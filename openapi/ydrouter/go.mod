@@ -3,7 +3,7 @@ module github.com/shibingli/ydx/openapi/ydrouter
 go 1.27.2
 
 require (
-	github.com/shibingli/ydx/openapi v0.1.0
+	github.com/shibingli/ydx/openapi v0.1.1
 	github.com/shibingli/ydx/router v0.1.0
 )
 
