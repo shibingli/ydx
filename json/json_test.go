@@ -452,13 +452,13 @@ func TestBackendNameIsKnown(t *testing.T) {
 		t.Fatalf("Backend() 多次调用结果不一致: %q != %q", name, again)
 	}
 	switch runtime.GOARCH {
-	case "amd64":
+	case "amd64", "arm64":
 		if name == "go-json" {
-			t.Fatalf("amd64 应使用自研后端或 encoding/json，实际 %q", name)
+			t.Fatalf("%s 应使用自研后端或 encoding/json，实际 %q", runtime.GOARCH, name)
 		}
 	default:
 		if name == "yd-native" {
-			t.Fatalf("非 amd64 不得使用自研后端，实际 %q", name)
+			t.Fatalf("非 amd64/arm64 不得使用自研后端，实际 %q", name)
 		}
 	}
 }

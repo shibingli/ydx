@@ -1,4 +1,4 @@
-//go:build amd64 && !jsonx_std
+//go:build (amd64 || arm64) && !jsonx_std
 
 package json
 
@@ -156,15 +156,9 @@ func (d *decoder) unmarshal(rv reflect.Value) error {
 	return nil
 }
 
+// skipSpace advances past JSON whitespace. | skipSpace 跳过 JSON 空白。
 func (d *decoder) skipSpace() {
-	for d.pos < len(d.data) {
-		switch d.data[d.pos] {
-		case ' ', '\t', '\n', '\r':
-			d.pos++
-		default:
-			return
-		}
-	}
+	d.pos = skipSpaceRun(d.data, d.pos)
 }
 
 // decodeFunc decodes one JSON value into a fixed Go type. | decodeFunc 把一个 JSON 值解析进固定 Go 类型。

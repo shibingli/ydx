@@ -1,16 +1,16 @@
-//go:build !amd64 && !jsonx_std
+//go:build !amd64 && !arm64 && !jsonx_std
 
-// This file is the jsonx implementation on non-amd64 architectures: it binds github.com/goccy/go-json. | 本文件是 jsonx 在非 amd64 架构上的实现：绑定 github.com/goccy/go-json。
+// This file is the jsonx implementation on architectures other than amd64/arm64: it binds github.com/goccy/go-json. | 本文件是 jsonx 在 amd64/arm64 之外的架构上的实现：绑定 github.com/goccy/go-json。
 //
 // go-json is a pure-Go high-performance replacement for encoding/json (no JIT required, safe to use on | go-json 是纯 Go 实现的 encoding/json 高性能替代品（无需 JIT，可安全用于
-// arm64 / 386 / riscv64 and other platforms), API- and semantics-compatible as a drop-in for the standard library. | arm64 / 386 / riscv64 等平台），API 与语义和标准库 drop-in 兼容。
+// 386 / riscv64 and other platforms), API- and semantics-compatible as a drop-in for the standard library. | 386 / riscv64 等平台），API 与语义和标准库 drop-in 兼容。
 //
 // Build constraint note: the implementation files are pairwise mutually exclusive and their union | 构建约束说明：各实现文件两两互斥，并集覆盖全部组合：
 // covers every combination:
 //
-//	jsonx_native*.go : amd64 && !jsonx_std  → self-developed native
-//	jsonx_generic.go : !amd64 && !jsonx_std → go-json
-//	jsonx_std.go     : jsonx_std            → encoding/json
+//	jsonx_native*.go : (amd64 || arm64) && !jsonx_std → self-developed native
+//	jsonx_generic.go : !amd64 && !arm64 && !jsonx_std → go-json
+//	jsonx_std.go     : jsonx_std                     → encoding/json
 //
 // Under any (GOARCH, jsonx_std) combination, exactly one implementation file takes part in compilation. | 任一 (GOARCH, jsonx_std) 组合下都恰好只有一个实现文件参与编译。
 
@@ -22,7 +22,7 @@ import (
 	gojson "github.com/goccy/go-json"
 )
 
-// Backend returns the name of the currently active JSON backend; on non-amd64 without the jsonx_std tag it is "go-json". | Backend 返回当前生效的 JSON 后端名称；非 amd64 且未设置 jsonx_std 标签时为 "go-json"。
+// Backend returns the name of the currently active JSON backend; on architectures other than amd64/arm64 without the jsonx_std tag it is "go-json". | Backend 返回当前生效的 JSON 后端名称；amd64/arm64 之外的架构且未设置 jsonx_std 标签时为 "go-json"。
 func Backend() string {
 	return "go-json"
 }

@@ -1,9 +1,8 @@
-//go:build amd64 && !jsonx_std
+//go:build (amd64 || arm64) && !jsonx_std
 
 package json
 
 import (
-	"encoding/binary"
 	stdjson "encoding/json"
 	"strconv"
 	"strings"
@@ -145,59 +144,6 @@ func (d *decoder) parseBool() (bool, error) {
 	return false, nil
 }
 
-// scanStringBody finds the closing quote of a string body. It returns slow=true when an escape,
-// control byte, or missing terminator requires the general parser, and nonASCII=true when the body
-// contains a byte >= 0x80 that still needs UTF-8 validation. | scanStringBody 查找字符串体的结束引号；
-// 遇到转义、控制字节或缺少终止符时返回 slow=true；字符串体含有 >= 0x80 的字节、仍需校验 UTF-8 时
-// 返回 nonASCII=true。
-func scanStringBody(data []byte, start int) (end int, slow bool, nonASCII bool) {
-	i := start
-	var high uint64
-	for len(data)-i >= 8 {
-		x := binary.LittleEndian.Uint64(unsafe.Slice(unsafe.SliceData(data[i:]), 8))
-		high |= x
-		if wordHasZero(x^wordQuote) || wordHasZero(x^wordBackslash) || wordHasControl(x) {
-			for j := 0; j < 8; j++ {
-				c := data[i+j]
-				if c == '"' {
-					return i + j, false, high&wordHi != 0
-				}
-				if c == '\\' || c < 0x20 {
-					return 0, true, false
-				}
-			}
-		}
-		i += 8
-	}
-	for len(data)-i >= 4 {
-		x := binary.LittleEndian.Uint32(unsafe.Slice(unsafe.SliceData(data[i:]), 4))
-		high |= uint64(x)
-		if wordHasZero32(x^wordQuote32) || wordHasZero32(x^wordBackslash32) || wordHasControl32(x) {
-			for j := 0; j < 4; j++ {
-				c := data[i+j]
-				if c == '"' {
-					return i + j, false, high&wordHi != 0
-				}
-				if c == '\\' || c < 0x20 {
-					return 0, true, false
-				}
-			}
-		}
-		i += 4
-	}
-	for ; i < len(data); i++ {
-		c := data[i]
-		if c == '"' {
-			return i, false, high&wordHi != 0
-		}
-		if c == '\\' || c < 0x20 {
-			return 0, true, false
-		}
-		high |= uint64(c)
-	}
-	return 0, true, false
-}
-
 func (d *decoder) parseString() (string, error) {
 	if d.pos >= len(d.data) || d.data[d.pos] != '"' {
 		return "", syntaxErr("expected string | 期望字符串")
@@ -248,6 +194,12 @@ func (d *decoder) parseString() (string, error) {
 			if c < 0x20 {
 				return "", syntaxErr("invalid control character in string | 字符串中包含非法控制字符")
 			}
+			if c < utf8.RuneSelf {
+				end := scanUnescapedASCII(d.data, d.pos)
+				b.Write(d.data[d.pos:end])
+				d.pos = end
+				continue
+			}
 			r, size := utf8.DecodeRune(d.data[d.pos:])
 			if r == utf8.RuneError && size == 1 {
 				b.WriteRune('�')
@@ -281,7 +233,12 @@ func (d *decoder) skipString() error {
 	if d.pos >= len(d.data) || d.data[d.pos] != '"' {
 		return syntaxErr("expected string | 期望字符串")
 	}
-	i := d.pos + 1
+	start := d.pos + 1
+	if end, slow, _ := scanStringBody(d.data, start); !slow {
+		d.pos = end + 1
+		return nil
+	}
+	i := start
 	for i < len(d.data) {
 		c := d.data[i]
 		switch {
@@ -388,9 +345,7 @@ func (d *decoder) parseNumberBytes() ([]byte, error) {
 		d.pos++
 	}
 	digits := d.pos
-	for d.pos < len(d.data) && d.data[d.pos] >= '0' && d.data[d.pos] <= '9' {
-		d.pos++
-	}
+	d.pos = scanDigits(d.data, d.pos)
 	if d.pos == digits {
 		return nil, syntaxErr("invalid number | 非法数字")
 	}
@@ -400,9 +355,7 @@ func (d *decoder) parseNumberBytes() ([]byte, error) {
 	if d.pos < len(d.data) && d.data[d.pos] == '.' {
 		d.pos++
 		frac := d.pos
-		for d.pos < len(d.data) && d.data[d.pos] >= '0' && d.data[d.pos] <= '9' {
-			d.pos++
-		}
+		d.pos = scanDigits(d.data, d.pos)
 		if d.pos == frac {
 			return nil, syntaxErr("invalid number fraction | 非法数字小数部分")
 		}
@@ -413,9 +366,7 @@ func (d *decoder) parseNumberBytes() ([]byte, error) {
 			d.pos++
 		}
 		exp := d.pos
-		for d.pos < len(d.data) && d.data[d.pos] >= '0' && d.data[d.pos] <= '9' {
-			d.pos++
-		}
+		d.pos = scanDigits(d.data, d.pos)
 		if d.pos == exp {
 			return nil, syntaxErr("invalid number exponent | 非法数字指数")
 		}

@@ -1,15 +1,13 @@
-//go:build amd64 && !jsonx_std
+//go:build (amd64 || arm64) && !jsonx_std
 
 package json
 
 import (
-	"encoding/binary"
 	stdjson "encoding/json"
 	"math"
 	"reflect"
 	"strconv"
 	"time"
-	"unicode/utf8"
 	"unsafe"
 
 	"github.com/shibingli/ydx/errs"
@@ -259,36 +257,52 @@ func appendCompactJSON(dst, src []byte, escapeHTML bool) ([]byte, error) {
 		return dst, syntaxErr("invalid JSON returned by Marshaler | Marshaler 返回了非法 JSON")
 	}
 	inString := false
-	for i := 0; i < len(src); i++ {
-		c := src[i]
+	for i := 0; i < len(src); {
 		if inString {
+			end := scanCompactInsideRun(src, i, escapeHTML)
+			dst = append(dst, src[i:end]...)
+			i = end
+			if i >= len(src) {
+				break
+			}
+			c := src[i]
 			switch {
 			case c == '"':
 				inString = false
 				dst = append(dst, c)
+				i++
 			case c == '\\':
 				dst = append(dst, c)
 				i++
 				if i < len(src) {
 					dst = append(dst, src[i])
+					i++
 				}
 			case escapeHTML && (c == '<' || c == '>' || c == '&'):
 				dst = append(dst, '\\', 'u', '0', '0', hexDigit(c>>4), hexDigit(c))
+				i++
 			case escapeHTML && c == 0xE2 && i+2 < len(src) && src[i+1] == 0x80 && src[i+2]&^1 == 0xA8:
 				dst = append(dst, '\\', 'u', '2', '0', '2', hexDigit(src[i+2]&0xF))
-				i += 2
+				i += 3
 			default:
 				dst = append(dst, c)
+				i++
 			}
 			continue
 		}
-		switch c {
-		case ' ', '\t', '\n', '\r':
-			continue
-		case '"':
-			inString = true
+
+		end := scanCompactOutsideRun(src, i)
+		dst = append(dst, src[i:end]...)
+		i = end
+		if i >= len(src) {
+			break
 		}
-		dst = append(dst, c)
+		if src[i] == '"' {
+			inString = true
+			dst = append(dst, '"')
+		}
+		// Whitespace outside strings is dropped. | 字符串外的空白被丢弃。
+		i++
 	}
 	return dst, nil
 }
@@ -394,81 +408,6 @@ func init() {
 
 func (e *encoder) str(s string) {
 	e.buf = appendJSONString(e.buf, s, e.escapeHTML)
-}
-
-func appendJSONString(buf []byte, s string, escapeHTML bool) []byte {
-	i := 0
-	for len(s)-i >= 8 {
-		x := binary.LittleEndian.Uint64(unsafe.Slice(unsafe.StringData(s[i:]), 8))
-		if x&wordHi != 0 || wordHasControl(x) ||
-			wordHasZero(x^wordQuote) || wordHasZero(x^wordBackslash) ||
-			(escapeHTML && (wordHasZero(x^wordLessThan) || wordHasZero(x^wordGreater) || wordHasZero(x^wordAmpersand))) {
-			goto slow
-		}
-		i += 8
-	}
-	for len(s)-i >= 4 {
-		x := binary.LittleEndian.Uint32(unsafe.Slice(unsafe.StringData(s[i:]), 4))
-		if x&0x80808080 != 0 || wordHasControl32(x) ||
-			wordHasZero32(x^wordQuote32) || wordHasZero32(x^wordBackslash32) ||
-			(escapeHTML && (wordHasZero32(x^wordLessThan32) || wordHasZero32(x^wordGreater32) || wordHasZero32(x^wordAmpersand32))) {
-			goto slow
-		}
-		i += 4
-	}
-	if escapeHTML {
-		for ; i < len(s); i++ {
-			if escapeTableHTML[s[i]] {
-				goto slow
-			}
-		}
-	} else {
-		for ; i < len(s); i++ {
-			if escapeTablePlain[s[i]] {
-				goto slow
-			}
-		}
-	}
-	buf = append(buf, '"')
-	buf = append(buf, s...)
-	buf = append(buf, '"')
-	return buf
-slow:
-	buf = append(buf, '"')
-	for _, r := range s {
-		switch r {
-		case '"':
-			buf = append(buf, '\\', '"')
-		case '\\':
-			buf = append(buf, '\\', '\\')
-		case '\b':
-			buf = append(buf, '\\', 'b')
-		case '\f':
-			buf = append(buf, '\\', 'f')
-		case '\n':
-			buf = append(buf, '\\', 'n')
-		case '\r':
-			buf = append(buf, '\\', 'r')
-		case '\t':
-			buf = append(buf, '\\', 't')
-		case '<', '>', '&':
-			if escapeHTML {
-				buf = append(buf, '\\', 'u', '0', '0', hexDigit(byte(r)>>4), hexDigit(byte(r)))
-			} else {
-				buf = utf8.AppendRune(buf, r)
-			}
-		case '\u2028', '\u2029':
-			buf = append(buf, '\\', 'u', '2', '0', '2', hexDigit(byte(r)))
-		default:
-			if r < 0x20 {
-				buf = append(buf, '\\', 'u', '0', '0', hexDigit(byte(r)>>4), hexDigit(byte(r)))
-			} else {
-				buf = utf8.AppendRune(buf, r)
-			}
-		}
-	}
-	buf = append(buf, '"')
-	return buf
 }
 
 // appendStringSlice appends one JSON string array to buf. | appendStringSlice
