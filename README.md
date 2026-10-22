@@ -36,8 +36,16 @@
 | `github.com/shibingli/ydx/middleware/recovery` | `recovery` | panic 恢复 |
 | `github.com/shibingli/ydx/middleware/requestid` | `requestid` | 请求 ID |
 | `github.com/shibingli/ydx/middleware/reqlog` | `reqlog` | 中间件内部共享的计数写入器与头处理（中间件共享实现（公开路径，无稳定性承诺）） |
+| `github.com/shibingli/ydx/repotest` | `repotest` | 仓库级守卫（模块文件、命名、依赖与架构约束） |
 
-> 目录名、模块名与包名三者一致；从 yd 迁移时需要同时更新 import 路径与包标识符。
+基准模块统一放在 `benchmarks/` 下，每个基准模块也拥有独立的 `go.mod`、`go.sum` 与 `docs.go`：
+`benchmarks/base64`、`benchmarks/buffpool`、`benchmarks/cache`、`benchmarks/json`、`benchmarks/jwt`、
+`benchmarks/log`、`benchmarks/middleware`、`benchmarks/render`、`benchmarks/router`、`benchmarks/sse`、
+`benchmarks/websocket`。组件模块本身不包含基准，也不依赖基准专用库。
+
+> 目录名、模块名与包名三者一致；每个带实现代码的包还必须有一个与包同名的 `<package>.go`
+> 主文件（例如 `cache/cache.go`，而不是 `cache/cachex.go`）。从 yd 迁移时需要同时更新
+> import 路径与包标识符。
 
 ## YD 路由用法
 
@@ -113,3 +121,10 @@ pwsh ./scripts/test-all.ps1
 脚本对每个模块执行 `go build ./... && go vet ./... && go test ./... -race`。
 
 每个模块都必须包含 `docs.go`、`go.mod`、`go.sum`；`docs.go` 给出包文档与 YD/原生两种用法。
+`repotest` 还会校验模块路径、包名、主文件名、本地 `replace`、标准库编解码与 `regexp` 直引、
+`fmt.Errorf`、直接 `panic`、外键、cgo SQLite 以及基准位置：
+
+```bash
+cd repotest
+GOWORK=off go test ./...
+```

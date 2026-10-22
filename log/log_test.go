@@ -754,8 +754,8 @@ func TestCallerAttribution(t *testing.T) {
 
 	recs := jsonLines(t, &buf)
 	caller, _ := recs[0]["caller"].(string)
-	if !strings.Contains(caller, "logx_test.go:") {
-		t.Fatalf("caller = %q，期望包含 logx_test.go:<行号>", caller)
+	if !strings.Contains(caller, "log_test.go:") {
+		t.Fatalf("caller = %q, want log_test.go:<line> | 期望包含 log_test.go:<行号>", caller)
 	}
 	if strings.ContainsAny(caller, `/\`) {
 		t.Fatalf("caller 应只含文件名: %q", caller)
