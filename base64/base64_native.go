@@ -3,8 +3,10 @@
 package base64
 
 import (
-	"github.com/shibingli/ydx/errs"
+	"encoding/binary"
 	"unsafe"
+
+	"github.com/shibingli/ydx/errs"
 )
 
 // errCorrupt is the underlying error for malformed Base64 input. | errCorrupt 是非法 Base64 输入的底层错误。
@@ -16,10 +18,31 @@ var errCorrupt = errs.New("b64x: corrupt Base64 input | b64x：损坏的 Base64 
 type Encoding struct {
 	alphabet [64]byte
 	decode   [256]uint8
+	pair     *encodePairLUT
 	pad      byte
 	raw      bool
 	simd     uint8
 }
+
+// encodePairLUT maps a 12-bit input chunk to its two Base64 characters packed little-endian, so a
+// three-byte group needs two lookups and one 32-bit store instead of four lookups and three
+// stores. The two alphabets share one table each. | encodePairLUT 把 12 位输入块映射为按小端打包的
+// 两个 Base64 字符，使一个三字节组只需两次查表与一次 32 位存储，而非四次查表与三次存储；两种字母表
+// 各共享一张表。
+type encodePairLUT [4096]uint16
+
+func makeEncodePairLUT(alpha string) *encodePairLUT {
+	t := new(encodePairLUT)
+	for i := 0; i < 4096; i++ {
+		t[i] = uint16(alpha[i>>6]) | uint16(alpha[i&63])<<8
+	}
+	return t
+}
+
+var (
+	stdEncodePairs = makeEncodePairLUT(stdAlpha)
+	urlEncodePairs = makeEncodePairLUT(urlAlpha)
+)
 
 // simdEncode and simdDecode are installed by the optional SIMD build. | simdEncode 与 simdDecode
 // 由可选的 SIMD 构建安装；未启用时保持 nil 并走标量路径。
@@ -39,8 +62,10 @@ func newEncoding(alpha string, padded bool) *Encoding {
 	switch alpha {
 	case stdAlpha:
 		e.simd = 1
+		e.pair = stdEncodePairs
 	case urlAlpha:
 		e.simd = 2
+		e.pair = urlEncodePairs
 	}
 	copy(e.alphabet[:], alpha)
 	for i := range e.decode {
@@ -92,38 +117,32 @@ func (e *Encoding) DecodedLen(n int) int {
 // 短缓冲不会逃逸。
 func (e *Encoding) encodeScalar(dst, src []byte) {
 	di := 0
+	pair := e.pair
 	for len(src) >= 12 {
 		for j := 0; j < 12; j += 3 {
 			v := uint(src[j])<<16 | uint(src[j+1])<<8 | uint(src[j+2])
-			o := di + j/3*4
-			dst[o] = e.alphabet[v>>18&63]
-			dst[o+1] = e.alphabet[v>>12&63]
-			dst[o+2] = e.alphabet[v>>6&63]
-			dst[o+3] = e.alphabet[v&63]
+			p := uint32(pair[(v>>12)&4095]) | uint32(pair[v&4095])<<16
+			binary.LittleEndian.PutUint32(dst[di+j/3*4:], p)
 		}
 		src, di = src[12:], di+16
 	}
 	for len(src) >= 3 {
 		v := uint(src[0])<<16 | uint(src[1])<<8 | uint(src[2])
-		dst[di] = e.alphabet[v>>18&63]
-		dst[di+1] = e.alphabet[v>>12&63]
-		dst[di+2] = e.alphabet[v>>6&63]
-		dst[di+3] = e.alphabet[v&63]
+		p := uint32(pair[(v>>12)&4095]) | uint32(pair[v&4095])<<16
+		binary.LittleEndian.PutUint32(dst[di:], p)
 		src, di = src[3:], di+4
 	}
 	switch len(src) {
 	case 1:
 		v := uint(src[0]) << 16
-		dst[di] = e.alphabet[v>>18&63]
-		dst[di+1] = e.alphabet[v>>12&63]
+		binary.LittleEndian.PutUint16(dst[di:], pair[(v>>12)&4095])
 		if !e.raw {
 			dst[di+2], dst[di+3] = e.pad, e.pad
 		}
 	case 2:
 		v := uint(src[0])<<16 | uint(src[1])<<8
-		dst[di] = e.alphabet[v>>18&63]
-		dst[di+1] = e.alphabet[v>>12&63]
-		dst[di+2] = e.alphabet[v>>6&63]
+		binary.LittleEndian.PutUint16(dst[di:], pair[(v>>12)&4095])
+		dst[di+2] = byte(pair[v&4095])
 		if !e.raw {
 			dst[di+3] = e.pad
 		}
@@ -207,6 +226,29 @@ func (e *Encoding) Decode(dst, src []byte) (int, error) {
 	}
 	if i == len(src) {
 		return out, nil
+	}
+	// Canonical padded tails are the common case for hashes and keys; decoding them here avoids
+	// the general slow path with its per-character state machine. | 规范填充尾部是摘要与密钥的常见
+	// 情形；在此直接解码可避免带逐字符状态机的通用慢路径。
+	if !e.raw && len(src)-i == 4 {
+		switch {
+		case src[i+2] == e.pad && src[i+3] == e.pad:
+			a := e.decode[src[i]]
+			b := e.decode[src[i+1]]
+			if (a|b)&0x80 == 0 {
+				dst[out] = a<<2 | b>>4
+				return out + 1, nil
+			}
+		case src[i+3] == e.pad:
+			a := e.decode[src[i]]
+			b := e.decode[src[i+1]]
+			c := e.decode[src[i+2]]
+			if (a|b|c)&0x80 == 0 {
+				dst[out] = a<<2 | b>>4
+				dst[out+1] = b<<4 | c>>2
+				return out + 2, nil
+			}
+		}
 	}
 	n, err := e.decodeSlow(dst[out:], src[i:])
 	if err != nil {
@@ -327,7 +369,7 @@ func (e *Encoding) DecodeString(s string) ([]byte, error) {
 		return []byte{}, nil
 	}
 	out := make([]byte, e.DecodedLen(len(s)))
-	n, err := e.Decode(out, []byte(s))
+	n, err := e.Decode(out, unsafe.Slice(unsafe.StringData(s), len(s)))
 	if err != nil {
 		return nil, err
 	}

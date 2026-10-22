@@ -24,6 +24,28 @@ func randomBytes(n int) []byte {
 
 // TestStdEncodingMatchesStdlib cross-checks inputs of length 0..256 one by one against encoding/base64: | TestStdEncodingMatchesStdlib 对长度 0..256 的输入逐一与 encoding/base64 对拍：
 // encoding, decoding and append-style codec are all identical, and the error cases containing undecodable characters are covered. | 编码、解码、追加式编解码全部一致，并覆盖含不可解码字符的错误情形。
+// TestDecodeCanonicalPaddedTails pins the inline padded-tail decoder against the standard library,
+// including malformed paddings that must still fall through to the slow path and fail. |
+// TestDecodeCanonicalPaddedTails 将内联填充尾部解码器与标准库对拍，并覆盖必须回退慢路径并报错的
+// 畸形填充。
+func TestDecodeCanonicalPaddedTails(t *testing.T) {
+	cases := []string{
+		"", "AA==", "AAA=", "AAAA", "AQID", "AQI=", "AQ==", "AAAAAA==", "AAAAAAA=",
+		"=====", "A===", "AA=A", "AAA", "AA", "A", "AA==\n", "AA==\r\n", "A A==",
+		"AA==AA==", "AQIDBA==", "AQIDBAU=",
+	}
+	for _, in := range cases {
+		got, gotErr := StdEncoding.DecodeString(in)
+		want, wantErr := stdb64.StdEncoding.DecodeString(in)
+		if (gotErr == nil) != (wantErr == nil) {
+			t.Fatalf("DecodeString(%q): error mismatch: yd=%v std=%v", in, gotErr, wantErr)
+		}
+		if gotErr == nil && !bytes.Equal(got, want) {
+			t.Fatalf("DecodeString(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
 func TestStdEncodingMatchesStdlib(t *testing.T) {
 	for n := 0; n <= 256; n++ {
 		src := randomBytes(n)
