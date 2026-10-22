@@ -22,6 +22,8 @@
 | `github.com/shibingli/ydx/regexpx` | `regexpx` | 统一正则入口（RE2 快路径 + regexp2 兼容路径） |
 | `github.com/shibingli/ydx/router` | `router` | 基数树路由 + 原生 http 适配 |
 | `github.com/shibingli/ydx/gorm` | `gorm` | GORM 装配、连接串预置与自动建库 |
+| `github.com/shibingli/ydx/redis` | `redis` | go-redis 通用客户端、探活与读透缓存 |
+| `github.com/shibingli/ydx/asynq` | `asynq` | 基于 asynq 的异步任务层（注册表、客户端、服务端） |
 | `github.com/shibingli/ydx/cache` | `cache` | 二级缓存（L1 环形缓存 + Redis） |
 | `github.com/shibingli/ydx/sse` | `sse` | Server-Sent Events 写入器与广播器 |
 | `github.com/shibingli/ydx/websocket` | `websocket` | RFC 6455 / 7692 / 8441 WebSocket |
