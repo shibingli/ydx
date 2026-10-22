@@ -59,6 +59,29 @@ func TestViewerScriptIslandStaysValid(t *testing.T) {
 	}
 }
 
+// TestViewerLeavesNoPlaceholder proves every placeholder occurrence is substituted, including
+// the icon sprite referenced by all three theme glyphs. A single strings.Replace would leave the
+// second and third icons pointing at the literal placeholder. | TestViewerLeavesNoPlaceholder
+// 证明每个占位符的每一处出现都被替换；三枚主题图标共用图标 sprite，若只替换一次，后两枚会停在
+// 字面占位符上。
+func TestViewerLeavesNoPlaceholder(t *testing.T) {
+	page, err := renderViewer(NewBuilder(Info{Title: "Demo", Version: "1.0.0"}).Build(), Options{})
+	if err != nil {
+		t.Fatalf("renderViewer: %v | 渲染查看器失败：%v", err, err)
+	}
+	for _, placeholder := range []string{
+		viewerTitlePlaceholder,
+		viewerDataPlaceholder,
+		viewerScriptPlaceholder,
+		viewerCSSPlaceholder,
+		viewerIconsPlaceholder,
+	} {
+		if strings.Contains(string(page), placeholder) {
+			t.Errorf("placeholder %q survived rendering | 占位符 %q 渲染后仍残留", placeholder, placeholder)
+		}
+	}
+}
+
 // TestViewerCoversAllObjectKinds checks that the template carries renderers for the extended
 // object kinds and no external asset references. | TestViewerCoversAllObjectKinds 检查模板包含
 // 扩展对象类型的渲染器，且不引用外部资源。

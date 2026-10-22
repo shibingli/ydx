@@ -42,7 +42,9 @@ func renderViewerWithJSON(doc Document, o Options, raw []byte) ([]byte, error) {
 	page = strings.Replace(page, viewerTitlePlaceholder, html.EscapeString(o.title(doc.Info)), 1)
 	page = strings.Replace(page, viewerScriptPlaceholder, html.EscapeString(o.ViewerScript), 1)
 	page = strings.Replace(page, viewerCSSPlaceholder, html.EscapeString(o.ViewerCSS), 1)
-	page = strings.Replace(page, viewerIconsPlaceholder, html.EscapeString(o.ViewerIcons), 1)
+	// The icon sprite is referenced by every theme glyph, so all occurrences must be replaced. |
+	// 图标 sprite 被每枚主题图标引用，必须替换全部出现位置。
+	page = strings.ReplaceAll(page, viewerIconsPlaceholder, html.EscapeString(o.ViewerIcons))
 	return []byte(page), nil
 }
 
