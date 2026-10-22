@@ -12,8 +12,8 @@ github.com/shibingli/ydx/json v0.1.0 h1:aMdhyavj+RjB1/NhoKrLQPm7tJ4IUBHC5Iwxgtu7
 github.com/shibingli/ydx/json v0.1.0/go.mod h1:mJ1JZbxjXZrydmUT1ckOL1SsChLEc3ZSWKUv8gdiHEk=
 github.com/shibingli/ydx/log v0.1.0 h1:zMWy8Ve+FWP8xKeUAWZkjcJNjjoVQhIyV1uulKEjcYk=
 github.com/shibingli/ydx/log v0.1.0/go.mod h1:ERZklQ7x/BDHsRyuE1INAQCcsWEKi2s9O9NCNHBBmqE=
-github.com/shibingli/ydx/openapi v0.1.2 h1:ThBPURzu8iYafmKVSWh60n4py9n7FRrTpUZaUt94P/s=
-github.com/shibingli/ydx/openapi v0.1.2/go.mod h1:M7cOhKXAfp9zb4Xe0KiK29lcEJ8YZDl4SLAsitc6Gz4=
+github.com/shibingli/ydx/openapi v0.1.3 h1:V8PpfVRidman/LWjwYQl6OZCigWaBYBayVBI/BQ931k=
+github.com/shibingli/ydx/openapi v0.1.3/go.mod h1:M7cOhKXAfp9zb4Xe0KiK29lcEJ8YZDl4SLAsitc6Gz4=
 github.com/shibingli/ydx/protocol v0.1.0 h1:bGgaYQwhjr8M0keef1a8O+eKaAXw4FWBORhlLHFZ+n4=
 github.com/shibingli/ydx/protocol v0.1.0/go.mod h1:LxChAo9PJJFJsFi3A38qhQEvWFbMkhVVvM3HsIdKzbk=
 github.com/shibingli/ydx/router v0.1.0 h1:We8NvNtkmILKdGU/Rowa/7dpb4mzYRZ+GRlzTF3ZozI=
