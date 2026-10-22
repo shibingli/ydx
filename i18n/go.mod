@@ -1,0 +1,32 @@
+module github.com/shibingli/ydx/i18n
+
+go 1.27.2
+
+require (
+	github.com/shibingli/ydx/afs v0.1.0
+	github.com/shibingli/ydx/errs v0.1.0
+	github.com/shibingli/ydx/json v0.1.0
+	github.com/shibingli/ydx/router v0.1.0
+	github.com/spf13/afero v1.15.0
+	github.com/spf13/viper v1.21.0
+)
+
+require (
+	github.com/cristalhq/base64 v0.1.2 // indirect
+	github.com/fsnotify/fsnotify v1.9.0 // indirect
+	github.com/go-viper/mapstructure/v2 v2.4.0 // indirect
+	github.com/goccy/go-json v0.11.2 // indirect
+	github.com/pelletier/go-toml/v2 v2.2.4 // indirect
+	github.com/sagikazarmark/locafero v0.11.0 // indirect
+	github.com/shibingli/ydx/base64 v0.1.0 // indirect
+	github.com/shibingli/ydx/log v0.1.0 // indirect
+	github.com/shibingli/ydx/protocol v0.1.0 // indirect
+	github.com/shibingli/ydx/sysinfo v0.1.0 // indirect
+	github.com/sourcegraph/conc v0.3.1-0.20240121214520-5f936abd7ae8 // indirect
+	github.com/spf13/cast v1.10.0 // indirect
+	github.com/spf13/pflag v1.0.10 // indirect
+	github.com/subosito/gotenv v1.6.0 // indirect
+	go.yaml.in/yaml/v3 v3.0.4 // indirect
+	golang.org/x/sys v0.29.0 // indirect
+	golang.org/x/text v0.43.0 // indirect
+)

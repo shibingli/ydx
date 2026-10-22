@@ -5,7 +5,7 @@
 
 ## 0. 项目定位
 
-- ydx 是 yd 全栈框架的组件仓库，28 个产品模块、11 个基准模块与 1 个 `repotest` 守卫模块。
+- ydx 是 yd 全栈框架的组件仓库，30 个产品模块、11 个基准模块与 1 个 `repotest` 守卫模块。
 - 组件源码以 ydx 为唯一事实来源；yd 通过 `github.com/shibingli/ydx/* vX.Y.Z` 依赖本仓库。
 - 禁止反向依赖：任何 ydx 模块都不得 import `github.com/shibingli/yd`。
 
@@ -15,7 +15,7 @@
 
 - 产品模块目录：`errs/`、`sysinfo/`、`buffpool/`、`protocol/`、`base64/`、`json/`、`afs/`、
   `config/`、`log/`、`regexpx/`、`router/`、`gorm/`、`redis/`、`asynq/`、`cache/`、`sse/`、
-  `websocket/`、`render/`、`jwt/`、`middleware/` 及其插件子目录。
+  `websocket/`、`render/`、`i18n/`、`openapi/`、`jwt/`、`middleware/` 及其插件子目录。
 - 基准模块：`benchmarks/**`。
 - 守卫：`repotest/**`。
 - 测试与文档：`*_test.go`、`testdata/**`、`README.md`、本文件、`CLAUDE.md`、`docs/**`。

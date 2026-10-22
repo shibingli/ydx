@@ -34,6 +34,8 @@
 | `github.com/shibingli/ydx/sse` | `sse` | Server-Sent Events 写入器与广播器 |
 | `github.com/shibingli/ydx/websocket` | `websocket` | RFC 6455 / 7692 / 8441 WebSocket |
 | `github.com/shibingli/ydx/render` | `render` | 编译式 `html/template` 引擎 |
+| `github.com/shibingli/ydx/i18n` | `i18n` | 多语言目录加载、语言协商与路由中间件 |
+| `github.com/shibingli/ydx/openapi` | `openapi` | OpenAPI 3.0/3.1 文档构建、注解解析与自包含查看器 |
 | `github.com/shibingli/ydx/jwt` | `jwt` | 免反射 JWT 签发、验签与中间件 |
 | `github.com/shibingli/ydx/middleware` | `middleware` | 中间件聚合门面（保持旧 API） |
 | `github.com/shibingli/ydx/middleware/accesslog` | `accesslog` | 访问日志 |
@@ -117,6 +119,10 @@ handler := cors.Middleware(cors.CORSOptions{})(mux)
 ```
 
 `jwt` 使用 `HTTPMiddleware` / `FromRequest`，`sse` 使用 `HTTPHandler`，`websocket` 使用 `HtmxHTTPHandler`。
+
+`openapi` 的查看器脚本内嵌在模块中：`HTTPHandler` 同时提供 JSON 文档、查看器页面与
+`AssetsPath` 下的脚本资源，标准 `net/http` 只需把同一个处理器挂载到三个路径；需要接入自有静态
+管线时，用 `openapi.ViewerScript()` 取内嵌字节，并把 `Options.ViewerScript` 指向自己的 URL。
 
 ## 基准与对比
 
