@@ -15,6 +15,7 @@ func benchRouterRequest(target string) *http.Request {
 	return httptest.NewRequest(http.MethodGet, target, nil)
 }
 
+// BenchmarkRouterStatic measures static route dispatch. | BenchmarkRouterStatic 测量静态路由分发。
 func BenchmarkRouterStatic(b *testing.B) {
 	r := New()
 	r.GET("/api/v1/users", func(c *Ctx) { _ = c.NoContent() })
@@ -29,6 +30,7 @@ func BenchmarkRouterStatic(b *testing.B) {
 	}
 }
 
+// BenchmarkRouterParam measures a route with one named parameter. | BenchmarkRouterParam 测量带一个命名参数的路由。
 func BenchmarkRouterParam(b *testing.B) {
 	r := New()
 	r.GET("/api/v1/users/:id/profile", func(c *Ctx) { _ = c.Param("id"); _ = c.NoContent() })
@@ -43,6 +45,7 @@ func BenchmarkRouterParam(b *testing.B) {
 	}
 }
 
+// BenchmarkRouterMixedSegment measures a segment mixing a literal with a parameter. | BenchmarkRouterMixedSegment 测量字面量与参数混合的分段。
 func BenchmarkRouterMixedSegment(b *testing.B) {
 	r := New()
 	r.GET("/report/:id-xx.png", func(c *Ctx) { _ = c.Param("id"); _ = c.NoContent() })
@@ -57,6 +60,7 @@ func BenchmarkRouterMixedSegment(b *testing.B) {
 	}
 }
 
+// BenchmarkRouterWildcard measures wildcard route dispatch. | BenchmarkRouterWildcard 测量通配路由分发。
 func BenchmarkRouterWildcard(b *testing.B) {
 	r := New()
 	r.GET("/files/*filepath", func(c *Ctx) { _ = c.Param("filepath"); _ = c.NoContent() })
@@ -71,6 +75,7 @@ func BenchmarkRouterWildcard(b *testing.B) {
 	}
 }
 
+// BenchmarkRouterMiss measures the unmatched-route path. | BenchmarkRouterMiss 测量未命中路由路径。
 func BenchmarkRouterMiss(b *testing.B) {
 	r := New()
 	r.GET("/api/v1/users/:id", func(c *Ctx) { _ = c.NoContent() })
@@ -85,6 +90,7 @@ func BenchmarkRouterMiss(b *testing.B) {
 	}
 }
 
+// BenchmarkDownloadBytes measures Ctx.DownloadBytes for a 4 KiB body. | BenchmarkDownloadBytes 测量 4 KiB 正文的 Ctx.DownloadBytes。
 func BenchmarkDownloadBytes(b *testing.B) {
 	content := make([]byte, 4096)
 	r := New()
@@ -103,6 +109,7 @@ func BenchmarkDownloadBytes(b *testing.B) {
 	}
 }
 
+// BenchmarkDownloadReader measures Ctx.DownloadReader copying from a reader without WriterTo. | BenchmarkDownloadReader 测量 Ctx.DownloadReader 从不含 WriterTo 的读取器拷贝。
 func BenchmarkDownloadReader(b *testing.B) {
 	content := make([]byte, 4096)
 	r := New()

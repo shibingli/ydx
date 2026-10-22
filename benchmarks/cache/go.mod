@@ -3,6 +3,10 @@ module github.com/shibingli/ydx/benchmarks/cache
 go 1.27.2
 
 require (
+	github.com/allegro/bigcache/v3 v3.2.0
+	github.com/coocood/freecache v1.2.7
+	github.com/dgraph-io/ristretto/v2 v2.4.2
+	github.com/patrickmn/go-cache v2.1.0+incompatible
 	github.com/shibingli/ydx/cache v0.1.0
 	github.com/shibingli/ydx/log v0.1.0
 )
@@ -10,6 +14,7 @@ require (
 require (
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/cristalhq/base64 v0.1.2 // indirect
+	github.com/dustin/go-humanize v1.1.0 // indirect
 	github.com/fsnotify/fsnotify v1.10.1 // indirect
 	github.com/go-viper/mapstructure/v2 v2.5.0 // indirect
 	github.com/goccy/go-json v0.11.2 // indirect

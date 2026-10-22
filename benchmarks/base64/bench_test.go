@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"testing"
 
+	cmpb64 "github.com/cristalhq/base64"
+
 	b64x "github.com/shibingli/ydx/base64"
 )
 
@@ -47,6 +49,15 @@ func BenchmarkEncode(b *testing.B) {
 			}
 			benchSinkBytes = dst
 		})
+		b.Run(fmt.Sprintf("cristalhq/%d", size), func(b *testing.B) {
+			b.SetBytes(int64(size))
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				cmpb64.StdEncoding.Encode(dst, src)
+			}
+			benchSinkBytes = dst
+		})
 	}
 }
 
@@ -68,6 +79,14 @@ func BenchmarkEncodeToString(b *testing.B) {
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
 				benchSinkString = stdbase64.StdEncoding.EncodeToString(src)
+			}
+		})
+		b.Run(fmt.Sprintf("cristalhq/%d", size), func(b *testing.B) {
+			b.SetBytes(int64(size))
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				benchSinkString = cmpb64.StdEncoding.EncodeToString(src)
 			}
 		})
 	}
@@ -93,6 +112,14 @@ func BenchmarkRawURLEncode(b *testing.B) {
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
 				stdbase64.RawURLEncoding.Encode(dst, src)
+			}
+		})
+		b.Run(fmt.Sprintf("cristalhq/%d", size), func(b *testing.B) {
+			b.SetBytes(int64(size))
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				cmpb64.RawURLEncoding.Encode(dst, src)
 			}
 		})
 	}
@@ -126,6 +153,16 @@ func BenchmarkDecode(b *testing.B) {
 				}
 			}
 		})
+		b.Run(fmt.Sprintf("cristalhq/%d", size), func(b *testing.B) {
+			b.SetBytes(int64(size))
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				if _, err := cmpb64.StdEncoding.Decode(dst, encoded); err != nil {
+					b.Fatalf("Decode failed | Decode 失败: %v", err)
+				}
+			}
+		})
 	}
 }
 
@@ -153,6 +190,18 @@ func BenchmarkDecodeString(b *testing.B) {
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
 				out, err := stdbase64.RawURLEncoding.DecodeString(encoded)
+				if err != nil {
+					b.Fatalf("DecodeString failed | DecodeString 失败: %v", err)
+				}
+				benchSinkBytes = out
+			}
+		})
+		b.Run(fmt.Sprintf("cristalhq/%d", size), func(b *testing.B) {
+			b.SetBytes(int64(size))
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				out, err := cmpb64.RawURLEncoding.DecodeString(encoded)
 				if err != nil {
 					b.Fatalf("DecodeString failed | DecodeString 失败: %v", err)
 				}

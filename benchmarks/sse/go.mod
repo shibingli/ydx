@@ -2,7 +2,10 @@ module github.com/shibingli/ydx/benchmarks/sse
 
 go 1.27.2
 
-require github.com/shibingli/ydx/sse v0.1.0
+require (
+	github.com/gin-contrib/sse v1.1.2
+	github.com/shibingli/ydx/sse v0.1.0
+)
 
 require (
 	github.com/cristalhq/base64 v0.1.2 // indirect

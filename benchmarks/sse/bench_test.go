@@ -28,6 +28,14 @@ func (w *benchWriter) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
+// WriteString implements io.StringWriter without allocating, so string-based encoders such as
+// gin-contrib/sse do not pay a wrapper allocation. | WriteString 以零分配方式实现 io.StringWriter，
+// 使 gin-contrib/sse 等字符串编码器不必支付包装器分配。
+func (w *benchWriter) WriteString(s string) (int, error) {
+	w.n += len(s)
+	return len(s), nil
+}
+
 // WriteHeader implements http.ResponseWriter. | WriteHeader 实现 http.ResponseWriter。
 func (w *benchWriter) WriteHeader(int) {}
 
@@ -49,6 +57,7 @@ func benchSSEWriter(b *testing.B, size int) *Writer {
 	return w
 }
 
+// BenchmarkWriteData measures data-only event assembly for three payload shapes. | BenchmarkWriteData 测量三种载荷形态的纯 data 事件组装。
 func BenchmarkWriteData(b *testing.B) {
 	cases := []struct {
 		name string
@@ -73,6 +82,7 @@ func BenchmarkWriteData(b *testing.B) {
 	}
 }
 
+// BenchmarkWriteEvent measures a full event with id, name, comment, retry and data. | BenchmarkWriteEvent 测量携带 id、name、comment、retry 与 data 的完整事件。
 func BenchmarkWriteEvent(b *testing.B) {
 	w := benchSSEWriter(b, benchDefaultBufferSize)
 	e := Event{
@@ -92,6 +102,7 @@ func BenchmarkWriteEvent(b *testing.B) {
 	}
 }
 
+// BenchmarkPublish measures broker fan-out to one and 64 subscribers. | BenchmarkPublish 测量向 1 与 64 个订阅者扇出。
 func BenchmarkPublish(b *testing.B) {
 	for _, n := range []int{1, 64} {
 		b.Run("subscribers="+strconv.Itoa(n), func(b *testing.B) {

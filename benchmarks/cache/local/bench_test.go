@@ -24,6 +24,7 @@ func benchCache(b *testing.B) *Cache {
 	return c
 }
 
+// BenchmarkGet measures the local cache hit path. | BenchmarkGet 测量本地缓存命中路径。
 func BenchmarkGet(b *testing.B) {
 	c := benchCache(b)
 	keys := make([]string, 1024)
@@ -37,6 +38,7 @@ func BenchmarkGet(b *testing.B) {
 	}
 }
 
+// BenchmarkGetAppend measures the append-into-caller-buffer hit path. | BenchmarkGetAppend 测量追加到调用方缓冲区的命中路径。
 func BenchmarkGetAppend(b *testing.B) {
 	c := benchCache(b)
 	buf := make([]byte, 0, 64)
@@ -47,6 +49,7 @@ func BenchmarkGetAppend(b *testing.B) {
 	}
 }
 
+// BenchmarkView measures the zero-copy callback view. | BenchmarkView 测量零拷贝回调视图。
 func BenchmarkView(b *testing.B) {
 	c := benchCache(b)
 	b.ReportAllocs()
@@ -56,6 +59,7 @@ func BenchmarkView(b *testing.B) {
 	}
 }
 
+// BenchmarkSet measures the insert path. | BenchmarkSet 测量写入路径。
 func BenchmarkSet(b *testing.B) {
 	c := benchCache(b)
 	value := []byte("0123456789abcdef0123456789abcdef")
@@ -66,6 +70,7 @@ func BenchmarkSet(b *testing.B) {
 	}
 }
 
+// BenchmarkGetParallel measures concurrent hit paths. | BenchmarkGetParallel 测量并发命中路径。
 func BenchmarkGetParallel(b *testing.B) {
 	c := benchCache(b)
 	b.ReportAllocs()

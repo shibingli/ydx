@@ -38,6 +38,7 @@ func benchKeys(n int) []string {
 	return keys
 }
 
+// BenchmarkRawGet measures the raw L1 hit path through Manager.Raw. | BenchmarkRawGet 测量经 Manager.Raw 的原始 L1 命中路径。
 func BenchmarkRawGet(b *testing.B) {
 	ctx := context.Background()
 	m := benchManager(b, nil)
@@ -56,6 +57,7 @@ func BenchmarkRawGet(b *testing.B) {
 	}
 }
 
+// BenchmarkRawView measures the zero-copy callback view over an L1 entry. | BenchmarkRawView 测量通过回调零拷贝访问 L1 条目。
 func BenchmarkRawView(b *testing.B) {
 	ctx := context.Background()
 	m := benchManager(b, nil)
@@ -74,6 +76,7 @@ func BenchmarkRawView(b *testing.B) {
 	}
 }
 
+// BenchmarkRawSet measures the raw write path with an in-memory L1 only. | BenchmarkRawSet 测量仅使用内存 L1 的原始写入路径。
 func BenchmarkRawSet(b *testing.B) {
 	ctx := context.Background()
 	m := benchManager(b, nil)
@@ -90,6 +93,7 @@ func BenchmarkRawSet(b *testing.B) {
 	}
 }
 
+// BenchmarkRawGetTwoLevelL1Hit measures an L1 hit while a remote L2 is configured. | BenchmarkRawGetTwoLevelL1Hit 测量配置了远端 L2 时的 L1 命中。
 func BenchmarkRawGetTwoLevelL1Hit(b *testing.B) {
 	ctx := context.Background()
 	m := benchManager(b, newFakeRemote())

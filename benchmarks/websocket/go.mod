@@ -2,7 +2,11 @@ module github.com/shibingli/ydx/benchmarks/websocket
 
 go 1.27.2
 
-require github.com/shibingli/ydx/websocket v0.1.0
+require (
+	github.com/coder/websocket v1.8.15
+	github.com/gorilla/websocket v1.5.3
+	github.com/shibingli/ydx/websocket v0.1.0
+)
 
 require (
 	github.com/cristalhq/base64 v0.1.2 // indirect

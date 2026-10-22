@@ -4,6 +4,11 @@ import (
 	stdjson "encoding/json"
 	"testing"
 
+	sonic "github.com/bytedance/sonic"
+	goccyjson "github.com/goccy/go-json"
+	jsoniter "github.com/json-iterator/go"
+	segjson "github.com/segmentio/encoding/json"
+
 	jsonx "github.com/shibingli/ydx/json"
 )
 
@@ -34,44 +39,82 @@ func benchUsers(n int) []benchUser {
 	return out
 }
 
-// BenchmarkMarshal compares the adaptive layer with encoding/json. | BenchmarkMarshal 对比自适应层与 encoding/json。
+// benchMarshaler names one JSON encoder under comparison. | benchMarshaler 命名一个参与对比的 JSON 编码器。
+type benchMarshaler struct {
+	name string
+	fn   func(any) ([]byte, error)
+}
+
+// benchUnmarshaler names one JSON decoder under comparison. | benchUnmarshaler 命名一个参与对比的 JSON 解码器。
+type benchUnmarshaler struct {
+	name string
+	fn   func([]byte, any) error
+}
+
+// benchMarshalers returns the encoder set, starting with the adaptive layer and the standard
+// library as references. jsoniter uses its standard-library-compatible configuration so every
+// entry honours the same struct tags and number semantics. |
+// benchMarshalers 返回编码器集合，自适应层与标准库排在最前作为参照。jsoniter 使用与标准库兼容
+// 的配置，使每个实现遵循相同的结构体标签与数值语义。
+func benchMarshalers() []benchMarshaler {
+	return []benchMarshaler{
+		{name: "jsonx", fn: jsonx.Marshal},
+		{name: "stdlib", fn: stdjson.Marshal},
+		{name: "goccy", fn: goccyjson.Marshal},
+		{name: "jsoniter", fn: jsoniter.ConfigCompatibleWithStandardLibrary.Marshal},
+		{name: "sonic", fn: sonic.Marshal},
+		{name: "segmentio", fn: segjson.Marshal},
+	}
+}
+
+// benchUnmarshalers returns the decoder set in the same order. | benchUnmarshalers 按相同顺序返回解码器集合。
+func benchUnmarshalers() []benchUnmarshaler {
+	return []benchUnmarshaler{
+		{name: "jsonx", fn: jsonx.Unmarshal},
+		{name: "stdlib", fn: stdjson.Unmarshal},
+		{name: "goccy", fn: goccyjson.Unmarshal},
+		{name: "jsoniter", fn: jsoniter.ConfigCompatibleWithStandardLibrary.Unmarshal},
+		{name: "sonic", fn: sonic.Unmarshal},
+		{name: "segmentio", fn: segjson.Unmarshal},
+	}
+}
+
+// BenchmarkMarshal compares every encoder on the same single-object and 64-object payloads.
+// Each sub-benchmark performs one warm-up call outside the timed region so first-call caches and
+// sonic's runtime code generation do not distort the steady-state number. |
+// BenchmarkMarshal 在相同的单对象与 64 对象载荷上对比所有编码器。每个子基准在计时区外先做一次
+// 预热调用，避免首次调用的缓存与 sonic 的运行时代码生成污染稳态数字。
 func BenchmarkMarshal(b *testing.B) {
-	small := benchUsers(1)[0]
-	many := benchUsers(64)
 	cases := []struct {
 		name string
 		v    any
 	}{
-		{name: "one", v: small},
-		{name: "many", v: many},
+		{name: "one", v: benchUsers(1)[0]},
+		{name: "many", v: benchUsers(64)},
 	}
 	for _, c := range cases {
-		b.Run(c.name+"/jsonx", func(b *testing.B) {
-			b.ReportAllocs()
-			b.ResetTimer()
-			for i := 0; i < b.N; i++ {
-				out, err := jsonx.Marshal(c.v)
-				if err != nil {
-					b.Fatalf("Marshal failed | Marshal 失败: %v", err)
+		for _, enc := range benchMarshalers() {
+			b.Run(c.name+"/"+enc.name, func(b *testing.B) {
+				if _, err := enc.fn(c.v); err != nil {
+					b.Fatalf("warm-up failed | 预热失败: %v", err)
 				}
-				benchSinkBytes = out
-			}
-		})
-		b.Run(c.name+"/stdlib", func(b *testing.B) {
-			b.ReportAllocs()
-			b.ResetTimer()
-			for i := 0; i < b.N; i++ {
-				out, err := stdjson.Marshal(c.v)
-				if err != nil {
-					b.Fatalf("Marshal failed | Marshal 失败: %v", err)
+				b.ReportAllocs()
+				b.ResetTimer()
+				for i := 0; i < b.N; i++ {
+					out, err := enc.fn(c.v)
+					if err != nil {
+						b.Fatalf("Marshal failed | Marshal 失败: %v", err)
+					}
+					benchSinkBytes = out
 				}
-				benchSinkBytes = out
-			}
-		})
+			})
+		}
 	}
 }
 
-// BenchmarkUnmarshal compares decoding into a fresh value. | BenchmarkUnmarshal 对比解码到新值。
+// BenchmarkUnmarshal compares every decoder into a fresh value. The input is produced by the
+// adaptive layer once, so all decoders parse identical bytes. |
+// BenchmarkUnmarshal 对比所有解码器解码到新值。输入由自适应层一次性生成，使所有解码器解析完全相同的字节。
 func BenchmarkUnmarshal(b *testing.B) {
 	small := benchUsers(1)[0]
 	many := benchUsers(64)
@@ -84,44 +127,28 @@ func BenchmarkUnmarshal(b *testing.B) {
 		b.Fatalf("setup failed | 准备失败: %v", err)
 	}
 
-	b.Run("one/jsonx", func(b *testing.B) {
-		b.ReportAllocs()
-		b.ResetTimer()
-		for i := 0; i < b.N; i++ {
-			var v benchUser
-			if err := jsonx.Unmarshal(smallJSON, &v); err != nil {
-				b.Fatalf("Unmarshal failed | Unmarshal 失败: %v", err)
-			}
+	cases := []struct {
+		name string
+		in   []byte
+		new  func() any
+	}{
+		{name: "one", in: smallJSON, new: func() any { return new(benchUser) }},
+		{name: "many", in: manyJSON, new: func() any { return new([]benchUser) }},
+	}
+	for _, c := range cases {
+		for _, dec := range benchUnmarshalers() {
+			b.Run(c.name+"/"+dec.name, func(b *testing.B) {
+				if err := dec.fn(c.in, c.new()); err != nil {
+					b.Fatalf("warm-up failed | 预热失败: %v", err)
+				}
+				b.ReportAllocs()
+				b.ResetTimer()
+				for i := 0; i < b.N; i++ {
+					if err := dec.fn(c.in, c.new()); err != nil {
+						b.Fatalf("Unmarshal failed | Unmarshal 失败: %v", err)
+					}
+				}
+			})
 		}
-	})
-	b.Run("one/stdlib", func(b *testing.B) {
-		b.ReportAllocs()
-		b.ResetTimer()
-		for i := 0; i < b.N; i++ {
-			var v benchUser
-			if err := stdjson.Unmarshal(smallJSON, &v); err != nil {
-				b.Fatalf("Unmarshal failed | Unmarshal 失败: %v", err)
-			}
-		}
-	})
-	b.Run("many/jsonx", func(b *testing.B) {
-		b.ReportAllocs()
-		b.ResetTimer()
-		for i := 0; i < b.N; i++ {
-			var v []benchUser
-			if err := jsonx.Unmarshal(manyJSON, &v); err != nil {
-				b.Fatalf("Unmarshal failed | Unmarshal 失败: %v", err)
-			}
-		}
-	})
-	b.Run("many/stdlib", func(b *testing.B) {
-		b.ReportAllocs()
-		b.ResetTimer()
-		for i := 0; i < b.N; i++ {
-			var v []benchUser
-			if err := stdjson.Unmarshal(manyJSON, &v); err != nil {
-				b.Fatalf("Unmarshal failed | Unmarshal 失败: %v", err)
-			}
-		}
-	})
+	}
 }
