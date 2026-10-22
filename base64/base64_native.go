@@ -219,6 +219,43 @@ func (e *Encoding) Decode(dst, src []byte) (int, error) {
 	if simdDecode != nil && e.simd != 0 {
 		i, out = simdDecode(dst, src, e.simd == 2, e.raw)
 	}
+	for i+16 <= len(src) {
+		s := src[i : i+16]
+		a0 := e.decode[s[0]]
+		b0 := e.decode[s[1]]
+		c0 := e.decode[s[2]]
+		d0 := e.decode[s[3]]
+		a1 := e.decode[s[4]]
+		b1 := e.decode[s[5]]
+		c1 := e.decode[s[6]]
+		d1 := e.decode[s[7]]
+		a2 := e.decode[s[8]]
+		b2 := e.decode[s[9]]
+		c2 := e.decode[s[10]]
+		d2 := e.decode[s[11]]
+		a3 := e.decode[s[12]]
+		b3 := e.decode[s[13]]
+		c3 := e.decode[s[14]]
+		d3 := e.decode[s[15]]
+		if (a0|b0|c0|d0|a1|b1|c1|d1|a2|b2|c2|d2|a3|b3|c3|d3)&0x80 != 0 {
+			break
+		}
+		d := dst[out : out+12]
+		d[0] = a0<<2 | b0>>4
+		d[1] = b0<<4 | c0>>2
+		d[2] = c0<<6 | d0
+		d[3] = a1<<2 | b1>>4
+		d[4] = b1<<4 | c1>>2
+		d[5] = c1<<6 | d1
+		d[6] = a2<<2 | b2>>4
+		d[7] = b2<<4 | c2>>2
+		d[8] = c2<<6 | d2
+		d[9] = a3<<2 | b3>>4
+		d[10] = b3<<4 | c3>>2
+		d[11] = c3<<6 | d3
+		i += 16
+		out += 12
+	}
 	for i+4 <= len(src) {
 		a := e.decode[src[i]]
 		b := e.decode[src[i+1]]
