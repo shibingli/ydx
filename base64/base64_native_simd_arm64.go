@@ -48,6 +48,40 @@ func encodeSIMDNEON(dst, src []byte, url, padded bool, pad byte) (int, int) {
 	cSlash := archsimd.BroadcastUint8x16(slash)
 
 	i, o := 0, 0
+	// Four independent groups per iteration hide the shift/map latency behind ILP.
+	// | 每次迭代处理四个独立分组，用指令级并行隐藏移位/映射延迟。
+	for len(src)-i >= 52 && len(dst)-o >= 64 {
+		g0 := archsimd.LoadUint8x16(src[i : i+16]).LookupOrZero(shuf)
+		g1 := archsimd.LoadUint8x16(src[i+12 : i+28]).LookupOrZero(shuf)
+		g2 := archsimd.LoadUint8x16(src[i+24 : i+40]).LookupOrZero(shuf)
+		g3 := archsimd.LoadUint8x16(src[i+36 : i+52]).LookupOrZero(shuf)
+		x0, x1 := g0.ReshapeToUint32s(), g1.ReshapeToUint32s()
+		x2, x3 := g2.ReshapeToUint32s(), g3.ReshapeToUint32s()
+
+		v0 := x0.ShiftAllRight(2).And(m3f).
+			Or(x0.ShiftAllLeft(4).And(m30).Or(x0.ShiftAllRight(12).And(m0f)).ShiftAllLeft(8)).
+			Or(x0.ShiftAllRight(6).And(m3c).Or(x0.ShiftAllRight(22).And(m03)).ShiftAllLeft(16)).
+			Or(x0.ShiftAllRight(16).And(m3f).ShiftAllLeft(24)).ReshapeToUint8s()
+		v1 := x1.ShiftAllRight(2).And(m3f).
+			Or(x1.ShiftAllLeft(4).And(m30).Or(x1.ShiftAllRight(12).And(m0f)).ShiftAllLeft(8)).
+			Or(x1.ShiftAllRight(6).And(m3c).Or(x1.ShiftAllRight(22).And(m03)).ShiftAllLeft(16)).
+			Or(x1.ShiftAllRight(16).And(m3f).ShiftAllLeft(24)).ReshapeToUint8s()
+		v2 := x2.ShiftAllRight(2).And(m3f).
+			Or(x2.ShiftAllLeft(4).And(m30).Or(x2.ShiftAllRight(12).And(m0f)).ShiftAllLeft(8)).
+			Or(x2.ShiftAllRight(6).And(m3c).Or(x2.ShiftAllRight(22).And(m03)).ShiftAllLeft(16)).
+			Or(x2.ShiftAllRight(16).And(m3f).ShiftAllLeft(24)).ReshapeToUint8s()
+		v3 := x3.ShiftAllRight(2).And(m3f).
+			Or(x3.ShiftAllLeft(4).And(m30).Or(x3.ShiftAllRight(12).And(m0f)).ShiftAllLeft(8)).
+			Or(x3.ShiftAllRight(6).And(m3c).Or(x3.ShiftAllRight(22).And(m03)).ShiftAllLeft(16)).
+			Or(x3.ShiftAllRight(16).And(m3f).ShiftAllLeft(24)).ReshapeToUint8s()
+
+		encodeCharsNEON(v0, c26, c52, cA, c71, c4, c62, c63, cPlus, cSlash).Store(dst[o : o+16])
+		encodeCharsNEON(v1, c26, c52, cA, c71, c4, c62, c63, cPlus, cSlash).Store(dst[o+16 : o+32])
+		encodeCharsNEON(v2, c26, c52, cA, c71, c4, c62, c63, cPlus, cSlash).Store(dst[o+32 : o+48])
+		encodeCharsNEON(v3, c26, c52, cA, c71, c4, c62, c63, cPlus, cSlash).Store(dst[o+48 : o+64])
+		i += 48
+		o += 64
+	}
 	for len(src)-i >= 16 && len(dst)-o >= 16 {
 		group := archsimd.LoadUint8x16(src[i : i+16]).LookupOrZero(shuf)
 		x := group.ReshapeToUint32s()
@@ -56,19 +90,24 @@ func encodeSIMDNEON(dst, src []byte, url, padded bool, pad byte) (int, int) {
 		i2 := x.ShiftAllRight(6).And(m3c).Or(x.ShiftAllRight(22).And(m03))
 		i3 := x.ShiftAllRight(16).And(m3f)
 		values := i0.Or(i1.ShiftAllLeft(8)).Or(i2.ShiftAllLeft(16)).Or(i3.ShiftAllLeft(24)).ReshapeToUint8s()
-
-		ge26 := values.GreaterEqual(c26)
-		ge52 := values.GreaterEqual(c52)
-		chars := values.Add(cA)
-		chars = values.Add(c71).IfElse(ge26, chars)
-		chars = values.Sub(c4).IfElse(ge52, chars)
-		chars = cPlus.IfElse(values.Equal(c62), chars)
-		chars = cSlash.IfElse(values.Equal(c63), chars)
-		chars.Store(dst[o : o+16])
+		encodeCharsNEON(values, c26, c52, cA, c71, c4, c62, c63, cPlus, cSlash).Store(dst[o : o+16])
 		i += 12
 		o += 16
 	}
 	return i, o
+}
+
+// encodeCharsNEON maps six-bit values to the selected Base64 alphabet. | encodeCharsNEON 把 6 位值
+// 映射到所选 Base64 字母表。
+func encodeCharsNEON(values, c26, c52, cA, c71, c4, c62, c63, cPlus, cSlash archsimd.Uint8x16) archsimd.Uint8x16 {
+	ge26 := values.GreaterEqual(c26)
+	ge52 := values.GreaterEqual(c52)
+	chars := values.Add(cA)
+	chars = values.Add(c71).IfElse(ge26, chars)
+	chars = values.Sub(c4).IfElse(ge52, chars)
+	chars = cPlus.IfElse(values.Equal(c62), chars)
+	chars = cSlash.IfElse(values.Equal(c63), chars)
+	return chars
 }
 
 // decodeSIMDNEON decodes complete 16-character blocks and returns the characters consumed and
