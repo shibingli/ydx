@@ -1,0 +1,60 @@
+package recovery
+
+import (
+	"bytes"
+	"net/http/httptest"
+	"strings"
+	"testing"
+
+	"github.com/shibingli/ydx/json"
+	"github.com/shibingli/ydx/log"
+	"github.com/shibingli/ydx/router"
+)
+
+// newTestLogger returns a JSON logger writing records into buf. | newTestLogger 返回一个把
+// JSON 记录写入 buf 的日志器。
+func newTestLogger() (*log.Logger, *bytes.Buffer) {
+	buf := &bytes.Buffer{}
+	return log.New(log.Options{Writer: buf, Level: log.DebugLevel}), buf
+}
+
+// decodeLogRecords parses every JSON line in buf into a record map. | decodeLogRecords 把 buf
+// 中的每一行 JSON 解析为一条记录。
+func decodeLogRecords(t *testing.T, buf *bytes.Buffer) []map[string]any {
+	t.Helper()
+	var out []map[string]any
+	for _, line := range strings.Split(strings.TrimSpace(buf.String()), "\n") {
+		if line == "" {
+			continue
+		}
+		rec := map[string]any{}
+		if err := json.Unmarshal([]byte(line), &rec); err != nil {
+			t.Fatalf("日志行不是合法 JSON: %v (行内容 %q)", err, line)
+		}
+		out = append(out, rec)
+	}
+	return out
+}
+
+// onlyRecord asserts that exactly one log record exists and returns it. | onlyRecord 断言日志
+// 恰好只有一条并返回它。
+func onlyRecord(t *testing.T, buf *bytes.Buffer) map[string]any {
+	t.Helper()
+	recs := decodeLogRecords(t, buf)
+	if len(recs) != 1 {
+		t.Fatalf("日志条数 = %d, 期望 1: %v", len(recs), recs)
+	}
+	return recs[0]
+}
+
+// doReq runs one request through r with the given headers and body. | doReq 携带指定请求头与
+// 请求体，把请求送入 r 执行一次。
+func doReq(r *router.Router, method, target string, hdr map[string]string, body string) *httptest.ResponseRecorder {
+	req := httptest.NewRequest(method, target, strings.NewReader(body))
+	for k, v := range hdr {
+		req.Header.Set(k, v)
+	}
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+	return rec
+}
