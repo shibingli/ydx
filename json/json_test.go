@@ -4,7 +4,10 @@ import (
 	"bytes"
 	stdjson "encoding/json"
 	"errors"
+	"go/parser"
+	"go/token"
 	"io"
+	"os"
 	"reflect"
 	"runtime"
 	"strings"
@@ -441,7 +444,7 @@ func TestBackendNameIsKnown(t *testing.T) {
 	name := json.Backend()
 	t.Logf("GOARCH=%s 生效的 JSON 后端为 %q", runtime.GOARCH, name)
 
-	known := map[string]bool{"go-json": true, "encoding/json": true, "yd-native": true}
+	known := map[string]bool{"encoding/json": true, "yd-native": true}
 	if !known[name] {
 		t.Fatalf("Backend() 返回未知后端 %q", name)
 	}
@@ -450,16 +453,6 @@ func TestBackendNameIsKnown(t *testing.T) {
 	}
 	if again := json.Backend(); again != name {
 		t.Fatalf("Backend() 多次调用结果不一致: %q != %q", name, again)
-	}
-	switch runtime.GOARCH {
-	case "amd64", "arm64":
-		if name == "go-json" {
-			t.Fatalf("%s 应使用自研后端或 encoding/json，实际 %q", runtime.GOARCH, name)
-		}
-	default:
-		if name == "yd-native" {
-			t.Fatalf("非 amd64/arm64 不得使用自研后端，实际 %q", name)
-		}
 	}
 }
 
@@ -524,4 +517,33 @@ func TestUnmarshalErrorPropagates(t *testing.T) {
 			t.Fatal("an unencodable type must return an error | 不可编码类型必须返回 error")
 		}
 	})
+}
+
+// TestNoThirdPartyBackendImports verifies that no product source file imports a third-party JSON
+// backend. | TestNoThirdPartyBackendImports 验证任何产品源文件都不导入第三方 JSON 后端。
+func TestNoThirdPartyBackendImports(t *testing.T) {
+	forbidden := map[string]bool{
+		"github.com/goccy/go-json":    true,
+		"github.com/cristalhq/base64": true,
+	}
+	entries, err := os.ReadDir(".")
+	if err != nil {
+		t.Fatalf("read dir: %v", err)
+	}
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		file, err := parser.ParseFile(token.NewFileSet(), name, nil, parser.ImportsOnly)
+		if err != nil {
+			t.Fatalf("parse %s: %v", name, err)
+		}
+		for _, imp := range file.Imports {
+			path := strings.Trim(imp.Path.Value, `"`)
+			if forbidden[path] {
+				t.Errorf("%s imports %s | 产品代码不得依赖第三方后端", name, path)
+			}
+		}
+	}
 }

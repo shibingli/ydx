@@ -1,5 +1,3 @@
-github.com/cristalhq/base64 v0.1.2 h1:edsefYyYDiac7Ytdh2xdaiiSSJzcI2f0yIkdGEf1qY0=
-github.com/cristalhq/base64 v0.1.2/go.mod h1:sy4+2Hale2KbtSqkzpdMeYTP/IrB+HCvxVHWsh2VSYk=
 github.com/shibingli/ydx/errs v0.1.0 h1:eeCCiENvWt2pl0iPk2OOjGqWBiGCBp/yZp+hxzQpOBk=
 github.com/shibingli/ydx/errs v0.1.0/go.mod h1:TxxdX2XnyvkyoEPtwKjxZFythqeJIYZabjw8S+Mllso=
 github.com/shibingli/ydx/sysinfo v0.1.0 h1:CAA568Nu4rntF5uDl4PhgI1DRh4/iuRQYEePUrDyOeo=

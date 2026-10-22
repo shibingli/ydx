@@ -4,8 +4,10 @@ import (
 	"bytes"
 	stdb64 "encoding/base64"
 	"errors"
+	"go/parser"
+	"go/token"
 	"math/rand"
-	"runtime"
+	"os"
 	"strings"
 	"testing"
 )
@@ -383,20 +385,10 @@ func TestEncodedLenDecodedLenMatchStdlib(t *testing.T) {
 func TestBackendNameIsKnown(t *testing.T) {
 	got := Backend()
 	switch got {
-	case "cristalhq/base64", "encoding/base64", "yd-native":
+	case "encoding/base64", "yd-native":
 		t.Logf("当前 Base64 后端：%s", got)
 	default:
-		t.Fatalf("Backend() = %q，期望 cristalhq/base64、encoding/base64 或 yd-native", got)
-	}
-	switch runtime.GOARCH {
-	case "amd64", "arm64":
-		if got == "cristalhq/base64" {
-			t.Fatalf("%s 不得使用 cristalhq 后端，实际 %q", runtime.GOARCH, got)
-		}
-	default:
-		if got == "yd-native" {
-			t.Fatalf("非 amd64/arm64 不得使用自研后端，实际 %q", got)
-		}
+		t.Fatalf("Backend() = %q，期望 encoding/base64 或 yd-native", got)
 	}
 }
 
@@ -450,6 +442,31 @@ func TestAppendDecodeStringMatchesDecodeString(t *testing.T) {
 		}
 		if wantErr == nil && !bytes.Equal(got[len(prefix):], want) {
 			t.Fatalf("%q: got %x, want %x | 结果不一致", tc, got[len(prefix):], want)
+		}
+	}
+}
+
+// TestNoThirdPartyBackendImports verifies that no product source file imports a third-party
+// Base64 backend. | TestNoThirdPartyBackendImports 验证任何产品源文件都不导入第三方 Base64 后端。
+func TestNoThirdPartyBackendImports(t *testing.T) {
+	entries, err := os.ReadDir(".")
+	if err != nil {
+		t.Fatalf("read dir: %v", err)
+	}
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		file, err := parser.ParseFile(token.NewFileSet(), name, nil, parser.ImportsOnly)
+		if err != nil {
+			t.Fatalf("parse %s: %v", name, err)
+		}
+		for _, imp := range file.Imports {
+			path := strings.Trim(imp.Path.Value, `"`)
+			if path == "github.com/cristalhq/base64" {
+				t.Errorf("%s imports %s | 产品代码不得依赖第三方后端", name, path)
+			}
 		}
 	}
 }

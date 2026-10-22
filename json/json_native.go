@@ -1,4 +1,4 @@
-//go:build (amd64 || arm64) && !jsonx_std
+//go:build !jsonx_std
 
 package json
 

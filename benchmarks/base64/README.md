@@ -2,17 +2,16 @@
 
 > 环境、指标口径与公平性约定见 [../README.md](../README.md)。
 
-`ydx/base64` 在编译期/运行期选择后端：amd64 默认使用纯 Go 标量内核，启用
-`GOEXPERIMENT=simd` 后按 CPU 选择 AVX-512 VBMI2/VBMI、AVX-512 或 AVX2；其它
-cristalhq 支持的架构使用 `cristalhq/base64`；显式 `b64x_std` 构建标签或 loong64
-回退到 `encoding/base64`。本基准在同一台机器上比较标量构建、SIMD 构建、标准库与
-cristalhq。
+`ydx/base64` 在所有架构上默认使用自研后端：amd64 在 `GOEXPERIMENT=simd` 下按 CPU 选择
+AVX-512 VBMI2/VBMI、AVX-512 或 AVX2；arm64 在 `GOEXPERIMENT=simd` 下使用 NEON；其他架构
+使用纯 Go 标量内核；显式 `b64x_std` 构建标签回退到 `encoding/base64`。本基准在同一台
+机器上比较标量构建、SIMD 构建、标准库与 cristalhq。
 
 ## 对比对象
 
 | 实现 | 版本/构建 | 说明 |
 |---|---|---|
-| ydx/base64 | v0.1.0，默认 amd64 | 纯 Go 标量内核 |
+| ydx/base64 | v0.1.0，默认构建 | 纯 Go 标量内核（amd64/arm64 可启用 SIMD） |
 | ydx/base64 | v0.1.0，`GOEXPERIMENT=simd` | 运行时 SIMD 分派 |
 | `encoding/base64` | Go 1.27.2 | 标准库对照 |
 | `github.com/cristalhq/base64` | v0.1.2 | 第三方 SIMD/汇编实现 |

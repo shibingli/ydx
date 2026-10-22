@@ -1,4 +1,4 @@
-//go:build (amd64 || arm64) && !b64x_std
+//go:build !b64x_std
 
 package base64
 
@@ -10,9 +10,9 @@ import (
 // errCorrupt is the underlying error for malformed Base64 input. | errCorrupt 是非法 Base64 输入的底层错误。
 var errCorrupt = errs.New("b64x: corrupt Base64 input | b64x：损坏的 Base64 输入")
 
-// Encoding is the self-developed Base64 codec used on amd64 and arm64 unless
-// b64x_std is set. | Encoding 是 amd64 与 arm64 上默认使用的自研 Base64
-// 编解码器（设置 b64x_std 时改用标准库）。
+// Encoding is the self-developed Base64 codec used on every architecture unless
+// b64x_std is set. | Encoding 是除 b64x_std 构建外所有架构上默认使用的自研 Base64
+// 编解码器。
 type Encoding struct {
 	alphabet [64]byte
 	decode   [256]uint8

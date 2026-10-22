@@ -2,15 +2,16 @@
 
 > 环境、指标口径与公平性约定见 [../README.md](../README.md)。
 
-`ydx/json` 在 amd64 上使用自研原生编解码器，非 amd64 使用 `goccy/go-json`，
-`jsonx_std` 构建标签回退到 `encoding/json`。本基准在 amd64 上比较原生后端与四个
-主流 JSON 实现，所有实现解析同一份固定结构体载荷。
+`ydx/json` 在所有架构上使用自研原生编解码器；arm64 在 `GOEXPERIMENT=simd` 下额外启用
+NEON 扫描内核，其他架构使用可移植的 SWAR/标量路径，`jsonx_std` 构建标签回退到
+`encoding/json`。本基准在 amd64 上比较原生后端与四个主流 JSON 实现，所有实现解析同一份
+固定结构体载荷。
 
 ## 对比对象
 
 | 实现 | 版本 | 配置 |
 |---|---|---|
-| ydx/json | v0.1.0（amd64 原生后端） | 默认构建 |
+| ydx/json | v0.1.0（原生后端） | 默认构建 |
 | `encoding/json` | Go 1.27.2 | 标准库 |
 | `github.com/goccy/go-json` | v0.11.2 | 默认配置 |
 | `github.com/json-iterator/go` | v1.1.12 | `ConfigCompatibleWithStandardLibrary` |
@@ -86,7 +87,7 @@ GOWORK=off go test -run '^$' -bench . -benchmem -count=5 -benchtime=500ms
 
 ## 口径与限制
 
-- 本机是 amd64，ydx 走自研原生后端；非 amd64 会走 goccy，结果不同。
+- 本机是 amd64，ydx 走自研原生后端；其他架构同样走原生后端，但 SIMD 覆盖不同。
 - jsoniter 使用与标准库兼容配置，而不是 `ConfigFastest`；后者会放宽部分语义，无法与
   其它实现直接对比。
 - sonic 首次调用包含运行时编译；基准在计时区外预热，但 JIT 结果会受 CPU 特性影响。

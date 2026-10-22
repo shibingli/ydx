@@ -7,7 +7,7 @@ import (
 var (
 	// ErrSyntax indicates the input is not valid JSON text. | ErrSyntax 表示输入不是合法的 JSON 文本。
 	//
-	// The syntax error types of the backends (yd-native / go-json / encoding/json) are mutually incompatible, so jsonx | 各后端（yd-native / go-json / encoding/json）的语法错误类型互不兼容，jsonx 会在
+	// The syntax error types of the backends (yd-native / encoding/json) are mutually incompatible, so jsonx | 各后端（yd-native / encoding/json）的语法错误类型互不兼容，jsonx 会在
 	// classifies them uniformly on the error path; therefore errors.Is(err, json.ErrSyntax) holds under any backend; | 错误路径上统一归类，因此 errors.Is(err, json.ErrSyntax) 在任意后端下都成立；
 	// the original backend error is still preserved in the error chain by errs.Wrap, and can be further inspected with errors.Is/As. | 后端原始错误依旧通过 errs.Wrap 保留在错误链中，可用 errors.Is/As 进一步判定。
 	ErrSyntax = errs.New("jsonx: invalid JSON syntax | jsonx：非法的 JSON 语法")

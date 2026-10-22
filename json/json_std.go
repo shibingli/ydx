@@ -3,8 +3,9 @@
 // This file is the jsonx standard-library implementation: setting the jsonx_std build tag switches entirely to encoding/json, | 本文件是 jsonx 的标准库实现：设置 jsonx_std 构建标签后整体切换到 encoding/json，
 // for troubleshooting, compatibility comparison, and minimal-dependency builds in extreme environments. | 用于排障、兼容性对照与极端环境下的最小依赖构建。
 //
-// The build constraint `jsonx_std` is mutually exclusive with `amd64 && !jsonx_std` of the | 构建约束 `jsonx_std` 与自研后端文件的 `amd64 && !jsonx_std`、以及
-// native backend files and `!amd64 && !jsonx_std` of jsonx_generic.go, so duplicate symbols cannot occur. | go-json 的 `!amd64 && !jsonx_std` 互斥，因此不会出现重复符号。
+// The build constraint `jsonx_std` is mutually exclusive with `!jsonx_std` of the native
+// backend files, so duplicate symbols cannot occur. | 构建约束 `jsonx_std` 与自研后端文件的
+// `!jsonx_std` 互斥，因此不会出现重复符号。
 
 package json
 

@@ -2,8 +2,12 @@
 //
 // The same API automatically selects the best backend under different architectures and build tags, with no need for callers to be aware of the underlying implementation: | 同一套 API 在不同架构与构建标签下自动选择最优后端，调用方无需感知底层实现：
 //
-//   - amd64 without the jsonx_std tag: the self-developed native codec (see jsonx_native*.go) | amd64 且未设置 jsonx_std 标签：自研原生编解码器（见 jsonx_native*.go）
-//   - non-amd64 without the jsonx_std tag: github.com/goccy/go-json (pure-Go high performance, see jsonx_generic.go) | 非 amd64 且未设置 jsonx_std 标签：github.com/goccy/go-json（纯 Go 高性能，见 jsonx_generic.go）
+//   - without the jsonx_std tag: the self-developed native codec on every architecture
+//     (see json_native*.go). arm64 uses NEON scan kernels when built with GOEXPERIMENT=simd;
+//     other architectures use the portable SWAR/scalar path. Backend() returns "yd-native";
+//     | 未设置 jsonx_std 标签：所有架构使用自研原生编解码器（见 json_native*.go）。
+//     arm64 在 GOEXPERIMENT=simd 构建下使用 NEON 扫描内核；其他架构使用可移植的
+//     SWAR/标量路径。Backend() 返回 "yd-native"；
 //   - with the jsonx_std tag: the standard library encoding/json (troubleshooting and compatibility reference, see jsonx_std.go) | 设置 jsonx_std 标签：标准库 encoding/json（排障与兼容性对照，见 jsonx_std.go）
 //
 // All backends export exactly the same symbol set (Marshal / Unmarshal / MarshalIndent / Valid /

@@ -1,4 +1,4 @@
-//go:build loong64 || b64x_std
+//go:build b64x_std
 
 package base64
 
@@ -9,9 +9,10 @@ import (
 	"github.com/shibingli/ydx/errs"
 )
 
-// Encoding is a Base64 codec that delegates to the standard library encoding/base64 on | Encoding 是 Base64 编解码器，在没有第三方后端的架构
-// architectures without a third-party backend (currently loong64) or when the b64x_std | （当前为 loong64）或指定 b64x_std 标签时委托给标准库
-// tag is specified. Its method set is exactly the same as the other backends, and they are directly interchangeable. | encoding/base64。方法集与其他后端完全一致，可直接互换。
+// Encoding is a Base64 codec that delegates to the standard library encoding/base64 when the
+// b64x_std tag is specified. Its method set is exactly the same as the native backend, and the
+// two are directly interchangeable. | Encoding 是在指定 b64x_std 标签时委托给标准库
+// encoding/base64 的 Base64 编解码器。方法集与自研后端完全一致，可直接互换。
 type Encoding struct {
 	enc *base64.Encoding // underlying standard library codec | 底层标准库编解码器
 }
