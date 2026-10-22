@@ -1,4 +1,4 @@
-package ssebench
+package sse
 
 import (
 	"net/http"

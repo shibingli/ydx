@@ -1,4 +1,4 @@
-package jwtbench
+package jwt
 
 import (
 	"crypto/ecdsa"

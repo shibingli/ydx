@@ -9,9 +9,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/shibingli/ydx/cache/local"
 	"github.com/shibingli/ydx/json"
 	"github.com/shibingli/ydx/log"
-	"github.com/shibingli/ydx/cache/local"
 )
 
 // testLogger discards operational noise. | testLogger 丢弃运行噪音。

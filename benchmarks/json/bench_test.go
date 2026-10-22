@@ -1,7 +1,7 @@
-package jsonbench
+package json
 
 import (
-	"encoding/json"
+	stdjson "encoding/json"
 	"testing"
 
 	jsonx "github.com/shibingli/ydx/json"
@@ -61,7 +61,7 @@ func BenchmarkMarshal(b *testing.B) {
 			b.ReportAllocs()
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
-				out, err := json.Marshal(c.v)
+				out, err := stdjson.Marshal(c.v)
 				if err != nil {
 					b.Fatalf("Marshal failed | Marshal 失败: %v", err)
 				}
@@ -99,7 +99,7 @@ func BenchmarkUnmarshal(b *testing.B) {
 		b.ResetTimer()
 		for i := 0; i < b.N; i++ {
 			var v benchUser
-			if err := json.Unmarshal(smallJSON, &v); err != nil {
+			if err := stdjson.Unmarshal(smallJSON, &v); err != nil {
 				b.Fatalf("Unmarshal failed | Unmarshal 失败: %v", err)
 			}
 		}
@@ -119,7 +119,7 @@ func BenchmarkUnmarshal(b *testing.B) {
 		b.ResetTimer()
 		for i := 0; i < b.N; i++ {
 			var v []benchUser
-			if err := json.Unmarshal(manyJSON, &v); err != nil {
+			if err := stdjson.Unmarshal(manyJSON, &v); err != nil {
 				b.Fatalf("Unmarshal failed | Unmarshal 失败: %v", err)
 			}
 		}

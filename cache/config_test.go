@@ -7,8 +7,8 @@ import (
 	"github.com/spf13/afero"
 
 	"github.com/shibingli/ydx/afs"
-	"github.com/shibingli/ydx/config"
 	"github.com/shibingli/ydx/cache"
+	"github.com/shibingli/ydx/config"
 )
 
 // loadConfig builds a config from an in-memory fixture with a test-only env prefix. | loadConfig 使用测试专用环境前缀从内存夹具构建配置。

@@ -7,9 +7,9 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/shibingli/ydx/cache/local"
 	"github.com/shibingli/ydx/errs"
 	"github.com/shibingli/ydx/log"
-	"github.com/shibingli/ydx/cache/local"
 )
 
 // Declared sentinel errors, testable with errors.Is. | 已声明的哨兵错误，可用 errors.Is 判定。

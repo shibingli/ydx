@@ -1,9 +1,9 @@
-package buffpoolbench
+package buffpool
 
 import (
 	"testing"
 
-	"github.com/shibingli/ydx/buffpool"
+	ydxbuffpool "github.com/shibingli/ydx/buffpool"
 )
 
 // benchSizes mirrors the pool's published size classes. | benchSizes 镜像缓冲池公开的尺寸分级。
@@ -29,13 +29,13 @@ func BenchmarkGetPut(b *testing.B) {
 		b.Run(tc.name, func(b *testing.B) {
 			// Prime the class so the timed loop does not include the first allocation. | 预热该分级，
 			// 使计时循环不包含首次分配。
-			buffpool.Put(buffpool.Get(tc.size))
+			ydxbuffpool.Put(ydxbuffpool.Get(tc.size))
 			b.ReportAllocs()
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
-				p := buffpool.Get(tc.size)
+				p := ydxbuffpool.Get(tc.size)
 				benchSink = p
-				buffpool.Put(p)
+				ydxbuffpool.Put(p)
 			}
 		})
 	}
@@ -45,14 +45,14 @@ func BenchmarkGetPut(b *testing.B) {
 // 从多个 goroutine 测量同一循环。
 func BenchmarkGetPutParallel(b *testing.B) {
 	const size = 4 << 10
-	buffpool.Put(buffpool.Get(size))
+	ydxbuffpool.Put(ydxbuffpool.Get(size))
 	b.ReportAllocs()
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
-			p := buffpool.Get(size)
+			p := ydxbuffpool.Get(size)
 			benchSink = p
-			buffpool.Put(p)
+			ydxbuffpool.Put(p)
 		}
 	})
 }

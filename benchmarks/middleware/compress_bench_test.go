@@ -1,4 +1,4 @@
-package middlewarebench
+package middleware
 
 import (
 	"net/http"

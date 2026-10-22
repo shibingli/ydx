@@ -1,8 +1,8 @@
 package gormcache
 
 import (
-	"github.com/shibingli/ydx/config"
 	"github.com/shibingli/ydx/cache"
+	"github.com/shibingli/ydx/config"
 )
 
 // OptionsFromConfig maps cache.gorm.* into plugin options. | OptionsFromConfig 把 cache.gorm.* 映射为插件选项。

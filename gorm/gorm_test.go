@@ -14,8 +14,8 @@ import (
 
 	"github.com/shibingli/ydx/afs"
 	"github.com/shibingli/ydx/config"
-	"github.com/shibingli/ydx/log"
 	"github.com/shibingli/ydx/gorm"
+	"github.com/shibingli/ydx/log"
 )
 
 // NewLogger 的返回值必须满足 GORM 的日志接口；其动态类型还应额外实现

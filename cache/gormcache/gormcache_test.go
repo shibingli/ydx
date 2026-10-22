@@ -15,9 +15,9 @@ import (
 	"gorm.io/gorm"
 	gormlogger "gorm.io/gorm/logger"
 
-	"github.com/shibingli/ydx/log"
 	"github.com/shibingli/ydx/cache"
 	"github.com/shibingli/ydx/cache/local"
+	"github.com/shibingli/ydx/log"
 )
 
 // cacheRow is the test model; it deliberately has no relationships. | cacheRow 是测试模型，刻意不含任何关联。

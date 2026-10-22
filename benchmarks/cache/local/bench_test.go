@@ -1,4 +1,4 @@
-package localbench
+package local
 
 import (
 	"fmt"

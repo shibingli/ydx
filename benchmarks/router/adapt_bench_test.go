@@ -1,4 +1,4 @@
-package routerbench
+package router
 
 import (
 	"net/http"

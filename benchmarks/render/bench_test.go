@@ -1,4 +1,4 @@
-package renderbench
+package render
 
 import (
 	"io"
@@ -7,7 +7,7 @@ import (
 
 	"github.com/spf13/afero"
 
-	render "github.com/shibingli/ydx/render"
+	ydxrender "github.com/shibingli/ydx/render"
 )
 
 // zeroTranslator returns a precomputed message without allocating. | zeroTranslator 返回
@@ -41,7 +41,7 @@ func (a benchAuthz) DecisionKey() string { return a.key }
 
 // newBenchEngine builds a small template set that exercises both bindings. | newBenchEngine
 // 构建同时使用两种绑定的小模板集。
-func newBenchEngine(tb testing.TB) *render.Engine {
+func newBenchEngine(tb testing.TB) *ydxrender.Engine {
 	tb.Helper()
 	fsys := afero.NewMemMapFs()
 	files := map[string]string{
@@ -54,7 +54,7 @@ func newBenchEngine(tb testing.TB) *render.Engine {
 			tb.Fatal(err)
 		}
 	}
-	e, err := render.New(fsys, render.Options{Root: "templates"})
+	e, err := ydxrender.New(fsys, ydxrender.Options{Root: "templates"})
 	if err != nil {
 		tb.Fatal(err)
 	}
@@ -66,11 +66,11 @@ func newBenchEngine(tb testing.TB) *render.Engine {
 func BenchmarkRender(b *testing.B) {
 	e := newBenchEngine(b)
 	items := []string{"a", "b", "c", "d"}
-	withTr := map[string]any{render.TranslatorKey: zeroTranslator{}, "Items": items}
+	withTr := map[string]any{ydxrender.TranslatorKey: zeroTranslator{}, "Items": items}
 	withBoth := map[string]any{
-		render.TranslatorKey: zeroTranslator{},
-		render.AuthzKey:      benchAuthz{key: "admin", allow: true},
-		"Items":              items,
+		ydxrender.TranslatorKey: zeroTranslator{},
+		ydxrender.AuthzKey:      benchAuthz{key: "admin", allow: true},
+		"Items":                 items,
 	}
 	_ = e.Render(io.Discard, "pages/home.html", withBoth)
 

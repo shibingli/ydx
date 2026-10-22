@@ -6,9 +6,9 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/shibingli/ydx/cache/local"
 	"github.com/shibingli/ydx/errs"
 	"github.com/shibingli/ydx/log"
-	"github.com/shibingli/ydx/cache/local"
 )
 
 // managerStats holds manager-wide counters. | managerStats 保存管理器级计数器。

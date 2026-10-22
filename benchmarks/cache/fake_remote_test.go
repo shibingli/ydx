@@ -1,4 +1,4 @@
-package cachebench
+package cache
 
 import (
 	"context"

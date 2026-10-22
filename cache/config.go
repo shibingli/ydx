@@ -1,8 +1,8 @@
 package cache
 
 import (
-	"github.com/shibingli/ydx/config"
 	"github.com/shibingli/ydx/cache/local"
+	"github.com/shibingli/ydx/config"
 )
 
 // OptionsFromConfig maps the cache.* section into Manager options. | OptionsFromConfig 把 cache.* 配置段映射为管理器选项。

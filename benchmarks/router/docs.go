@@ -1,5 +1,5 @@
-// Package routerbench contains the router benchmarks that live outside the component module,
-// so github.com/shibingli/ydx/router never depends on benchmark-only code. | Package routerbench
+// Package router contains the router benchmarks that live outside the component module,
+// so github.com/shibingli/ydx/router never depends on benchmark-only code. | Package router
 // 保存位于组件模块之外的路由基准，使 github.com/shibingli/ydx/router 不依赖基准专用代码。
 //
 // The isolated matcher microbenchmarks that used unexported routePattern internals are not
@@ -11,4 +11,4 @@
 //
 //	cd benchmarks/router
 //	go test -run '^$' -bench . -benchmem
-package routerbench
+package router

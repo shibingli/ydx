@@ -13,8 +13,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/shibingli/ydx/regexpx"
 	"github.com/shibingli/ydx/protocol"
+	"github.com/shibingli/ydx/regexpx"
 	"golang.org/x/net/http2"
 )
 

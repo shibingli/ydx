@@ -173,15 +173,13 @@ func TestModulePathsMatchDirectories(t *testing.T) {
 	}
 }
 
-// TestPackageNamesMatchDirectories requires every product package name to equal its directory name.
-// Benchmark modules are excluded: they use a <component>bench package name to keep the package under
-// test as an unaliased import. | TestPackageNamesMatchDirectories 要求每个产品包的包名等于目录名。
-// 基准模块除外：它们使用 <component>bench 包名，使被测包可以不加别名导入。
+// TestPackageNamesMatchDirectories requires every package name to equal its directory name.
+// | TestPackageNamesMatchDirectories 要求每个包的包名等于目录名。
 func TestPackageNamesMatchDirectories(t *testing.T) {
 	root := repositoryRoot(t)
 	fset := token.NewFileSet()
 	for _, rel := range goFiles(walkFiles(t, root)) {
-		if under(rel, "benchmarks") || under(rel, "repotest") {
+		if under(rel, "repotest") {
 			continue
 		}
 		file := parseFile(t, fset, filepath.Join(root, filepath.FromSlash(rel)))
@@ -192,6 +190,60 @@ func TestPackageNamesMatchDirectories(t *testing.T) {
 		}
 		if file.Name.Name != want && !(isTestFile(rel) && file.Name.Name == want+"_test") {
 			t.Errorf("%s: package %q, want %q | 包名与目录不一致", rel, file.Name.Name, want)
+		}
+	}
+}
+
+// TestEveryImplementationPackageHasNamedFile requires <package>.go next to every package that has
+// implementation code, so the main file and the package keep the same name. Test-only packages
+// and the repotest guard are exempt. | TestEveryImplementationPackageHasNamedFile 要求带实现代码的
+// 包旁边存在 <package>.go，使主文件名与包名一致。纯测试包与 repotest 守卫除外。
+func TestEveryImplementationPackageHasNamedFile(t *testing.T) {
+	root := repositoryRoot(t)
+	fset := token.NewFileSet()
+	type packageDir struct {
+		hasImplementation bool
+		hasNamedFile      bool
+	}
+	dirs := make(map[string]*packageDir)
+	for _, rel := range goFiles(walkFiles(t, root)) {
+		if isTestFile(rel) || path.Base(rel) == "docs.go" || under(rel, "repotest") {
+			continue
+		}
+		file := parseFile(t, fset, filepath.Join(root, filepath.FromSlash(rel)))
+		dir := path.Dir(rel)
+		state := dirs[dir]
+		if state == nil {
+			state = &packageDir{}
+			dirs[dir] = state
+		}
+		state.hasImplementation = true
+		if strings.TrimSuffix(path.Base(rel), ".go") == file.Name.Name {
+			state.hasNamedFile = true
+		}
+	}
+	for dir, state := range dirs {
+		if state.hasImplementation && !state.hasNamedFile {
+			want := path.Base(dir) + ".go"
+			t.Errorf("%s has implementation code but no %s | 主文件名必须与包名一致", dir, want)
+		}
+	}
+}
+
+// TestNoReplaceDirectives keeps every module resolvable from its published tag instead of a local
+// filesystem path. | TestNoReplaceDirectives 确保每个模块都能从已发布标签解析，而不是依赖本地路径。
+func TestNoReplaceDirectives(t *testing.T) {
+	root := repositoryRoot(t)
+	for _, rel := range walkFiles(t, root) {
+		if path.Base(rel) != "go.mod" {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(rel)))
+		if err != nil {
+			t.Fatalf("read %s: %v | 读取失败", rel, err)
+		}
+		if strings.Contains(string(data), "\nreplace ") || strings.HasPrefix(string(data), "replace ") {
+			t.Errorf("%s contains a local replace directive | 不得提交本地 replace", rel)
 		}
 	}
 }

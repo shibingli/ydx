@@ -1,7 +1,7 @@
-package base64bench
+package base64
 
 import (
-	"encoding/base64"
+	stdbase64 "encoding/base64"
 	"fmt"
 	"testing"
 
@@ -43,7 +43,7 @@ func BenchmarkEncode(b *testing.B) {
 			b.ReportAllocs()
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
-				base64.StdEncoding.Encode(dst, src)
+				stdbase64.StdEncoding.Encode(dst, src)
 			}
 			benchSinkBytes = dst
 		})
@@ -67,7 +67,7 @@ func BenchmarkEncodeToString(b *testing.B) {
 			b.ReportAllocs()
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
-				benchSinkString = base64.StdEncoding.EncodeToString(src)
+				benchSinkString = stdbase64.StdEncoding.EncodeToString(src)
 			}
 		})
 	}
@@ -92,7 +92,7 @@ func BenchmarkRawURLEncode(b *testing.B) {
 			b.ReportAllocs()
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
-				base64.RawURLEncoding.Encode(dst, src)
+				stdbase64.RawURLEncoding.Encode(dst, src)
 			}
 		})
 	}
@@ -121,7 +121,7 @@ func BenchmarkDecode(b *testing.B) {
 			b.ReportAllocs()
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
-				if _, err := base64.StdEncoding.Decode(dst, encoded); err != nil {
+				if _, err := stdbase64.StdEncoding.Decode(dst, encoded); err != nil {
 					b.Fatalf("Decode failed | Decode 失败: %v", err)
 				}
 			}
@@ -152,7 +152,7 @@ func BenchmarkDecodeString(b *testing.B) {
 			b.ReportAllocs()
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
-				out, err := base64.RawURLEncoding.DecodeString(encoded)
+				out, err := stdbase64.RawURLEncoding.DecodeString(encoded)
 				if err != nil {
 					b.Fatalf("DecodeString failed | DecodeString 失败: %v", err)
 				}
