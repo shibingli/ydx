@@ -135,7 +135,10 @@ func (e *Encoding) Encode(dst, src []byte) {
 	if len(dst) < e.EncodedLen(len(src)) {
 		return
 	}
-	if simdEncode != nil && e.simd != 0 {
+	// Short inputs stay scalar: the SIMD dispatch and per-group vector setup cost more
+	// than the table lookups they replace. | 短输入保持标量：SIMD 分派与每组向量初始化的
+	// 成本高于它们替代的查表。
+	if simdEncode != nil && e.simd != 0 && len(src) >= 28 {
 		n, out := simdEncode(dst, src, e.simd == 2, !e.raw, e.pad)
 		src = src[n:]
 		dst = dst[out:]
