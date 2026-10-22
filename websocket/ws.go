@@ -1,4 +1,4 @@
-package ws
+package websocket
 
 import (
 	"fmt"
@@ -179,7 +179,7 @@ func validCloseCode(c CloseCode) bool {
 // Error variables. | 错误变量。
 var (
 	// ErrHandshake indicates that the WebSocket handshake failed. | ErrHandshake 表示 WebSocket 握手失败。
-	ErrHandshake = errx.New("ws: handshake failed | ws：握手失败")
+	ErrHandshake = errs.New("ws: handshake failed | ws：握手失败")
 	// ErrHijackUnsupported indicates that the underlying connection does not support Hijack. | ErrHijackUnsupported 表示底层连接不支持 Hijack。
 	//
 	// HTTP/2 and HTTP/3 WebSockets use RFC 8441 / RFC 9220 extended CONNECT
@@ -188,61 +188,61 @@ var (
 	// extended CONNECT but the writer still cannot hijack. | HTTP/2 与 HTTP/3 的
 	// WebSocket 使用 RFC 8441 / RFC 9220 extended CONNECT，而不是 Upgrade；HTTP/2 需要进程以
 	// GODEBUG=http2xconnect=1 启动。该错误只表示请求不是 extended CONNECT，且写入器仍无法 Hijack。
-	ErrHijackUnsupported = errx.New("ws: underlying connection does not support Hijack; HTTP/2 and HTTP/3 WebSockets use extended CONNECT (HTTP/2 requires GODEBUG=http2xconnect=1) | ws：底层连接不支持 Hijack；HTTP/2 与 HTTP/3 的 WebSocket 使用 extended CONNECT（HTTP/2 需要 GODEBUG=http2xconnect=1）")
+	ErrHijackUnsupported = errs.New("ws: underlying connection does not support Hijack; HTTP/2 and HTTP/3 WebSockets use extended CONNECT (HTTP/2 requires GODEBUG=http2xconnect=1) | ws：底层连接不支持 Hijack；HTTP/2 与 HTTP/3 的 WebSocket 使用 extended CONNECT（HTTP/2 需要 GODEBUG=http2xconnect=1）")
 	// ErrOriginNotAllowed indicates that the Origin check did not pass. | ErrOriginNotAllowed 表示 Origin 校验未通过。
-	ErrOriginNotAllowed = errx.New("ws: Origin check failed | ws：Origin 校验未通过")
+	ErrOriginNotAllowed = errs.New("ws: Origin check failed | ws：Origin 校验未通过")
 	// ErrProtocol indicates that the peer violated an RFC 6455 protocol constraint. | ErrProtocol 表示对端违反 RFC 6455 协议约束。
-	ErrProtocol = errx.New("ws: protocol error | ws：协议错误")
+	ErrProtocol = errs.New("ws: protocol error | ws：协议错误")
 	// ErrMessageTooBig indicates that a message exceeded MaxMessageSize. | ErrMessageTooBig 表示消息超过 MaxMessageSize。
-	ErrMessageTooBig = errx.New("ws: message exceeds the size limit | ws：消息超过大小上限")
+	ErrMessageTooBig = errs.New("ws: message exceeds the size limit | ws：消息超过大小上限")
 	// ErrInvalidUTF8 indicates that a text message is not valid UTF-8. | ErrInvalidUTF8 表示文本消息不是合法 UTF-8。
-	ErrInvalidUTF8 = errx.New("ws: text message is not valid UTF-8 | ws：文本消息不是合法 UTF-8")
+	ErrInvalidUTF8 = errs.New("ws: text message is not valid UTF-8 | ws：文本消息不是合法 UTF-8")
 	// ErrCloseSent indicates that the close frame has been sent, so no further data frame may be written. | ErrCloseSent 表示关闭帧已发出，此后不得再写数据帧。
-	ErrCloseSent = errx.New("ws: close frame already sent | ws：关闭帧已发出")
+	ErrCloseSent = errs.New("ws: close frame already sent | ws：关闭帧已发出")
 	// ErrUnexpectedEOF indicates that the connection dropped before a close frame arrived (corresponding to 1006). | ErrUnexpectedEOF 表示未收到关闭帧连接即断开（对应 1006）。
-	ErrUnexpectedEOF = errx.New("ws: connection dropped before a close frame arrived | ws：连接异常断开")
+	ErrUnexpectedEOF = errs.New("ws: connection dropped before a close frame arrived | ws：连接异常断开")
 	// ErrControlTooLarge indicates that a control frame payload exceeds 125 bytes. | ErrControlTooLarge 表示控制帧载荷超过 125 字节。
-	ErrControlTooLarge = errx.New("ws: control frame payload exceeds 125 bytes | ws：控制帧载荷超过 125 字节")
+	ErrControlTooLarge = errs.New("ws: control frame payload exceeds 125 bytes | ws：控制帧载荷超过 125 字节")
 	// ErrFragmentedControl indicates that a control frame was fragmented. | ErrFragmentedControl 表示控制帧被分片。
-	ErrFragmentedControl = errx.New("ws: control frames must not be fragmented | ws：控制帧不得分片")
+	ErrFragmentedControl = errs.New("ws: control frames must not be fragmented | ws：控制帧不得分片")
 	// ErrReservedBits indicates that RSV bits were set while no extension had been negotiated. | ErrReservedBits 表示在未协商扩展时设置了 RSV 位。
-	ErrReservedBits = errx.New("ws: RSV bits set without a negotiated extension | ws：未协商扩展却设置了 RSV 位")
+	ErrReservedBits = errs.New("ws: RSV bits set without a negotiated extension | ws：未协商扩展却设置了 RSV 位")
 	// ErrCompression indicates that the permessage-deflate codec itself failed (not a peer protocol violation). | ErrCompression 表示 permessage-deflate 编解码器自身失败（不是对端协议违规）。
-	ErrCompression = errx.New("ws: permessage-deflate codec failed | ws：permessage-deflate 编解码失败")
+	ErrCompression = errs.New("ws: permessage-deflate codec failed | ws：permessage-deflate 编解码失败")
 	// ErrInvalidCompressedData indicates that a compressed message could not be inflated; the connection is closed with 1007. | ErrInvalidCompressedData 表示压缩消息无法解压；连接会以 1007 关闭。
-	ErrInvalidCompressedData = errx.New("ws: compressed message is corrupt | ws：压缩消息已损坏")
+	ErrInvalidCompressedData = errs.New("ws: compressed message is corrupt | ws：压缩消息已损坏")
 	// ErrMaskMismatch indicates that the masking direction violates RFC 6455 (clients must mask, servers must not mask). | ErrMaskMismatch 表示掩码方向不符合 RFC 6455（客户端必须掩码、服务端必须不掩码）。
-	ErrMaskMismatch = errx.New("ws: masking direction violates RFC 6455 | ws：掩码方向不符合 RFC 6455")
+	ErrMaskMismatch = errs.New("ws: masking direction violates RFC 6455 | ws：掩码方向不符合 RFC 6455")
 	// ErrBadOpCode indicates a reserved opcode. | ErrBadOpCode 表示保留操作码。
-	ErrBadOpCode = errx.New("ws: reserved opcode | ws：保留了非法操作码")
+	ErrBadOpCode = errs.New("ws: reserved opcode | ws：保留了非法操作码")
 	// ErrContinuationWithoutStart indicates that a continuation frame was received with no starting frame. | ErrContinuationWithoutStart 表示收到没有起始帧的续帧。
-	ErrContinuationWithoutStart = errx.New("ws: continuation frame without a starting frame | ws：收到没有起始帧的续帧")
+	ErrContinuationWithoutStart = errs.New("ws: continuation frame without a starting frame | ws：收到没有起始帧的续帧")
 	// ErrNewDataDuringFragment indicates that a new message started before the fragmented one had finished. | ErrNewDataDuringFragment 表示分片消息未结束就开始了新消息。
-	ErrNewDataDuringFragment = errx.New("ws: new data frame arrived before the fragmented message ended | ws：分片消息未结束即出现新的数据帧")
+	ErrNewDataDuringFragment = errs.New("ws: new data frame arrived before the fragmented message ended | ws：分片消息未结束即出现新的数据帧")
 	// ErrFrameLengthMSB indicates that a 64-bit payload length has its most significant bit set, which RFC 6455 §5.2 forbids. | ErrFrameLengthMSB 表示 64 位载荷长度的最高位被置 1，RFC 6455 §5.2 禁止这种编码。
-	ErrFrameLengthMSB = errx.New("ws: frame payload length has the most significant bit set | ws：帧载荷长度的最高位被置 1")
+	ErrFrameLengthMSB = errs.New("ws: frame payload length has the most significant bit set | ws：帧载荷长度的最高位被置 1")
 	// ErrWriteContinuation indicates that WriteMessage was given a bare continuation frame (fragmentation is not exposed by the write API). | ErrWriteContinuation 表示 WriteMessage 收到了没有起始帧的续帧（写 API 不暴露分片能力）。
-	ErrWriteContinuation = errx.New("ws: a continuation frame cannot start a message; WriteMessage writes complete messages only | ws：续帧不能作为消息的起始帧；WriteMessage 只写完整消息")
+	ErrWriteContinuation = errs.New("ws: a continuation frame cannot start a message; WriteMessage writes complete messages only | ws：续帧不能作为消息的起始帧；WriteMessage 只写完整消息")
 	// ErrWriteMessageOpcode indicates that WriteMessage was given an opcode other than text or binary (control frames use WriteControl; 0x3-0x7 and 0xB-0xF are reserved). | ErrWriteMessageOpcode 表示 WriteMessage 收到的不是文本或二进制操作码（控制帧请用 WriteControl；0x3-0x7 与 0xB-0xF 为保留码）。
-	ErrWriteMessageOpcode = errx.New("ws: WriteMessage accepts only text or binary opcodes | ws：WriteMessage 只接受文本或二进制操作码")
+	ErrWriteMessageOpcode = errs.New("ws: WriteMessage accepts only text or binary opcodes | ws：WriteMessage 只接受文本或二进制操作码")
 	// ErrWriteControlOpcode indicates that WriteControl was given an opcode other than close, ping or pong. | ErrWriteControlOpcode 表示 WriteControl 收到的不是 close、ping 或 pong 操作码。
-	ErrWriteControlOpcode = errx.New("ws: WriteControl accepts only close, ping or pong opcodes | ws：WriteControl 只接受 close、ping 或 pong 操作码")
+	ErrWriteControlOpcode = errs.New("ws: WriteControl accepts only close, ping or pong opcodes | ws：WriteControl 只接受 close、ping 或 pong 操作码")
 	// ErrReadAheadActive indicates that NextReader was called on a connection with read-ahead enabled. | ErrReadAheadActive 表示在启用预读的连接上调用了 NextReader。
-	ErrReadAheadActive = errx.New("ws: NextReader is unavailable while read-ahead is enabled | ws：启用预读时不能使用 NextReader")
+	ErrReadAheadActive = errs.New("ws: NextReader is unavailable while read-ahead is enabled | ws：启用预读时不能使用 NextReader")
 	// ErrInvalidCloseCode indicates that an outbound close frame carries a reserved or unassigned status code. | ErrInvalidCloseCode 表示出站关闭帧携带了保留或未分配的状态码。
-	ErrInvalidCloseCode = errx.New("ws: close status code is reserved or unassigned and must not appear on the wire | ws：关闭状态码为保留或未分配，不得出现在线上")
+	ErrInvalidCloseCode = errs.New("ws: close status code is reserved or unassigned and must not appear on the wire | ws：关闭状态码为保留或未分配，不得出现在线上")
 	// ErrInvalidCloseReason indicates that an outbound close reason is not valid UTF-8. | ErrInvalidCloseReason 表示出站关闭原因不是合法 UTF-8。
-	ErrInvalidCloseReason = errx.New("ws: close reason must be valid UTF-8 | ws：关闭原因必须是合法 UTF-8")
+	ErrInvalidCloseReason = errs.New("ws: close reason must be valid UTF-8 | ws：关闭原因必须是合法 UTF-8")
 	// ErrUnrequestedSubprotocol indicates that the server selected a subprotocol the client never offered (RFC 6455 §4.1). | ErrUnrequestedSubprotocol 表示服务端选择了客户端未提议的子协议（RFC 6455 §4.1）。
-	ErrUnrequestedSubprotocol = errx.New("ws: server selected a subprotocol the client did not offer | ws：服务端选择了客户端未提议的子协议")
+	ErrUnrequestedSubprotocol = errs.New("ws: server selected a subprotocol the client did not offer | ws：服务端选择了客户端未提议的子协议")
 	// ErrUnrequestedExtension indicates that the server enabled an extension the client never offered (RFC 6455 §4.1). | ErrUnrequestedExtension 表示服务端启用了客户端未提议的扩展（RFC 6455 §4.1）。
-	ErrUnrequestedExtension = errx.New("ws: server enabled an extension the client did not offer | ws：服务端启用了客户端未提议的扩展")
+	ErrUnrequestedExtension = errs.New("ws: server enabled an extension the client did not offer | ws：服务端启用了客户端未提议的扩展")
 	// ErrExtendedConnectOptions indicates that Transport and ExtendedConnect were not set together. | ErrExtendedConnectOptions 表示 Transport 与 ExtendedConnect 未成对设置。
-	ErrExtendedConnectOptions = errx.New("ws: Transport and ExtendedConnect must be set together | ws：Transport 与 ExtendedConnect 必须同时设置")
+	ErrExtendedConnectOptions = errs.New("ws: Transport and ExtendedConnect must be set together | ws：Transport 与 ExtendedConnect 必须同时设置")
 	// ErrExtendedConnectScheme indicates that HTTP/3 extended CONNECT was used with ws:// (QUIC requires TLS). | ErrExtendedConnectScheme 表示 HTTP/3 extended CONNECT 使用了 ws://（QUIC 必须 TLS）。
-	ErrExtendedConnectScheme = errx.New("ws: HTTP/3 extended CONNECT requires wss:// | ws：HTTP/3 extended CONNECT 只支持 wss://")
+	ErrExtendedConnectScheme = errs.New("ws: HTTP/3 extended CONNECT requires wss:// | ws：HTTP/3 extended CONNECT 只支持 wss://")
 	// ErrExtendedConnectHeader indicates a connection-specific or handshake-only header was supplied for extended CONNECT. | ErrExtendedConnectHeader 表示扩展连接下提供了连接相关或仅用于握手的头部。
-	ErrExtendedConnectHeader = errx.New("ws: extended CONNECT forbids Connection, Upgrade, Host, Sec-WebSocket-Key and :protocol headers | ws：extended CONNECT 禁止 Connection、Upgrade、Host、Sec-WebSocket-Key 与 :protocol 头")
+	ErrExtendedConnectHeader = errs.New("ws: extended CONNECT forbids Connection, Upgrade, Host, Sec-WebSocket-Key and :protocol headers | ws：extended CONNECT 禁止 Connection、Upgrade、Host、Sec-WebSocket-Key 与 :protocol 头")
 )
 
 // CloseError indicates that one side ended the connection with a close frame. | CloseError 表示对端或本端以关闭帧结束连接。

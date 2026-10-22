@@ -1,4 +1,4 @@
-package cachex
+package cache
 
 import (
 	"context"
@@ -15,8 +15,8 @@ import (
 )
 
 // testLogger discards operational noise. | testLogger 丢弃运行噪音。
-func testLogger() *logx.Logger {
-	return logx.New(logx.Options{Writer: io.Discard, Level: logx.ErrorLevel})
+func testLogger() *log.Logger {
+	return log.New(log.Options{Writer: io.Discard, Level: log.ErrorLevel})
 }
 
 // testLocal keeps tests small and deterministic. | testLocal 让测试小而确定。
@@ -506,7 +506,7 @@ func TestTypedFreshRead(t *testing.T) {
 	if err := c.Set(ctx, "u", testUser{ID: 1, Name: "old"}); err != nil {
 		t.Fatalf("Set: %v | 写入失败", err)
 	}
-	body, err := jsonx.Marshal(testUser{ID: 2, Name: "new"})
+	body, err := json.Marshal(testUser{ID: 2, Name: "new"})
 	if err != nil {
 		t.Fatalf("marshal: %v | 序列化失败", err)
 	}

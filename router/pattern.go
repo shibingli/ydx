@@ -10,24 +10,24 @@ import (
 // Pattern errors, declared once at package level. | 模式错误，在包级声明一次。
 var (
 	// ErrBadPattern indicates an invalid route pattern syntax. | ErrBadPattern 表示路由模式语法非法。
-	ErrBadPattern = errx.New("router: invalid route pattern | router：非法的路由模式")
+	ErrBadPattern = errs.New("router: invalid route pattern | router：非法的路由模式")
 	// ErrDuplicateParam indicates a duplicate parameter name inside the same pattern. | ErrDuplicateParam 表示同一模式内出现重复的参数名。
-	ErrDuplicateParam = errx.New("router: duplicate parameter name | router：重复的参数名")
+	ErrDuplicateParam = errs.New("router: duplicate parameter name | router：重复的参数名")
 	// ErrWildcardPosition indicates the wildcard is not in the last segment of the pattern. | ErrWildcardPosition 表示通配符未出现在模式的最后一段。
-	ErrWildcardPosition = errx.New("router: wildcard must be in the last segment | router：通配符必须位于模式末尾")
+	ErrWildcardPosition = errs.New("router: wildcard must be in the last segment | router：通配符必须位于模式末尾")
 	// ErrConflict indicates a conflicting route pattern was registered under the same method. | ErrConflict 表示同一方法下注册了冲突的路由模式。
-	ErrConflict = errx.New("router: route pattern conflict | router：路由模式冲突")
+	ErrConflict = errs.New("router: route pattern conflict | router：路由模式冲突")
 
 	// ErrWildcardName indicates the name following "*" in a wildcard segment is not a valid identifier. | ErrWildcardName 表示通配段中 "*" 之后的名称不是合法标识符。
-	ErrWildcardName = errx.New("router: invalid wildcard name | router：非法的通配符名称")
+	ErrWildcardName = errs.New("router: invalid wildcard name | router：非法的通配符名称")
 	// ErrWildcardInSegment indicates a "*" appeared inside a segment instead of occupying the whole segment. | ErrWildcardInSegment 表示 "*" 出现在段内而非独占整个路径段。
-	ErrWildcardInSegment = errx.New("router: wildcard * must occupy the whole segment | router：通配符 * 只能独占整个路径段")
+	ErrWildcardInSegment = errs.New("router: wildcard * must occupy the whole segment | router：通配符 * 只能独占整个路径段")
 	// ErrEscapeSequence indicates an unsupported escape sequence in a pattern literal. | ErrEscapeSequence 表示模式字面量中出现不支持的转义序列。
-	ErrEscapeSequence = errx.New("router: unsupported escape sequence | router：不支持的转义序列")
+	ErrEscapeSequence = errs.New("router: unsupported escape sequence | router：不支持的转义序列")
 	// ErrDanglingEscape indicates a trailing backslash with no character to escape. | ErrDanglingEscape 表示末尾存在无字符可转义的悬空反斜杠。
-	ErrDanglingEscape = errx.New("router: dangling escape at end of segment | router：段末尾存在悬空转义符")
+	ErrDanglingEscape = errs.New("router: dangling escape at end of segment | router：段末尾存在悬空转义符")
 	// ErrParamName indicates a ":name" parameter name is not a valid identifier. | ErrParamName 表示 ":name" 参数名不是合法标识符。
-	ErrParamName = errx.New("router: invalid parameter name | router：非法的参数名")
+	ErrParamName = errs.New("router: invalid parameter name | router：非法的参数名")
 )
 
 // TokenKind distinguishes the type of a lexical token inside a segment. | TokenKind 区分段内词法单元的类型。
@@ -87,7 +87,7 @@ type Segment struct {
 // A pattern ending with "/" is terminated by a TrailingSlash segment, used to distinguish /users from /users/. | 以 "/" 结尾的模式会以一个 TrailingSlash 段收尾，用于区分 /users 与 /users/。
 func ParsePattern(p string) ([]Segment, error) {
 	if p == "" || p[0] != '/' {
-		return nil, errx.Detail(ErrBadPattern, "%[1]q must start with / | %[1]q 必须以 / 开头", p)
+		return nil, errs.Detail(ErrBadPattern, "%[1]q must start with / | %[1]q 必须以 / 开头", p)
 	}
 	raws := splitPath(p)
 	segs := make([]Segment, 0, len(raws))
@@ -95,24 +95,24 @@ func ParsePattern(p string) ([]Segment, error) {
 	for i, raw := range raws {
 		if raw == "" {
 			if i != len(raws)-1 {
-				return nil, errx.Detail(ErrBadPattern, "%[1]q contains an empty segment | %[1]q 含空段", p)
+				return nil, errs.Detail(ErrBadPattern, "%[1]q contains an empty segment | %[1]q 含空段", p)
 			}
 			segs = append(segs, Segment{Raw: "", Kind: SegStatic, TrailingSlash: true})
 			continue
 		}
 		seg, err := parseSegment(raw)
 		if err != nil {
-			return nil, errx.WrapDetail(err, ErrBadPattern, "%q in %q", raw, p)
+			return nil, errs.WrapDetail(err, ErrBadPattern, "%q in %q", raw, p)
 		}
 		if seg.Kind == SegWildcard && i != len(raws)-1 {
-			return nil, errx.Detail(ErrWildcardPosition, "%q", p)
+			return nil, errs.Detail(ErrWildcardPosition, "%q", p)
 		}
 		for _, tk := range seg.Tokens {
 			if tk.Kind != TokenParam {
 				continue
 			}
 			if _, dup := seen[tk.Text]; dup {
-				return nil, errx.Detail(ErrDuplicateParam, "%q in %q", tk.Text, p)
+				return nil, errs.Detail(ErrDuplicateParam, "%q in %q", tk.Text, p)
 			}
 			seen[tk.Text] = struct{}{}
 		}
@@ -126,7 +126,7 @@ func parseSegment(raw string) (Segment, error) {
 	if raw[0] == '*' {
 		name := raw[1:]
 		if !validParamName(name) {
-			return Segment{}, errx.Detail(ErrWildcardName, "%q", name)
+			return Segment{}, errs.Detail(ErrWildcardName, "%q", name)
 		}
 		return Segment{
 			Raw:    raw,
@@ -156,7 +156,7 @@ func parseSegment(raw string) (Segment, error) {
 			}
 			next := raw[i+1]
 			if next != ':' && next != '\\' && next != '*' {
-				return Segment{}, errx.Detail(ErrEscapeSequence, "%q", raw[i:i+2])
+				return Segment{}, errs.Detail(ErrEscapeSequence, "%q", raw[i:i+2])
 			}
 			lit.WriteByte(next)
 			i += 2
@@ -166,7 +166,7 @@ func parseSegment(raw string) (Segment, error) {
 				j++
 			}
 			if !validParamName(raw[i+1 : j]) {
-				return Segment{}, errx.Detail(ErrParamName, "%[1]q must match [A-Za-z_][A-Za-z0-9_]* | %[1]q 必须匹配 [A-Za-z_][A-Za-z0-9_]*", raw[i+1:j])
+				return Segment{}, errs.Detail(ErrParamName, "%[1]q must match [A-Za-z_][A-Za-z0-9_]* | %[1]q 必须匹配 [A-Za-z_][A-Za-z0-9_]*", raw[i+1:j])
 			}
 			flushLit()
 			toks = append(toks, Token{Kind: TokenParam, Text: raw[i+1 : j]})

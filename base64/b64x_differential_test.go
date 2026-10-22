@@ -1,4 +1,4 @@
-package b64x
+package base64
 
 // This file holds differential, safety and round-trip tests shared by every encoding variant.
 // 本文件包含所有编码变体共享的差分、安全与往返测试。

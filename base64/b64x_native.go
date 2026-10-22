@@ -1,6 +1,6 @@
 //go:build amd64 && !b64x_std
 
-package b64x
+package base64
 
 import (
 	"github.com/shibingli/ydx/errs"
@@ -8,7 +8,7 @@ import (
 )
 
 // errCorrupt is the underlying error for malformed Base64 input. | errCorrupt 是非法 Base64 输入的底层错误。
-var errCorrupt = errx.New("b64x: corrupt Base64 input | b64x：损坏的 Base64 输入")
+var errCorrupt = errs.New("b64x: corrupt Base64 input | b64x：损坏的 Base64 输入")
 
 // Encoding is the self-developed Base64 codec used on amd64 unless b64x_std is set. | Encoding 是
 // amd64 上默认使用的自研 Base64 编解码器（设置 b64x_std 时改用标准库）。
@@ -221,21 +221,21 @@ func (e *Encoding) decodeSlow(dst, src []byte) (int, error) {
 			continue
 		}
 		if padDone {
-			return 0, errx.Wrap(errCorrupt, ErrInvalidData)
+			return 0, errs.Wrap(errCorrupt, ErrInvalidData)
 		}
 		if c == e.pad {
 			if e.raw {
-				return 0, errx.Wrap(errCorrupt, ErrInvalidData)
+				return 0, errs.Wrap(errCorrupt, ErrInvalidData)
 			}
 			if padAt >= 0 {
 				if padAt != 2 || q != 3 {
-					return 0, errx.Wrap(errCorrupt, ErrInvalidData)
+					return 0, errs.Wrap(errCorrupt, ErrInvalidData)
 				}
 				quad[3] = 64
 				q = 4
 			} else {
 				if q < 2 {
-					return 0, errx.Wrap(errCorrupt, ErrInvalidData)
+					return 0, errs.Wrap(errCorrupt, ErrInvalidData)
 				}
 				padAt = q
 				quad[q] = 64
@@ -243,11 +243,11 @@ func (e *Encoding) decodeSlow(dst, src []byte) (int, error) {
 			}
 		} else {
 			if padAt >= 0 {
-				return 0, errx.Wrap(errCorrupt, ErrInvalidData)
+				return 0, errs.Wrap(errCorrupt, ErrInvalidData)
 			}
 			v := e.decode[c]
 			if v == 0xFF {
-				return 0, errx.Wrap(errCorrupt, ErrInvalidData)
+				return 0, errs.Wrap(errCorrupt, ErrInvalidData)
 			}
 			quad[q] = v
 			q++
@@ -262,7 +262,7 @@ func (e *Encoding) decodeSlow(dst, src []byte) (int, error) {
 			}
 			n, ok := e.decodeQuad(dst[out:], quad, real)
 			if !ok {
-				return 0, errx.Wrap(errCorrupt, ErrInvalidData)
+				return 0, errs.Wrap(errCorrupt, ErrInvalidData)
 			}
 			out += n
 			q = 0
@@ -274,15 +274,15 @@ func (e *Encoding) decodeSlow(dst, src []byte) (int, error) {
 	if q != 0 {
 		if e.raw {
 			if q == 1 {
-				return 0, errx.Wrap(errCorrupt, ErrInvalidData)
+				return 0, errs.Wrap(errCorrupt, ErrInvalidData)
 			}
 			n, ok := e.decodeQuad(dst[out:], quad, q)
 			if !ok {
-				return 0, errx.Wrap(errCorrupt, ErrInvalidData)
+				return 0, errs.Wrap(errCorrupt, ErrInvalidData)
 			}
 			out += n
 		} else {
-			return 0, errx.Wrap(errCorrupt, ErrInvalidData)
+			return 0, errs.Wrap(errCorrupt, ErrInvalidData)
 		}
 	}
 	return out, nil

@@ -1,6 +1,6 @@
 //go:build amd64 && !jsonx_std
 
-package jsonx
+package json
 
 import (
 	"encoding/binary"
@@ -304,7 +304,7 @@ func (e *encoder) float(f float64, bits int) error {
 // 把单个 JSON 浮点追加到 buf；它是切片快速路径使用的返回式版本，不触碰 encoder 的 buf 字段。
 func appendFloat(buf []byte, f float64, bits int) ([]byte, error) {
 	if math.IsNaN(f) || math.IsInf(f, 0) {
-		return buf, errx.Detail(errUnsupported, "unsupported float value %v | 不支持的浮点值 %v", f, f)
+		return buf, errs.Detail(errUnsupported, "unsupported float value %v | 不支持的浮点值 %v", f, f)
 	}
 	limit := float64(1 << 53)
 	if bits == 32 {
@@ -492,7 +492,7 @@ func appendStringSlice(buf []byte, ss []string, escapeHTML bool) []byte {
 // 追加到 buf，并复用 encoder 的小型时间缓存。
 func appendTimeValue(buf []byte, e *encoder, tt *time.Time) ([]byte, error) {
 	if y := tt.Year(); y < 0 || y >= 10000 {
-		return buf, errx.Detail(errUnsupported, "time year %d out of range | 时间年份 %d 超出范围", y, y)
+		return buf, errs.Detail(errUnsupported, "time year %d out of range | 时间年份 %d 超出范围", y, y)
 	}
 	entry := &e.timeCache[uint64(tt.UnixNano())&3]
 	if entry.n != 0 && entry.k == *tt {

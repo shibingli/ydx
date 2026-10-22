@@ -35,25 +35,25 @@ var configExts = []string{"yaml", "yml", "toml", "json"}
 
 var (
 	// ErrUnknownFlag indicates that a BindFlags mapping referenced a flag name that does not exist in the FlagSet. | ErrUnknownFlag 表示 BindFlags 的映射引用了 FlagSet 中不存在的标志名。
-	ErrUnknownFlag = errx.New("config: unknown command-line flag | config：未知的命令行标志")
+	ErrUnknownFlag = errs.New("config: unknown command-line flag | config：未知的命令行标志")
 	// ErrWatchUnavailable indicates that the current config instance cannot watch files: | ErrWatchUnavailable 表示当前配置实例不具备文件监视条件：
 	// no config file was found, or the file is not visible to the operating system (e.g. an in-memory filesystem). | 未找到配置文件，或该文件对操作系统不可见（例如内存文件系统）。
-	ErrWatchUnavailable = errx.New("config: config file cannot be watched | config：无法监视配置文件")
+	ErrWatchUnavailable = errs.New("config: config file cannot be watched | config：无法监视配置文件")
 
 	// ErrFlagMapping indicates a flag mapping entry is not usable: no FlagSet was provided, or a flag has no config key. | ErrFlagMapping 表示标志映射不可用：未提供 FlagSet，或标志未指定配置键。
-	ErrFlagMapping = errx.New("config: invalid flag mapping | config：非法的标志映射")
+	ErrFlagMapping = errs.New("config: invalid flag mapping | config：非法的标志映射")
 	// ErrFlagBind indicates viper failed to bind a flag to its config key. | ErrFlagBind 表示 viper 绑定标志到配置键失败。
-	ErrFlagBind = errx.New("config: failed to bind flag | config：绑定标志失败")
+	ErrFlagBind = errs.New("config: failed to bind flag | config：绑定标志失败")
 	// ErrBadFlagDefault indicates a flag's default value cannot be parsed into its declared type. | ErrBadFlagDefault 表示标志的默认值无法按声明类型解析。
-	ErrBadFlagDefault = errx.New("config: flag default value cannot be parsed | config：标志默认值无法解析")
+	ErrBadFlagDefault = errs.New("config: flag default value cannot be parsed | config：标志默认值无法解析")
 	// ErrUnmarshal indicates the layered configuration could not be decoded into the target struct. | ErrUnmarshal 表示分层配置无法解码到目标结构体。
-	ErrUnmarshal = errx.New("config: failed to unmarshal config | config：解码配置失败")
+	ErrUnmarshal = errs.New("config: failed to unmarshal config | config：解码配置失败")
 	// ErrProbeConfigFile indicates probing the config file path failed with an error other than "not exist". | ErrProbeConfigFile 表示探测配置文件路径失败，且错误并非「不存在」。
-	ErrProbeConfigFile = errx.New("config: failed to probe config file | config：探测配置文件失败")
+	ErrProbeConfigFile = errs.New("config: failed to probe config file | config：探测配置文件失败")
 	// ErrReadConfigFile indicates the config file could not be read. | ErrReadConfigFile 表示无法读取配置文件。
-	ErrReadConfigFile = errx.New("config: failed to read config file | config：读取配置文件失败")
+	ErrReadConfigFile = errs.New("config: failed to read config file | config：读取配置文件失败")
 	// ErrParseConfigFile indicates the config file content could not be parsed. | ErrParseConfigFile 表示无法解析配置文件内容。
-	ErrParseConfigFile = errx.New("config: failed to parse config file | config：解析配置文件失败")
+	ErrParseConfigFile = errs.New("config: failed to parse config file | config：解析配置文件失败")
 )
 
 // Options describes the input parameters of a single Load; the zero value uses the framework's conventional defaults. | Options 描述一次 Load 的输入参数，零值即采用框架约定默认。
@@ -182,7 +182,7 @@ func (c *Config) BindFlags(fs *pflag.FlagSet, mapping map[string]string) error {
 		if len(mapping) == 0 {
 			return nil
 		}
-		return errx.Detail(ErrFlagMapping, "no FlagSet provided to bind %[1]d flags | 未提供 FlagSet，无法绑定 %[1]d 个标志", len(mapping))
+		return errs.Detail(ErrFlagMapping, "no FlagSet provided to bind %[1]d flags | 未提供 FlagSet，无法绑定 %[1]d 个标志", len(mapping))
 	}
 
 	// Iterate in sorted order so that error messages and injection order stay stable and reproducible. | 排序后遍历，保证错误信息与注入顺序稳定可复现。
@@ -195,11 +195,11 @@ func (c *Config) BindFlags(fs *pflag.FlagSet, mapping map[string]string) error {
 	for _, flagName := range flagNames {
 		key := strings.ToLower(strings.TrimSpace(mapping[flagName]))
 		if key == "" {
-			return errx.Detail(ErrFlagMapping, "flag %[1]q has no config key | 标志 %[1]q 没有对应的配置键", flagName)
+			return errs.Detail(ErrFlagMapping, "flag %[1]q has no config key | 标志 %[1]q 没有对应的配置键", flagName)
 		}
 		fl := fs.Lookup(flagName)
 		if fl == nil {
-			return errx.Detail(ErrUnknownFlag, "flag %[1]q is not in the FlagSet | 标志 %[1]q 不在 FlagSet 中", flagName)
+			return errs.Detail(ErrUnknownFlag, "flag %[1]q is not in the FlagSet | 标志 %[1]q 不在 FlagSet 中", flagName)
 		}
 		c.mu.Lock()
 		// Bind every flag, not only the ones already Changed: viper consults HasChanged() at lookup
@@ -209,13 +209,13 @@ func (c *Config) BindFlags(fs *pflag.FlagSet, mapping map[string]string) error {
 		// 标志仍会落到环境变量/文件/默认值。
 		if err := c.Viper.BindPFlag(key, fl); err != nil {
 			c.mu.Unlock()
-			return errx.WrapDetail(err, ErrFlagBind, "flag %[1]q to config key %[2]q | 把标志 %[1]q 绑定到配置键 %[2]q", flagName, key)
+			return errs.WrapDetail(err, ErrFlagBind, "flag %[1]q to config key %[2]q | 把标志 %[1]q 绑定到配置键 %[2]q", flagName, key)
 		}
 		if !fl.Changed {
 			defValue, err := parseFlagDefault(fl)
 			if err != nil {
 				c.mu.Unlock()
-				return errx.WrapDetail(err, ErrBadFlagDefault, "flag %[1]q default %[2]q | 标志 %[1]q 的默认值 %[2]q", flagName, fl.DefValue)
+				return errs.WrapDetail(err, ErrBadFlagDefault, "flag %[1]q default %[2]q | 标志 %[1]q 的默认值 %[2]q", flagName, fl.DefValue)
 			}
 			c.Viper.SetDefault(key, defValue)
 		}
@@ -315,7 +315,7 @@ func (c *Config) Unmarshal(raw any) error {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	if err := c.Viper.Unmarshal(raw); err != nil {
-		return errx.Wrap(err, ErrUnmarshal)
+		return errs.Wrap(err, ErrUnmarshal)
 	}
 	return nil
 }
@@ -383,12 +383,12 @@ func (c *Config) Watch(fn func(*Config)) {
 	// 在锁外修改内部映射，并在无法创建监视器时直接 os.Exit；自己持有监视器可同时避免这三点。
 	w, err := fsnotify.NewWatcher()
 	if err != nil {
-		c.setWatchErr(errx.WrapDetail(err, ErrWatchUnavailable, "dir=%[1]s | 目录=%[1]s", dir))
+		c.setWatchErr(errs.WrapDetail(err, ErrWatchUnavailable, "dir=%[1]s | 目录=%[1]s", dir))
 		return
 	}
 	if err := w.Add(dir); err != nil {
 		_ = w.Close()
-		c.setWatchErr(errx.WrapDetail(err, ErrWatchUnavailable, "dir=%[1]s | 目录=%[1]s", dir))
+		c.setWatchErr(errs.WrapDetail(err, ErrWatchUnavailable, "dir=%[1]s | 目录=%[1]s", dir))
 		return
 	}
 
@@ -453,7 +453,7 @@ func (c *Config) watchLoop(w *fsnotify.Watcher, fn func(*Config)) {
 			if !ok {
 				return
 			}
-			c.setWatchErr(errx.Wrap(err, ErrWatchUnavailable))
+			c.setWatchErr(errs.Wrap(err, ErrWatchUnavailable))
 		}
 	}
 }
@@ -551,7 +551,7 @@ func (c *Config) findConfigFiles() (basePath, localPath, ext string, err error) 
 		if errors.Is(statErr, os.ErrNotExist) {
 			return false, nil
 		}
-		return false, errx.WrapDetail(statErr, ErrProbeConfigFile, "%s", p)
+		return false, errs.WrapDetail(statErr, ErrProbeConfigFile, "%s", p)
 	}
 
 	for _, e := range exts {
@@ -596,19 +596,19 @@ func (c *Config) findConfigFiles() (basePath, localPath, ext string, err error) 
 func (c *Config) readConfigFile(path string, merge bool) error {
 	data, err := afero.ReadFile(c.fs, path)
 	if err != nil {
-		return errx.WrapDetail(err, ErrReadConfigFile, "%s", path)
+		return errs.WrapDetail(err, ErrReadConfigFile, "%s", path)
 	}
 	c.Viper.SetConfigType(c.configType)
 
 	reader := bytes.NewReader(data)
 	if merge {
 		if err := c.Viper.MergeConfig(reader); err != nil {
-			return errx.WrapDetail(err, ErrParseConfigFile, "%s", path)
+			return errs.WrapDetail(err, ErrParseConfigFile, "%s", path)
 		}
 		return nil
 	}
 	if err := c.Viper.ReadConfig(reader); err != nil {
-		return errx.WrapDetail(err, ErrParseConfigFile, "%s", path)
+		return errs.WrapDetail(err, ErrParseConfigFile, "%s", path)
 	}
 	return nil
 }

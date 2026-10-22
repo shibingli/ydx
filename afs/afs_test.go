@@ -17,7 +17,7 @@ import (
 
 	"github.com/spf13/afero"
 
-	"github.com/shibingli/ydx/sfs"
+	"github.com/shibingli/ydx/afs"
 )
 
 // testTree 是各后端复用的小目录树：相对路径 -> 内容。

@@ -1,4 +1,4 @@
-package cachex
+package cache
 
 import (
 	cryptorand "crypto/rand"
@@ -15,42 +15,42 @@ import (
 // Declared sentinel errors, testable with errors.Is. | 已声明的哨兵错误，可用 errors.Is 判定。
 var (
 	// ErrInvalidOptions indicates an unusable Manager or cache option. | ErrInvalidOptions 表示 Manager 或缓存选项不可用。
-	ErrInvalidOptions = errx.New("cachex: invalid options | cachex：非法选项")
+	ErrInvalidOptions = errs.New("cachex: invalid options | cachex：非法选项")
 	// ErrClosed indicates the manager or the namespace was closed. | ErrClosed 表示管理器或命名空间已关闭。
-	ErrClosed = errx.New("cachex: cache closed | cachex：缓存已关闭")
+	ErrClosed = errs.New("cachex: cache closed | cachex：缓存已关闭")
 	// ErrInvalidNamespace indicates a namespace that is empty, too long or contains ':' or control bytes. | ErrInvalidNamespace 表示命名空间为空、过长或含 ':' 或控制字节。
-	ErrInvalidNamespace = errx.New("cachex: invalid namespace | cachex：非法命名空间")
+	ErrInvalidNamespace = errs.New("cachex: invalid namespace | cachex：非法命名空间")
 	// ErrNamespaceInUse indicates the same namespace was opened twice on one Manager. | ErrNamespaceInUse 表示同一管理器上重复打开了命名空间。
-	ErrNamespaceInUse = errx.New("cachex: namespace already in use | cachex：命名空间已被占用")
+	ErrNamespaceInUse = errs.New("cachex: namespace already in use | cachex：命名空间已被占用")
 	// ErrEmptyKey indicates an empty cache key. | ErrEmptyKey 表示缓存键为空。
-	ErrEmptyKey = errx.New("cachex: empty key | cachex：空键")
+	ErrEmptyKey = errs.New("cachex: empty key | cachex：空键")
 	// ErrInvalidKey indicates a key contains a NUL byte. | ErrInvalidKey 表示键包含 NUL 字节。
-	ErrInvalidKey = errx.New("cachex: invalid key | cachex：非法键")
+	ErrInvalidKey = errs.New("cachex: invalid key | cachex：非法键")
 	// ErrKeyTooLong indicates a key that cannot fit the L1 ring. | ErrKeyTooLong 表示键无法放进 L1 环形缓冲区。
-	ErrKeyTooLong = errx.New("cachex: key too long | cachex：键过长")
+	ErrKeyTooLong = errs.New("cachex: key too long | cachex：键过长")
 	// ErrNilLoader indicates a nil loader was passed to GetOrLoad. | ErrNilLoader 表示传给 GetOrLoad 的 loader 为 nil。
-	ErrNilLoader = errx.New("cachex: nil loader | cachex：loader 为 nil")
+	ErrNilLoader = errs.New("cachex: nil loader | cachex：loader 为 nil")
 	// ErrNilView indicates a nil callback was passed to View. | ErrNilView 表示传给 View 的回调为 nil。
-	ErrNilView = errx.New("cachex: nil view callback | cachex：视图回调为 nil")
+	ErrNilView = errs.New("cachex: nil view callback | cachex：视图回调为 nil")
 	// ErrNotFound is the loader contract for "the value does not exist". | ErrNotFound 是 loader 表示「值不存在」的契约。
-	ErrNotFound = errx.New("cachex: value not found | cachex：值不存在")
+	ErrNotFound = errs.New("cachex: value not found | cachex：值不存在")
 	// ErrEncode indicates a value could not be serialized. | ErrEncode 表示值无法序列化。
-	ErrEncode = errx.New("cachex: encode failed | cachex：序列化失败")
+	ErrEncode = errs.New("cachex: encode failed | cachex：序列化失败")
 	// ErrDecode indicates a payload could not be deserialized. | ErrDecode 表示载荷无法反序列化。
-	ErrDecode = errx.New("cachex: decode failed | cachex：反序列化失败")
+	ErrDecode = errs.New("cachex: decode failed | cachex：反序列化失败")
 	// ErrRemote indicates the remote (L2) store failed. | ErrRemote 表示远端（L2）存储失败。
-	ErrRemote = errx.New("cachex: remote store failed | cachex：远端存储失败")
+	ErrRemote = errs.New("cachex: remote store failed | cachex：远端存储失败")
 	// ErrNilRemote indicates a nil remote was passed to a constructor. | ErrNilRemote 表示构造器收到 nil 远端。
-	ErrNilRemote = errx.New("cachex: nil remote store | cachex：远端存储为 nil")
+	ErrNilRemote = errs.New("cachex: nil remote store | cachex：远端存储为 nil")
 	// ErrNilClient indicates a nil redis client was passed to NewRedisRemote. | ErrNilClient 表示 NewRedisRemote 收到 nil 客户端。
-	ErrNilClient = errx.New("cachex: nil redis client | cachex：Redis 客户端为 nil")
+	ErrNilClient = errs.New("cachex: nil redis client | cachex：Redis 客户端为 nil")
 )
 
 // Internal sentinels used to classify an L1 view without allocating. | 内部哨兵，用于在不分配的情况下对 L1 视图分类。
 var (
-	errNegativeEntry  = errx.New("cachex: negative entry | cachex：负缓存条目")
-	errTombstoneEntry = errx.New("cachex: tombstone entry | cachex：墓碑条目")
-	errCorruptEntry   = errx.New("cachex: corrupt envelope | cachex：损坏的信封")
+	errNegativeEntry  = errs.New("cachex: negative entry | cachex：负缓存条目")
+	errTombstoneEntry = errs.New("cachex: tombstone entry | cachex：墓碑条目")
+	errCorruptEntry   = errs.New("cachex: corrupt envelope | cachex：损坏的信封")
 )
 
 // Defaults applied by NewManager when an option leaves a field empty. | NewManager 在选项留空时施加的默认值。
@@ -73,8 +73,8 @@ const (
 type Options struct {
 	// Remote is the optional L2 store; nil means local-only. | Remote 是可选的 L2 存储；nil 表示仅本地缓存。
 	Remote Remote
-	// Logger receives operational warnings; nil means logx.Default(). | Logger 接收运行告警；nil 表示 logx.Default()。
-	Logger *logx.Logger
+	// Logger receives operational warnings; nil means log.Default(). | Logger 接收运行告警；nil 表示 log.Default()。
+	Logger *log.Logger
 	// NodeID identifies this process in events; empty means a random identifier. | NodeID 在事件中标识本进程；空值表示随机生成。
 	NodeID string
 	// Local configures the L1 ring cache. | Local 配置 L1 环形缓存。
@@ -131,7 +131,7 @@ func WithNodeID(id string) Option {
 }
 
 // WithLogger overrides the operational logger. | WithLogger 覆盖运行日志器。
-func WithLogger(l *logx.Logger) Option {
+func WithLogger(l *log.Logger) Option {
 	return func(o *Options) { o.Logger = l }
 }
 
@@ -192,7 +192,7 @@ func (o Options) withDefaults() Options {
 		o.TombstoneTTL = DefaultTombstoneTTL
 	}
 	if o.Logger == nil {
-		o.Logger = logx.Default()
+		o.Logger = log.Default()
 	}
 	if o.NodeID == "" {
 		o.NodeID = newNodeID()

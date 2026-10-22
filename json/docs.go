@@ -1,4 +1,4 @@
-// Package jsonx provides an adaptive JSON codec abstraction layer. | Package jsonx 提供自适应的 JSON 编解码抽象层。
+// Package json provides an adaptive JSON codec abstraction layer. | Package json 提供自适应的 JSON 编解码抽象层。
 //
 // The same API automatically selects the best backend under different architectures and build tags, with no need for callers to be aware of the underlying implementation: | 同一套 API 在不同架构与构建标签下自动选择最优后端，调用方无需感知底层实现：
 //
@@ -22,17 +22,17 @@
 //
 // Typical usage | 典型用法：
 //
-//	b, err := jsonx.Marshal(v)
+//	b, err := json.Marshal(v)
 //	if err != nil {
 //		return err
 //	}
-//	if err := jsonx.Unmarshal(b, &out); err != nil {
+//	if err := json.Unmarshal(b, &out); err != nil {
 //		return err
 //	}
 //
 // To determine errors stably across backends, combine errors.Is with ErrSyntax / ErrTypeMismatch. | 需要跨后端稳定判定错误时，可用 errors.Is 配合 ErrSyntax / ErrTypeMismatch。
 //
-// The import path is github.com/shibingli/ydx/json while the package identifier remains
-// jsonx, so existing yd call sites only change their import path. | 导入路径是
-// github.com/shibingli/ydx/json，包标识符仍是 jsonx，因此 yd 既有调用点只需替换导入路径。
-package jsonx
+// The import path is github.com/shibingli/ydx/json while the package identifier is json,
+// json, matching the directory name. | 导入路径是
+// github.com/shibingli/ydx/json，包标识符为 json，与目录名一致。
+package json

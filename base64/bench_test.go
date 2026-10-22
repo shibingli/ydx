@@ -1,4 +1,4 @@
-package b64x
+package base64
 
 import (
 	"encoding/base64"

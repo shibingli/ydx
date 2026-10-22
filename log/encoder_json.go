@@ -1,4 +1,4 @@
-package logx
+package log
 
 import (
 	"math"
@@ -134,7 +134,7 @@ func appendJSONValue(dst []byte, f *Field, timeFormat string) []byte {
 		return appendJSONMillis(dst, int64(f.num))
 	case BytesType:
 		dst = append(dst, '"')
-		dst = b64x.StdEncoding.AppendEncode(dst, f.bs)
+		dst = base64.StdEncoding.AppendEncode(dst, f.bs)
 		return append(dst, '"')
 	case AnyType:
 		return appendJSONAny(dst, f.obj)
@@ -203,7 +203,7 @@ func appendJSONMillis(dst []byte, ns int64) []byte {
 // appendJSONAny encodes the boxed value of the Any slow path: it uses encoding/json (reflection inside, plus extra allocations). | appendJSONAny 编码 Any 慢路径的装箱值：使用 encoding/json（内部反射 + 额外分配）。
 // When encoding fails it outputs a JSON string describing the error, so the result is always valid JSON. | 编码失败时输出描述该错误的 JSON 字符串，保证结果始终是合法 JSON。
 func appendJSONAny(dst []byte, v any) []byte {
-	b, err := jsonx.Marshal(v)
+	b, err := json.Marshal(v)
 	if err != nil {
 		return appendJSONString(dst, "!json: "+err.Error())
 	}

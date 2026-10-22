@@ -100,21 +100,21 @@ func parseTokenLookupRequest(spec string) (func(*http.Request) (string, bool), e
 			name, prefix = rest[:i], rest[i+1:]
 		}
 		if name == "" {
-			return nil, errx.Detail(ErrBadTokenLookup, "empty header name | 头部名称为空")
+			return nil, errs.Detail(ErrBadTokenLookup, "empty header name | 头部名称为空")
 		}
 		return func(r *http.Request) (string, bool) {
 			return headerToken(r.Header.Get(name), prefix)
 		}, nil
 	case "query":
 		if rest == "" {
-			return nil, errx.Detail(ErrBadTokenLookup, "empty query name | 查询参数名为空")
+			return nil, errs.Detail(ErrBadTokenLookup, "empty query name | 查询参数名为空")
 		}
 		return func(r *http.Request) (string, bool) {
 			return nonEmptyToken(r.URL.Query().Get(rest))
 		}, nil
 	case "cookie":
 		if rest == "" {
-			return nil, errx.Detail(ErrBadTokenLookup, "empty cookie name | Cookie 名为空")
+			return nil, errs.Detail(ErrBadTokenLookup, "empty cookie name | Cookie 名为空")
 		}
 		return func(r *http.Request) (string, bool) {
 			c, err := r.Cookie(rest)

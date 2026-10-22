@@ -21,7 +21,7 @@ const MatchTimeout = 100 * time.Millisecond
 
 var (
 	// ErrCompile is returned when a pattern cannot be compiled by either engine. | ErrCompile 表示两个引擎都无法编译该模式。
-	ErrCompile = errx.New("compile regular expression failed | 编译正则表达式失败")
+	ErrCompile = errs.New("compile regular expression failed | 编译正则表达式失败")
 )
 
 // Regexp is a compiled pattern. It is safe for concurrent use. | Regexp 是已编译的模式，可安全并发使用。
@@ -43,7 +43,7 @@ type Regexp struct {
 func Compile(expr string) (*Regexp, error) {
 	compat, err := regexp2.Compile(expr, regexp2.RE2)
 	if err != nil {
-		return nil, errx.WrapDetail(err, ErrCompile, "pattern %[1]q | 模式 %[1]q", expr)
+		return nil, errs.WrapDetail(err, ErrCompile, "pattern %[1]q | 模式 %[1]q", expr)
 	}
 	compat.MatchTimeout = MatchTimeout
 	r := &Regexp{src: expr, re2x: compat}

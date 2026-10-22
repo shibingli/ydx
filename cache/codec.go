@@ -1,4 +1,4 @@
-package cachex
+package cache
 
 import (
 	"strconv"
@@ -10,13 +10,13 @@ import (
 // JSON returns the default codec for any JSON-serializable type. | JSON 返回适用于任何可 JSON 序列化类型的默认编解码器。
 //
 // It supports structs, slices, arrays, maps, pointers with string keys and interface values; | 它支持结构体、切片、数组、字符串键的 map、指针与接口值；
-// numbers decode into their natural Go types, and interface values decode through jsonx. | 数字解码为自然的 Go 类型，接口值经 jsonx 解码。
+// numbers decode into their natural Go types, and interface values decode through json. | 数字解码为自然的 Go 类型，接口值经 jsonx 解码。
 func JSON[T any]() Codec[T] {
 	return Codec[T]{
-		Encode: func(v T) ([]byte, error) { return jsonx.Marshal(v) },
+		Encode: func(v T) ([]byte, error) { return json.Marshal(v) },
 		Decode: func(b []byte) (T, error) {
 			var v T
-			err := jsonx.Unmarshal(b, &v)
+			err := json.Unmarshal(b, &v)
 			return v, err
 		},
 	}

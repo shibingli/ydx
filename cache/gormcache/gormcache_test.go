@@ -30,8 +30,8 @@ type cacheRow struct {
 func (cacheRow) TableName() string { return "cachex_gorm_rows" }
 
 // quietLogger discards operational noise. | quietLogger 丢弃运行噪音。
-func quietLogger() *logx.Logger {
-	return logx.New(logx.Options{Writer: io.Discard, Level: logx.ErrorLevel})
+func quietLogger() *log.Logger {
+	return log.New(log.Options{Writer: io.Discard, Level: log.ErrorLevel})
 }
 
 // openTestDB opens a named shared in-memory database. | openTestDB 打开具名共享内存数据库。
@@ -63,12 +63,12 @@ func memoryDSN(t *testing.T) string {
 }
 
 // newLocalManager builds a local-only manager with a long lease. | newLocalManager 构造长租约的仅本地管理器。
-func newLocalManager(t *testing.T) *cachex.Manager {
+func newLocalManager(t *testing.T) *cache.Manager {
 	t.Helper()
-	m, err := cachex.NewManager(
-		cachex.WithLocalOptions(local.Options{MaxCost: 1 << 20, Shards: 2, MaxEntrySize: 64 << 10, CleanupInterval: time.Hour}),
-		cachex.WithLogger(quietLogger()),
-		cachex.WithLease(time.Minute),
+	m, err := cache.NewManager(
+		cache.WithLocalOptions(local.Options{MaxCost: 1 << 20, Shards: 2, MaxEntrySize: 64 << 10, CleanupInterval: time.Hour}),
+		cache.WithLogger(quietLogger()),
+		cache.WithLease(time.Minute),
 	)
 	if err != nil {
 		t.Fatalf("NewManager: %v | 构造管理器失败", err)
@@ -78,7 +78,7 @@ func newLocalManager(t *testing.T) *cachex.Manager {
 }
 
 // install builds and installs a plugin. | install 构造并安装插件。
-func install(t *testing.T, db *gorm.DB, m *cachex.Manager, mutate func(*Options)) *Plugin {
+func install(t *testing.T, db *gorm.DB, m *cache.Manager, mutate func(*Options)) *Plugin {
 	t.Helper()
 	o := Options{Manager: m}
 	if mutate != nil {
@@ -330,21 +330,21 @@ func TestCrossInstanceInvalidation(t *testing.T) {
 		_ = cli1.Close()
 		_ = cli2.Close()
 	})
-	remote1, err := cachex.NewRedisRemote(cli1, cachex.RedisOptions{Prefix: "xt:", HealthInterval: 100 * time.Millisecond})
+	remote1, err := cache.NewRedisRemote(cli1, cache.RedisOptions{Prefix: "xt:", HealthInterval: 100 * time.Millisecond})
 	if err != nil {
 		t.Fatalf("remote1: %v | 构造远端失败", err)
 	}
-	remote2, err := cachex.NewRedisRemote(cli2, cachex.RedisOptions{Prefix: "xt:", HealthInterval: 100 * time.Millisecond})
+	remote2, err := cache.NewRedisRemote(cli2, cache.RedisOptions{Prefix: "xt:", HealthInterval: 100 * time.Millisecond})
 	if err != nil {
 		t.Fatalf("remote2: %v | 构造远端失败", err)
 	}
-	localOpts := cachex.WithLocalOptions(local.Options{MaxCost: 1 << 20, Shards: 2, MaxEntrySize: 64 << 10, CleanupInterval: time.Hour})
-	mgr1, err := cachex.NewManager(cachex.WithRemote(remote1), localOpts, cachex.WithLogger(quietLogger()), cachex.WithLease(time.Minute))
+	localOpts := cache.WithLocalOptions(local.Options{MaxCost: 1 << 20, Shards: 2, MaxEntrySize: 64 << 10, CleanupInterval: time.Hour})
+	mgr1, err := cache.NewManager(cache.WithRemote(remote1), localOpts, cache.WithLogger(quietLogger()), cache.WithLease(time.Minute))
 	if err != nil {
 		t.Fatalf("manager1: %v | 构造管理器失败", err)
 	}
 	t.Cleanup(func() { _ = mgr1.Close() })
-	mgr2, err := cachex.NewManager(cachex.WithRemote(remote2), localOpts, cachex.WithLogger(quietLogger()), cachex.WithLease(time.Minute))
+	mgr2, err := cache.NewManager(cache.WithRemote(remote2), localOpts, cache.WithLogger(quietLogger()), cache.WithLease(time.Minute))
 	if err != nil {
 		t.Fatalf("manager2: %v | 构造管理器失败", err)
 	}
@@ -418,11 +418,11 @@ func TestResyncInvalidatesEveryGeneration(t *testing.T) {
 	db := openTestDB(t, memoryDSN(t))
 	p := install(t, db, newLocalManager(t), nil)
 	before := p.epoch.Load()
-	p.onEvent(cachex.Event{Op: cachex.OpResync})
+	p.onEvent(cache.Event{Op: cache.OpResync})
 	if got := p.epoch.Load(); got != before+1 {
 		t.Fatalf("resync epoch = %d, want %d | 重同步纪元不符", got, before+1)
 	}
-	p.onEvent(cachex.Event{Op: cachex.OpClear})
+	p.onEvent(cache.Event{Op: cache.OpClear})
 	if got := p.epoch.Load(); got != before+2 {
 		t.Fatalf("clear epoch = %d, want %d | 全清纪元不符", got, before+2)
 	}

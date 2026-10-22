@@ -68,7 +68,7 @@ func methodOf(method string) (methodID, bool) {
 }
 
 // ErrUnknownSegment indicates a segment kind the tree cannot place. | ErrUnknownSegment 表示树无法安放的段类型。
-var ErrUnknownSegment = errx.New("router: unknown segment type | router：未知的段类型")
+var ErrUnknownSegment = errs.New("router: unknown segment type | router：未知的段类型")
 
 // node is a single node of the radix tree; each node corresponds to one segment in the path. | node 是基数树的单个节点，每个节点对应路径中的一个分段。
 //
@@ -389,7 +389,7 @@ func (n *node) child(seg Segment) (*node, error) {
 		})
 		return c, nil
 	default:
-		return nil, errx.Detail(ErrUnknownSegment, "kind=%[1]d | 类型=%[1]d", seg.Kind)
+		return nil, errs.Detail(ErrUnknownSegment, "kind=%[1]d | 类型=%[1]d", seg.Kind)
 	}
 }
 
@@ -565,7 +565,7 @@ func (t *Tree) Add(method, pattern string, handler any) error {
 		n = next
 	}
 	if !n.addHandler(method, handler) {
-		return errx.Detail(ErrConflict, "%s %s", method, pattern)
+		return errs.Detail(ErrConflict, "%s %s", method, pattern)
 	}
 	n.pattern = pattern
 	n.patternShape = compilePatternShape(segs, paramNames)
@@ -584,7 +584,7 @@ func (t *Tree) AddRaw(method, pattern string, handler any) error {
 	}
 	for i := range segs {
 		if segs[i].Kind != SegStatic {
-			return errx.Detail(ErrRawPatternNotStatic, "%s %s", method, pattern)
+			return errs.Detail(ErrRawPatternNotStatic, "%s %s", method, pattern)
 		}
 	}
 	n := t.root
@@ -596,7 +596,7 @@ func (t *Tree) AddRaw(method, pattern string, handler any) error {
 		n = next
 	}
 	if !n.addHandler(method, handler) {
-		return errx.Detail(ErrConflict, "%s %s", method, pattern)
+		return errs.Detail(ErrConflict, "%s %s", method, pattern)
 	}
 	n.pattern = pattern
 	n.patternShape = nil

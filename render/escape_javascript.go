@@ -54,7 +54,7 @@ func jsValEscaper(args ...any) string {
 		}
 		a = fmt.Sprint(args...)
 	}
-	b, err := jsonx.Marshal(a)
+	b, err := json.Marshal(a)
 	if err != nil {
 		return " /* " + sanitizeJSError(err.Error()) + " */null "
 	}

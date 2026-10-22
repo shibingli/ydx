@@ -1,6 +1,6 @@
 //go:build amd64 && !jsonx_std
 
-package jsonx
+package json
 
 import (
 	"bytes"
@@ -37,7 +37,7 @@ func (d *decoder) enter() error {
 	d.depth++
 	if d.depth > maxNestingDepth {
 		d.depth--
-		return errx.Detail(ErrSyntax, "exceeded max depth of %d | 嵌套深度超过上限 %d", maxNestingDepth, maxNestingDepth)
+		return errs.Detail(ErrSyntax, "exceeded max depth of %d | 嵌套深度超过上限 %d", maxNestingDepth, maxNestingDepth)
 	}
 	return nil
 }
@@ -107,7 +107,7 @@ var decoderPool = sync.Pool{New: func() any { return new(decoder) }}
 func Unmarshal(data []byte, v any) error {
 	rv := reflect.ValueOf(v)
 	if rv.Kind() != reflect.Pointer || rv.IsNil() {
-		return errx.Detail(ErrTypeMismatch, "jsonx: Unmarshal target must be a non-nil pointer | jsonx：Unmarshal 目标必须是非 nil 指针")
+		return errs.Detail(ErrTypeMismatch, "jsonx: Unmarshal target must be a non-nil pointer | jsonx：Unmarshal 目标必须是非 nil 指针")
 	}
 	d := decoderPool.Get().(*decoder)
 	*d = decoder{data: data}

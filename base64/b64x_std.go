@@ -1,6 +1,6 @@
 //go:build loong64 || b64x_std
 
-package b64x
+package base64
 
 import (
 	"encoding/base64"
@@ -60,7 +60,7 @@ func (e *Encoding) Decode(dst, src []byte) (int, error) {
 	}
 	n, err := e.enc.Decode(dst, src)
 	if err != nil {
-		return 0, errx.Wrap(err, ErrInvalidData)
+		return 0, errs.Wrap(err, ErrInvalidData)
 	}
 	return n, nil
 }
@@ -73,7 +73,7 @@ func (e *Encoding) DecodeString(s string) ([]byte, error) {
 	}
 	out, err := e.enc.DecodeString(s)
 	if err != nil {
-		return nil, errx.Wrap(err, ErrInvalidData)
+		return nil, errs.Wrap(err, ErrInvalidData)
 	}
 	return out, nil
 }
@@ -98,7 +98,7 @@ func (e *Encoding) AppendDecode(dst, src []byte) ([]byte, error) {
 	}
 	out, err := e.enc.AppendDecode(dst, src)
 	if err != nil {
-		return dst, errx.Wrap(err, ErrInvalidData)
+		return dst, errs.Wrap(err, ErrInvalidData)
 	}
 	return out, nil
 }

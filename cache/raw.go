@@ -1,4 +1,4 @@
-package cachex
+package cache
 
 import (
 	"context"
@@ -174,7 +174,7 @@ func (r *Raw) SetTTL(ctx context.Context, key string, data []byte, ttl time.Dura
 	if r.manager.remote != nil {
 		v, err := r.manager.remote.Store(ctx, full, data, FlagNone, ttl)
 		if err != nil {
-			return errx.Wrap(err, ErrRemote)
+			return errs.Wrap(err, ErrRemote)
 		}
 		version = v
 	}
@@ -197,7 +197,7 @@ func (r *Raw) Delete(ctx context.Context, key string) error {
 	if r.manager.remote != nil {
 		if _, err := r.manager.remote.Remove(ctx, full, FlagTombstone, r.manager.opts.TombstoneTTL); err != nil {
 			r.manager.local.Delete(full)
-			return errx.Wrap(err, ErrRemote)
+			return errs.Wrap(err, ErrRemote)
 		}
 	}
 	r.manager.local.Delete(full)

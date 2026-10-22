@@ -1,4 +1,4 @@
-package cachex
+package cache
 
 import (
 	"context"
@@ -63,7 +63,7 @@ func (r *Raw) lookup(ctx context.Context, key string, fn func(data []byte, versi
 			r.stats.misses.Add(1)
 			return StatusMiss, 0, nil
 		}
-		return StatusMiss, 0, errx.Wrap(err, ErrRemote)
+		return StatusMiss, 0, errs.Wrap(err, ErrRemote)
 	}
 	if !ok {
 		r.stats.remoteMisses.Add(1)
@@ -116,7 +116,7 @@ func (r *Raw) lookupFresh(ctx context.Context, key string, fn func(data []byte, 
 			r.stats.misses.Add(1)
 			return StatusMiss, 0, nil
 		}
-		return StatusMiss, 0, errx.Wrap(err, ErrRemote)
+		return StatusMiss, 0, errs.Wrap(err, ErrRemote)
 	}
 	if !ok {
 		r.manager.local.Delete(full)
@@ -219,7 +219,7 @@ func (r *Raw) storeLoaded(ctx context.Context, key string, value []byte, ttl tim
 	}
 	version, stored, err := r.manager.remote.StoreIf(ctx, full, value, FlagNone, ttl, expect)
 	if err != nil {
-		return nil, errx.Wrap(err, ErrRemote)
+		return nil, errs.Wrap(err, ErrRemote)
 	}
 	if !stored {
 		r.stats.casLost.Add(1)
@@ -244,7 +244,7 @@ func (r *Raw) storeNegative(ctx context.Context, key string) error {
 	if r.manager.remote != nil {
 		v, err := r.manager.remote.Store(ctx, full, nil, FlagNegative, r.negativeTTL)
 		if err != nil {
-			return errx.Wrap(err, ErrRemote)
+			return errs.Wrap(err, ErrRemote)
 		}
 		version = v
 	}
@@ -330,7 +330,7 @@ func (r *Raw) checkKey(key string) error {
 		return ErrEmptyKey
 	}
 	if len(r.prefix)+len(key) > local.MaxKeyLength {
-		return errx.Detail(ErrKeyTooLong, "length %d exceeds %d | 长度 %d 超过 %d",
+		return errs.Detail(ErrKeyTooLong, "length %d exceeds %d | 长度 %d 超过 %d",
 			len(r.prefix)+len(key), local.MaxKeyLength, len(r.prefix)+len(key), local.MaxKeyLength)
 	}
 	for i := 0; i < len(key); i++ {

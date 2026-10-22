@@ -1,5 +1,5 @@
-// Package bufpool provides a size-classed pool of reusable byte buffers.
-// | Package bufpool 提供按尺寸分级复用的字节缓冲池。
+// Package buffpool provides a size-classed pool of reusable byte buffers.
+// | Package buffpool 提供按尺寸分级复用的字节缓冲池。
 //
 // Buffers are grouped into fixed size classes, one sync.Pool per class, so a
 // request for a few hundred bytes never occupies a quarter-megabyte block and
@@ -28,6 +28,6 @@
 //
 // Typical usage | 典型用法：
 //
-//	buf := bufpool.Get(4096)
-//	defer bufpool.Put(buf)
-package bufpool
+//	buf := buffpool.Get(4096)
+//	defer buffpool.Put(buf)
+package buffpool

@@ -15,13 +15,13 @@ import (
 //
 // An event stream must be delivered frame by frame; a response writer lacking Flush capability (such as some middleware wrappers) | 事件流必须逐帧送达客户端，缺少 Flush 能力的响应写入器（如部分中间件包装器）
 // would leave events sitting in a buffer, so this case is judged unusable outright. | 会把事件滞留在缓冲区，因此这种情况直接判定为不可用。
-var ErrFlusherUnsupported = errx.New("sse: response writer does not support flushing | sse：响应写入器不支持 flush")
+var ErrFlusherUnsupported = errs.New("sse: response writer does not support flushing | sse：响应写入器不支持 flush")
 
 // ErrWriteStream is returned when the assembled event stream frame cannot be written to the response writer. | ErrWriteStream 在组装好的事件流帧无法写入响应写入器时返回。
 //
 // It keeps the underlying write error on the same chain, so errors.Is matches both the sentinel and that error | 它把底层写入错误保留在同一条链上，因此 errors.Is 既能匹配哨兵也能匹配该错误，
 // (typical causes are a dropped client connection or a closed response body). | （常见原因是客户端断连或响应体已关闭）。
-var ErrWriteStream = errx.New("sse: failed to write event stream | sse：写出事件流失败")
+var ErrWriteStream = errs.New("sse: failed to write event stream | sse：写出事件流失败")
 
 // Default values. | 默认值。
 const (
@@ -324,7 +324,7 @@ func (w *Writer) flushLocked(buf []byte) error {
 		w.buf = buf
 	}
 	if _, err := w.w.Write(buf); err != nil {
-		return errx.Wrap(err, ErrWriteStream)
+		return errs.Wrap(err, ErrWriteStream)
 	}
 	w.flusher.Flush()
 	return nil

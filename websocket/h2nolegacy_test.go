@@ -1,6 +1,6 @@
 //go:build !http2legacy
 
-package ws
+package websocket
 
 // h2ClientTransportAvailable reports whether golang.org/x/net/http2 can send
 // the :protocol pseudo-header. On Go 1.27 without the http2legacy build tag,

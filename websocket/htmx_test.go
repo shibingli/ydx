@@ -1,4 +1,4 @@
-package ws
+package websocket
 
 import (
 	"context"
@@ -180,12 +180,12 @@ func TestHtmxHandlerEchoAndCallbacks(t *testing.T) {
 		if op != TextMessage {
 			t.Fatalf("操作码 = %v, 期望 TextMessage", op)
 		}
-		if !jsonx.Valid(got) {
+		if !json.Valid(got) {
 			t.Fatalf("回显不是合法 JSON: %s", got)
 		}
 
 		var echo HtmxMessage
-		if err := jsonx.Unmarshal(got, &echo); err != nil {
+		if err := json.Unmarshal(got, &echo); err != nil {
 			t.Fatalf("回显解码失败: %v", err)
 		}
 		if echo.Body != "raw json body | 原始 JSON 正文" {
@@ -194,7 +194,7 @@ func TestHtmxHandlerEchoAndCallbacks(t *testing.T) {
 		// htmx 4 swaps "content" and ignores BODY; the request-side headers must not be echoed back. | htmx 4 只交换
 		// "content" 而忽略 BODY；请求侧的请求头不得回送。
 		var shape map[string]any
-		if err := jsonx.Unmarshal(got, &shape); err != nil {
+		if err := json.Unmarshal(got, &shape); err != nil {
 			t.Fatalf("回显形状解析失败: %v", err)
 		}
 		if _, ok := shape["headers"]; ok {
@@ -213,7 +213,7 @@ func TestHtmxHandlerEchoAndCallbacks(t *testing.T) {
 			t.Fatalf("写入第二条失败: %v", err)
 		}
 		_, got = readOrFail(t, c, "第二条回显")
-		if err := jsonx.Unmarshal(got, &echo); err != nil {
+		if err := json.Unmarshal(got, &echo); err != nil {
 			t.Fatalf("第二条回显解码失败: %v", err)
 		}
 		if echo.Body != "second | 第二条" {
@@ -259,7 +259,7 @@ func TestHtmxHandlerEchoAndCallbacks(t *testing.T) {
 
 		for i := 0; i < 3; i++ {
 			body := "hi-" + string(rune('0'+i))
-			raw, err := jsonx.Marshal(HtmxMessage{
+			raw, err := json.Marshal(HtmxMessage{
 				Headers: map[string]string{"hx-target": "#chat", "HX-Source": "test"},
 				Body:    body,
 			})

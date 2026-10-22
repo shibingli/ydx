@@ -1,4 +1,4 @@
-package ws
+package websocket
 
 import (
 	"net/http"
@@ -302,8 +302,8 @@ func negotiateClientCompression(h http.Header, offered bool) (*compressionConfig
 
 	if !offered {
 		if len(entries) > 0 {
-			return nil, errx.Wrap(
-				errx.Detail(ErrUnrequestedExtension,
+			return nil, errs.Wrap(
+				errs.Detail(ErrUnrequestedExtension,
 					"server sent %[1]q, which the client did not offer | 服务端发送了客户端未提议的 %[1]q",
 					strings.Join(h.Values(headerSecWebSocketExtensions), ", ")),
 				ErrHandshake)
@@ -315,15 +315,15 @@ func negotiateClientCompression(h http.Header, offered bool) (*compressionConfig
 		return nil, nil
 	}
 	if len(entries) > 1 {
-		return nil, errx.Wrap(
-			errx.Detail(ErrUnrequestedExtension,
+		return nil, errs.Wrap(
+			errs.Detail(ErrUnrequestedExtension,
 				"server sent %[1]d extension entries, at most one is allowed | 服务端发送了 %[1]d 个扩展项，最多允许一个", len(entries)),
 			ErrHandshake)
 	}
 	e := entries[0]
 	if e.name != "permessage-deflate" || e.invalid {
-		return nil, errx.Wrap(
-			errx.Detail(ErrUnrequestedExtension,
+		return nil, errs.Wrap(
+			errs.Detail(ErrUnrequestedExtension,
 				"server activated unsupported extension %[1]q | 服务端启用了不支持的扩展 %[1]q", e.name),
 			ErrHandshake)
 	}
@@ -332,7 +332,7 @@ func negotiateClientCompression(h http.Header, offered bool) (*compressionConfig
 	seen := make(map[string]struct{}, len(e.params))
 	for _, p := range e.params {
 		if _, dup := seen[p.name]; dup {
-			return nil, errx.Detail(ErrHandshake,
+			return nil, errs.Detail(ErrHandshake,
 				"duplicate permessage-deflate parameter %[1]q | permessage-deflate 参数 %[1]q 重复", p.name)
 		}
 		seen[p.name] = struct{}{}
@@ -340,24 +340,24 @@ func negotiateClientCompression(h http.Header, offered bool) (*compressionConfig
 		switch p.name {
 		case "client_no_context_takeover":
 			if p.hasValue {
-				return nil, errx.Detail(ErrHandshake,
+				return nil, errs.Detail(ErrHandshake,
 					"parameter %[1]q must not carry a value | 参数 %[1]q 不得带值", p.name)
 			}
 			cfg.clientNoContextTakeover = true
 		case "server_no_context_takeover":
 			if p.hasValue {
-				return nil, errx.Detail(ErrHandshake,
+				return nil, errs.Detail(ErrHandshake,
 					"parameter %[1]q must not carry a value | 参数 %[1]q 不得带值", p.name)
 			}
 			cfg.serverNoContextTakeover = true
 		case "client_max_window_bits":
 			if !p.hasValue {
-				return nil, errx.Detail(ErrHandshake,
+				return nil, errs.Detail(ErrHandshake,
 					"parameter %[1]q must carry a value in a response | 响应中的参数 %[1]q 必须带值", p.name)
 			}
 			n, ok := parseWindowBits(p.value)
 			if !ok {
-				return nil, errx.Detail(ErrHandshake,
+				return nil, errs.Detail(ErrHandshake,
 					"invalid %[1]q value %[2]q | %[1]q 取值 %[2]q 非法", p.name, p.value)
 			}
 			cfg.clientWindowBits = n
@@ -369,12 +369,12 @@ func negotiateClientCompression(h http.Header, offered bool) (*compressionConfig
 			}
 			n, ok := parseWindowBits(p.value)
 			if !ok {
-				return nil, errx.Detail(ErrHandshake,
+				return nil, errs.Detail(ErrHandshake,
 					"invalid %[1]q value %[2]q | %[1]q 取值 %[2]q 非法", p.name, p.value)
 			}
 			cfg.serverWindowBits = n
 		default:
-			return nil, errx.Detail(ErrHandshake,
+			return nil, errs.Detail(ErrHandshake,
 				"unsupported permessage-deflate parameter %[1]q | 不支持的 permessage-deflate 参数 %[1]q", p.name)
 		}
 	}

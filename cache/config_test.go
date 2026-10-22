@@ -1,4 +1,4 @@
-package cachex_test
+package cache_test
 
 import (
 	"testing"
@@ -6,7 +6,7 @@ import (
 
 	"github.com/spf13/afero"
 
-	"github.com/shibingli/ydx/sfs"
+	"github.com/shibingli/ydx/afs"
 	"github.com/shibingli/ydx/config"
 	"github.com/shibingli/ydx/cache"
 )
@@ -49,7 +49,7 @@ cache:
   cleanup_interval: 250ms
   sample_size: 64
 `)
-	o := cachex.OptionsFromConfig(c)
+	o := cache.OptionsFromConfig(c)
 	if o.Lease != 5*time.Second || o.LoadTimeout != 2*time.Second {
 		t.Fatalf("basic options = %+v | 基础选项不符", o)
 	}
@@ -64,17 +64,17 @@ cache:
 
 func TestOptionsFromConfigDefaults(t *testing.T) {
 	c := loadConfig(t, "")
-	o := cachex.OptionsFromConfig(c)
-	if o.Lease != cachex.DefaultLease || o.LoadTimeout != cachex.DefaultLoadTimeout {
+	o := cache.OptionsFromConfig(c)
+	if o.Lease != cache.DefaultLease || o.LoadTimeout != cache.DefaultLoadTimeout {
 		t.Fatalf("defaults = %+v | 默认值不符", o)
 	}
-	if !o.FailOpen || o.EventBuffer != cachex.DefaultEventBuffer || o.TombstoneTTL != cachex.DefaultTombstoneTTL {
+	if !o.FailOpen || o.EventBuffer != cache.DefaultEventBuffer || o.TombstoneTTL != cache.DefaultTombstoneTTL {
 		t.Fatalf("defaults = %+v | 默认值不符", o)
 	}
 	if o.Local.MaxCost != 0 || o.Local.Shards != 0 || o.Local.MaxEntrySize != 0 {
 		t.Fatalf("local defaults = %+v | 本地默认值应为零（自动推导）", o.Local)
 	}
-	if o := cachex.OptionsFromConfig(nil); !o.FailOpen {
+	if o := cache.OptionsFromConfig(nil); !o.FailOpen {
 		t.Fatalf("nil config = %+v | nil 配置应保持失败开放", o)
 	}
 }
@@ -91,7 +91,7 @@ cache:
     subscribe_buffer: 8
     health_interval: 3s
 `)
-	o := cachex.RedisOptionsFromConfig(c)
+	o := cache.RedisOptionsFromConfig(c)
 	if o.Prefix != "rk:app:" {
 		t.Fatalf("prefix = %q, want rk:app: | Redis 前缀不符", o.Prefix)
 	}
@@ -112,14 +112,14 @@ cache:
   redis:
     prefix: "explicit:"
 `)
-	o := cachex.RedisOptionsFromConfig(c)
+	o := cache.RedisOptionsFromConfig(c)
 	if o.Prefix != "explicit:" {
 		t.Fatalf("prefix = %q, want explicit: | 显式 Redis 前缀未生效", o.Prefix)
 	}
 	if o.Channel != "explicit:events" {
 		t.Fatalf("channel = %q | 默认频道不符", o.Channel)
 	}
-	if o := cachex.RedisOptionsFromConfig(nil); o.Prefix != "" {
+	if o := cache.RedisOptionsFromConfig(nil); o.Prefix != "" {
 		t.Fatalf("nil config = %+v | nil 配置应返回零值", o)
 	}
 }

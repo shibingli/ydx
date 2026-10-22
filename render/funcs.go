@@ -14,7 +14,7 @@ import (
 
 	"github.com/spf13/afero"
 
-	"github.com/shibingli/ydx/sfs"
+	"github.com/shibingli/ydx/afs"
 	"github.com/shibingli/ydx/errs"
 	"github.com/shibingli/ydx/json"
 )
@@ -73,13 +73,13 @@ func funcsFor(fsys, assetFS afero.Fs, production bool) template.FuncMap {
 // dict builds a map from alternating key/value arguments. | dict 由交替的键值参数构造 map。
 func dict(kv ...any) (map[string]any, error) {
 	if len(kv)%2 != 0 {
-		return nil, errx.Detail(ErrDictOddArgs, "got %[1]d args | 需要 %[1]d 个参数", len(kv))
+		return nil, errs.Detail(ErrDictOddArgs, "got %[1]d args | 需要 %[1]d 个参数", len(kv))
 	}
 	m := make(map[string]any, len(kv)/2)
 	for i := 0; i < len(kv); i += 2 {
 		k, ok := kv[i].(string)
 		if !ok {
-			return nil, errx.Detail(ErrDictKeyNotString, "index=%[1]d | 索引=%[1]d", i)
+			return nil, errs.Detail(ErrDictKeyNotString, "index=%[1]d | 索引=%[1]d", i)
 		}
 		m[k] = kv[i+1]
 	}
@@ -125,9 +125,9 @@ func isEmpty(v any) bool {
 // jsonx escapes HTML-significant characters by default, so the result is safe
 // inside a <script> block. | jsonx 默认转义 HTML 敏感字符，因此结果可安全嵌入 <script>。
 func toJSON(v any) (template.JS, error) {
-	b, err := jsonx.Marshal(v)
+	b, err := json.Marshal(v)
 	if err != nil {
-		return "", errx.Wrap(err, ErrJSONMarshal)
+		return "", errs.Wrap(err, ErrJSONMarshal)
 	}
 	return template.JS(b), nil
 }
@@ -163,28 +163,28 @@ func humanTime(t time.Time) string {
 // 并拒绝不是普通属性名的键。
 func htmxAttrs(kv ...any) (template.HTMLAttr, error) {
 	if len(kv)%2 != 0 {
-		return "", errx.Detail(ErrHtmxOddArgs, "got %[1]d args | 需要 %[1]d 个参数", len(kv))
+		return "", errs.Detail(ErrHtmxOddArgs, "got %[1]d args | 需要 %[1]d 个参数", len(kv))
 	}
 	pairs := make([]string, 0, len(kv)/2)
 	for i := 0; i < len(kv); i += 2 {
 		k, ok := kv[i].(string)
 		if !ok {
-			return "", errx.Detail(ErrHtmxKeyNotString, "index=%[1]d | 索引=%[1]d", i)
+			return "", errs.Detail(ErrHtmxKeyNotString, "index=%[1]d | 索引=%[1]d", i)
 		}
 		if k == "" {
-			return "", errx.Detail(ErrHtmxInvalidKey, "key=%[1]q | 键=%[1]q", k)
+			return "", errs.Detail(ErrHtmxInvalidKey, "key=%[1]q | 键=%[1]q", k)
 		}
 		if !strings.HasPrefix(k, "hx-") {
 			k = "hx-" + k
 		}
 		if !validAttrName(k) {
-			return "", errx.Detail(ErrHtmxInvalidKey, "key=%[1]q | 键=%[1]q", k)
+			return "", errs.Detail(ErrHtmxInvalidKey, "key=%[1]q | 键=%[1]q", k)
 		}
 		// hx-on:* attributes are JavaScript, not HTML: HTML escaping does not escape quotes inside
 		// a JS string, so a computed value could break out and execute. | hx-on:* 属性是 JavaScript
 		// 而不是 HTML：HTML 转义不会转义 JS 字符串里的引号，计算值可以逃逸并执行。
 		if strings.HasPrefix(k, "hx-on") || strings.HasPrefix(k, "on") {
-			return "", errx.Detail(ErrHtmxInvalidKey, "key=%[1]q is executable JavaScript and is not allowed | 键 %[1]q 是可执行 JavaScript，不允许使用", k)
+			return "", errs.Detail(ErrHtmxInvalidKey, "key=%[1]q is executable JavaScript and is not allowed | 键 %[1]q 是可执行 JavaScript，不允许使用", k)
 		}
 		pairs = append(pairs, fmt.Sprintf(`%s="%s"`, k, html.EscapeString(fmt.Sprint(kv[i+1]))))
 	}
@@ -225,7 +225,7 @@ func validAttrName(name string) bool {
 func (c *assetCache) assetFunc(fsys, assetFS afero.Fs, production bool) func(string) (string, error) {
 	return func(p string) (string, error) {
 		if p == "" {
-			return "", errx.Detail(ErrAssetNotFound, "empty path | 路径为空")
+			return "", errs.Detail(ErrAssetNotFound, "empty path | 路径为空")
 		}
 		urlPath, file, readFS := resolveAsset(fsys, assetFS, p, production)
 		c.mu.RLock()
@@ -234,7 +234,7 @@ func (c *assetCache) assetFunc(fsys, assetFS afero.Fs, production bool) func(str
 		if !ok {
 			b, err := afero.ReadFile(readFS, file)
 			if err != nil {
-				return "", errx.WrapDetail(err, ErrAssetNotFound, "path=%[1]s | 路径=%[1]s", p)
+				return "", errs.WrapDetail(err, ErrAssetNotFound, "path=%[1]s | 路径=%[1]s", p)
 			}
 			sum := sha256.Sum256(b)
 			h = hex.EncodeToString(sum[:4])

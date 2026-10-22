@@ -56,7 +56,7 @@ func (p *Plugin) queryKey(db *gorm.DB) (string, bool) {
 	buf = append(buf, 0)
 	buf = append(buf, st.SQL.String()...)
 	for _, v := range st.Vars {
-		raw, err := jsonx.Marshal(v)
+		raw, err := json.Marshal(v)
 		if err != nil {
 			release()
 			return "", false

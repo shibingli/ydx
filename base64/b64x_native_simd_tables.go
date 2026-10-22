@@ -1,6 +1,6 @@
 //go:build amd64 && goexperiment.simd && !b64x_std
 
-package b64x
+package base64
 
 import "simd/archsimd"
 

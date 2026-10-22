@@ -43,7 +43,7 @@ const (
 )
 
 // jsonMarshaler matches json.Marshaler without importing encoding/json, which
-// the repository forbids outside core/jsonx. | jsonMarshaler 匹配 json.Marshaler
+// the repository forbids outside core/json. | jsonMarshaler 匹配 json.Marshaler
 // 而不导入 encoding/json —— 仓库禁止在 core/jsonx 之外直接导入该包。
 type jsonMarshaler interface {
 	MarshalJSON() ([]byte, error)

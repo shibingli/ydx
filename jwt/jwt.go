@@ -37,38 +37,38 @@ const (
 
 // The declared sentinels of this package. | 本包的哨兵错误声明。
 //
-// Every failure path returns one of them, either directly or through errx.Detail / errx.Wrap, so callers can
+// Every failure path returns one of them, either directly or through errs.Detail / errs.Wrap, so callers can
 // classify failures with errors.Is instead of matching message text. | 所有失败路径都返回其中之一，
-// 直接返回或经由 errx.Detail / errx.Wrap 包装，因此调用方可用 errors.Is 分类失败，而无需匹配文案。
+// 直接返回或经由 errs.Detail / errs.Wrap 包装，因此调用方可用 errors.Is 分类失败，而无需匹配文案。
 var (
 	// ErrMalformed reports a token that is not a well-formed compact JWS, or whose JSON is not well formed. | ErrMalformed 表示 token 不是结构良好的紧凑 JWS，或其 JSON 结构非法。
-	ErrMalformed = errx.New("jwt: malformed token | jwt：令牌格式非法")
+	ErrMalformed = errs.New("jwt: malformed token | jwt：令牌格式非法")
 	// ErrSignatureInvalid reports that the signature did not verify, or that the key family does not match the algorithm. | ErrSignatureInvalid 表示签名校验未通过，或密钥族与算法不匹配。
-	ErrSignatureInvalid = errx.New("jwt: invalid signature | jwt：签名校验失败")
+	ErrSignatureInvalid = errs.New("jwt: invalid signature | jwt：签名校验失败")
 	// ErrWeakKey reports an HMAC secret shorter than the algorithm's hash output (RFC 7518 §3.2). | ErrWeakKey 表示 HMAC 密钥短于算法哈希输出（RFC 7518 §3.2）。
-	ErrWeakKey = errx.New("jwt: HMAC key is too short | jwt：HMAC 密钥过短")
+	ErrWeakKey = errs.New("jwt: HMAC key is too short | jwt：HMAC 密钥过短")
 	// ErrTokenExpired reports an exp claim in the past, beyond the leeway. | ErrTokenExpired 表示 exp 声明位于过去，且超出容差。
-	ErrTokenExpired = errx.New("jwt: token expired | jwt：令牌已过期")
+	ErrTokenExpired = errs.New("jwt: token expired | jwt：令牌已过期")
 	// ErrTokenNotValidYet reports an nbf claim in the future, beyond the leeway. | ErrTokenNotValidYet 表示 nbf 声明位于未来，且超出容差。
-	ErrTokenNotValidYet = errx.New("jwt: token not valid yet | jwt：令牌尚未生效")
+	ErrTokenNotValidYet = errs.New("jwt: token not valid yet | jwt：令牌尚未生效")
 	// ErrAlgNotAllowed reports an alg header that is unsupported, unknown, or outside the allow list. | ErrAlgNotAllowed 表示 alg 头部不受支持、未知，或不在白名单内。
-	ErrAlgNotAllowed = errx.New("jwt: algorithm not allowed | jwt：算法不被允许")
+	ErrAlgNotAllowed = errs.New("jwt: algorithm not allowed | jwt：算法不被允许")
 	// ErrIssuerMismatch reports an iss claim that differs from the expected issuer. | ErrIssuerMismatch 表示 iss 声明与期望的签发方不一致。
-	ErrIssuerMismatch = errx.New("jwt: issuer mismatch | jwt：签发方不匹配")
+	ErrIssuerMismatch = errs.New("jwt: issuer mismatch | jwt：签发方不匹配")
 	// ErrAudienceMismatch reports an aud claim that does not contain the expected audience. | ErrAudienceMismatch 表示 aud 声明不包含期望的受众。
-	ErrAudienceMismatch = errx.New("jwt: audience mismatch | jwt：受众不匹配")
+	ErrAudienceMismatch = errs.New("jwt: audience mismatch | jwt：受众不匹配")
 	// ErrMissingExp reports a token without an exp claim while ParseOptions.RequireExp is set. | ErrMissingExp 表示已开启 ParseOptions.RequireExp 但 token 缺少 exp 声明。
-	ErrMissingExp = errx.New("jwt: missing exp claim | jwt：缺少 exp 声明")
+	ErrMissingExp = errs.New("jwt: missing exp claim | jwt：缺少 exp 声明")
 	// ErrClaimNotFound reports a claim that an accessor could not find. | ErrClaimNotFound 表示访问器找不到该声明。
-	ErrClaimNotFound = errx.New("jwt: claim not found | jwt：声明不存在")
+	ErrClaimNotFound = errs.New("jwt: claim not found | jwt：声明不存在")
 	// ErrInvalidClaims reports claims that jsonx cannot serialize. | ErrInvalidClaims 表示 jsonx 无法序列化的声明。
-	ErrInvalidClaims = errx.New("jwt: claims cannot be encoded | jwt：声明无法编码")
+	ErrInvalidClaims = errs.New("jwt: claims cannot be encoded | jwt：声明无法编码")
 	// ErrTokenNotFound reports that the middleware found no token at the configured lookup location. | ErrTokenNotFound 表示中间件在配置的提取位置没有找到 token。
-	ErrTokenNotFound = errx.New("jwt: token not found | jwt：未找到令牌")
+	ErrTokenNotFound = errs.New("jwt: token not found | jwt：未找到令牌")
 	// ErrNoKeyFunc reports a nil KeyFunc. | ErrNoKeyFunc 表示 KeyFunc 为空。
-	ErrNoKeyFunc = errx.New("jwt: nil key function | jwt：密钥函数为空")
+	ErrNoKeyFunc = errs.New("jwt: nil key function | jwt：密钥函数为空")
 	// ErrBadTokenLookup reports a malformed MiddlewareOptions.TokenLookup. | ErrBadTokenLookup 表示 MiddlewareOptions.TokenLookup 配置非法。
-	ErrBadTokenLookup = errx.New("jwt: invalid token lookup | jwt：令牌提取配置非法")
+	ErrBadTokenLookup = errs.New("jwt: invalid token lookup | jwt：令牌提取配置非法")
 )
 
 // supported reports whether a is one of the algorithms this package implements. | supported 报告 a 是否为本包实现的算法之一。
@@ -213,15 +213,15 @@ func Parse(token string, keyFn KeyFunc, o ParseOptions) (*Token, error) {
 
 	first := strings.IndexByte(token, '.')
 	if first < 0 {
-		return nil, errx.Detail(ErrMalformed, "missing payload separator | 缺少载荷段分隔符")
+		return nil, errs.Detail(ErrMalformed, "missing payload separator | 缺少载荷段分隔符")
 	}
 	rest := token[first+1:]
 	second := strings.IndexByte(rest, '.')
 	if second < 0 {
-		return nil, errx.Detail(ErrMalformed, "missing signature separator | 缺少签名段分隔符")
+		return nil, errs.Detail(ErrMalformed, "missing signature separator | 缺少签名段分隔符")
 	}
 	if strings.IndexByte(rest[second+1:], '.') >= 0 {
-		return nil, errx.Detail(ErrMalformed, "too many segments | 段数过多")
+		return nil, errs.Detail(ErrMalformed, "too many segments | 段数过多")
 	}
 	payloadSeg, sigSeg := rest[:second], rest[second+1:]
 
@@ -230,7 +230,7 @@ func Parse(token string, keyFn KeyFunc, o ParseOptions) (*Token, error) {
 
 	// Step 1: header structure and algorithm. | 第一步：头部结构与算法。
 	if !decodeSegment(s, &s.header, token[:first]) {
-		return nil, errx.Detail(ErrMalformed, "header is not base64url | 头部不是 base64url")
+		return nil, errs.Detail(ErrMalformed, "header is not base64url | 头部不是 base64url")
 	}
 	var hf headerFields
 	if err := scanHeader(s.header, &hf); err != nil {
@@ -239,25 +239,25 @@ func Parse(token string, keyFn KeyFunc, o ParseOptions) (*Token, error) {
 	// A hostile token must not be able to pick its own algorithm, so the allow list is enforced before any
 	// key material is requested. | 恶意 token 不得自行选择算法，因此白名单在任何密钥材料被索取之前强制执行。
 	if !algAllowed(o.ValidAlgs, hf.alg) {
-		return nil, errx.Detail(ErrAlgNotAllowed, "alg=%[1]q | 算法=%[1]q", string(hf.alg))
+		return nil, errs.Detail(ErrAlgNotAllowed, "alg=%[1]q | 算法=%[1]q", string(hf.alg))
 	}
 	if payloadSeg == "" {
-		return nil, errx.Detail(ErrMalformed, "empty payload segment | 载荷段为空")
+		return nil, errs.Detail(ErrMalformed, "empty payload segment | 载荷段为空")
 	}
 	if sigSeg == "" {
-		return nil, errx.Detail(ErrMalformed, "empty signature segment | 签名段为空")
+		return nil, errs.Detail(ErrMalformed, "empty signature segment | 签名段为空")
 	}
 
 	// Step 2: payload structure. | 第二步：载荷结构。
 	if !decodeSegment(s, &s.payload, payloadSeg) {
-		return nil, errx.Detail(ErrMalformed, "payload is not base64url | 载荷不是 base64url")
+		return nil, errs.Detail(ErrMalformed, "payload is not base64url | 载荷不是 base64url")
 	}
 	var fields claimFields
 	if !scanRegistered(s.payload, &fields) {
-		return nil, errx.Detail(ErrMalformed, "payload is not a JSON object | 载荷不是 JSON 对象")
+		return nil, errs.Detail(ErrMalformed, "payload is not a JSON object | 载荷不是 JSON 对象")
 	}
 	if !decodeSegment(s, &s.sig, sigSeg) {
-		return nil, errx.Detail(ErrMalformed, "signature is not base64url | 签名不是 base64url")
+		return nil, errs.Detail(ErrMalformed, "signature is not base64url | 签名不是 base64url")
 	}
 
 	// Acquire the Token before KeyFunc so Header.Kid and Header.Typ can point at token-owned storage
@@ -441,19 +441,19 @@ func parseTokenLookup(spec string) (tokenLookup, error) {
 			name, prefix = rest[:i], rest[i+1:]
 		}
 		if name == "" {
-			return nil, errx.Detail(ErrBadTokenLookup, "empty header name | 头部名称为空")
+			return nil, errs.Detail(ErrBadTokenLookup, "empty header name | 头部名称为空")
 		}
 		return func(c *router.Ctx) (string, bool) {
 			return headerToken(c.Header(name), prefix)
 		}, nil
 	case "query":
 		if rest == "" {
-			return nil, errx.Detail(ErrBadTokenLookup, "empty query name | 查询参数名为空")
+			return nil, errs.Detail(ErrBadTokenLookup, "empty query name | 查询参数名为空")
 		}
 		return func(c *router.Ctx) (string, bool) { return nonEmptyToken(c.Query(rest)) }, nil
 	case "cookie":
 		if rest == "" {
-			return nil, errx.Detail(ErrBadTokenLookup, "empty cookie name | Cookie 名为空")
+			return nil, errs.Detail(ErrBadTokenLookup, "empty cookie name | Cookie 名为空")
 		}
 		return func(c *router.Ctx) (string, bool) { return nonEmptyToken(c.Cookie(rest)) }, nil
 	}

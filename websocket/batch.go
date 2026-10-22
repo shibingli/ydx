@@ -1,4 +1,4 @@
-package ws
+package websocket
 
 // Message is one complete message for Conn.WriteBatch. | Message 是 Conn.WriteBatch 使用的单条完整消息。
 type Message struct {

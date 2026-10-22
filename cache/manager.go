@@ -1,4 +1,4 @@
-package cachex
+package cache
 
 import (
 	"context"
@@ -32,7 +32,7 @@ type Manager struct {
 	remote     Remote
 	subCtx     context.Context
 	local      *local.Cache
-	log        *logx.Logger
+	log        *log.Logger
 	bus        *eventBus
 	subCancel  context.CancelFunc
 	namespaces map[string]struct{}
@@ -60,7 +60,7 @@ func NewManager(opts ...Option) (*Manager, error) {
 	o = o.withDefaults()
 	lc, err := local.New(o.Local)
 	if err != nil {
-		return nil, errx.Wrap(err, ErrInvalidOptions)
+		return nil, errs.Wrap(err, ErrInvalidOptions)
 	}
 	m := &Manager{
 		local:      lc,
@@ -87,12 +87,12 @@ func (m *Manager) Raw(namespace string, opts ...CacheOption) (*Raw, error) {
 		return nil, ErrClosed
 	}
 	if !validNamespace(namespace) {
-		return nil, errx.Detail(ErrInvalidNamespace, "%q", namespace)
+		return nil, errs.Detail(ErrInvalidNamespace, "%q", namespace)
 	}
 	m.nsMu.Lock()
 	if _, exists := m.namespaces[namespace]; exists {
 		m.nsMu.Unlock()
-		return nil, errx.Detail(ErrNamespaceInUse, "%q", namespace)
+		return nil, errs.Detail(ErrNamespaceInUse, "%q", namespace)
 	}
 	m.namespaces[namespace] = struct{}{}
 	m.nsMu.Unlock()
@@ -124,7 +124,7 @@ func (m *Manager) Publish(ctx context.Context, ev Event) error {
 		return ErrClosed
 	}
 	if ev.Op < OpSet || ev.Op > OpResync {
-		return errx.Detail(ErrInvalidOptions, "unknown op %d | 未知操作 %d", ev.Op, ev.Op)
+		return errs.Detail(ErrInvalidOptions, "unknown op %d | 未知操作 %d", ev.Op, ev.Op)
 	}
 	if ev.Source == "" {
 		ev.Source = m.opts.NodeID
@@ -140,7 +140,7 @@ func (m *Manager) Publish(ctx context.Context, ev Event) error {
 			m.stats.eventsDropped.Add(1)
 			m.warn("cachex: publish failed | cachex：事件发布失败", err)
 			if !m.opts.FailOpen {
-				return errx.Wrap(err, ErrRemote)
+				return errs.Wrap(err, ErrRemote)
 			}
 		}
 	}
@@ -189,11 +189,11 @@ func (m *Manager) Close() error {
 		m.wg.Wait()
 		if m.remote != nil {
 			if err := m.remote.Close(); err != nil {
-				m.log.Warn("cachex: remote close failed | cachex：远端关闭失败", logx.Err(err))
+				m.log.Warn("cachex: remote close failed | cachex：远端关闭失败", log.Err(err))
 			}
 		}
 		if err := m.local.Close(); err != nil {
-			m.log.Warn("cachex: local close failed | cachex：本地缓存关闭失败", logx.Err(err))
+			m.log.Warn("cachex: local close failed | cachex：本地缓存关闭失败", log.Err(err))
 		}
 		m.bus.close()
 	})
@@ -335,5 +335,5 @@ func (m *Manager) warn(msg string, err error) {
 	if !m.warnAt.CompareAndSwap(last, now) {
 		return
 	}
-	m.log.Warn(msg, logx.Err(err))
+	m.log.Warn(msg, log.Err(err))
 }

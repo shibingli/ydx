@@ -10,21 +10,21 @@
 
 | 导入路径 | 包名 | 职责 |
 |---|---|---|
-| `github.com/shibingli/ydx/errs` | `errx` | 声明式哨兵错误与上下文包装 |
+| `github.com/shibingli/ydx/errs` | `errs` | 声明式哨兵错误与上下文包装 |
 | `github.com/shibingli/ydx/sysinfo` | `sysinfo` | GOMAXPROCS / cgroup / 主机内存探测 |
-| `github.com/shibingli/ydx/buffpool` | `bufpool` | 按尺寸分级的字节缓冲池 |
+| `github.com/shibingli/ydx/buffpool` | `buffpool` | 按尺寸分级的字节缓冲池 |
 | `github.com/shibingli/ydx/protocol` | `protocol` | HTTP 协议判定（extended CONNECT 等） |
-| `github.com/shibingli/ydx/base64` | `b64x` | 硬件自适应 Base64 |
-| `github.com/shibingli/ydx/json` | `jsonx` | 硬件自适应 JSON |
-| `github.com/shibingli/ydx/sfs` | `afs` | afero 之上的文件系统门面（OS / 内存 / embed） |
+| `github.com/shibingli/ydx/base64` | `base64` | 硬件自适应 Base64 |
+| `github.com/shibingli/ydx/json` | `json` | 硬件自适应 JSON |
+| `github.com/shibingli/ydx/afs` | `afs` | afero 之上的文件系统门面（OS / 内存 / embed） |
 | `github.com/shibingli/ydx/config` | `config` | 多源分层配置（flags > env > file > defaults） |
-| `github.com/shibingli/ydx/log` | `logx` | 零拷贝结构化日志 |
+| `github.com/shibingli/ydx/log` | `log` | 零拷贝结构化日志 |
 | `github.com/shibingli/ydx/regexpx` | `regexpx` | 统一正则入口（RE2 快路径 + regexp2 兼容路径） |
 | `github.com/shibingli/ydx/router` | `router` | 基数树路由 + 原生 http 适配 |
-| `github.com/shibingli/ydx/gorm` | `gormx` | GORM 装配、连接串预置与自动建库 |
-| `github.com/shibingli/ydx/cache` | `cachex` | 二级缓存（L1 环形缓存 + Redis） |
+| `github.com/shibingli/ydx/gorm` | `gorm` | GORM 装配、连接串预置与自动建库 |
+| `github.com/shibingli/ydx/cache` | `cache` | 二级缓存（L1 环形缓存 + Redis） |
 | `github.com/shibingli/ydx/sse` | `sse` | Server-Sent Events 写入器与广播器 |
-| `github.com/shibingli/ydx/websocket` | `ws` | RFC 6455 / 7692 / 8441 WebSocket |
+| `github.com/shibingli/ydx/websocket` | `websocket` | RFC 6455 / 7692 / 8441 WebSocket |
 | `github.com/shibingli/ydx/render` | `render` | 编译式 `html/template` 引擎 |
 | `github.com/shibingli/ydx/jwt` | `jwt` | 免反射 JWT 签发、验签与中间件 |
 | `github.com/shibingli/ydx/middleware` | `middleware` | 中间件聚合门面（保持旧 API） |
@@ -35,9 +35,9 @@
 | `github.com/shibingli/ydx/middleware/ratelimit` | `ratelimit` | 限流（内存 / Redis） |
 | `github.com/shibingli/ydx/middleware/recovery` | `recovery` | panic 恢复 |
 | `github.com/shibingli/ydx/middleware/requestid` | `requestid` | 请求 ID |
-| `github.com/shibingli/ydx/middleware/internal/reqlog` | `reqlog` | 中间件内部共享的计数写入器与头处理（仅 ydx 内部可用） |
+| `github.com/shibingli/ydx/middleware/reqlog` | `reqlog` | 中间件内部共享的计数写入器与头处理（中间件共享实现（公开路径，无稳定性承诺）） |
 
-> 目录名是模块名，包名沿用 yd 原有标识符（例如 `errs` 目录下是 `package errx`），因此从 yd 迁移只需改 import 路径，调用点不变。
+> 目录名、模块名与包名三者一致；从 yd 迁移时需要同时更新 import 路径与包标识符。
 
 ## YD 路由用法
 

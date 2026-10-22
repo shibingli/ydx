@@ -1,4 +1,4 @@
-// Package gormcache is the GORM plugin of cachex. | Package gormcache 是 cachex 的 GORM 插件。
+// Package gormcache is the GORM plugin of cache. | Package gormcache 是 cachex 的 GORM 插件。
 //
 // The plugin caches SELECT results by a key over the built SQL, every bind variable and a | 插件按「构建后的 SQL、全部绑定变量与该表的代际」生成键来缓存 SELECT 结果；
 // per-table generation. Any write to a table bumps its generation, so every cached query | 对一张表的任何写入都会推进其代际，因此该表的所有缓存查询
@@ -32,16 +32,16 @@ import (
 // Declared sentinel errors, testable with errors.Is. | 已声明的哨兵错误，可用 errors.Is 判定。
 var (
 	// ErrNilManager indicates Options.Manager was nil. | ErrNilManager 表示 Options.Manager 为 nil。
-	ErrNilManager = errx.New("gormcache: nil cache manager | gormcache：缓存管理器为 nil")
+	ErrNilManager = errs.New("gormcache: nil cache manager | gormcache：缓存管理器为 nil")
 	// ErrNilDB indicates Initialize received a nil *gorm.DB. | ErrNilDB 表示 Initialize 收到 nil *gorm.DB。
-	ErrNilDB = errx.New("gormcache: nil gorm db | gormcache：GORM 数据库为 nil")
+	ErrNilDB = errs.New("gormcache: nil gorm db | gormcache：GORM 数据库为 nil")
 	// ErrCallbackMissing indicates gorm:query was not registered on the DB. | ErrCallbackMissing 表示数据库未注册 gorm:query。
-	ErrCallbackMissing = errx.New("gormcache: gorm:query callback missing | gormcache：缺少 gorm:query 回调")
+	ErrCallbackMissing = errs.New("gormcache: gorm:query callback missing | gormcache：缺少 gorm:query 回调")
 	// ErrAlreadyInitialized indicates the same plugin was installed twice. | ErrAlreadyInitialized 表示同一插件被安装两次。
-	ErrAlreadyInitialized = errx.New("gormcache: plugin already initialized | gormcache：插件已初始化")
+	ErrAlreadyInitialized = errs.New("gormcache: plugin already initialized | gormcache：插件已初始化")
 	// ErrClosed indicates the plugin was closed. | ErrClosed 表示插件已关闭。
-	ErrClosed         = errx.New("gormcache: plugin closed | gormcache：插件已关闭")
-	errCorruptPayload = errx.New("gormcache: corrupt cached payload | gormcache：缓存的载荷损坏")
+	ErrClosed         = errs.New("gormcache: plugin closed | gormcache：插件已关闭")
+	errCorruptPayload = errs.New("gormcache: corrupt cached payload | gormcache：缓存的载荷损坏")
 )
 
 // defaultTTL is used when Options.TTL is not positive. | defaultTTL 在 Options.TTL 非正时使用。
@@ -50,9 +50,9 @@ const defaultTTL = 30 * time.Second
 // Options configures the GORM plugin. | Options 配置 GORM 插件。
 type Options struct {
 	// Manager is the cachex manager that owns L1 and L2. | Manager 是拥有 L1 与 L2 的 cachex 管理器。
-	Manager *cachex.Manager
-	// Logger receives warnings; nil means logx.Default(). | Logger 接收告警；nil 表示 logx.Default()。
-	Logger *logx.Logger
+	Manager *cache.Manager
+	// Logger receives warnings; nil means log.Default(). | Logger 接收告警；nil 表示 log.Default()。
+	Logger *log.Logger
 	// Namespace is the cache namespace; empty means "gorm". | Namespace 是缓存命名空间；空值表示 "gorm"。
 	Namespace string
 	// Tables is an allowlist; empty means every table. | Tables 是白名单；空表示所有表。
@@ -82,12 +82,12 @@ type Stats struct {
 	// Writes counts table invalidations. | Writes 统计表失效次数。
 	Writes uint64
 	// Cache is the namespace snapshot. | Cache 是命名空间快照。
-	Cache cachex.Stats
+	Cache cache.Stats
 }
 
 // Plugin implements gorm.Plugin. | Plugin 实现 gorm.Plugin。
 type Plugin struct {
-	raw         *cachex.Raw
+	raw         *cache.Raw
 	original    func(*gorm.DB)
 	unsub       func()
 	gens        map[string]*atomic.Uint64
@@ -113,9 +113,9 @@ func New(o Options) (*Plugin, error) {
 		o.TTL = defaultTTL
 	}
 	if o.Logger == nil {
-		o.Logger = logx.Default()
+		o.Logger = log.Default()
 	}
-	raw, err := o.Manager.Raw(o.Namespace, cachex.WithTTL(o.TTL))
+	raw, err := o.Manager.Raw(o.Namespace, cache.WithTTL(o.TTL))
 	if err != nil {
 		return nil, err
 	}
@@ -193,7 +193,7 @@ func (p *Plugin) query(db *gorm.DB) {
 		if !valid {
 			return errCorruptPayload
 		}
-		if err := jsonx.Unmarshal(body, db.Statement.Dest); err != nil {
+		if err := json.Unmarshal(body, db.Statement.Dest); err != nil {
 			return err
 		}
 		db.RowsAffected = rows
@@ -216,7 +216,7 @@ func (p *Plugin) query(db *gorm.DB) {
 	if db.Error != nil || db.RowsAffected <= 0 {
 		return
 	}
-	body, err := jsonx.Marshal(db.Statement.Dest)
+	body, err := json.Marshal(db.Statement.Dest)
 	if err != nil {
 		return
 	}
@@ -224,7 +224,7 @@ func (p *Plugin) query(db *gorm.DB) {
 	binary.BigEndian.PutUint64(payload[:8], uint64(db.RowsAffected))
 	copy(payload[8:], body)
 	if err := p.raw.SetTTL(ctx, key, payload, p.opts.TTL); err != nil {
-		p.opts.Logger.Debug("cachex: gorm cache store failed | cachex：GORM 缓存写入失败", logx.Err(err))
+		p.opts.Logger.Debug("cachex: gorm cache store failed | cachex：GORM 缓存写入失败", log.Err(err))
 	}
 }
 
@@ -307,8 +307,8 @@ func (p *Plugin) bump(ctx context.Context, table string) {
 	}
 	pubCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer cancel()
-	ev := cachex.Event{
-		Op:        cachex.OpInvalidate,
+	ev := cache.Event{
+		Op:        cache.OpInvalidate,
 		Namespace: p.opts.Namespace,
 		Tables:    []string{table},
 		Version:   version,
@@ -317,19 +317,19 @@ func (p *Plugin) bump(ctx context.Context, table string) {
 	}
 	if err := p.opts.Manager.Publish(pubCtx, ev); err != nil {
 		p.opts.Logger.Warn("cachex: gorm invalidation publish failed | cachex：GORM 失效发布失败",
-			logx.Err(err), logx.Str("table", table))
+			log.Err(err), log.Str("table", table))
 	}
 }
 
 // onEvent adopts remote generations and resynchronizes after a subscription gap. | onEvent 采纳远端代际，并在订阅缺口后重新同步。
-func (p *Plugin) onEvent(ev cachex.Event) {
+func (p *Plugin) onEvent(ev cache.Event) {
 	// A subscription gap or a whole-cache clear moves every table forward, including tables that
 	// have not been queried yet on this process. | 订阅缺口或全缓存清理会推进所有表，包括本进程尚未查询过的表。
 	switch {
-	case ev.Op == cachex.OpResync:
+	case ev.Op == cache.OpResync:
 		p.epoch.Add(1)
 		return
-	case ev.Op == cachex.OpClear && ev.Namespace == "":
+	case ev.Op == cache.OpClear && ev.Namespace == "":
 		p.epoch.Add(1)
 		return
 	}
@@ -340,11 +340,11 @@ func (p *Plugin) onEvent(ev cachex.Event) {
 		return
 	}
 	switch ev.Op {
-	case cachex.OpInvalidate:
+	case cache.OpInvalidate:
 		for _, table := range ev.Tables {
 			p.adopt(table, ev.Version)
 		}
-	case cachex.OpClear:
+	case cache.OpClear:
 		p.epoch.Add(1)
 	}
 }
@@ -430,8 +430,8 @@ func (p *Plugin) Invalidate(ctx context.Context, tables ...string) error {
 	}
 	if len(tables) == 0 {
 		p.epoch.Add(1)
-		ev := cachex.Event{
-			Op:        cachex.OpClear,
+		ev := cache.Event{
+			Op:        cache.OpClear,
 			Namespace: p.opts.Namespace,
 			Source:    p.opts.Manager.NodeID(),
 			At:        time.Now().UTC(),
@@ -463,7 +463,7 @@ func (p *Plugin) Close() error {
 			p.unsub()
 		}
 		if err := p.raw.Close(); err != nil {
-			p.opts.Logger.Warn("cachex: gorm namespace close failed | cachex：GORM 命名空间关闭失败", logx.Err(err))
+			p.opts.Logger.Warn("cachex: gorm namespace close failed | cachex：GORM 命名空间关闭失败", log.Err(err))
 		}
 	})
 	return nil

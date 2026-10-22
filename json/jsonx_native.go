@@ -1,6 +1,6 @@
 //go:build amd64 && !jsonx_std
 
-package jsonx
+package json
 
 import (
 	"bytes"
@@ -259,7 +259,7 @@ func (d *Decoder) Decode(v any) error {
 	}
 	rv := reflect.ValueOf(v)
 	if rv.Kind() != reflect.Pointer || rv.IsNil() {
-		return errx.Detail(ErrTypeMismatch, "jsonx: Decode target must be a non-nil pointer | jsonx：Decode 目标必须是非 nil 指针")
+		return errs.Detail(ErrTypeMismatch, "jsonx: Decode target must be a non-nil pointer | jsonx：Decode 目标必须是非 nil 指针")
 	}
 	if err := dec.value(rv.Elem()); err != nil {
 		return err

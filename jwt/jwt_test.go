@@ -57,9 +57,9 @@ var rfcNow = time.Unix(1_300_819_300, 0).UTC()
 
 // buildToken assembles a compact JWS from a raw JSON header, a raw JSON payload and raw signature bytes. | buildToken 用原始 JSON 头部、原始 JSON 载荷与原始签名字节拼装紧凑 JWS。
 func buildToken(header, payload string, sig []byte) string {
-	return b64x.RawURLEncoding.EncodeToString([]byte(header)) + "." +
-		b64x.RawURLEncoding.EncodeToString([]byte(payload)) + "." +
-		b64x.RawURLEncoding.EncodeToString(sig)
+	return base64.RawURLEncoding.EncodeToString([]byte(header)) + "." +
+		base64.RawURLEncoding.EncodeToString([]byte(payload)) + "." +
+		base64.RawURLEncoding.EncodeToString(sig)
 }
 
 // buildSegments assembles a compact JWS from three already encoded segments. | buildSegments 用三个已编码的段拼装紧凑 JWS。
@@ -68,7 +68,7 @@ func buildSegments(header, payload, sig string) string {
 }
 
 // b64 wraps EncodeToString for readability. | b64 包装 EncodeToString 以便阅读。
-func b64(s string) string { return b64x.RawURLEncoding.EncodeToString([]byte(s)) }
+func b64(s string) string { return base64.RawURLEncoding.EncodeToString([]byte(s)) }
 
 // hmacKeyFunc returns a KeyFunc that always yields key. | hmacKeyFunc 返回恒定给出 key 的 KeyFunc。
 func hmacKeyFunc(key []byte) KeyFunc {
@@ -101,20 +101,20 @@ func resign(t *testing.T, headerSegment, payloadSegment string) string {
 	input := headerSegment + "." + payloadSegment
 	mac := hmac.New(sha256.New, testSecret)
 	mac.Write([]byte(input))
-	return input + "." + b64x.RawURLEncoding.EncodeToString(mac.Sum(nil))
+	return input + "." + base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
 }
 
 // ---------------------------------------------------------------- RFC 7519 official vector | RFC 7519 官方向量
 
 func TestHS256AgainstRFC7519Vector(t *testing.T) {
-	key, err := b64x.RawURLEncoding.DecodeString(rfc7519KeyB64)
+	key, err := base64.RawURLEncoding.DecodeString(rfc7519KeyB64)
 	if err != nil {
 		t.Fatalf("解码 RFC 7519 密钥失败: %v", err)
 	}
 	if !bytes.Equal(key, rfc7519KeyOctets) {
 		t.Fatalf("RFC 7519 密钥字节不一致:\n got %v\nwant %v", key, rfc7519KeyOctets)
 	}
-	wantSig, err := b64x.RawURLEncoding.DecodeString(rfc7519SigB64)
+	wantSig, err := base64.RawURLEncoding.DecodeString(rfc7519SigB64)
 	if err != nil {
 		t.Fatalf("解码 RFC 7519 签名失败: %v", err)
 	}
@@ -180,7 +180,7 @@ func TestHS256AgainstRFC7519Vector(t *testing.T) {
 	if got := tok.Claims.Keys(); len(got) != 3 {
 		t.Errorf("Claims.Keys() = %v，期望 3 个键", got)
 	}
-	wantPayload, _ := b64x.RawURLEncoding.DecodeString(strings.Split(rfc7519Token, ".")[1])
+	wantPayload, _ := base64.RawURLEncoding.DecodeString(strings.Split(rfc7519Token, ".")[1])
 	if !bytes.Equal(tok.Claims.Raw(), wantPayload) {
 		t.Errorf("Claims.Raw() = %q，期望 %q", tok.Claims.Raw(), wantPayload)
 	}
@@ -1176,7 +1176,7 @@ func echoSubject(c *router.Ctx) {
 func TestMalformedTokensTable(t *testing.T) {
 	hline := b64(`{"alg":"HS256","typ":"JWT"}`)
 	goodPayload := b64(`{"sub":"u1"}`)
-	goodSig := b64x.RawURLEncoding.EncodeToString([]byte("0123456789abcdef0123456789abcdef"))
+	goodSig := base64.RawURLEncoding.EncodeToString([]byte("0123456789abcdef0123456789abcdef"))
 	notJSON := b64(`nope`)
 	notObject := b64(`[1,2]`)
 
@@ -1201,8 +1201,8 @@ func TestMalformedTokensTable(t *testing.T) {
 		{"payload not json", buildSegments(hline, notJSON, goodSig), ErrMalformed},
 		{"payload not object", buildSegments(hline, notObject, goodSig), ErrMalformed},
 		{"payload truncated", buildSegments(hline, b64(`{"sub":`), goodSig), ErrMalformed},
-		{"signature too short", buildSegments(hline, goodPayload, b64x.RawURLEncoding.EncodeToString([]byte("short"))), ErrSignatureInvalid},
-		{"signature too long", buildSegments(hline, goodPayload, b64x.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{0x01}, 128))), ErrSignatureInvalid},
+		{"signature too short", buildSegments(hline, goodPayload, base64.RawURLEncoding.EncodeToString([]byte("short"))), ErrSignatureInvalid},
+		{"signature too long", buildSegments(hline, goodPayload, base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{0x01}, 128))), ErrSignatureInvalid},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

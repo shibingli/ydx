@@ -1,6 +1,6 @@
 //go:build amd64 && !jsonx_std
 
-package jsonx
+package json
 
 import (
 	"encoding/binary"

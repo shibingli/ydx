@@ -22,7 +22,7 @@ require (
 	github.com/dlclark/regexp2 v1.12.0 // indirect
 	github.com/goccy/go-json v0.11.2 // indirect
 	github.com/quic-go/qpack v0.6.0 // indirect
-	github.com/shibingli/ydx/sfs v0.1.0 // indirect
+	github.com/shibingli/ydx/afs v0.1.0 // indirect
 	github.com/spf13/afero v1.15.0 // indirect
 	golang.org/x/crypto v0.58.0 // indirect
 	golang.org/x/sys v0.49.0 // indirect
@@ -41,7 +41,7 @@ replace github.com/shibingli/ydx/base64 => D:/developer/go_code/ydx/base64
 
 replace github.com/shibingli/ydx/json => D:/developer/go_code/ydx/json
 
-replace github.com/shibingli/ydx/sfs => D:/developer/go_code/ydx/sfs
+replace github.com/shibingli/ydx/afs => D:/developer/go_code/ydx/afs
 
 replace github.com/shibingli/ydx/config => D:/developer/go_code/ydx/config
 

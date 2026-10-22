@@ -1,4 +1,4 @@
-package ws
+package websocket
 
 import (
 	"bufio"
@@ -83,12 +83,12 @@ type DialOptions struct {
 func Dial(ctx context.Context, rawURL string, o DialOptions) (*Conn, error) {
 	u, err := url.Parse(rawURL)
 	if err != nil {
-		return nil, errx.WrapDetail(err, ErrHandshake, "URL parsing failed | URL 解析失败")
+		return nil, errs.WrapDetail(err, ErrHandshake, "URL parsing failed | URL 解析失败")
 	}
 	switch u.Scheme {
 	case "ws", "wss":
 	default:
-		return nil, errx.Detail(ErrHandshake, "only ws/wss are supported, got %[1]q | 仅支持 ws/wss，得到 %[1]q", u.Scheme)
+		return nil, errs.Detail(ErrHandshake, "only ws/wss are supported, got %[1]q | 仅支持 ws/wss，得到 %[1]q", u.Scheme)
 	}
 
 	timeout := o.HandshakeTimeout
@@ -122,7 +122,7 @@ func Dial(ctx context.Context, rawURL string, o DialOptions) (*Conn, error) {
 		netConn, err = dialer.DialContext(ctx, "tcp", host)
 	}
 	if err != nil {
-		return nil, errx.WrapDetail(err, ErrHandshake, "connect failed | 建连失败")
+		return nil, errs.WrapDetail(err, ErrHandshake, "connect failed | 建连失败")
 	}
 
 	// generate a 16-byte random key | 生成 16 字节随机 key
@@ -131,7 +131,7 @@ func Dial(ctx context.Context, rawURL string, o DialOptions) (*Conn, error) {
 		_ = netConn.Close()
 		return nil, err
 	}
-	key := b64x.StdEncoding.EncodeToString(keyRaw[:])
+	key := base64.StdEncoding.EncodeToString(keyRaw[:])
 
 	reqPath := u.RequestURI()
 	if reqPath == "" {
@@ -173,7 +173,7 @@ func Dial(ctx context.Context, rawURL string, o DialOptions) (*Conn, error) {
 	_ = netConn.SetDeadline(deadline)
 	if _, err := netConn.Write(req); err != nil {
 		_ = netConn.Close()
-		return nil, errx.WrapDetail(err, ErrHandshake, "failed to send handshake request | 发送握手请求失败")
+		return nil, errs.WrapDetail(err, ErrHandshake, "failed to send handshake request | 发送握手请求失败")
 	}
 
 	// Size the handshake reader for the frames that follow it, so it can be
@@ -187,32 +187,32 @@ func Dial(ctx context.Context, rawURL string, o DialOptions) (*Conn, error) {
 	resp, err := http.ReadResponse(br, &http.Request{Method: http.MethodGet})
 	if err != nil {
 		_ = netConn.Close()
-		return nil, errx.WrapDetail(err, ErrHandshake, "failed to read handshake response | 读取握手响应失败")
+		return nil, errs.WrapDetail(err, ErrHandshake, "failed to read handshake response | 读取握手响应失败")
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusSwitchingProtocols {
 		_ = netConn.Close()
-		return nil, errx.Detail(errNotSwitchingProtocols, "status %[1]d | 状态 %[1]d", resp.StatusCode)
+		return nil, errs.Detail(errNotSwitchingProtocols, "status %[1]d | 状态 %[1]d", resp.StatusCode)
 	}
 	if !headerContainsToken(resp.Header, "Connection", "upgrade") {
 		_ = netConn.Close()
-		return nil, errx.Detail(ErrHandshake, "response Connection header is invalid | 响应 Connection 头非法")
+		return nil, errs.Detail(ErrHandshake, "response Connection header is invalid | 响应 Connection 头非法")
 	}
 	if !strings.EqualFold(strings.TrimSpace(resp.Header.Get("Upgrade")), "websocket") {
 		_ = netConn.Close()
-		return nil, errx.Detail(ErrHandshake, "response Upgrade header is invalid | 响应 Upgrade 头非法")
+		return nil, errs.Detail(ErrHandshake, "response Upgrade header is invalid | 响应 Upgrade 头非法")
 	}
 	if got, want := resp.Header.Get(headerSecWebSocketAccept), acceptKey(key); got != want {
 		_ = netConn.Close()
-		return nil, errx.Detail(ErrHandshake, "Sec-WebSocket-Accept mismatch, got %[1]q | Sec-WebSocket-Accept 不匹配（收到 %[1]q）", got)
+		return nil, errs.Detail(ErrHandshake, "Sec-WebSocket-Accept mismatch, got %[1]q | Sec-WebSocket-Accept 不匹配（收到 %[1]q）", got)
 	}
 	// RFC 6455 §4.1: the server may only select one of the subprotocols the client offered; | RFC 6455 §4.1：服务端只能从客户端提议的子协议中选择一个；
 	// an empty selection is legal (the connection then has no subprotocol). | 服务端不选择也是合法的（此时连接没有子协议）。
 	selected, err := parseSelectedSubprotocol(resp.Header, o.Subprotocols)
 	if err != nil {
 		_ = netConn.Close()
-		return nil, errx.Wrap(err, ErrHandshake)
+		return nil, errs.Wrap(err, ErrHandshake)
 	}
 	// RFC 6455 §4.1: an extension may only be activated when the client offered it. | RFC 6455 §4.1：只有客户端提议过的扩展才能被启用。
 	// negotiateClientCompression rejects an unrequested or malformed activation instead of continuing; | negotiateClientCompression 会拒绝未提议或非法的扩展启用，而不是继续；
@@ -254,13 +254,13 @@ func validateExtendedConnect(u *url.URL, o DialOptions) error {
 		return ErrExtendedConnectOptions
 	}
 	if o.Transport != nil && o.ExtendedConnect != ExtendedConnectHTTP2 && o.ExtendedConnect != ExtendedConnectHTTP3 {
-		return errx.Detail(ErrExtendedConnectOptions, "unknown extended CONNECT mode %[1]d | 未知的 extended CONNECT 模式 %[1]d", o.ExtendedConnect)
+		return errs.Detail(ErrExtendedConnectOptions, "unknown extended CONNECT mode %[1]d | 未知的 extended CONNECT 模式 %[1]d", o.ExtendedConnect)
 	}
 	if o.Transport == nil {
 		return nil
 	}
 	if o.ExtendedConnect == ExtendedConnectHTTP3 && u.Scheme != "wss" {
-		return errx.Detail(ErrExtendedConnectScheme, "scheme %[1]q | 协议 %[1]q", u.Scheme)
+		return errs.Detail(ErrExtendedConnectScheme, "scheme %[1]q | 协议 %[1]q", u.Scheme)
 	}
 	for name := range o.Headers {
 		switch {
@@ -269,7 +269,7 @@ func validateExtendedConnect(u *url.URL, o DialOptions) error {
 			strings.EqualFold(name, "Host"),
 			strings.EqualFold(name, "Sec-WebSocket-Key"),
 			strings.HasPrefix(name, ":"):
-			return errx.Detail(ErrExtendedConnectHeader, "header %[1]q | 头部 %[1]q", name)
+			return errs.Detail(ErrExtendedConnectHeader, "header %[1]q | 头部 %[1]q", name)
 		}
 	}
 	return nil
@@ -283,7 +283,7 @@ func validateExtendedConnect(u *url.URL, o DialOptions) error {
 func parseSelectedSubprotocol(h http.Header, offered []string) (string, error) {
 	values := h.Values(headerSecWebSocketProtocol)
 	if len(values) > 1 {
-		return "", errx.Detail(ErrUnrequestedSubprotocol,
+		return "", errs.Detail(ErrUnrequestedSubprotocol,
 			"server sent %[1]d Sec-WebSocket-Protocol headers, at most one is allowed | 服务端发送了 %[1]d 个 Sec-WebSocket-Protocol 头，最多允许一个", len(values))
 	}
 	if len(values) == 0 {
@@ -291,7 +291,7 @@ func parseSelectedSubprotocol(h http.Header, offered []string) (string, error) {
 	}
 	selected := strings.TrimSpace(values[0])
 	if selected != "" && !slices.Contains(offered, selected) {
-		return "", errx.Detail(ErrUnrequestedSubprotocol,
+		return "", errs.Detail(ErrUnrequestedSubprotocol,
 			"server selected %[1]q, which the client did not offer | 服务端选择了客户端未提议的 %[1]q", selected)
 	}
 	return selected, nil
@@ -302,7 +302,7 @@ func parseSelectedSubprotocol(h http.Header, offered []string) (string, error) {
 // RFC 8441 / RFC 9220 客户端握手。
 func dialExtended(ctx context.Context, u *url.URL, o DialOptions, timeout time.Duration) (*Conn, error) {
 	if err := ctx.Err(); err != nil {
-		return nil, errx.WrapDetail(err, ErrHandshake, "context is already done | 上下文已结束")
+		return nil, errs.WrapDetail(err, ErrHandshake, "context is already done | 上下文已结束")
 	}
 
 	scheme := "https"
@@ -319,7 +319,7 @@ func dialExtended(ctx context.Context, u *url.URL, o DialOptions, timeout time.D
 	if err != nil {
 		cancel()
 		_ = pw.CloseWithError(err)
-		return nil, errx.WrapDetail(err, ErrHandshake, "failed to build the handshake request | 构造握手请求失败")
+		return nil, errs.WrapDetail(err, ErrHandshake, "failed to build the handshake request | 构造握手请求失败")
 	}
 	req.Host = u.Host
 	req.Header.Set(headerSecWebSocketVersion, "13")
@@ -347,7 +347,7 @@ func dialExtended(ctx context.Context, u *url.URL, o DialOptions, timeout time.D
 		timer.Stop()
 		cancel()
 		_ = pw.CloseWithError(err)
-		return nil, errx.WrapDetail(err, ErrHandshake, "extended CONNECT failed | extended CONNECT 失败")
+		return nil, errs.WrapDetail(err, ErrHandshake, "extended CONNECT failed | extended CONNECT 失败")
 	}
 	if resp.Body == nil {
 		resp.Body = http.NoBody
@@ -356,7 +356,7 @@ func dialExtended(ctx context.Context, u *url.URL, o DialOptions, timeout time.D
 		_ = resp.Body.Close()
 		cancel()
 		_ = pw.CloseWithError(context.DeadlineExceeded)
-		return nil, errx.WrapDetail(context.DeadlineExceeded, ErrHandshake, "handshake timed out | 握手超时")
+		return nil, errs.WrapDetail(context.DeadlineExceeded, ErrHandshake, "handshake timed out | 握手超时")
 	}
 	fail := func(err error) (*Conn, error) {
 		_ = resp.Body.Close()
@@ -365,11 +365,11 @@ func dialExtended(ctx context.Context, u *url.URL, o DialOptions, timeout time.D
 		return nil, err
 	}
 	if resp.StatusCode != http.StatusOK {
-		return fail(errx.WrapDetail(errNotSwitchingProtocols, ErrHandshake, "status %[1]d | 状态 %[1]d", resp.StatusCode))
+		return fail(errs.WrapDetail(errNotSwitchingProtocols, ErrHandshake, "status %[1]d | 状态 %[1]d", resp.StatusCode))
 	}
 	selected, err := parseSelectedSubprotocol(resp.Header, o.Subprotocols)
 	if err != nil {
-		return fail(errx.Wrap(err, ErrHandshake))
+		return fail(errs.Wrap(err, ErrHandshake))
 	}
 	compCfg, err := negotiateClientCompression(resp.Header, o.EnableWriteCompression)
 	if err != nil {

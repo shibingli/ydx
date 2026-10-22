@@ -29,11 +29,11 @@ var downloadBufPool = sync.Pool{New: func() any {
 // Download errors, declared once at package level. | 下载错误，在包级声明一次。
 var (
 	// ErrDownload indicates the response could not be produced from the source. | ErrDownload 表示无法从数据源产出响应。
-	ErrDownload = errx.New("router: download failed | router：下载失败")
+	ErrDownload = errs.New("router: download failed | router：下载失败")
 	// ErrDownloadReader indicates a nil download source. | ErrDownloadReader 表示下载数据源为 nil。
-	ErrDownloadReader = errx.New("router: download source is nil | router：下载数据源为 nil")
+	ErrDownloadReader = errs.New("router: download source is nil | router：下载数据源为 nil")
 	// ErrDownloadOpen indicates the file could not be opened or inspected. | ErrDownloadOpen 表示无法打开或读取文件信息。
-	ErrDownloadOpen = errx.New("router: cannot open the download file | router：无法打开下载文件")
+	ErrDownloadOpen = errs.New("router: cannot open the download file | router：无法打开下载文件")
 )
 
 // DownloadOptions controls a download response. | DownloadOptions 控制下载响应。
@@ -72,10 +72,10 @@ func (c *Ctx) Download(r io.ReadSeeker, o DownloadOptions) error {
 
 	size, err := r.Seek(0, io.SeekEnd)
 	if err != nil {
-		return errx.Wrap(err, ErrDownload)
+		return errs.Wrap(err, ErrDownload)
 	}
 	if _, err := r.Seek(0, io.SeekStart); err != nil {
-		return errx.Wrap(err, ErrDownload)
+		return errs.Wrap(err, ErrDownload)
 	}
 	if err := c.finishDownloadHeaders(o, size, r); err != nil {
 		return err
@@ -93,7 +93,7 @@ func (c *Ctx) Download(r io.ReadSeeker, o DownloadOptions) error {
 		return nil
 	}
 	if _, err := copyResponse(c.Writer, r); err != nil {
-		return errx.Wrap(err, ErrDownload)
+		return errs.Wrap(err, ErrDownload)
 	}
 	return nil
 }
@@ -129,7 +129,7 @@ func (c *Ctx) DownloadReader(r io.Reader, size int64, o DownloadOptions) error {
 		return nil
 	}
 	if _, err := copyResponse(c.Writer, r); err != nil {
-		return errx.Wrap(err, ErrDownload)
+		return errs.Wrap(err, ErrDownload)
 	}
 	return nil
 }
@@ -146,13 +146,13 @@ func (c *Ctx) DownloadFile(fsys fs.FS, name string, o DownloadOptions) error {
 	}
 	f, err := fsys.Open(name)
 	if err != nil {
-		return errx.Wrap(err, ErrDownloadOpen)
+		return errs.Wrap(err, ErrDownloadOpen)
 	}
 	defer func() { _ = f.Close() }()
 
 	info, err := f.Stat()
 	if err != nil {
-		return errx.Wrap(err, ErrDownloadOpen)
+		return errs.Wrap(err, ErrDownloadOpen)
 	}
 	if o.Filename == "" {
 		o.Filename = info.Name()
@@ -217,7 +217,7 @@ func sniffContentType(r io.ReadSeeker, filename string) (string, error) {
 	var buf [512]byte
 	n, err := io.ReadFull(r, buf[:])
 	if _, seekErr := r.Seek(0, io.SeekStart); seekErr != nil {
-		return "", errx.Wrap(seekErr, ErrDownload)
+		return "", errs.Wrap(seekErr, ErrDownload)
 	}
 	if n > 0 && (err == nil || errors.Is(err, io.ErrUnexpectedEOF)) {
 		return http.DetectContentType(buf[:n]), nil

@@ -70,7 +70,7 @@ func putScratch(s *scratch) {
 // text buffer: AppendDecodeString reads the string directly. | decodeSegment 把 seg
 // 以 base64url 解码到 dst，且不分配中间文本缓冲：AppendDecodeString 直接读取字符串。
 func decodeSegment(s *scratch, dst *[]byte, seg string) bool {
-	out, err := b64x.RawURLEncoding.AppendDecodeString((*dst)[:0], seg)
+	out, err := base64.RawURLEncoding.AppendDecodeString((*dst)[:0], seg)
 	if err != nil {
 		return false
 	}
@@ -98,7 +98,7 @@ type headerFields struct {
 func scanHeader(raw []byte, f *headerFields) error {
 	var s scanner
 	if !s.init(raw) {
-		return errx.Detail(ErrMalformed, "header is not a JSON object | 头部不是 JSON 对象")
+		return errs.Detail(ErrMalformed, "header is not a JSON object | 头部不是 JSON 对象")
 	}
 	for s.next() {
 		switch headerParam(s.key) {
@@ -114,7 +114,7 @@ func scanHeader(raw []byte, f *headerFields) error {
 			// | RFC 7515 §4.1.11 要求接收方不理解 "crit" 扩展时必须拒绝令牌。本实现不支持任何扩展，
 			// 因此任何 crit 头部都失败关闭。
 			if rawEqualString(s.key, "crit") {
-				return errx.Detail(ErrMalformed, "unsupported crit header | 不支持 crit 头部")
+				return errs.Detail(ErrMalformed, "unsupported crit header | 不支持 crit 头部")
 			}
 			if v, ok := jsonStringValue(s.val); ok {
 				if f.extra == nil {
@@ -125,14 +125,14 @@ func scanHeader(raw []byte, f *headerFields) error {
 		}
 	}
 	if s.err {
-		return errx.Detail(ErrMalformed, "header is not well-formed JSON | 头部不是结构良好的 JSON")
+		return errs.Detail(ErrMalformed, "header is not well-formed JSON | 头部不是结构良好的 JSON")
 	}
 	if !f.haveAlg {
-		return errx.Detail(ErrAlgNotAllowed, "header has no alg | 头部缺少 alg")
+		return errs.Detail(ErrAlgNotAllowed, "header has no alg | 头部缺少 alg")
 	}
 	alg, ok := algFromRaw(f.algRaw)
 	if !ok {
-		return errx.Detail(ErrAlgNotAllowed, "alg=%[1]q is unsupported | alg=%[1]q 不受支持", string(f.algRaw))
+		return errs.Detail(ErrAlgNotAllowed, "alg=%[1]q is unsupported | alg=%[1]q 不受支持", string(f.algRaw))
 	}
 	f.alg = alg
 	return nil
@@ -169,10 +169,10 @@ type SignOptions struct {
 
 // Sign builds a compact JWS from claims and key. | Sign 用 claims 与 key 生成紧凑 JWS。
 //
-// Claims may be any value jsonx.Marshal accepts; a struct is faster than a
+// Claims may be any value json.Marshal accepts; a struct is faster than a
 // map[string]any because it avoids map reflection. For an already encoded JSON
 // object use SignJSON, which skips serialization entirely. | claims 可以是
-// jsonx.Marshal 接受的任意值；结构体比 map[string]any 更快，因为它避免 map 反射。
+// json.Marshal 接受的任意值；结构体比 map[string]any 更快，因为它避免 map 反射。
 // 已经编码好的 JSON 对象请用 SignJSON，它完全跳过序列化。
 //
 // The key must match the algorithm: []byte or string for HSxxx, *rsa.PrivateKey for RSxxx and PSxxx,
@@ -180,16 +180,16 @@ type SignOptions struct {
 // ErrSignatureInvalid. | 密钥必须与算法匹配：HSxxx 用 []byte 或 string，RSxxx 与 PSxxx 用 *rsa.PrivateKey，
 // ESxxx 用 *ecdsa.PrivateKey，EdDSA 用 ed25519.PrivateKey；密钥族不符时以 ErrSignatureInvalid 拒绝。
 //
-// The header always carries alg and typ; the payload is jsonx.Marshal of claims, and the signature covers the
-// raw "header.payload" bytes produced here. | 头部始终包含 alg 与 typ；载荷由 jsonx.Marshal 序列化 claims，
+// The header always carries alg and typ; the payload is json.Marshal of claims, and the signature covers the
+// raw "header.payload" bytes produced here. | 头部始终包含 alg 与 typ；载荷由 json.Marshal 序列化 claims，
 // 签名覆盖此处产出的原始 "header.payload" 字节。
 func Sign(claims any, key any, alg Alg, o SignOptions) (string, error) {
 	if !supported(alg) {
-		return "", errx.Detail(ErrAlgNotAllowed, "alg=%[1]q | 算法=%[1]q", string(alg))
+		return "", errs.Detail(ErrAlgNotAllowed, "alg=%[1]q | 算法=%[1]q", string(alg))
 	}
-	payload, err := jsonx.Marshal(claims)
+	payload, err := json.Marshal(claims)
 	if err != nil {
-		return "", errx.WrapDetail(err, ErrInvalidClaims, "claims | 声明")
+		return "", errs.WrapDetail(err, ErrInvalidClaims, "claims | 声明")
 	}
 	return signPayload(payload, key, alg, o)
 }
@@ -204,10 +204,10 @@ func Sign(claims any, key any, alg Alg, o SignOptions) (string, error) {
 // 不做任何重新编码。
 func SignJSON(payload []byte, key any, alg Alg, o SignOptions) (string, error) {
 	if !supported(alg) {
-		return "", errx.Detail(ErrAlgNotAllowed, "alg=%[1]q | 算法=%[1]q", string(alg))
+		return "", errs.Detail(ErrAlgNotAllowed, "alg=%[1]q | 算法=%[1]q", string(alg))
 	}
 	if !validJSONObject(payload) {
-		return "", errx.Detail(ErrInvalidClaims, "payload is not a JSON object | 载荷不是 JSON 对象")
+		return "", errs.Detail(ErrInvalidClaims, "payload is not a JSON object | 载荷不是 JSON 对象")
 	}
 	return signPayload(payload, key, alg, o)
 }
@@ -219,9 +219,9 @@ func signPayload(payload []byte, key any, alg Alg, o SignOptions) (string, error
 
 	// Encode both segments into pooled buffers and keep the signing input in one contiguous slice. | 把两段编码进池化缓冲，并让签名输入保持为一段连续内存。
 	s.header = appendHeader(s.header[:0], alg, o)
-	s.input = b64x.RawURLEncoding.AppendEncode(s.input[:0], s.header)
+	s.input = base64.RawURLEncoding.AppendEncode(s.input[:0], s.header)
 	s.input = append(s.input, '.')
-	s.input = b64x.RawURLEncoding.AppendEncode(s.input, payload)
+	s.input = base64.RawURLEncoding.AppendEncode(s.input, payload)
 	sig, err := signRaw(alg, key, s.input, s)
 	if err != nil {
 		return "", err
@@ -229,7 +229,7 @@ func signPayload(payload []byte, key any, alg Alg, o SignOptions) (string, error
 
 	// The signature is appended straight after the signing input, so the compact token occupies one buffer. | 签名直接追加在签名输入之后，因此紧凑 token 只占一个缓冲。
 	s.input = append(s.input, '.')
-	s.input = b64x.RawURLEncoding.AppendEncode(s.input, sig)
+	s.input = base64.RawURLEncoding.AppendEncode(s.input, sig)
 	return string(s.input), nil
 }
 
@@ -376,14 +376,14 @@ func signRaw(alg Alg, key any, input []byte, s *scratch) ([]byte, error) {
 		// ed25519.Sign panics on a wrong-length key, and a library must never panic on caller-supplied
 		// key material. | 密钥长度不符时 ed25519.Sign 会 panic，而库绝不能因调用方提供的密钥材料 panic。
 		if len(k) != ed25519.PrivateKeySize {
-			return nil, errx.Detail(ErrSignatureInvalid, "ed25519 private key is %[1]d bytes, want %[2]d | ed25519 私钥为 %[1]d 字节，期望 %[2]d 字节", len(k), ed25519.PrivateKeySize)
+			return nil, errs.Detail(ErrSignatureInvalid, "ed25519 private key is %[1]d bytes, want %[2]d | ed25519 私钥为 %[1]d 字节，期望 %[2]d 字节", len(k), ed25519.PrivateKeySize)
 		}
 		return ed25519.Sign(k, input), nil
 	}
 
 	h, ok := algHash(alg)
 	if !ok {
-		return nil, errx.Detail(ErrAlgNotAllowed, "alg=%[1]q | 算法=%[1]q", string(alg))
+		return nil, errs.Detail(ErrAlgNotAllowed, "alg=%[1]q | 算法=%[1]q", string(alg))
 	}
 
 	switch alg {
@@ -392,7 +392,7 @@ func signRaw(alg Alg, key any, input []byte, s *scratch) ([]byte, error) {
 		if !ok {
 			switch key.(type) {
 			case []byte, string:
-				return nil, errx.Detail(ErrWeakKey, "alg=%[1]s needs at least %[2]d key bytes | 算法 %[1]s 至少需要 %[2]d 字节密钥", string(alg), h.Size())
+				return nil, errs.Detail(ErrWeakKey, "alg=%[1]s needs at least %[2]d key bytes | 算法 %[1]s 至少需要 %[2]d 字节密钥", string(alg), h.Size())
 			}
 			return nil, keyTypeError(alg)
 		}
@@ -406,7 +406,7 @@ func signRaw(alg Alg, key any, input []byte, s *scratch) ([]byte, error) {
 		digest := algHashPool(alg).sum(input, s.mac[:0])
 		sig, err := rsa.SignPKCS1v15(rand.Reader, k, h, digest)
 		if err != nil {
-			return nil, errx.WrapDetail(err, ErrSignatureInvalid, "RSA signing | RSA 签名")
+			return nil, errs.WrapDetail(err, ErrSignatureInvalid, "RSA signing | RSA 签名")
 		}
 		return sig, nil
 	case PS256, PS384, PS512:
@@ -418,7 +418,7 @@ func signRaw(alg Alg, key any, input []byte, s *scratch) ([]byte, error) {
 		opts := &rsa.PSSOptions{SaltLength: rsa.PSSSaltLengthEqualsHash, Hash: h}
 		sig, err := rsa.SignPSS(rand.Reader, k, h, digest, opts)
 		if err != nil {
-			return nil, errx.WrapDetail(err, ErrSignatureInvalid, "RSA-PSS signing | RSA-PSS 签名")
+			return nil, errs.WrapDetail(err, ErrSignatureInvalid, "RSA-PSS signing | RSA-PSS 签名")
 		}
 		return sig, nil
 	case ES256, ES384, ES512:
@@ -429,11 +429,11 @@ func signRaw(alg Alg, key any, input []byte, s *scratch) ([]byte, error) {
 		digest := algHashPool(alg).sum(input, s.mac[:0])
 		r, sv, err := ecdsa.Sign(rand.Reader, k, digest)
 		if err != nil {
-			return nil, errx.WrapDetail(err, ErrSignatureInvalid, "ECDSA signing | ECDSA 签名")
+			return nil, errs.WrapDetail(err, ErrSignatureInvalid, "ECDSA signing | ECDSA 签名")
 		}
 		return appendFixedWidth(nil, r, sv, curveWidth(alg)), nil
 	}
-	return nil, errx.Detail(ErrAlgNotAllowed, "alg=%[1]q | 算法=%[1]q", string(alg))
+	return nil, errs.Detail(ErrAlgNotAllowed, "alg=%[1]q | 算法=%[1]q", string(alg))
 }
 
 // verify checks the signature of a compact token. | verify 校验紧凑 token 的签名。
@@ -541,5 +541,5 @@ func appendFixedWidth(dst []byte, r, s *big.Int, width int) []byte {
 
 // keyTypeError reports a key whose family does not match the algorithm. | keyTypeError 报告密钥族与算法不匹配。
 func keyTypeError(alg Alg) error {
-	return errx.Detail(ErrSignatureInvalid, "key type does not match alg=%[1]q | 密钥类型与 alg=%[1]q 不匹配", string(alg))
+	return errs.Detail(ErrSignatureInvalid, "key type does not match alg=%[1]q | 密钥类型与 alg=%[1]q 不匹配", string(alg))
 }

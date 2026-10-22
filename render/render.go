@@ -17,7 +17,7 @@ import (
 
 	"github.com/spf13/afero"
 
-	"github.com/shibingli/ydx/sfs"
+	"github.com/shibingli/ydx/afs"
 	"github.com/shibingli/ydx/errs"
 	"github.com/shibingli/ydx/log"
 )
@@ -46,11 +46,11 @@ func isEscapeError(err error) bool {
 // Sentinel errors. | 哨兵错误。
 var (
 	// ErrNoTemplates reports that the scan found no template files. | ErrNoTemplates 表示扫描未找到任何模板文件。
-	ErrNoTemplates = errx.New("no templates found | 未找到任何模板文件")
+	ErrNoTemplates = errs.New("no templates found | 未找到任何模板文件")
 	// ErrTemplateNotFound reports an unknown template name. | ErrTemplateNotFound 表示模板名不存在。
-	ErrTemplateNotFound = errx.New("template not found | 模板不存在")
+	ErrTemplateNotFound = errs.New("template not found | 模板不存在")
 	// ErrNilFS reports a missing filesystem. | ErrNilFS 表示未提供文件系统。
-	ErrNilFS = errx.New("nil filesystem | 文件系统为 nil")
+	ErrNilFS = errs.New("nil filesystem | 文件系统为 nil")
 )
 
 // Options configures an Engine. | Options 配置渲染引擎。
@@ -238,7 +238,7 @@ func (e *Engine) AddFunc(name string, fn any) *Engine {
 			// The signature cannot return an error; log loudly instead of handing back an engine
 			// that silently lacks the function. | 签名无法返回错误；大声记录，而不是交回一个静默
 			// 缺少该函数的引擎。
-			logx.Default().Error("render: reload after AddFunc failed | render：AddFunc 之后重新加载失败", logx.Err(err))
+			log.Default().Error("render: reload after AddFunc failed | render：AddFunc 之后重新加载失败", log.Err(err))
 		}
 	}
 	return c
@@ -277,7 +277,7 @@ func (e *Engine) load() error {
 		return err
 	}
 	if len(files) == 0 {
-		return errx.Detail(ErrNoTemplates, "root=%[1]s | 根目录=%[1]s", e.opts.Root)
+		return errs.Detail(ErrNoTemplates, "root=%[1]s | 根目录=%[1]s", e.opts.Root)
 	}
 
 	funcs := e.funcMap()
@@ -287,7 +287,7 @@ func (e *Engine) load() error {
 			return derr
 		}
 		if !validFuncName(name) {
-			return errx.Detail(ErrInvalidFunc, "function=%[1]s | 函数=%[1]s", name)
+			return errs.Detail(ErrInvalidFunc, "function=%[1]s | 函数=%[1]s", name)
 		}
 	}
 	for name := range e.opts.Funcs {
@@ -302,10 +302,10 @@ func (e *Engine) load() error {
 	for _, f := range files {
 		b, rerr := afero.ReadFile(e.fsys, f.path)
 		if rerr != nil {
-			return errx.WrapDetail(rerr, ErrReadTemplate, "path=%[1]s | 路径=%[1]s", f.path)
+			return errs.WrapDetail(rerr, ErrReadTemplate, "path=%[1]s | 路径=%[1]s", f.path)
 		}
 		if _, perr := tmpl.New(f.name).Parse(string(b)); perr != nil {
-			return errx.WrapDetail(perr, ErrParseTemplate, "name=%[1]s | 名称=%[1]s", f.name)
+			return errs.WrapDetail(perr, ErrParseTemplate, "name=%[1]s | 名称=%[1]s", f.name)
 		}
 		names = append(names, f.name)
 	}
@@ -327,7 +327,7 @@ func (e *Engine) load() error {
 		// 某个入口的上下文错误不得污染其它入口仍需使用的解析树。
 		clone, cerr := tmpl.Clone()
 		if cerr != nil {
-			st.programs[name] = &program{err: errx.Wrap(cerr, ErrCloneTemplate)}
+			st.programs[name] = &program{err: errs.Wrap(cerr, ErrCloneTemplate)}
 			continue
 		}
 		if execErr := clone.ExecuteTemplate(io.Discard, name, nil); execErr != nil && isEscapeError(execErr) {
@@ -336,12 +336,12 @@ func (e *Engine) load() error {
 			// first render failed later with an unactionable message. | 强制转义遍正是
 			// html/template 计算上下文的时机。吞掉它的错误会让 New 对「分支结束于不同上下文」的
 			// 模板报告成功，首次渲染才以无法定位问题的文案失败。
-			st.programs[name] = &program{err: errx.Wrap(execErr, ErrExecuteTemplate)}
+			st.programs[name] = &program{err: errs.Wrap(execErr, ErrExecuteTemplate)}
 			continue
 		}
 		ht := clone.Lookup(name)
 		if ht == nil || ht.Tree == nil {
-			st.programs[name] = &program{err: errx.Detail(ErrParseTemplate, "name=%[1]s | 名称=%[1]s", name)}
+			st.programs[name] = &program{err: errs.Detail(ErrParseTemplate, "name=%[1]s | 名称=%[1]s", name)}
 			continue
 		}
 		prog, cerr := compileProgram(clone, name, funcs, owned)
@@ -386,7 +386,7 @@ func (e *Engine) collect() ([]templateFile, error) {
 		return nil
 	})
 	if err != nil {
-		return nil, errx.Wrap(err, ErrWalkTemplates)
+		return nil, errs.Wrap(err, ErrWalkTemplates)
 	}
 	sort.Slice(files, func(i, j int) bool { return files[i].name < files[j].name })
 	return files, nil
@@ -410,7 +410,7 @@ func (e *Engine) programFor(name string) (*program, error) {
 	}
 	p, ok := st.programs[name]
 	if !ok {
-		return nil, errx.Detail(ErrTemplateNotFound, "name=%[1]s | 名称=%[1]s", name)
+		return nil, errs.Detail(ErrTemplateNotFound, "name=%[1]s | 名称=%[1]s", name)
 	}
 	if p.err != nil {
 		return nil, p.err

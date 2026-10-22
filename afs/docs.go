@@ -16,7 +16,7 @@
 //	embedFS := afs.NewEmbed(embedded)
 //	b, err := afs.ReadFile(fsys, "config.yaml")
 //
-// The import path is github.com/shibingli/ydx/sfs while the package identifier remains
+// The import path is github.com/shibingli/ydx/afs while the package identifier remains
 // afs, so existing yd call sites only change their import path. | 导入路径是
-// github.com/shibingli/ydx/sfs，包标识符仍是 afs，因此 yd 既有调用点只需替换导入路径。
+// github.com/shibingli/ydx/afs，包标识符仍是 afs，因此 yd 既有调用点只需替换导入路径。
 package afs

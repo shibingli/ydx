@@ -96,9 +96,9 @@ func (c *Capture) ReadFrom(r io.Reader) (int64, error) {
 		c.bytes += n
 		return n, err
 	}
-	buf := bufpool.Get(32 << 10)
+	buf := buffpool.Get(32 << 10)
 	buf = buf[:cap(buf)] // buffpool returns length 0; CopyBuffer panics on an empty buffer | buffpool 返回长度为 0；空缓冲会让 CopyBuffer panic
-	defer bufpool.Put(buf)
+	defer buffpool.Put(buf)
 	n, err := io.CopyBuffer(c.ResponseWriter, r, buf)
 	c.bytes += n
 	return n, err

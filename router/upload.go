@@ -28,21 +28,21 @@ var uploadBufPool = sync.Pool{New: func() any {
 // Upload errors, declared once at package level. | 上传错误，在包级声明一次。
 var (
 	// ErrNotMultipart indicates the request is not multipart/form-data. | ErrNotMultipart 表示请求不是 multipart/form-data。
-	ErrNotMultipart = errx.New("router: request is not multipart/form-data | router：请求不是 multipart/form-data")
+	ErrNotMultipart = errs.New("router: request is not multipart/form-data | router：请求不是 multipart/form-data")
 	// ErrUploadName indicates a client-supplied filename cannot be used safely. | ErrUploadName 表示客户端提供的文件名无法安全使用。
-	ErrUploadName = errx.New("router: invalid upload filename | router：非法的上传文件名")
+	ErrUploadName = errs.New("router: invalid upload filename | router：非法的上传文件名")
 	// ErrUploadTooLarge indicates one file or the whole body exceeded its limit. | ErrUploadTooLarge 表示单个文件或整个请求体超过限制。
-	ErrUploadTooLarge = errx.New("router: upload exceeds the size limit | router：上传超过大小限制")
+	ErrUploadTooLarge = errs.New("router: upload exceeds the size limit | router：上传超过大小限制")
 	// ErrUploadCreate indicates the destination file or directory could not be created. | ErrUploadCreate 表示无法创建目标文件或目录。
-	ErrUploadCreate = errx.New("router: cannot create the upload destination | router：无法创建上传目标")
+	ErrUploadCreate = errs.New("router: cannot create the upload destination | router：无法创建上传目标")
 	// ErrUploadWrite indicates receiving or writing the part failed. | ErrUploadWrite 表示接收或写入分段失败。
-	ErrUploadWrite = errx.New("router: failed to receive or write the upload | router：接收或写入上传失败")
+	ErrUploadWrite = errs.New("router: failed to receive or write the upload | router：接收或写入上传失败")
 	// ErrNoUpload indicates no part matched the requested field. | ErrNoUpload 表示没有匹配请求字段的分段。
-	ErrNoUpload = errx.New("router: no matching uploaded file | router：没有匹配的上传文件")
+	ErrNoUpload = errs.New("router: no matching uploaded file | router：没有匹配的上传文件")
 	// ErrUploadCallback indicates a nil StreamUploads callback. | ErrUploadCallback 表示 StreamUploads 回调为 nil。
-	ErrUploadCallback = errx.New("router: nil upload callback | router：上传回调为 nil")
+	ErrUploadCallback = errs.New("router: nil upload callback | router：上传回调为 nil")
 	// ErrUploadDone may be returned by a StreamUploads callback to stop early without an error. | ErrUploadDone 可由 StreamUploads 回调返回来提前结束且不报错。
-	ErrUploadDone = errx.New("router: stop streaming uploads | router：停止流式上传")
+	ErrUploadDone = errs.New("router: stop streaming uploads | router：停止流式上传")
 )
 
 // UploadPart is one file part of a multipart request. | UploadPart 是 multipart 请求中的一个文件分段。
@@ -91,7 +91,7 @@ func (c *Ctx) StreamUploads(fn func(UploadPart) error) error {
 	c.limitBody()
 	reader, err := c.Request.MultipartReader()
 	if err != nil {
-		return errx.Wrap(err, ErrNotMultipart)
+		return errs.Wrap(err, ErrNotMultipart)
 	}
 	for {
 		part, err := reader.NextPart()
@@ -124,9 +124,9 @@ func (c *Ctx) StreamUploads(fn func(UploadPart) error) error {
 func uploadReadError(err error) error {
 	var tooLarge *http.MaxBytesError
 	if errors.As(err, &tooLarge) {
-		return errx.Wrap(err, ErrUploadTooLarge)
+		return errs.Wrap(err, ErrUploadTooLarge)
 	}
-	return errx.Wrap(err, ErrUploadWrite)
+	return errs.Wrap(err, ErrUploadWrite)
 }
 
 // CopyUpload streams the first file of field into dir and returns what it saved. | CopyUpload 把 field 的第一个文件流式写入 dir 并返回保存信息。
@@ -206,7 +206,7 @@ func (c *Ctx) saveUpload(p UploadPart, dir string, maxFileSize int64) (string, i
 		return "", 0, err
 	}
 	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return "", 0, errx.WrapDetail(err, ErrUploadCreate, "dir %[1]q | 目录 %[1]q", dir)
+		return "", 0, errs.WrapDetail(err, ErrUploadCreate, "dir %[1]q | 目录 %[1]q", dir)
 	}
 	file, saved, err := createUniqueFile(dir, name)
 	if err != nil {
@@ -219,7 +219,7 @@ func (c *Ctx) saveUpload(p UploadPart, dir string, maxFileSize int64) (string, i
 		if copyErr != nil {
 			return "", 0, copyErr
 		}
-		return "", 0, errx.WrapDetail(closeErr, ErrUploadWrite, "file %[1]q | 文件 %[1]q", saved)
+		return "", 0, errs.WrapDetail(closeErr, ErrUploadWrite, "file %[1]q | 文件 %[1]q", saved)
 	}
 	return saved, size, nil
 }
@@ -243,7 +243,7 @@ func copyUploadPart(dst io.Writer, src io.Reader, max int64) (int64, error) {
 		return n, uploadReadError(err)
 	}
 	if max > 0 && n > max {
-		return n, errx.Detail(ErrUploadTooLarge, "limit %[1]d bytes | 上限 %[1]d 字节", max)
+		return n, errs.Detail(ErrUploadTooLarge, "limit %[1]d bytes | 上限 %[1]d 字节", max)
 	}
 	return n, nil
 }
@@ -268,10 +268,10 @@ func createUniqueFile(dir, name string) (*os.File, string, error) {
 			return file, candidate, nil
 		}
 		if !errors.Is(err, os.ErrExist) {
-			return nil, "", errx.WrapDetail(err, ErrUploadCreate, "file %[1]q | 文件 %[1]q", candidate)
+			return nil, "", errs.WrapDetail(err, ErrUploadCreate, "file %[1]q | 文件 %[1]q", candidate)
 		}
 	}
-	return nil, "", errx.Detail(ErrUploadCreate, "too many name collisions for %[1]q | %[1]q 的文件名冲突过多", name)
+	return nil, "", errs.Detail(ErrUploadCreate, "too many name collisions for %[1]q | %[1]q 的文件名冲突过多", name)
 }
 
 // SafeUploadName reduces a client-supplied filename to a safe base name. | SafeUploadName 把客户端提供的文件名收敛为安全的基础名。
@@ -307,7 +307,7 @@ func SafeUploadName(name string) (string, error) {
 	}, name)
 	name = strings.TrimSpace(name)
 	if name == "" || name == "." || name == ".." || name == "/" {
-		return "", errx.Detail(ErrUploadName, "%q | %q", name, name)
+		return "", errs.Detail(ErrUploadName, "%q | %q", name, name)
 	}
 	if len(name) > 200 {
 		ext := path.Ext(name)

@@ -1,4 +1,4 @@
-package logx
+package log
 
 import (
 	"strconv"
@@ -8,7 +8,7 @@ import (
 )
 
 // ErrUnknownLevel indicates that ParseLevel encountered an unrecognized level name. | ErrUnknownLevel 表示 ParseLevel 遇到了无法识别的级别名。
-var ErrUnknownLevel = errx.New("logx: unknown log level | logx：未知日志级别")
+var ErrUnknownLevel = errs.New("logx: unknown log level | logx：未知日志级别")
 
 // Level is a log level. Larger values are more severe. | Level 是日志级别。取值越大越严重。
 //
@@ -68,5 +68,5 @@ func ParseLevel(s string) (Level, error) {
 	case "fatal":
 		return FatalLevel, nil
 	}
-	return InfoLevel, errx.Detail(ErrUnknownLevel, "level %q | 级别 %q", s, s)
+	return InfoLevel, errs.Detail(ErrUnknownLevel, "level %q | 级别 %q", s, s)
 }

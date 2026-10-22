@@ -1,4 +1,4 @@
-package cachex
+package cache
 
 import (
 	"context"
@@ -34,10 +34,10 @@ func New[T any](m *Manager, namespace string, opts ...CacheOption) (*Cache[T], e
 // NewWithCodec opens a typed cache with a custom codec. | NewWithCodec 使用自定义编解码器打开一个泛型缓存。
 func NewWithCodec[T any](m *Manager, namespace string, codec Codec[T], opts ...CacheOption) (*Cache[T], error) {
 	if m == nil {
-		return nil, errx.Detail(ErrInvalidOptions, "nil manager | 管理器为 nil")
+		return nil, errs.Detail(ErrInvalidOptions, "nil manager | 管理器为 nil")
 	}
 	if codec.Encode == nil || codec.Decode == nil {
-		return nil, errx.Detail(ErrInvalidOptions, "incomplete codec | 编解码器不完整")
+		return nil, errs.Detail(ErrInvalidOptions, "incomplete codec | 编解码器不完整")
 	}
 	raw, err := m.Raw(namespace, opts...)
 	if err != nil {
@@ -62,7 +62,7 @@ func (c *Cache[T]) Get(ctx context.Context, key string) (T, bool, error) {
 	status, _, err := c.raw.lookup(ctx, key, func(data []byte, _ uint64) error {
 		v, derr := c.codec.Decode(data)
 		if derr != nil {
-			return errx.Wrap(derr, ErrDecode)
+			return errs.Wrap(derr, ErrDecode)
 		}
 		out = v
 		return nil
@@ -91,7 +91,7 @@ func (c *Cache[T]) View(ctx context.Context, key string, fn func(T) error) (bool
 	status, _, err := c.raw.lookup(ctx, key, func(data []byte, _ uint64) error {
 		v, derr := c.codec.Decode(data)
 		if derr != nil {
-			return errx.Wrap(derr, ErrDecode)
+			return errs.Wrap(derr, ErrDecode)
 		}
 		return fn(v)
 	})
@@ -112,7 +112,7 @@ func (c *Cache[T]) GetFresh(ctx context.Context, key string) (T, bool, error) {
 	status, _, err := c.raw.lookupFresh(ctx, key, func(data []byte, _ uint64) error {
 		v, derr := c.codec.Decode(data)
 		if derr != nil {
-			return errx.Wrap(derr, ErrDecode)
+			return errs.Wrap(derr, ErrDecode)
 		}
 		out = v
 		return nil
@@ -138,7 +138,7 @@ func (c *Cache[T]) ViewFresh(ctx context.Context, key string, fn func(T) error) 
 	status, _, err := c.raw.lookupFresh(ctx, key, func(data []byte, _ uint64) error {
 		v, derr := c.codec.Decode(data)
 		if derr != nil {
-			return errx.Wrap(derr, ErrDecode)
+			return errs.Wrap(derr, ErrDecode)
 		}
 		return fn(v)
 	})
@@ -161,7 +161,7 @@ func (c *Cache[T]) Set(ctx context.Context, key string, v T) error {
 func (c *Cache[T]) SetTTL(ctx context.Context, key string, v T, ttl time.Duration) error {
 	data, err := c.codec.Encode(v)
 	if err != nil {
-		return errx.Wrap(err, ErrEncode)
+		return errs.Wrap(err, ErrEncode)
 	}
 	return c.raw.SetTTL(ctx, key, data, ttl)
 }
@@ -191,13 +191,13 @@ func (c *Cache[T]) GetOrLoadTTL(ctx context.Context, key string, ttl time.Durati
 		}
 		data, eerr := c.codec.Encode(v)
 		if eerr != nil {
-			return nil, errx.Wrap(eerr, ErrEncode)
+			return nil, errs.Wrap(eerr, ErrEncode)
 		}
 		return data, nil
 	}, func(data []byte) error {
 		v, derr := c.codec.Decode(data)
 		if derr != nil {
-			return errx.Wrap(derr, ErrDecode)
+			return errs.Wrap(derr, ErrDecode)
 		}
 		out = v
 		return nil
@@ -228,13 +228,13 @@ func (c *Cache[T]) GetOrLoadView(ctx context.Context, key string, ttl time.Durat
 		}
 		data, eerr := c.codec.Encode(v)
 		if eerr != nil {
-			return nil, errx.Wrap(eerr, ErrEncode)
+			return nil, errs.Wrap(eerr, ErrEncode)
 		}
 		return data, nil
 	}, func(data []byte) error {
 		v, derr := c.codec.Decode(data)
 		if derr != nil {
-			return errx.Wrap(derr, ErrDecode)
+			return errs.Wrap(derr, ErrDecode)
 		}
 		return fn(v)
 	})

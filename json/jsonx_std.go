@@ -6,7 +6,7 @@
 // The build constraint `jsonx_std` is mutually exclusive with `amd64 && !jsonx_std` of the | 构建约束 `jsonx_std` 与自研后端文件的 `amd64 && !jsonx_std`、以及
 // native backend files and `!amd64 && !jsonx_std` of jsonx_generic.go, so duplicate symbols cannot occur. | go-json 的 `!amd64 && !jsonx_std` 互斥，因此不会出现重复符号。
 
-package jsonx
+package json
 
 import (
 	stdjson "encoding/json"

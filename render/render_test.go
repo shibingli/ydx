@@ -10,7 +10,7 @@ import (
 
 	"github.com/spf13/afero"
 
-	"github.com/shibingli/ydx/sfs"
+	"github.com/shibingli/ydx/afs"
 	"github.com/shibingli/ydx/render"
 )
 

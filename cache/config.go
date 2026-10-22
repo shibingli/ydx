@@ -1,4 +1,4 @@
-package cachex
+package cache
 
 import (
 	"github.com/shibingli/ydx/config"

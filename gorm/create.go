@@ -1,4 +1,4 @@
-package gormx
+package gorm
 
 import (
 	"errors"
@@ -328,7 +328,7 @@ func runMaintenanceDDL(driver, dsn, statement string) error {
 // would read as a different problem than the pair does. | fail 是首次连接的错误。跳过建库时原样保留，
 // 建库失败时与建库错误一起挂在返回错误的同一条链上，两个原因一个都不吞——只报其中一个，
 // 读起来都像是另一个问题。
-func createAndReconnect(o Options, dialector gorm.Dialector, cfg *gorm.Config, fail error, l *logx.Logger) (*gorm.DB, error) {
+func createAndReconnect(o Options, dialector gorm.Dialector, cfg *gorm.Config, fail error, l *log.Logger) (*gorm.DB, error) {
 	plan, ok := planCreation(o.Driver, o.DSN)
 	if !ok {
 		// The database name, the maintenance DSN or the statement could not be derived: report the
@@ -340,9 +340,9 @@ func createAndReconnect(o Options, dialector gorm.Dialector, cfg *gorm.Config, f
 	if err := maintenanceDDLFunc(o.Driver, plan.maintenanceDSN, plan.statement); err != nil && !isDuplicateDatabaseError(o.Driver, err) {
 		driver := strings.TrimSpace(o.Driver)
 		return nil, errors.Join(
-			errx.WrapDetail(fail, ErrDatabaseMissing, "driver %q database %q | 驱动 %q 数据库 %q",
+			errs.WrapDetail(fail, ErrDatabaseMissing, "driver %q database %q | 驱动 %q 数据库 %q",
 				driver, plan.database, driver, plan.database),
-			errx.WrapDetail(err, ErrCreateDatabase, "driver %q database %q | 驱动 %q 数据库 %q",
+			errs.WrapDetail(err, ErrCreateDatabase, "driver %q database %q | 驱动 %q 数据库 %q",
 				driver, plan.database, driver, plan.database),
 		)
 	}
@@ -351,9 +351,9 @@ func createAndReconnect(o Options, dialector gorm.Dialector, cfg *gorm.Config, f
 	// whoever reads this log has to know which one. | 在重连之前打这行日志：无论重连成败，
 	// 库里已经多出一个数据库，读日志的人必须知道是哪一个。
 	l.Warn("database created, reconnecting | 数据库已创建，正在重连",
-		logx.Str("driver", strings.TrimSpace(o.Driver)),
-		logx.Str("database", plan.database),
-		logx.Str("statement", plan.statement))
+		log.Str("driver", strings.TrimSpace(o.Driver)),
+		log.Str("database", plan.database),
+		log.Str("statement", plan.statement))
 
 	return openDatabaseFunc(dialector, cfg)
 }

@@ -3,10 +3,10 @@ module github.com/shibingli/ydx/render
 go 1.27.2
 
 require (
+	github.com/shibingli/ydx/afs v0.1.0
 	github.com/shibingli/ydx/errs v0.1.0
 	github.com/shibingli/ydx/json v0.1.0
 	github.com/shibingli/ydx/log v0.1.0
-	github.com/shibingli/ydx/sfs v0.1.0
 	github.com/spf13/afero v1.15.0
 )
 
@@ -30,7 +30,7 @@ replace github.com/shibingli/ydx/base64 => D:/developer/go_code/ydx/base64
 
 replace github.com/shibingli/ydx/json => D:/developer/go_code/ydx/json
 
-replace github.com/shibingli/ydx/sfs => D:/developer/go_code/ydx/sfs
+replace github.com/shibingli/ydx/afs => D:/developer/go_code/ydx/afs
 
 replace github.com/shibingli/ydx/config => D:/developer/go_code/ydx/config
 

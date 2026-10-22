@@ -1,4 +1,4 @@
-package logx
+package log
 
 import (
 	"io"
@@ -200,8 +200,8 @@ func SetDefault(l *Logger) {
 //
 // Calling it before constructing fields makes calls at a disabled level completely allocation-free: | 在构造字段之前调用它可让禁用级别的调用完全零分配：
 //
-//	if log.Enabled(logx.DebugLevel) {
-//		log.Debug("dump", logx.Str("body", expensiveCall()))
+//	if log.Enabled(log.DebugLevel) {
+//		log.Debug("dump", log.Str("body", expensiveCall()))
 //	}
 func (l *Logger) Enabled(lvl Level) bool {
 	return lvl >= Level(l.core.level.Load())

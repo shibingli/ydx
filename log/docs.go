@@ -1,5 +1,5 @@
-// Package logx is a zero-copy, zero-reflection structured logging system.
-// | Package logx 是零拷贝、零反射的结构化日志系统。
+// Package log is a zero-copy, zero-reflection structured logging system.
+// | Package log 是零拷贝、零反射的结构化日志系统。
 //
 // Design highlights: | 设计要点：
 //
@@ -28,7 +28,7 @@
 //
 // Basic usage | 基本用法：
 //
-//	log := logx.New(logx.Options{Service: "api", Level: logx.InfoLevel})
-//	log.Info("server started | 服务器已启动", logx.Str("addr", ":8080"))
-//	reqLog := log.With(logx.Str("request_id", id))
-package logx
+//	log := log.New(log.Options{Service: "api", Level: log.InfoLevel})
+//	log.Info("server started | 服务器已启动", log.Str("addr", ":8080"))
+//	reqLog := log.With(log.Str("request_id", id))
+package log

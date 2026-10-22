@@ -1,6 +1,6 @@
 //go:build http2legacy
 
-package ws
+package websocket
 
 // h2ClientTransportAvailable reports whether golang.org/x/net/http2 uses the
 // legacy transport, which sends the :protocol pseudo-header. | h2ClientTransportAvailable

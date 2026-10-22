@@ -8,7 +8,7 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/shibingli/ydx/sfs"
+	"github.com/shibingli/ydx/afs"
 	"github.com/shibingli/ydx/errs"
 	"github.com/shibingli/ydx/log"
 	"github.com/shibingli/ydx/protocol"
@@ -38,12 +38,12 @@ var (
 // Route wiring errors, declared once at package level. | 路由接线错误，在包级声明一次。
 var (
 	// ErrNilHandler indicates a nil handler or a nil middleware inside a call chain. | ErrNilHandler 表示调用链中存在空的处理器或中间件。
-	ErrNilHandler = errx.New("router: nil handler | router：处理器为 nil")
+	ErrNilHandler = errs.New("router: nil handler | router：处理器为 nil")
 	// ErrInvalidHandler indicates a handler stored in the tree that is not a call chain. | ErrInvalidHandler 表示树中存放的处理器不是调用链类型。
-	ErrInvalidHandler = errx.New("router: handler is not a call chain | router：处理器不是调用链类型")
+	ErrInvalidHandler = errs.New("router: handler is not a call chain | router：处理器不是调用链类型")
 	// ErrRawPatternNotStatic indicates a raw handler was registered on a non-static pattern. | ErrRawPatternNotStatic
 	// 表示无上下文处理器注册到了非静态模式上。
-	ErrRawPatternNotStatic = errx.New("router: raw handler requires a static pattern | router：无上下文处理器要求静态模式")
+	ErrRawPatternNotStatic = errs.New("router: raw handler requires a static pattern | router：无上下文处理器要求静态模式")
 )
 
 // RouteInfo describes a registered route, used for OpenAPI documents and diagnostic output. | RouteInfo 描述一条已注册的路由，供 OpenAPI 文档与诊断输出使用。
@@ -240,7 +240,7 @@ func (r *Router) HandleRaw(method, pattern string, h HandlerFuncRaw) {
 // 处理器及其普通调用链包装。
 func (r *Router) handleRaw(method, pattern string, h HandlerFuncRaw) {
 	if h == nil {
-		r.recordWiringError(errx.Detail(ErrNilHandler, "%s %s", method, pattern))
+		r.recordWiringError(errs.Detail(ErrNilHandler, "%s %s", method, pattern))
 		return
 	}
 	wrapper := func(c *Ctx) { h(c.Writer, c.Request) }
@@ -275,7 +275,7 @@ func (r *Router) Handle(method, pattern string, h HandlerFunc, mw ...Middleware)
 
 func (r *Router) handle(method, pattern string, h HandlerFunc, mw ...Middleware) {
 	if h == nil {
-		r.recordWiringError(errx.Detail(ErrNilHandler, "%s %s", method, pattern))
+		r.recordWiringError(errs.Detail(ErrNilHandler, "%s %s", method, pattern))
 		return
 	}
 	// The tree stores the full call chain of "route-level middleware + business handler", | 树中存放「路由级中间件 + 业务处理器」的完整调用链，
@@ -317,40 +317,40 @@ func (r *Router) recordWiringError(err error) {
 // 调用一次。返回非 nil 表示路由表不可用于服务；只要有注册错误被登记，ServeHTTP 就会执行同一规则。
 func (r *Router) Validate() error {
 	r.mu.RLock()
-	errs := append([]error(nil), r.errs...)
+	list := append([]error(nil), r.errs...)
 	r.mu.RUnlock()
 	if err := r.validateTree(); err != nil {
-		errs = append(errs, err)
+		list = append(list, err)
 		r.mu.Lock()
 		r.brokenFlag = true
 		r.publishStateLocked()
 		r.mu.Unlock()
 	}
-	return errors.Join(errs...)
+	return errors.Join(list...)
 }
 
 // validateTree checks that every handler stored in the tree is a non-empty call chain
 // whose elements are all non-nil. | validateTree 校验树中每个处理器都是非空调用链，且链上元素均非 nil。
 func (r *Router) validateTree() error {
-	var errs []error
+	var list []error
 	r.tree.Walk(func(method, pattern string, handler any) {
 		chain, ok := handler.([]HandlerFunc)
 		if !ok {
-			errs = append(errs, errx.Detail(ErrInvalidHandler, "%s %s", method, pattern))
+			list = append(list, errs.Detail(ErrInvalidHandler, "%s %s", method, pattern))
 			return
 		}
 		if len(chain) == 0 {
-			errs = append(errs, errx.Detail(ErrNilHandler, "%s %s", method, pattern))
+			list = append(list, errs.Detail(ErrNilHandler, "%s %s", method, pattern))
 			return
 		}
 		for _, h := range chain {
 			if h == nil {
-				errs = append(errs, errx.Detail(ErrNilHandler, "%s %s", method, pattern))
+				list = append(list, errs.Detail(ErrNilHandler, "%s %s", method, pattern))
 				return
 			}
 		}
 	})
-	return errors.Join(errs...)
+	return errors.Join(list...)
 }
 
 // Static mounts a local directory at urlPrefix (its contents are served as static files). | Static 把本地目录挂载到 urlPrefix（目录内容以静态文件方式提供）。
@@ -684,8 +684,8 @@ func (r *Router) serveSlow(c *Ctx, state *serveState, key methodKey, path string
 		// An internal invariant, not a caller mistake: log it and answer 500 instead of
 		// taking the whole process down. | 这是内部不变量而非调用方错误：记录日志并返回 500，
 		// 而不是让整个进程崩溃。
-		logx.Default().Error("router: handler in the tree is not a call chain | router：树中的处理器不是调用链类型",
-			logx.Str("method", req.Method), logx.Str("path", path))
+		log.Default().Error("router: handler in the tree is not a call chain | router：树中的处理器不是调用链类型",
+			log.Str("method", req.Method), log.Str("path", path))
 		http.Error(c.Writer, routeTableBrokenBody, http.StatusInternalServerError)
 		return
 	}
@@ -885,4 +885,4 @@ func redirectTrailingSlash(c *Ctx, path, rawQuery string) {
 }
 
 // ErrNoRenderer is returned by c.HTML when no template renderer has been injected. | ErrNoRenderer 在未注入模板渲染器时由 c.HTML 返回。
-var ErrNoRenderer = errx.New("router: no template renderer injected | router：未注入模板渲染器")
+var ErrNoRenderer = errs.New("router: no template renderer injected | router：未注入模板渲染器")

@@ -16,7 +16,7 @@ import (
 // Accessors that return a string or a slice necessarily allocate that result; the numeric and boolean
 // accessors and Has never allocate. | 返回字符串或切片的访问器必然为结果分配内存；数值、布尔访问器与 Has 则零分配。
 //
-// A key that appears more than once resolves to its last occurrence, matching jsonx.Unmarshal into a map. | 多次出现的键取最后一次出现的值，与 jsonx.Unmarshal 解到 map 的行为一致。
+// A key that appears more than once resolves to its last occurrence, matching json.Unmarshal into a map. | 多次出现的键取最后一次出现的值，与 json.Unmarshal 解到 map 的行为一致。
 type Claims struct {
 	raw []byte
 }
@@ -153,10 +153,10 @@ func (c Claims) GetBool(key string) (bool, bool) {
 func (c Claims) GetJSON(key string, v any) error {
 	raw, ok := scanField(c.raw, key)
 	if !ok {
-		return errx.Detail(ErrClaimNotFound, "claim %[1]q | 声明 %[1]q", key)
+		return errs.Detail(ErrClaimNotFound, "claim %[1]q | 声明 %[1]q", key)
 	}
-	if err := jsonx.Unmarshal(raw, v); err != nil {
-		return errx.WrapDetail(err, ErrMalformed, "claim %[1]q | 声明 %[1]q", key)
+	if err := json.Unmarshal(raw, v); err != nil {
+		return errs.WrapDetail(err, ErrMalformed, "claim %[1]q | 声明 %[1]q", key)
 	}
 	return nil
 }
@@ -227,30 +227,30 @@ func checkRegistered(f *claimFields, o ParseOptions) error {
 
 	if f.hasNbf {
 		if !f.nbfOK {
-			return errx.Detail(ErrMalformed, "nbf is not a valid NumericDate | nbf 不是合法的 NumericDate")
+			return errs.Detail(ErrMalformed, "nbf is not a valid NumericDate | nbf 不是合法的 NumericDate")
 		}
 		if at.Add(o.Leeway).Before(f.nbf) {
-			return errx.Detail(ErrTokenNotValidYet, "nbf=%[1]s | 生效时间=%[1]s", f.nbf.Format(time.RFC3339))
+			return errs.Detail(ErrTokenNotValidYet, "nbf=%[1]s | 生效时间=%[1]s", f.nbf.Format(time.RFC3339))
 		}
 	}
 	if f.hasExp {
 		if !f.expOK {
-			return errx.Detail(ErrMalformed, "exp is not a valid NumericDate | exp 不是合法的 NumericDate")
+			return errs.Detail(ErrMalformed, "exp is not a valid NumericDate | exp 不是合法的 NumericDate")
 		}
 		if f.exp.Add(o.Leeway).Before(at) {
-			return errx.Detail(ErrTokenExpired, "exp=%[1]s | 过期时间=%[1]s", f.exp.Format(time.RFC3339))
+			return errs.Detail(ErrTokenExpired, "exp=%[1]s | 过期时间=%[1]s", f.exp.Format(time.RFC3339))
 		}
 	} else if o.RequireExp {
 		return ErrMissingExp
 	}
 	if o.Issuer != "" {
 		if !f.hasIss || !jsonStringEquals(f.iss, o.Issuer) {
-			return errx.Detail(ErrIssuerMismatch, "want %[1]q | 期望 %[1]q", o.Issuer)
+			return errs.Detail(ErrIssuerMismatch, "want %[1]q | 期望 %[1]q", o.Issuer)
 		}
 	}
 	if o.Audience != "" {
 		if !f.hasAud || !rawAudienceContains(f.aud, o.Audience) {
-			return errx.Detail(ErrAudienceMismatch, "want %[1]q | 期望 %[1]q", o.Audience)
+			return errs.Detail(ErrAudienceMismatch, "want %[1]q | 期望 %[1]q", o.Audience)
 		}
 	}
 	return nil

@@ -287,9 +287,9 @@ func (s *scanner) next() bool {
 
 // scanField returns the raw value bytes of the last occurrence of key in the top-level JSON object. | scanField 返回顶层 JSON 对象中 key 最后一次出现处的原始值字节。
 //
-// Last-wins keeps the scanner consistent with jsonx.Unmarshal, which resolves duplicate keys the same way,
+// Last-wins keeps the scanner consistent with json.Unmarshal, which resolves duplicate keys the same way,
 // and satisfies RFC 7519 §4 (parsers must use the lexically last duplicate member or reject the token). | 取最后一次
-// 出现与 jsonx.Unmarshal 解到 map 的语义一致，也满足 RFC 7519 §4（解析器必须取最后一次出现的重复成员，或直接拒绝）。
+// 出现与 json.Unmarshal 解到 map 的语义一致，也满足 RFC 7519 §4（解析器必须取最后一次出现的重复成员，或直接拒绝）。
 //
 // The second result is false when obj is not a well-formed JSON object or when the key is absent. | obj 不是结构良好的 JSON 对象、或键不存在时，第二个结果为 false。
 func scanField(obj []byte, key string) ([]byte, bool) {

@@ -1,4 +1,4 @@
-module github.com/shibingli/ydx/sfs
+module github.com/shibingli/ydx/afs
 
 go 1.27.2
 

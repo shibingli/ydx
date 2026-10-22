@@ -300,7 +300,7 @@ func (c *Ctx) Body() io.ReadCloser {
 func bodyError(err error) error {
 	var tooLarge *http.MaxBytesError
 	if errors.As(err, &tooLarge) {
-		return errx.Wrap(err, ErrBodyTooLarge)
+		return errs.Wrap(err, ErrBodyTooLarge)
 	}
 	return err
 }
@@ -402,7 +402,7 @@ func (c *Ctx) HTMLString(code int, s string) error {
 // HTML renders with the injected template engine and writes it as text/html. | HTML 使用已注入的模板引擎渲染并以 text/html 输出。
 func (c *Ctx) HTML(code int, name string, data any) error {
 	if c.router.renderer == nil {
-		return errx.Detail(ErrNoRenderer, "use SetRenderer or c.HTMLString | 请使用 SetRenderer 或 c.HTMLString")
+		return errs.Detail(ErrNoRenderer, "use SetRenderer or c.HTMLString | 请使用 SetRenderer 或 c.HTMLString")
 	}
 	c.SetHeader("Content-Type", "text/html; charset=utf-8")
 	c.WriteHeader(code)
@@ -411,7 +411,7 @@ func (c *Ctx) HTML(code int, name string, data any) error {
 
 // JSON serializes and writes the value using the framework's adaptive JSON layer. | JSON 使用框架自适应 JSON 层序列化输出。
 func (c *Ctx) JSON(code int, v any) error {
-	buf, err := jsonx.Marshal(v)
+	buf, err := json.Marshal(v)
 	if err != nil {
 		c.SetHeader("Content-Type", "application/json; charset=utf-8")
 		c.WriteHeader(http.StatusInternalServerError)
@@ -435,7 +435,7 @@ func (c *Ctx) JSON(code int, v any) error {
 func (c *Ctx) JSONStream(code int, v any) error {
 	c.SetHeader("Content-Type", "application/json; charset=utf-8")
 	c.WriteHeader(code)
-	return jsonx.NewEncoder(c.Writer).Encode(v)
+	return json.NewEncoder(c.Writer).Encode(v)
 }
 
 // XML writes XML (standard library encoding/xml). | XML 输出 XML（标准库 encoding/xml）。
@@ -480,7 +480,7 @@ func (c *Ctx) NoContent(code ...int) error {
 }
 
 // ErrRedirectStatus is returned by c.Redirect when the status code is outside the 3xx range. | ErrRedirectStatus 在重定向状态码不在 3xx 区间时由 c.Redirect 返回。
-var ErrRedirectStatus = errx.New("router: redirect status must be in the 3xx range | router：重定向状态码必须在 3xx 区间")
+var ErrRedirectStatus = errs.New("router: redirect status must be in the 3xx range | router：重定向状态码必须在 3xx 区间")
 
 // Redirect writes a redirect response. | Redirect 输出重定向响应。
 func (c *Ctx) Redirect(code int, location string) error {

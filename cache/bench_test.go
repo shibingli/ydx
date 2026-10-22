@@ -1,4 +1,4 @@
-package cachex
+package cache
 
 import (
 	"context"
@@ -17,7 +17,7 @@ func benchManager(b *testing.B, remote Remote) *Manager {
 	m, err := NewManager(
 		WithRemote(remote),
 		WithLocalOptions(local.Options{MaxCost: 64 << 20, Shards: 8, MaxEntrySize: 1 << 20, CleanupInterval: time.Hour}),
-		WithLogger(logx.New(logx.Options{Writer: io.Discard, Level: logx.ErrorLevel})),
+		WithLogger(log.New(log.Options{Writer: io.Discard, Level: log.ErrorLevel})),
 		WithLease(time.Minute),
 	)
 	if err != nil {

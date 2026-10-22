@@ -1,4 +1,4 @@
-package ws
+package websocket
 
 import (
 	"bufio"
@@ -593,7 +593,7 @@ func (r *MessageReader) readCompressed(p []byte) (int, error) {
 		return n, io.EOF
 	}
 	r.done = true
-	return n, r.c.fail(CloseInvalidFramePayloadData, errx.WrapDetail(err, ErrInvalidCompressedData,
+	return n, r.c.fail(CloseInvalidFramePayloadData, errs.WrapDetail(err, ErrInvalidCompressedData,
 		"failed to inflate the message | 解压消息失败"))
 }
 

@@ -14,7 +14,7 @@
 //
 // Under any (GOARCH, jsonx_std) combination, exactly one implementation file takes part in compilation. | 任一 (GOARCH, jsonx_std) 组合下都恰好只有一个实现文件参与编译。
 
-package jsonx
+package json
 
 import (
 	"io"

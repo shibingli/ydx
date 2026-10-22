@@ -1,6 +1,6 @@
 //go:build !unix
 
-package ws
+package websocket
 
 // scatterWriteThreshold effectively disables the size-triggered scatter path on
 // platforms without cheap vectored socket writes (Windows sends multi-buffer

@@ -1,6 +1,6 @@
 //go:build unix
 
-package ws
+package websocket
 
 // scatterWriteThreshold is the payload size from which a server frame is sent
 // with a vectored write on Unix. `writev` sends the frame header and the

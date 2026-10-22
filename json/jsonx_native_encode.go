@@ -1,6 +1,6 @@
 //go:build amd64 && !jsonx_std
 
-package jsonx
+package json
 
 import (
 	"bytes"
@@ -43,7 +43,7 @@ func (e *encoder) enter() error {
 	e.depth++
 	if e.depth > maxNestingDepth {
 		e.depth--
-		return errx.Detail(errUnsupported, "exceeded max depth of %d | 嵌套深度超过上限 %d", maxNestingDepth, maxNestingDepth)
+		return errs.Detail(errUnsupported, "exceeded max depth of %d | 嵌套深度超过上限 %d", maxNestingDepth, maxNestingDepth)
 	}
 	return nil
 }
@@ -52,14 +52,14 @@ func (e *encoder) enter() error {
 func (e *encoder) leave() { e.depth-- }
 
 func syntaxErr(format string, args ...any) error {
-	return errx.Detail(ErrSyntax, format, args...)
+	return errs.Detail(ErrSyntax, format, args...)
 }
 
 func typeErr(format string, args ...any) error {
-	return errx.Detail(ErrTypeMismatch, format, args...)
+	return errs.Detail(ErrTypeMismatch, format, args...)
 }
 
-var errUnsupported = errx.New("jsonx: unsupported value | jsonx：不支持的值")
+var errUnsupported = errs.New("jsonx: unsupported value | jsonx：不支持的值")
 
 // encodeFunc encodes one value of a fixed Go type. | encodeFunc 编码一个固定 Go 类型的值。
 type encodeFunc func(*encoder, reflect.Value) error
@@ -146,7 +146,7 @@ func buildEncoder(t reflect.Type) encodeFunc {
 				s = "0"
 			}
 			if !isValidNumber(s) {
-				return errx.Detail(errUnsupported, "invalid number %q | 非法数字 %q", s, s)
+				return errs.Detail(errUnsupported, "invalid number %q | 非法数字 %q", s, s)
 			}
 			e.buf = append(e.buf, s...)
 			return nil
@@ -261,7 +261,7 @@ func buildKindEncoder(t reflect.Type) encodeFunc {
 		return buildStructEncoder(t)
 	default:
 		return func(e *encoder, v reflect.Value) error {
-			return errx.Detail(errUnsupported, "unsupported type %s | 不支持的类型 %s", t, t)
+			return errs.Detail(errUnsupported, "unsupported type %s | 不支持的类型 %s", t, t)
 		}
 	}
 }
@@ -324,7 +324,7 @@ func buildSliceEncoder(t reflect.Type) encodeFunc {
 				encodeNull(e)
 				return nil
 			}
-			e.str(b64x.StdEncoding.EncodeToString(v.Bytes()))
+			e.str(base64.StdEncoding.EncodeToString(v.Bytes()))
 			return nil
 		}
 	}
@@ -436,7 +436,7 @@ func buildMapKeyEncoder(t reflect.Type) func(reflect.Value) (string, error) {
 		}
 	}
 	return func(k reflect.Value) (string, error) {
-		return "", errx.Detail(errUnsupported, "unsupported map key type %s | 不支持的 map 键类型 %s", t, t)
+		return "", errs.Detail(errUnsupported, "unsupported map key type %s | 不支持的 map 键类型 %s", t, t)
 	}
 }
 
@@ -601,7 +601,7 @@ func buildStructEncoder(t reflect.Type) encodeFunc {
 				return nil
 			}
 			if y := tt.Year(); y < 0 || y >= 10000 {
-				return errx.Detail(errUnsupported, "time year %d out of range | 时间年份 %d 超出范围", y, y)
+				return errs.Detail(errUnsupported, "time year %d out of range | 时间年份 %d 超出范围", y, y)
 			}
 			var full [64]byte
 			n := copy(full[:], key)
@@ -609,7 +609,7 @@ func buildStructEncoder(t reflect.Type) encodeFunc {
 			n++
 			formatted := tt.AppendFormat(full[n:n], time.RFC3339Nano)
 			if len(formatted) > cap(full)-n {
-				return errx.Detail(errUnsupported, "time formatting overflow | 时间格式化溢出")
+				return errs.Detail(errUnsupported, "time formatting overflow | 时间格式化溢出")
 			}
 			copy(full[n:], formatted)
 			n += len(formatted)

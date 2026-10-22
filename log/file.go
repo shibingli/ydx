@@ -1,4 +1,4 @@
-package logx
+package log
 
 import (
 	"os"
@@ -7,7 +7,7 @@ import (
 )
 
 // ErrOpenLogFile is returned when a log file cannot be opened for appending. | ErrOpenLogFile 表示日志文件无法以追加方式打开。
-var ErrOpenLogFile = errx.New("open log file failed | 打开日志文件失败")
+var ErrOpenLogFile = errs.New("open log file failed | 打开日志文件失败")
 
 // OpenFile opens path for append-only logging and returns the file handle. | OpenFile 以只追加方式打开 path 用于写日志，并返回文件句柄。
 //
@@ -24,7 +24,7 @@ var ErrOpenLogFile = errx.New("open log file failed | 打开日志文件失败")
 func OpenFile(path string) (*os.File, error) {
 	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
 	if err != nil {
-		return nil, errx.WrapDetail(err, ErrOpenLogFile, "path %[1]q | 路径 %[1]q", path)
+		return nil, errs.WrapDetail(err, ErrOpenLogFile, "path %[1]q | 路径 %[1]q", path)
 	}
 	return f, nil
 }

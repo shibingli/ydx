@@ -292,10 +292,10 @@ func (c *compiler) template(root *template.Template, name string) (*compiledTemp
 		if strings.Contains(name, "$htmltemplate_") {
 			return nil, errDerivedContext
 		}
-		return nil, errx.Detail(ErrParseTemplate, "name=%[1]s | 名称=%[1]s", name)
+		return nil, errs.Detail(ErrParseTemplate, "name=%[1]s | 名称=%[1]s", name)
 	}
 	if ht.Tree == nil || ht.Tree.Root == nil {
-		return nil, errx.Detail(ErrParseTemplate, "name=%[1]s | 名称=%[1]s", name)
+		return nil, errs.Detail(ErrParseTemplate, "name=%[1]s | 名称=%[1]s", name)
 	}
 	out := &compiledTemplate{name: name}
 	c.prog.templates[name] = out
@@ -424,7 +424,7 @@ func (c *compiler) node(in parse.Node) (node, error) {
 	case *parse.ListNode:
 		return c.list(n)
 	default:
-		return nil, errx.Detail(ErrParseTemplate, "node=%[1]s | 节点=%[1]s", in.String())
+		return nil, errs.Detail(ErrParseTemplate, "node=%[1]s | 节点=%[1]s", in.String())
 	}
 }
 
@@ -539,7 +539,7 @@ func (c *compiler) pipeline(in *parse.PipeNode) (*pipeNode, []escKind, error) {
 // command compiles one command. | command 编译单条命令。
 func (c *compiler) command(in *parse.CommandNode) (*commandNode, error) {
 	if len(in.Args) == 0 {
-		return nil, errx.Detail(ErrParseTemplate, "empty command | 空命令")
+		return nil, errs.Detail(ErrParseTemplate, "empty command | 空命令")
 	}
 	first := in.Args[0]
 	switch n := first.(type) {
@@ -587,7 +587,7 @@ func (c *compiler) command(in *parse.CommandNode) (*commandNode, error) {
 		}, nil
 	case *parse.PipeNode:
 		if len(in.Args) != 1 {
-			return nil, errx.Detail(ErrParseTemplate, "parenthesized pipeline with arguments | 括号流水线带参数")
+			return nil, errs.Detail(ErrParseTemplate, "parenthesized pipeline with arguments | 括号流水线带参数")
 		}
 		p, _, err := c.pipeline(n)
 		if err != nil {
@@ -596,7 +596,7 @@ func (c *compiler) command(in *parse.CommandNode) (*commandNode, error) {
 		return &commandNode{kind: cmdValue, value: &pipeExpr{pipe: p}}, nil
 	default:
 		if len(in.Args) != 1 {
-			return nil, errx.Detail(ErrParseTemplate, "arguments to non-function | 给非函数传参")
+			return nil, errs.Detail(ErrParseTemplate, "arguments to non-function | 给非函数传参")
 		}
 		v, err := c.arg(first)
 		if err != nil {
@@ -658,7 +658,7 @@ func (c *compiler) arg(in parse.Node) (expr, error) {
 		}
 		return callExpr{ref: ref}, nil
 	default:
-		return nil, errx.Detail(ErrParseTemplate, "argument=%[1]s | 参数=%[1]s", in.String())
+		return nil, errs.Detail(ErrParseTemplate, "argument=%[1]s | 参数=%[1]s", in.String())
 	}
 }
 

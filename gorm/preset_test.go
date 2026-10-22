@@ -1,4 +1,4 @@
-package gormx_test
+package gorm_test
 
 import (
 	"bytes"
@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"gorm.io/gorm"
 
+	gormio "gorm.io/gorm"
 	"github.com/shibingli/ydx/gorm"
 )
 
@@ -85,7 +85,7 @@ func TestPresetDSNAddsEveryDefaultParam(t *testing.T) {
 	}{
 		{
 			name:   "mysql-no-query-string",
-			driver: gormx.DriverMySQL,
+			driver: gorm.DriverMySQL,
 			dsn:    "root:root@tcp(127.0.0.1:3306)/yd",
 			want:   "root:root@tcp(127.0.0.1:3306)/yd?" + mysqlQueryTail,
 			query: []presetWant{
@@ -99,7 +99,7 @@ func TestPresetDSNAddsEveryDefaultParam(t *testing.T) {
 		},
 		{
 			name:   "mysql-scaffold-dsn",
-			driver: gormx.DriverMySQL,
+			driver: gorm.DriverMySQL,
 			dsn:    "root:root@tcp(127.0.0.1:3306)/yd?charset=utf8mb4&parseTime=True&loc=Local",
 			want: "root:root@tcp(127.0.0.1:3306)/yd?charset=utf8mb4&parseTime=True&loc=Local" +
 				"&time_zone=%27%2B00%3A00%27" +
@@ -116,7 +116,7 @@ func TestPresetDSNAddsEveryDefaultParam(t *testing.T) {
 		},
 		{
 			name:   "postgres-url-form",
-			driver: gormx.DriverPostgres,
+			driver: gorm.DriverPostgres,
 			dsn:    "postgres://user:pw@127.0.0.1:5432/yd?sslmode=disable",
 			want:   "postgres://user:pw@127.0.0.1:5432/yd?sslmode=disable&TimeZone=UTC&client_encoding=UTF8",
 			query: []presetWant{
@@ -126,7 +126,7 @@ func TestPresetDSNAddsEveryDefaultParam(t *testing.T) {
 		},
 		{
 			name:   "postgres-keyword-value-form",
-			driver: gormx.DriverPostgres,
+			driver: gorm.DriverPostgres,
 			dsn:    "host=127.0.0.1 port=5432 user=yd password=secret dbname=yd sslmode=disable",
 			want:   "host=127.0.0.1 port=5432 user=yd password=secret dbname=yd sslmode=disable TimeZone=UTC client_encoding=UTF8",
 			keyword: []presetWant{
@@ -136,7 +136,7 @@ func TestPresetDSNAddsEveryDefaultParam(t *testing.T) {
 		},
 		{
 			name:   "sqlite-plain-path",
-			driver: gormx.DriverSQLite,
+			driver: gorm.DriverSQLite,
 			dsn:    "data/yd.db",
 			want:   "data/yd.db?" + sqlitePragmaTail,
 			query: []presetWant{
@@ -148,7 +148,7 @@ func TestPresetDSNAddsEveryDefaultParam(t *testing.T) {
 		},
 		{
 			name:   "sqlite-file-uri",
-			driver: gormx.DriverSQLite,
+			driver: gorm.DriverSQLite,
 			dsn:    "file::memory:?cache=shared",
 			want:   "file::memory:?cache=shared&" + sqlitePragmaTail,
 			query: []presetWant{
@@ -172,7 +172,7 @@ func TestPresetDSNAddsEveryDefaultParam(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := gormx.PresetDSN(tc.driver, tc.dsn)
+			got := gorm.PresetDSN(tc.driver, tc.dsn)
 			if got != tc.want {
 				t.Fatalf("PresetDSN(%q, %q)\n  得到 %q\n  期望 %q", tc.driver, tc.dsn, got, tc.want)
 			}
@@ -212,7 +212,7 @@ func TestPresetDSNKeepsExplicitParameters(t *testing.T) {
 	}{
 		{
 			name:      "mysql-loc-local",
-			driver:    gormx.DriverMySQL,
+			driver:    gorm.DriverMySQL,
 			dsn:       "root:root@tcp(127.0.0.1:3306)/yd?loc=Local",
 			want:      "root:root@tcp(127.0.0.1:3306)/yd?loc=Local",
 			absent:    []string{"loc=UTC"},
@@ -220,7 +220,7 @@ func TestPresetDSNKeepsExplicitParameters(t *testing.T) {
 		},
 		{
 			name:      "mysql-charset-latin1",
-			driver:    gormx.DriverMySQL,
+			driver:    gorm.DriverMySQL,
 			dsn:       "root:root@tcp(127.0.0.1:3306)/yd?charset=latin1",
 			want:      "root:root@tcp(127.0.0.1:3306)/yd?charset=latin1",
 			absent:    []string{"charset=utf8mb4", "collation=utf8mb4_unicode_ci"},
@@ -231,7 +231,7 @@ func TestPresetDSNKeepsExplicitParameters(t *testing.T) {
 			// rejects the resulting SET NAMES with error 1253. | 显式 collation 同样不得与预置
 			// charset 配对：MySQL 会以 1253 拒绝由此生成的 SET NAMES。
 			name:      "mysql-collation-explicit",
-			driver:    gormx.DriverMySQL,
+			driver:    gorm.DriverMySQL,
 			dsn:       "root:root@tcp(127.0.0.1:3306)/yd?collation=latin1_swedish_ci",
 			want:      "root:root@tcp(127.0.0.1:3306)/yd?collation=latin1_swedish_ci",
 			absent:    []string{"collation=utf8mb4_unicode_ci", "charset=utf8mb4"},
@@ -239,7 +239,7 @@ func TestPresetDSNKeepsExplicitParameters(t *testing.T) {
 		},
 		{
 			name:      "mysql-parse-time-false",
-			driver:    gormx.DriverMySQL,
+			driver:    gorm.DriverMySQL,
 			dsn:       "root:root@tcp(127.0.0.1:3306)/yd?parseTime=false",
 			want:      "root:root@tcp(127.0.0.1:3306)/yd?parseTime=false",
 			absent:    []string{"parseTime=True"},
@@ -247,7 +247,7 @@ func TestPresetDSNKeepsExplicitParameters(t *testing.T) {
 		},
 		{
 			name:      "mysql-explicit-system-variables",
-			driver:    gormx.DriverMySQL,
+			driver:    gorm.DriverMySQL,
 			dsn:       "root:root@tcp(127.0.0.1:3306)/yd?time_zone='%2B05%3A30'&sql_mode='ANSI_QUOTES'",
 			want:      "root:root@tcp(127.0.0.1:3306)/yd?time_zone='%2B05%3A30'&sql_mode='ANSI_QUOTES'",
 			absent:    []string{"time_zone=%27%2B00%3A00%27", "sql_mode=%27STRICT"},
@@ -256,7 +256,7 @@ func TestPresetDSNKeepsExplicitParameters(t *testing.T) {
 		{
 			// MySQL system-variable names are case-insensitive, so a case variant also counts as explicitly written. | MySQL 的系统变量名不区分大小写，因此大小写变体也算「已显式写出」。
 			name:      "mysql-system-variable-other-case",
-			driver:    gormx.DriverMySQL,
+			driver:    gorm.DriverMySQL,
 			dsn:       "root:root@tcp(127.0.0.1:3306)/yd?TIME_ZONE='%2B05%3A30'",
 			want:      "root:root@tcp(127.0.0.1:3306)/yd?TIME_ZONE='%2B05%3A30'",
 			absent:    []string{"time_zone=%27%2B00%3A00%27"},
@@ -264,7 +264,7 @@ func TestPresetDSNKeepsExplicitParameters(t *testing.T) {
 		},
 		{
 			name:      "postgres-keyword-timezone",
-			driver:    gormx.DriverPostgres,
+			driver:    gorm.DriverPostgres,
 			dsn:       "host=127.0.0.1 user=yd TimeZone=Asia/Shanghai",
 			want:      "host=127.0.0.1 user=yd TimeZone=Asia/Shanghai client_encoding=UTF8",
 			absent:    []string{"TimeZone=UTC"},
@@ -272,7 +272,7 @@ func TestPresetDSNKeepsExplicitParameters(t *testing.T) {
 		},
 		{
 			name:      "postgres-keyword-lowercase-timezone",
-			driver:    gormx.DriverPostgres,
+			driver:    gorm.DriverPostgres,
 			dsn:       "host=127.0.0.1 user=yd timezone=Asia/Shanghai",
 			want:      "host=127.0.0.1 user=yd timezone=Asia/Shanghai client_encoding=UTF8",
 			absent:    []string{"TimeZone=UTC"},
@@ -280,7 +280,7 @@ func TestPresetDSNKeepsExplicitParameters(t *testing.T) {
 		},
 		{
 			name:      "postgres-url-timezone",
-			driver:    gormx.DriverPostgres,
+			driver:    gorm.DriverPostgres,
 			dsn:       "postgres://user:pw@127.0.0.1:5432/yd?TimeZone=Asia%2FShanghai",
 			want:      "postgres://user:pw@127.0.0.1:5432/yd?TimeZone=Asia%2FShanghai&client_encoding=UTF8",
 			absent:    []string{"TimeZone=UTC"},
@@ -288,7 +288,7 @@ func TestPresetDSNKeepsExplicitParameters(t *testing.T) {
 		},
 		{
 			name:   "sqlite-explicit-pragma",
-			driver: gormx.DriverSQLite,
+			driver: gorm.DriverSQLite,
 			dsn:    "data/yd.db?_pragma=journal_mode(DELETE)",
 			want: "data/yd.db?_pragma=journal_mode(DELETE)&_loc=UTC" +
 				"&_pragma=synchronous%28NORMAL%29&_pragma=busy_timeout%285000%29",
@@ -298,7 +298,7 @@ func TestPresetDSNKeepsExplicitParameters(t *testing.T) {
 		{
 			// A _pragma value also accepts the other PRAGMA spelling, name=value. | _pragma 的取值也接受 PRAGMA 的另一种写法 name=value。
 			name:   "sqlite-explicit-pragma-equals-form",
-			driver: gormx.DriverSQLite,
+			driver: gorm.DriverSQLite,
 			dsn:    "data/yd.db?_pragma=journal_mode%3DDELETE",
 			want: "data/yd.db?_pragma=journal_mode%3DDELETE&_loc=UTC" +
 				"&_pragma=synchronous%28NORMAL%29&_pragma=busy_timeout%285000%29",
@@ -307,7 +307,7 @@ func TestPresetDSNKeepsExplicitParameters(t *testing.T) {
 		},
 		{
 			name:   "sqlite-explicit-loc",
-			driver: gormx.DriverSQLite,
+			driver: gorm.DriverSQLite,
 			dsn:    "data/yd.db?_loc=Asia/Shanghai",
 			want: "data/yd.db?_loc=Asia/Shanghai" +
 				"&_pragma=journal_mode%28WAL%29&_pragma=synchronous%28NORMAL%29&_pragma=busy_timeout%285000%29",
@@ -318,7 +318,7 @@ func TestPresetDSNKeepsExplicitParameters(t *testing.T) {
 			// 调用方自己写的 _txlock 必须原样留下：SQLite 侧它才是并发写的开关，而预置表里
 			// 刻意不含 _time_format（见 preset.go 的说明），正是为了不让驱动跳过 _txlock 的解析。
 			name:   "sqlite-keeps-caller-txlock",
-			driver: gormx.DriverSQLite,
+			driver: gorm.DriverSQLite,
 			dsn:    "data/yd.db?_txlock=immediate",
 			want: "data/yd.db?_txlock=immediate&_loc=UTC" +
 				"&_pragma=journal_mode%28WAL%29" +
@@ -329,7 +329,7 @@ func TestPresetDSNKeepsExplicitParameters(t *testing.T) {
 		{
 			// A caller-written _time_format is not part of the preset table, so the preset neither rewrites it nor appends it twice. | 调用方自己写的 _time_format 不在预置表内，预置既不改它也不重复追加。
 			name:   "sqlite-caller-time-format-left-alone",
-			driver: gormx.DriverSQLite,
+			driver: gorm.DriverSQLite,
 			dsn:    "data/yd.db?_time_format=sqlite",
 			want: "data/yd.db?_time_format=sqlite&_loc=UTC" +
 				"&_pragma=journal_mode%28WAL%29&_pragma=synchronous%28NORMAL%29&_pragma=busy_timeout%285000%29",
@@ -339,7 +339,7 @@ func TestPresetDSNKeepsExplicitParameters(t *testing.T) {
 
 	// Beyond the per-case assertion, every case must also prove the remaining presets are still filled in, otherwise "does not override" could be misimplemented as "skips the preset entirely". | 除逐例断言外，每例都要保证「其余预置仍然补齐」，否则「不覆盖」可能被误实现成「干脆不预置」。
 	allPresets := map[string][]presetWant{
-		gormx.DriverMySQL: {
+		gorm.DriverMySQL: {
 			{key: "loc", value: "loc=UTC"},
 			{key: "time_zone", value: "time_zone=%27%2B00%3A00%27"},
 			{key: "parseTime", value: "parseTime=True"},
@@ -347,11 +347,11 @@ func TestPresetDSNKeepsExplicitParameters(t *testing.T) {
 			{key: "charset", value: "charset=utf8mb4"},
 			{key: "collation", value: "collation=utf8mb4_unicode_ci"},
 		},
-		gormx.DriverPostgres: {
+		gorm.DriverPostgres: {
 			{key: "TimeZone", value: "TimeZone=UTC"},
 			{key: "client_encoding", value: "client_encoding=UTF8"},
 		},
-		gormx.DriverSQLite: {
+		gorm.DriverSQLite: {
 			{key: "_loc", value: "_loc=UTC"},
 			{key: "journal_mode", value: "journal_mode%28WAL%29"},
 			{key: "synchronous", value: "synchronous%28NORMAL%29"},
@@ -383,7 +383,7 @@ func TestPresetDSNKeepsExplicitParameters(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := gormx.PresetDSN(tc.driver, tc.dsn)
+			got := gorm.PresetDSN(tc.driver, tc.dsn)
 
 			// The existing content must stay verbatim at the front, with the presets appended behind it. | 既有内容必须在最前面原样保留，只有预置追加在后面。
 			if !strings.HasPrefix(got, tc.want) {
@@ -428,15 +428,15 @@ func TestPresetDSNIsIdempotent(t *testing.T) {
 		driver string
 		dsn    string
 	}{
-		{gormx.DriverMySQL, "root:root@tcp(127.0.0.1:3306)/yd"},
-		{gormx.DriverMySQL, "root:root@tcp(127.0.0.1:3306)/yd?loc=Local&charset=latin1"},
-		{gormx.DriverMySQL, ""},
-		{gormx.DriverPostgres, "host=127.0.0.1 user=yd TimeZone=Asia/Shanghai"},
-		{gormx.DriverPostgres, "postgres://user:pw@127.0.0.1:5432/yd?sslmode=disable"},
-		{gormx.DriverSQLite, "data/yd.db"},
-		{gormx.DriverSQLite, "file::memory:?cache=shared"},
-		{gormx.DriverSQLite, "data/yd.db?_pragma=journal_mode(DELETE)"},
-		{gormx.DriverSQLite, "data/yd.db?_txlock=immediate&_pragma=journal_mode(DELETE)"},
+		{gorm.DriverMySQL, "root:root@tcp(127.0.0.1:3306)/yd"},
+		{gorm.DriverMySQL, "root:root@tcp(127.0.0.1:3306)/yd?loc=Local&charset=latin1"},
+		{gorm.DriverMySQL, ""},
+		{gorm.DriverPostgres, "host=127.0.0.1 user=yd TimeZone=Asia/Shanghai"},
+		{gorm.DriverPostgres, "postgres://user:pw@127.0.0.1:5432/yd?sslmode=disable"},
+		{gorm.DriverSQLite, "data/yd.db"},
+		{gorm.DriverSQLite, "file::memory:?cache=shared"},
+		{gorm.DriverSQLite, "data/yd.db?_pragma=journal_mode(DELETE)"},
+		{gorm.DriverSQLite, "data/yd.db?_txlock=immediate&_pragma=journal_mode(DELETE)"},
 		{"", "data/yd.db"},
 		{"oracle", "whatever-it-is"},
 	}
@@ -444,12 +444,12 @@ func TestPresetDSNIsIdempotent(t *testing.T) {
 	for _, tc := range cases {
 		name := tc.driver + "/" + tc.dsn
 		t.Run(name, func(t *testing.T) {
-			once := gormx.PresetDSN(tc.driver, tc.dsn)
-			twice := gormx.PresetDSN(tc.driver, once)
+			once := gorm.PresetDSN(tc.driver, tc.dsn)
+			twice := gorm.PresetDSN(tc.driver, once)
 			if once != twice {
 				t.Fatalf("二次预置改变了连接串\n  一次 %q\n  二次 %q", once, twice)
 			}
-			thrice := gormx.PresetDSN(tc.driver, twice)
+			thrice := gorm.PresetDSN(tc.driver, twice)
 			if once != thrice {
 				t.Fatalf("三次预置仍在变化\n  一次 %q\n  三次 %q", once, thrice)
 			}
@@ -479,14 +479,14 @@ func TestPresetDSNPreservesForm(t *testing.T) {
 	}{
 		{
 			name:    "sqlite-file-uri-memory",
-			driver:  gormx.DriverSQLite,
+			driver:  gorm.DriverSQLite,
 			dsn:     "file::memory:?cache=shared",
 			prefix:  "file::memory:?cache=shared&",
 			appends: "_loc=UTC",
 		},
 		{
 			name:    "sqlite-bare-memory",
-			driver:  gormx.DriverSQLite,
+			driver:  gorm.DriverSQLite,
 			dsn:     ":memory:",
 			prefix:  ":memory:?",
 			appends: "_pragma=journal_mode%28WAL%29",
@@ -495,7 +495,7 @@ func TestPresetDSNPreservesForm(t *testing.T) {
 			// 脚手架 dsnFor 生成的正是这一形态：既有的查询参数（含 _txlock=immediate）原样保留，
 			// 预置只在其后追加，且**不得**追加 _time_format（那会让驱动跳过 _txlock 的解析）。
 			name:    "sqlite-file-uri-with-foreign-params",
-			driver:  gormx.DriverSQLite,
+			driver:  gorm.DriverSQLite,
 			dsn:     "file:yd.db?mode=rwc&cache=private&_txlock=immediate",
 			prefix:  "file:yd.db?mode=rwc&cache=private&_txlock=immediate&",
 			absent:  []string{"_time_format="},
@@ -503,14 +503,14 @@ func TestPresetDSNPreservesForm(t *testing.T) {
 		},
 		{
 			name:    "postgres-keyword-quoted-value",
-			driver:  gormx.DriverPostgres,
+			driver:  gorm.DriverPostgres,
 			dsn:     "host=127.0.0.1 application_name='my app' user=yd",
 			prefix:  "host=127.0.0.1 application_name='my app' user=yd TimeZone=UTC client_encoding=UTF8",
 			appends: "TimeZone=UTC",
 		},
 		{
 			name:    "mysql-no-query-string",
-			driver:  gormx.DriverMySQL,
+			driver:  gorm.DriverMySQL,
 			dsn:     "user:pass@tcp(127.0.0.1:3306)/yd",
 			prefix:  "user:pass@tcp(127.0.0.1:3306)/yd?loc=UTC",
 			appends: "parseTime=True",
@@ -518,7 +518,7 @@ func TestPresetDSNPreservesForm(t *testing.T) {
 		{
 			// The '/' inside the password takes no part in the split: the database name follows the last '/'. | 口令里的 '/' 不参与切分：库名在最后一个 '/' 之后。
 			name:    "mysql-slash-inside-password",
-			driver:  gormx.DriverMySQL,
+			driver:  gorm.DriverMySQL,
 			dsn:     "user:pa/ss@tcp(127.0.0.1:3306)/yd?loc=Local",
 			prefix:  "user:pa/ss@tcp(127.0.0.1:3306)/yd?loc=Local&",
 			absent:  []string{"loc=UTC"},
@@ -528,7 +528,7 @@ func TestPresetDSNPreservesForm(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := gormx.PresetDSN(tc.driver, tc.dsn)
+			got := gorm.PresetDSN(tc.driver, tc.dsn)
 			if !strings.HasPrefix(got, tc.prefix) {
 				t.Fatalf("PresetDSN(%q, %q)\n  得到 %q\n  应以 %q 开头", tc.driver, tc.dsn, got, tc.prefix)
 			}
@@ -553,32 +553,32 @@ func TestPresetDSNLeavesEmptyAndUnknownAlone(t *testing.T) {
 		{"oracle", "user/pass@host:1521/xe"},
 		{"mongodb", "mongodb://127.0.0.1:27017/yd"},
 		{"SQL Server", "sqlserver://sa:pw@127.0.0.1:1433?database=yd"},
-		{gormx.DriverMySQL, ""},
-		{gormx.DriverPostgres, ""},
-		{gormx.DriverSQLite, ""},
-		{gormx.DriverSQLite, "   "},
+		{gorm.DriverMySQL, ""},
+		{gorm.DriverPostgres, ""},
+		{gorm.DriverSQLite, ""},
+		{gorm.DriverSQLite, "   "},
 	}
 	for _, tc := range unchanged {
-		if got := gormx.PresetDSN(tc.driver, tc.dsn); got != tc.dsn {
+		if got := gorm.PresetDSN(tc.driver, tc.dsn); got != tc.dsn {
 			t.Fatalf("PresetDSN(%q, %q) = %q，期望原样返回", tc.driver, tc.dsn, got)
 		}
 	}
 
 	// Case and surrounding whitespace in the driver name do not affect recognition, matching dialectorFor. | 驱动名的大小写与首尾空白不影响识别，与 dialectorFor 的口径一致。
 	for _, driver := range []string{"MySQL", "mysql", " MYSQL "} {
-		got := gormx.PresetDSN(driver, "user:pass@tcp(h:3306)/yd")
+		got := gorm.PresetDSN(driver, "user:pass@tcp(h:3306)/yd")
 		if !strings.Contains(got, "loc=UTC") {
 			t.Fatalf("驱动名 %q 未按 MySQL 预置: %q", driver, got)
 		}
 	}
 	for _, driver := range []string{"postgres", " Postgres", "POSTGRES"} {
-		got := gormx.PresetDSN(driver, "host=h user=u")
+		got := gorm.PresetDSN(driver, "host=h user=u")
 		if !strings.Contains(got, "TimeZone=UTC") {
 			t.Fatalf("驱动名 %q 未按 PostgreSQL 预置: %q", driver, got)
 		}
 	}
 	for _, driver := range []string{"", "sqlite", "SQLite"} {
-		got := gormx.PresetDSN(driver, "data/yd.db")
+		got := gorm.PresetDSN(driver, "data/yd.db")
 		if !strings.Contains(got, "_loc=UTC") {
 			t.Fatalf("驱动名 %q 未按 SQLite 预置: %q", driver, got)
 		}
@@ -613,7 +613,7 @@ func TestPresetDSNRealSQLiteRoundTrip(t *testing.T) {
 	seed := presetRow{Name: "alice", Stamp: time.Date(2026, 10, 17, 8, 30, 15, 0, time.UTC)}
 
 	db := openPresetDB(t, dsn)
-	if err := gormx.AutoMigrate(db, &presetRow{}); err != nil {
+	if err := gorm.AutoMigrate(db, &presetRow{}); err != nil {
 		t.Fatalf("AutoMigrate 失败: %v", err)
 	}
 	if err := db.Create(&seed).Error; err != nil {
@@ -624,7 +624,7 @@ func TestPresetDSNRealSQLiteRoundTrip(t *testing.T) {
 	if raw := rawStamp(t, db, seed.Name); !strings.Contains(raw, "+00:00") {
 		t.Fatalf("落库的时间文本 %q 不含时区偏移量", raw)
 	}
-	if err := gormx.Close(db); err != nil {
+	if err := gorm.Close(db); err != nil {
 		t.Fatalf("Close 失败: %v", err)
 	}
 
@@ -647,11 +647,11 @@ func TestPresetDSNRealSQLiteRoundTrip(t *testing.T) {
 // 解析器会忽略它不认识的查询参数，这里用真实连接把它钉住），并且预置的 pragma 仍生效。
 func TestPresetDSNRealSQLiteFileURI(t *testing.T) {
 	dsn := "file::memory:?cache=shared"
-	db, err := gormx.Open(gormx.Options{Driver: gormx.DriverSQLite, DSN: dsn}, newBufLogger(&bytes.Buffer{}))
+	db, err := gorm.Open(gorm.Options{Driver: gorm.DriverSQLite, DSN: dsn}, newBufLogger(&bytes.Buffer{}))
 	if err != nil {
 		t.Fatalf("Open(%q) 失败: %v", dsn, err)
 	}
-	t.Cleanup(func() { _ = gormx.Close(db) })
+	t.Cleanup(func() { _ = gorm.Close(db) })
 
 	if err := db.Exec("CREATE TABLE preset_probe (id INTEGER PRIMARY KEY, name TEXT)").Error; err != nil {
 		t.Fatalf("建表失败: %v", err)
@@ -693,8 +693,8 @@ func TestPresetDSNNeverAddsTimeFormat(t *testing.T) {
 		{"foreign-params", "file:yd.db?mode=rwc&cache=private&_txlock=immediate"},
 	}
 	for _, tc := range inputs {
-		for _, driver := range []string{gormx.DriverSQLite, "", "SQLite", " SQLITE "} {
-			got := gormx.PresetDSN(driver, tc.dsn)
+		for _, driver := range []string{gorm.DriverSQLite, "", "SQLite", " SQLITE "} {
+			got := gorm.PresetDSN(driver, tc.dsn)
 			if strings.Contains(got, "_time_format") {
 				t.Fatalf("驱动名 %q、连接串 %q 的预置结果 %q 含 _time_format："+
 					"该键会让驱动提前返回、跳过 _txlock 解析，禁止重新加入", driver, tc.dsn, got)
@@ -707,7 +707,7 @@ func TestPresetDSNNeverAddsTimeFormat(t *testing.T) {
 	}
 }
 
-// TestSQLiteTxlockReachesDriverThroughOpen 用真实连接证明 _txlock=immediate 经 gormx.Open 之后
+// TestSQLiteTxlockReachesDriverThroughOpen 用真实连接证明 _txlock=immediate 经 gorm.Open 之后
 // 仍然生效——即预置确实没有把它吃掉。
 //
 // 判据是写锁的持有者：immediate 事务在 BEGIN 时就取得写锁，因此只读事务进行期间另一条连接写不进去，
@@ -766,14 +766,14 @@ func TestSQLiteTimeFormatKeyIsANoOp(t *testing.T) {
 	for _, extra := range []string{"", "&_time_format=sqlite"} {
 		path := filepath.Join(dir, "fmt"+strings.ReplaceAll(extra, "&", "_")+".db")
 		db := openPresetDB(t, path+"?_pragma=journal_mode(WAL)"+extra)
-		if err := gormx.AutoMigrate(db, &presetRow{}); err != nil {
+		if err := gorm.AutoMigrate(db, &presetRow{}); err != nil {
 			t.Fatalf("AutoMigrate 失败: %v", err)
 		}
 		if err := db.Create(&presetRow{Name: "a", Stamp: stamp}).Error; err != nil {
 			t.Fatalf("写入失败: %v", err)
 		}
 		texts = append(texts, rawStamp(t, db, "a"))
-		if err := gormx.Close(db); err != nil {
+		if err := gorm.Close(db); err != nil {
 			t.Fatalf("Close 失败: %v", err)
 		}
 	}
@@ -787,18 +787,18 @@ func TestSQLiteTimeFormatKeyIsANoOp(t *testing.T) {
 }
 
 // openPresetDB opens a connection with the given SQLite DSN and closes it when the test ends. | openPresetDB 用给定的 SQLite DSN 打开连接并在测试结束时关闭。
-func openPresetDB(t *testing.T, dsn string) *gorm.DB {
+func openPresetDB(t *testing.T, dsn string) *gormio.DB {
 	t.Helper()
-	db, err := gormx.Open(gormx.Options{Driver: gormx.DriverSQLite, DSN: dsn}, newBufLogger(&bytes.Buffer{}))
+	db, err := gorm.Open(gorm.Options{Driver: gorm.DriverSQLite, DSN: dsn}, newBufLogger(&bytes.Buffer{}))
 	if err != nil {
 		t.Fatalf("Open(%q) 失败: %v", dsn, err)
 	}
-	t.Cleanup(func() { _ = gormx.Close(db) })
+	t.Cleanup(func() { _ = gorm.Close(db) })
 	return db
 }
 
 // pragmaText reads one PRAGMA value off the connection, feeding the assertion that the presets really landed on it. | pragmaText 读出连接上的一个 PRAGMA 取值，供「预置是否真的落到连接上」的断言使用。
-func pragmaText(t *testing.T, db *gorm.DB, name string) string {
+func pragmaText(t *testing.T, db *gormio.DB, name string) string {
 	t.Helper()
 	var got any
 	if err := db.Raw("PRAGMA " + name).Row().Scan(&got); err != nil {
@@ -810,7 +810,7 @@ func pragmaText(t *testing.T, db *gorm.DB, name string) string {
 // rawStamp 读出 stamp 列的原始文本，用于断言写出时间带偏移量。
 //
 // 用 CAST 成 TEXT 是为了绕开驱动的时间解析：表达式没有声明类型，驱动便原样给出文本。
-func rawStamp(t *testing.T, db *gorm.DB, name string) string {
+func rawStamp(t *testing.T, db *gormio.DB, name string) string {
 	t.Helper()
 	var raw string
 	if err := db.Raw("SELECT CAST(stamp AS TEXT) FROM "+presetRow{}.TableName()+" WHERE name = ?", name).

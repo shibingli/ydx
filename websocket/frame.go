@@ -1,4 +1,4 @@
-package ws
+package websocket
 
 import (
 	"bufio"
@@ -253,7 +253,7 @@ func closePayload(code CloseCode, text string) []byte {
 // and values above 4999; it never rewrites the value, it reports it. | 以及大于 4999 的取值；它绝不改写取值，只做报告。
 func validateOutboundCloseCode(code CloseCode) error {
 	if !validCloseCode(code) {
-		return errx.Detail(ErrInvalidCloseCode,
+		return errs.Detail(ErrInvalidCloseCode,
 			"%[1]d is reserved or unassigned | %[1]d 为保留或未分配状态码", uint16(code))
 	}
 	return nil
@@ -265,7 +265,7 @@ func validateOutboundClose(code CloseCode, reason string) error {
 		return err
 	}
 	if len(reason) > maxControlPayload-2 {
-		return errx.Detail(ErrControlTooLarge,
+		return errs.Detail(ErrControlTooLarge,
 			"close reason is %[1]d bytes, at most %[2]d are allowed | 关闭原因 %[1]d 字节，最多允许 %[2]d 字节", len(reason), maxControlPayload-2)
 	}
 	if !utf8Valid([]byte(reason)) {
@@ -280,7 +280,7 @@ func validateOutboundClosePayload(p []byte) error {
 	case 0:
 		return nil
 	case 1:
-		return errx.Detail(ErrInvalidCloseCode,
+		return errs.Detail(ErrInvalidCloseCode,
 			"a close payload of %[1]d byte cannot carry a 2-byte status code | %[1]d 字节的关闭载荷无法承载 2 字节状态码", len(p))
 	}
 	if err := validateOutboundCloseCode(CloseCode(binary.BigEndian.Uint16(p[:2]))); err != nil {

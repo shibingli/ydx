@@ -1,4 +1,4 @@
-package gormx_test
+package gorm_test
 
 import (
 	"bytes"
@@ -28,18 +28,18 @@ type appProbeRow struct {
 const appProbeTable = "yd_app_probe_rows"
 
 // TestOpenMigratesApplicationModelsUnderYDPrefix 是「使用方模型也带前缀」的实测证据：
-// 用 gormx.Open 打开真实 SQLite，迁移一个不属于 security/auth/gormstore 的模型，然后直接从 sqlite_master
+// 用 gorm.Open 打开真实 SQLite，迁移一个不属于 security/auth/gormstore 的模型，然后直接从 sqlite_master
 // 读回它落到的表与索引名 —— 断言的是库里的 DDL，而不是策略的自述。
 //
 // TestOpenMigratesApplicationModelsUnderYDPrefix is the measured evidence that application models carry the prefix
-// too: it opens a real SQLite through gormx.Open, migrates a model that belongs to no framework package, and reads
+// too: it opens a real SQLite through gorm.Open, migrates a model that belongs to no framework package, and reads
 // the table and index names back from sqlite_master — so the assertion is about the DDL in the database, not about
 // what the strategy says about itself.
 func TestOpenMigratesApplicationModelsUnderYDPrefix(t *testing.T) {
 	dsn := "file:" + filepath.ToSlash(filepath.Join(t.TempDir(), "naming.db"))
-	db := openProbe(t, gormx.Options{DSN: dsn}, newBufLogger(&bytes.Buffer{}))
+	db := openProbe(t, gorm.Options{DSN: dsn}, newBufLogger(&bytes.Buffer{}))
 
-	if err := gormx.AutoMigrate(db, &appProbeRow{}); err != nil {
+	if err := gorm.AutoMigrate(db, &appProbeRow{}); err != nil {
 		t.Fatalf("AutoMigrate() = %v, want nil | AutoMigrate() = %v，期望 nil", err, err)
 	}
 	if !db.Migrator().HasTable(appProbeTable) {
@@ -74,8 +74,8 @@ func TestOpenMigratesApplicationModelsUnderYDPrefix(t *testing.T) {
 		t.Errorf("derived indexes = %v, want %v | 派生索引 = %v，期望 %v", indexes, want, indexes, want)
 	}
 	for _, index := range indexes {
-		if !strings.HasPrefix(index, gormx.IndexPrefix) {
-			t.Errorf("index %q does not start with %q | 索引 %q 不以 %q 开头", index, gormx.IndexPrefix, index, gormx.IndexPrefix)
+		if !strings.HasPrefix(index, gorm.IndexPrefix) {
+			t.Errorf("index %q does not start with %q | 索引 %q 不以 %q 开头", index, gorm.IndexPrefix, index, gorm.IndexPrefix)
 		}
 	}
 	// 证据原样写进日志：模型没有 TableName()，落到的却是 yd_ 表与 yd_idx_ 索引。
@@ -100,7 +100,7 @@ func containsString(list []string, value string) bool {
 // later "fix" that produces idx_yd_auth_users_... or yd_idx_yd_auth_users_... fails here instead of reaching a
 // database.
 func TestNamingStrategyPrefixesTablesAndIndexes(t *testing.T) {
-	n := gormx.DefaultNamingStrategy()
+	n := gorm.DefaultNamingStrategy()
 
 	if got := n.TableName("User"); got != "yd_users" {
 		t.Errorf("TableName(User) = %q, want %q | TableName(User) = %q，期望 %q", got, "yd_users", got, "yd_users")
@@ -123,10 +123,10 @@ func TestNamingStrategyPrefixesTablesAndIndexes(t *testing.T) {
 			if got != c.want {
 				t.Errorf("IndexName(%q, %q) = %q, want %q | IndexName(%q, %q) = %q，期望 %q", c.table, c.column, got, c.want, c.table, c.column, got, c.want)
 			}
-			if !strings.HasPrefix(got, gormx.IndexPrefix) {
-				t.Errorf("IndexName(%q, %q) = %q does not start with %q | IndexName(%q, %q) = %q 不以 %q 开头", c.table, c.column, got, gormx.IndexPrefix, c.table, c.column, got, gormx.IndexPrefix)
+			if !strings.HasPrefix(got, gorm.IndexPrefix) {
+				t.Errorf("IndexName(%q, %q) = %q does not start with %q | IndexName(%q, %q) = %q 不以 %q 开头", c.table, c.column, got, gorm.IndexPrefix, c.table, c.column, got, gorm.IndexPrefix)
 			}
-			if strings.Contains(got, gormx.IndexPrefix+gormx.TablePrefix) {
+			if strings.Contains(got, gorm.IndexPrefix+gorm.TablePrefix) {
 				t.Errorf("IndexName(%q, %q) = %q repeats the table prefix | IndexName(%q, %q) = %q 重复了表前缀", c.table, c.column, got, c.table, c.column, got)
 			}
 		})
@@ -142,30 +142,30 @@ func TestNamingStrategyPrefixesTablesAndIndexes(t *testing.T) {
 // plain cut — two indexes sharing a head but differing in the tail must stay two names, or they would silently
 // become one index.
 func TestIndexNameTruncatesLongNamesWithHash(t *testing.T) {
-	n := gormx.DefaultNamingStrategy()
+	n := gorm.DefaultNamingStrategy()
 	// 表名本身就长于上限，两个用例因此共享同一段前缀，只在尾部不同。
 	// The table name alone exceeds the limit, so the two cases share a long head and differ only in the tail.
-	longTable := gormx.TablePrefix + strings.Repeat("segment_", 8) + "sessions"
+	longTable := gorm.TablePrefix + strings.Repeat("segment_", 8) + "sessions"
 
 	first := n.IndexName(longTable, "tenant_id")
 	second := n.IndexName(longTable, "tenant_code")
 
-	if len(first) != gormx.IdentifierMaxLength {
-		t.Errorf("len(IndexName(long, tenant_id)) = %d, want %d | 超长索引名的长度 = %d，期望 %d", len(first), gormx.IdentifierMaxLength, len(first), gormx.IdentifierMaxLength)
+	if len(first) != gorm.IdentifierMaxLength {
+		t.Errorf("len(IndexName(long, tenant_id)) = %d, want %d | 超长索引名的长度 = %d，期望 %d", len(first), gorm.IdentifierMaxLength, len(first), gorm.IdentifierMaxLength)
 	}
-	if len(second) != gormx.IdentifierMaxLength {
-		t.Errorf("len(IndexName(long, tenant_code)) = %d, want %d | 超长索引名的长度 = %d，期望 %d", len(second), gormx.IdentifierMaxLength, len(second), gormx.IdentifierMaxLength)
+	if len(second) != gorm.IdentifierMaxLength {
+		t.Errorf("len(IndexName(long, tenant_code)) = %d, want %d | 超长索引名的长度 = %d，期望 %d", len(second), gorm.IdentifierMaxLength, len(second), gorm.IdentifierMaxLength)
 	}
-	if !strings.HasPrefix(first, gormx.IndexPrefix) {
-		t.Errorf("truncated index %q does not start with %q | 截断后的索引 %q 不以 %q 开头", first, gormx.IndexPrefix, first, gormx.IndexPrefix)
+	if !strings.HasPrefix(first, gorm.IndexPrefix) {
+		t.Errorf("truncated index %q does not start with %q | 截断后的索引 %q 不以 %q 开头", first, gorm.IndexPrefix, first, gorm.IndexPrefix)
 	}
 	if first == second {
 		t.Errorf("two long names collided after truncation: %q | 两个长名字截断后撞成同一个：%q", first, first)
 	}
 	// 与「直接截断」对质：完整名的前 63 字节若就是结果，说明散列后缀根本没加上。
 	// Confronted with a plain cut: if the first 63 bytes of the full name were the result, the hash suffix would be missing.
-	plainCut := gormx.IndexPrefix + strings.TrimPrefix(longTable, gormx.TablePrefix) + "_tenant_id"
-	if first == plainCut[:gormx.IdentifierMaxLength] {
+	plainCut := gorm.IndexPrefix + strings.TrimPrefix(longTable, gorm.TablePrefix) + "_tenant_id"
+	if first == plainCut[:gorm.IdentifierMaxLength] {
 		t.Errorf("index %q is a plain cut of the full name, the hash suffix is missing | 索引 %q 只是完整名的直接截断，缺少散列后缀", first, first)
 	}
 	// 同一次派生必须稳定：名字进日志、进迁移比较，抖动会让每次启动都重建索引。

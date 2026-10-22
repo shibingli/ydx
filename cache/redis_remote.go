@@ -1,4 +1,4 @@
-package cachex
+package cache
 
 import (
 	"context"
@@ -16,11 +16,11 @@ import (
 // Additional sentinel errors for the Redis remote. | Redis 远端的额外哨兵错误。
 var (
 	// ErrSubscribe indicates the Pub/Sub subscription ended unexpectedly. | ErrSubscribe 表示 Pub/Sub 订阅意外结束。
-	ErrSubscribe = errx.New("cachex: subscription failed | cachex：订阅失败")
+	ErrSubscribe = errs.New("cachex: subscription failed | cachex：订阅失败")
 	// ErrHealthCheck indicates the Pub/Sub connection failed its liveness probe. | ErrHealthCheck 表示 Pub/Sub 连接未通过探活。
-	ErrHealthCheck = errx.New("cachex: subscription health check failed | cachex：订阅探活失败")
+	ErrHealthCheck = errs.New("cachex: subscription health check failed | cachex：订阅探活失败")
 	// ErrPublish indicates an invalidation event could not be broadcast. | ErrPublish 表示失效事件无法广播。
-	ErrPublish = errx.New("cachex: publish failed | cachex：发布失败")
+	ErrPublish = errs.New("cachex: publish failed | cachex：发布失败")
 )
 
 // Defaults for RedisOptions. | RedisOptions 的默认值。
@@ -126,14 +126,14 @@ func (r *RedisRemote) Load(ctx context.Context, key string) (Item, bool, error) 
 	get := pipe.Get(ctx, full)
 	pttl := pipe.PTTL(ctx, full)
 	if _, err := pipe.Exec(ctx); err != nil && !errors.Is(err, redis.Nil) {
-		return Item{}, false, errx.Wrap(err, ErrRemote)
+		return Item{}, false, errs.Wrap(err, ErrRemote)
 	}
 	raw, err := get.Bytes()
 	if errors.Is(err, redis.Nil) {
 		return Item{}, false, nil
 	}
 	if err != nil {
-		return Item{}, false, errx.Wrap(err, ErrRemote)
+		return Item{}, false, errs.Wrap(err, ErrRemote)
 	}
 	return Item{Raw: raw, TTL: remainingTTL(pttl.Val())}, true, nil
 }
@@ -168,7 +168,7 @@ func (r *RedisRemote) LoadMany(ctx context.Context, keys []string) (map[string]I
 			ttls = append(ttls, pipe.PTTL(ctx, full))
 		}
 		if _, err := pipe.Exec(ctx); err != nil && !errors.Is(err, redis.Nil) {
-			return nil, errx.Wrap(err, ErrRemote)
+			return nil, errs.Wrap(err, ErrRemote)
 		}
 		for i, cmd := range gets {
 			raw, err := cmd.Bytes()
@@ -176,7 +176,7 @@ func (r *RedisRemote) LoadMany(ctx context.Context, keys []string) (map[string]I
 				continue
 			}
 			if err != nil {
-				return nil, errx.Wrap(err, ErrRemote)
+				return nil, errs.Wrap(err, ErrRemote)
 			}
 			out[batch[i]] = Item{Raw: raw, TTL: remainingTTL(ttls[i].Val())}
 		}
@@ -201,7 +201,7 @@ func (r *RedisRemote) Store(ctx context.Context, key string, data []byte, flags 
 	}
 	v, err := setScript.Run(ctx, r.cli, []string{r.key(key)}, data, int(flags), ttlMillis(ttl)).Uint64()
 	if err != nil {
-		return 0, errx.Wrap(err, ErrRemote)
+		return 0, errs.Wrap(err, ErrRemote)
 	}
 	return v, nil
 }
@@ -213,7 +213,7 @@ func (r *RedisRemote) StoreIf(ctx context.Context, key string, data []byte, flag
 	}
 	v, err := casScript.Run(ctx, r.cli, []string{r.key(key)}, data, int(flags), ttlMillis(ttl), expect).Int64()
 	if err != nil {
-		return 0, false, errx.Wrap(err, ErrRemote)
+		return 0, false, errs.Wrap(err, ErrRemote)
 	}
 	if v < 0 {
 		return 0, false, nil
@@ -262,12 +262,12 @@ func (r *RedisRemote) Publish(ctx context.Context, ev Event) error {
 
 // publishOne marshals and sends one message. | publishOne 序列化并发送一条消息。
 func (r *RedisRemote) publishOne(ctx context.Context, msg eventWire) error {
-	payload, err := jsonx.Marshal(msg)
+	payload, err := json.Marshal(msg)
 	if err != nil {
-		return errx.Wrap(err, ErrPublish)
+		return errs.Wrap(err, ErrPublish)
 	}
 	if err := r.cli.Publish(ctx, r.opts.Channel, string(payload)).Err(); err != nil {
-		return errx.Wrap(err, ErrPublish)
+		return errs.Wrap(err, ErrPublish)
 	}
 	return nil
 }
@@ -311,7 +311,7 @@ func (r *RedisRemote) Subscribe(ctx context.Context, handler func(Event)) error 
 			err := pubsub.Ping(probeCtx)
 			cancel()
 			if err != nil {
-				return errx.Wrap(err, ErrHealthCheck)
+				return errs.Wrap(err, ErrHealthCheck)
 			}
 		}
 	}
@@ -320,7 +320,7 @@ func (r *RedisRemote) Subscribe(ctx context.Context, handler func(Event)) error 
 // decodeEvent parses and bounds one published message. | decodeEvent 解析并限制一条已发布消息。
 func decodeEvent(payload string) (Event, bool) {
 	var wire eventWire
-	if err := jsonx.Unmarshal([]byte(payload), &wire); err != nil {
+	if err := json.Unmarshal([]byte(payload), &wire); err != nil {
 		return Event{}, false
 	}
 	ev := Event{

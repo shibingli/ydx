@@ -1,6 +1,6 @@
 //go:build amd64 && !jsonx_std
 
-package jsonx_test
+package json_test
 
 import (
 	"bytes"
@@ -108,7 +108,7 @@ func TestNativeOmitZeroMarshalDifferential(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got, gotErr := jsonx.Marshal(tc.value)
+			got, gotErr := json.Marshal(tc.value)
 			want, wantErr := stdjson.Marshal(tc.value)
 			if (gotErr == nil) != (wantErr == nil) {
 				t.Fatalf("错误行为不一致 | error behavior differs: jsonx err=%v, stdlib err=%v", gotErr, wantErr)
@@ -125,7 +125,7 @@ func TestNativeOmitZeroMarshalDifferential(t *testing.T) {
 // 自定义 IsZero 的装箱路径在不可寻址根值上可用，且指针根值输出仍逐字节一致。
 func TestNativeOmitZeroPointerRoot(t *testing.T) {
 	value := omitZeroFields{Custom: omitZeroValue{V: 42}, CustomPtr: omitZeroPointer{V: 7}, Int: 3}
-	got, err := jsonx.Marshal(value)
+	got, err := json.Marshal(value)
 	if err != nil {
 		t.Fatalf("值编码失败 | value marshal failed: %v", err)
 	}
@@ -136,7 +136,7 @@ func TestNativeOmitZeroPointerRoot(t *testing.T) {
 	if !bytes.Equal(got, want) {
 		t.Fatalf("值编码不一致 | value encoding differs\njsonx : %s\nstdlib: %s", got, want)
 	}
-	gotPtr, err := jsonx.Marshal(&value)
+	gotPtr, err := json.Marshal(&value)
 	if err != nil {
 		t.Fatalf("指针编码失败 | pointer marshal failed: %v", err)
 	}
@@ -178,7 +178,7 @@ func TestNativeOmitZeroEdgeDifferential(t *testing.T) {
 		omitZeroEdge{NamedInt: 9},
 	}
 	for _, value := range cases {
-		got, gotErr := jsonx.Marshal(value)
+		got, gotErr := json.Marshal(value)
 		want, wantErr := stdjson.Marshal(value)
 		if (gotErr == nil) != (wantErr == nil) {
 			t.Fatalf("错误行为不一致 | error behavior differs: jsonx err=%v, stdlib err=%v", gotErr, wantErr)
@@ -200,7 +200,7 @@ func TestNativeOmitZeroUnmarshalUnaffected(t *testing.T) {
 	}
 	for _, doc := range docs {
 		got := new(omitZeroFields)
-		gotErr := jsonx.Unmarshal([]byte(doc), got)
+		gotErr := json.Unmarshal([]byte(doc), got)
 		want := new(omitZeroFields)
 		wantErr := stdjson.Unmarshal([]byte(doc), want)
 		if (gotErr == nil) != (wantErr == nil) {

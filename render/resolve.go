@@ -39,24 +39,24 @@ func (c *compiler) resolveFunc(name string) (*funcRef, error) {
 	if b, ok := builtinFor(name); ok {
 		return &funcRef{name: name, kind: funcBuiltin, builtin: b}, nil
 	}
-	return nil, errx.Detail(ErrParseTemplate, "function=%[1]s | 函数=%[1]s", name)
+	return nil, errs.Detail(ErrParseTemplate, "function=%[1]s | 函数=%[1]s", name)
 }
 
 // funcValue validates a template function and returns its reflect value. | funcValue 校验模板函数并返回其反射值。
 func funcValue(name string, fn any) (reflect.Value, error) {
 	rv := reflect.ValueOf(fn)
 	if !rv.IsValid() || rv.Kind() != reflect.Func {
-		return reflect.Value{}, errx.Detail(ErrInvalidFunc, "function=%[1]s | 函数=%[1]s", name)
+		return reflect.Value{}, errs.Detail(ErrInvalidFunc, "function=%[1]s | 函数=%[1]s", name)
 	}
 	typ := rv.Type()
 	switch typ.NumOut() {
 	case 1:
 	case 2:
 		if typ.Out(1) != reflect.TypeFor[error]() {
-			return reflect.Value{}, errx.Detail(ErrInvalidFunc, "function=%[1]s | 函数=%[1]s", name)
+			return reflect.Value{}, errs.Detail(ErrInvalidFunc, "function=%[1]s | 函数=%[1]s", name)
 		}
 	default:
-		return reflect.Value{}, errx.Detail(ErrInvalidFunc, "function=%[1]s | 函数=%[1]s", name)
+		return reflect.Value{}, errs.Detail(ErrInvalidFunc, "function=%[1]s | 函数=%[1]s", name)
 	}
 	return rv, nil
 }

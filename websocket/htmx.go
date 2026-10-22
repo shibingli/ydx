@@ -1,4 +1,4 @@
-package ws
+package websocket
 
 import (
 	stdhtml "html"
@@ -16,13 +16,13 @@ import (
 // Error variables of the htmx integration. | htmx 集成层的错误变量。
 var (
 	// ErrHtmxEncode indicates that an htmx envelope could not be encoded as JSON. | ErrHtmxEncode 表示 htmx 信封无法编码为 JSON。
-	ErrHtmxEncode = errx.New("ws: failed to encode htmx message | ws：htmx 消息编码失败")
+	ErrHtmxEncode = errs.New("ws: failed to encode htmx message | ws：htmx 消息编码失败")
 	// ErrHtmxDecode indicates that a received text message is not a valid htmx JSON envelope. | ErrHtmxDecode 表示收到的文本消息不是合法的 htmx JSON 信封。
-	ErrHtmxDecode = errx.New("ws: failed to decode htmx message | ws：htmx 消息解码失败")
+	ErrHtmxDecode = errs.New("ws: failed to decode htmx message | ws：htmx 消息解码失败")
 	// ErrHtmxWrite indicates that writing an htmx fragment to the connection failed. | ErrHtmxWrite 表示把 htmx 片段写入连接失败。
-	ErrHtmxWrite = errx.New("ws: failed to write htmx fragment | ws：htmx 片段写出失败")
+	ErrHtmxWrite = errs.New("ws: failed to write htmx fragment | ws：htmx 片段写出失败")
 	// ErrHtmxMessageType indicates that an htmx endpoint received a non-text message. | ErrHtmxMessageType 表示 htmx 端点收到了非文本消息。
-	ErrHtmxMessageType = errx.New("ws: htmx endpoint received a non-text message | ws：htmx 端点收到非文本消息")
+	ErrHtmxMessageType = errs.New("ws: htmx endpoint received a non-text message | ws：htmx 端点收到非文本消息")
 )
 
 // Close reasons used by HtmxHandler. | HtmxHandler 使用的关闭原因。
@@ -63,7 +63,7 @@ type HtmxMessage struct {
 // 同时接受 htmx 4 的扁平信封与旧的 HEADERS/BODY 信封。
 func (m *HtmxMessage) UnmarshalJSON(data []byte) error {
 	var raw map[string]any
-	if err := jsonx.Unmarshal(data, &raw); err != nil {
+	if err := json.Unmarshal(data, &raw); err != nil {
 		return err
 	}
 	*m = HtmxMessage{Values: make(map[string]any, len(raw))}
@@ -125,7 +125,7 @@ func htmxScalarString(value any) string {
 	if value == nil {
 		return ""
 	}
-	encoded, err := jsonx.Marshal(value)
+	encoded, err := json.Marshal(value)
 	if err != nil {
 		return ""
 	}
@@ -204,8 +204,8 @@ func htmxServe(w http.ResponseWriter, r *http.Request, opts Options, o HtmxOptio
 	conn, err := Upgrade(w, r, opts)
 	if err != nil {
 		// Upgrade has already written the HTTP error response; only an observable log record is added here | Upgrade 已写出 HTTP 错误响应，这里只补一条可观测日志
-		logx.Default().Warn("ws: htmx endpoint upgrade failed | ws：htmx 端点升级失败",
-			logx.Str("path", path), logx.Err(err))
+		log.Default().Warn("ws: htmx endpoint upgrade failed | ws：htmx 端点升级失败",
+			log.Str("path", path), log.Err(err))
 		return
 	}
 	// the connection is unusable once the loop ends, so the underlying TCP is always closed on exit | 读循环结束后连接不再可用，统一在退出时关闭底层 TCP
@@ -234,9 +234,9 @@ func serveHtmx(conn *Conn, o HtmxOptions) error {
 		}
 
 		var msg HtmxMessage
-		if err := jsonx.Unmarshal(data, &msg); err != nil {
+		if err := json.Unmarshal(data, &msg); err != nil {
 			_ = conn.Close(CloseUnsupportedData, closeReasonHtmxJSON)
-			return errx.Wrap(err, ErrHtmxDecode)
+			return errs.Wrap(err, ErrHtmxDecode)
 		}
 
 		if o.OnMessage != nil {
@@ -252,16 +252,16 @@ func serveHtmx(conn *Conn, o HtmxOptions) error {
 			return err
 		}
 		if err := conn.WriteMessage(TextMessage, echo); err != nil {
-			return errx.Wrap(err, ErrHtmxWrite)
+			return errs.Wrap(err, ErrHtmxWrite)
 		}
 	}
 }
 
 // encodeHtmxMessage encodes an htmx envelope with the framework's adaptive JSON layer. | encodeHtmxMessage 用框架自适应 JSON 层编码 htmx 信封。
 func encodeHtmxMessage(m HtmxMessage) ([]byte, error) {
-	b, err := jsonx.Marshal(m)
+	b, err := json.Marshal(m)
 	if err != nil {
-		return nil, errx.Wrap(err, ErrHtmxEncode)
+		return nil, errs.Wrap(err, ErrHtmxEncode)
 	}
 	return b, nil
 }
@@ -295,7 +295,7 @@ func (c *Conn) WriteHtmxFragment(target, swap, html string) error {
 	buf = append(buf, "</hx-partial>"...)
 
 	if err := c.WriteMessage(TextMessage, buf); err != nil {
-		return errx.Wrap(err, ErrHtmxWrite)
+		return errs.Wrap(err, ErrHtmxWrite)
 	}
 	return nil
 }

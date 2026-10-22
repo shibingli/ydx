@@ -1,6 +1,6 @@
 //go:build amd64 && !jsonx_std
 
-package jsonx_test
+package json_test
 
 import (
 	"bytes"
@@ -243,7 +243,7 @@ func TestNativeDecodeDifferential(t *testing.T) {
 	for _, tc := range nativeDecodeCases() {
 		t.Run(tc.name, func(t *testing.T) {
 			got := tc.newTarget()
-			gotErr := jsonx.Unmarshal([]byte(tc.doc), got)
+			gotErr := json.Unmarshal([]byte(tc.doc), got)
 			want := tc.newTarget()
 			wantErr := stdjson.Unmarshal([]byte(tc.doc), want)
 
@@ -258,7 +258,7 @@ func TestNativeDecodeDifferential(t *testing.T) {
 				var syn *stdjson.SyntaxError
 				var typ *stdjson.UnmarshalTypeError
 				if errors.As(wantErr, &syn) || errors.As(wantErr, &typ) {
-					if !errors.Is(gotErr, jsonx.ErrSyntax) && !errors.Is(gotErr, jsonx.ErrTypeMismatch) {
+					if !errors.Is(gotErr, json.ErrSyntax) && !errors.Is(gotErr, json.ErrTypeMismatch) {
 						t.Fatalf("错误未归类为 ErrSyntax / ErrTypeMismatch: %v", gotErr)
 					}
 				}
@@ -267,7 +267,7 @@ func TestNativeDecodeDifferential(t *testing.T) {
 			if !reflect.DeepEqual(got, want) {
 				t.Fatalf("解码结果与标准库不一致\njsonx : %#v\nstdlib: %#v", got, want)
 			}
-			if v := jsonx.Valid([]byte(tc.doc)); v != stdjson.Valid([]byte(tc.doc)) {
+			if v := json.Valid([]byte(tc.doc)); v != stdjson.Valid([]byte(tc.doc)) {
 				t.Fatalf("Valid 与标准库不一致: jsonx=%v stdlib=%v", v, stdjson.Valid([]byte(tc.doc)))
 			}
 		})
@@ -281,7 +281,7 @@ func TestNativeTruncatedPrefixesDifferential(t *testing.T) {
 	for i := 0; i < len(doc); i++ {
 		prefix := doc[:i]
 		var got any
-		gotErr := jsonx.Unmarshal(prefix, &got)
+		gotErr := json.Unmarshal(prefix, &got)
 		var want any
 		wantErr := stdjson.Unmarshal(prefix, &want)
 		if (gotErr == nil) != (wantErr == nil) {
@@ -290,7 +290,7 @@ func TestNativeTruncatedPrefixesDifferential(t *testing.T) {
 		if gotErr == nil && !reflect.DeepEqual(got, want) {
 			t.Fatalf("前缀 %d (%q) 结果不一致", i, prefix)
 		}
-		if got, want := jsonx.Valid(prefix), stdjson.Valid(prefix); got != want {
+		if got, want := json.Valid(prefix), stdjson.Valid(prefix); got != want {
 			t.Fatalf("前缀 %d (%q) Valid 不一致: jsonx=%v stdlib=%v", i, prefix, got, want)
 		}
 	}
@@ -358,7 +358,7 @@ func TestNativeMarshalDifferential(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got, gotErr := jsonx.Marshal(tc.value)
+			got, gotErr := json.Marshal(tc.value)
 			want, wantErr := stdjson.Marshal(tc.value)
 			if (gotErr == nil) != (wantErr == nil) {
 				t.Fatalf("错误行为不一致: jsonx err=%v, stdlib err=%v", gotErr, wantErr)
@@ -388,7 +388,7 @@ func TestNativeStringRoundTripByteExact(t *testing.T) {
 		"invalid \xff\xc3 bytes",
 	}
 	for _, s := range values {
-		got, err := jsonx.Marshal(s)
+		got, err := json.Marshal(s)
 		if err != nil {
 			t.Fatalf("Marshal(%q): %v", s, err)
 		}
@@ -400,7 +400,7 @@ func TestNativeStringRoundTripByteExact(t *testing.T) {
 			t.Fatalf("编码不一致\njsonx : %q\nstdlib: %q", got, want)
 		}
 		var back string
-		if err := jsonx.Unmarshal(got, &back); err != nil {
+		if err := json.Unmarshal(got, &back); err != nil {
 			t.Fatalf("Unmarshal(%q): %v", got, err)
 		}
 		var stdBack string
@@ -410,7 +410,7 @@ func TestNativeStringRoundTripByteExact(t *testing.T) {
 		if back != stdBack {
 			t.Fatalf("解码结果不一致\njsonx : %q\nstdlib: %q", back, stdBack)
 		}
-		again, err := jsonx.Marshal(back)
+		again, err := json.Marshal(back)
 		if err != nil {
 			t.Fatalf("re-Marshal(%q): %v", back, err)
 		}
@@ -429,10 +429,10 @@ func TestNativeDepthLimit(t *testing.T) {
 	for _, n := range []int{1, 100, 9999, 10000} {
 		doc := nested(n)
 		var got any
-		if err := jsonx.Unmarshal(doc, &got); err != nil {
+		if err := json.Unmarshal(doc, &got); err != nil {
 			t.Fatalf("深度 %d 应可解码，实际 %v", n, err)
 		}
-		if !jsonx.Valid(doc) {
+		if !json.Valid(doc) {
 			t.Fatalf("深度 %d 的 Valid 应为 true", n)
 		}
 	}
@@ -440,14 +440,14 @@ func TestNativeDepthLimit(t *testing.T) {
 		doc := nested(n)
 		var got any
 		start := time.Now()
-		err := jsonx.Unmarshal(doc, &got)
+		err := json.Unmarshal(doc, &got)
 		if err == nil {
 			t.Fatalf("深度 %d 必须返回错误", n)
 		}
-		if !errors.Is(err, jsonx.ErrSyntax) {
+		if !errors.Is(err, json.ErrSyntax) {
 			t.Fatalf("深度 %d 的错误应归类为 ErrSyntax，实际 %v", n, err)
 		}
-		if jsonx.Valid(doc) {
+		if json.Valid(doc) {
 			t.Fatalf("深度 %d 的 Valid 应为 false", n)
 		}
 		if elapsed := time.Since(start); elapsed > 2*time.Second {
@@ -458,10 +458,10 @@ func TestNativeDepthLimit(t *testing.T) {
 	t.Run("truncated_deep", func(t *testing.T) {
 		doc := []byte(strings.Repeat("[", 20000))
 		var got any
-		if err := jsonx.Unmarshal(doc, &got); err == nil {
+		if err := json.Unmarshal(doc, &got); err == nil {
 			t.Fatal("truncated deep input must return an error | 截断的超深输入必须返回错误")
 		}
-		if jsonx.Valid(doc) {
+		if json.Valid(doc) {
 			t.Fatal("truncated deep input must be invalid | 截断的超深输入 Valid 必须为 false")
 		}
 	})
@@ -469,7 +469,7 @@ func TestNativeDepthLimit(t *testing.T) {
 	t.Run("deep_objects", func(t *testing.T) {
 		doc := []byte(strings.Repeat(`{"a":`, 10001) + "0" + strings.Repeat("}", 10001))
 		var got any
-		if err := jsonx.Unmarshal(doc, &got); err == nil {
+		if err := json.Unmarshal(doc, &got); err == nil {
 			t.Fatal("deep object must return an error | 超深对象必须返回错误")
 		}
 	})
@@ -477,7 +477,7 @@ func TestNativeDepthLimit(t *testing.T) {
 	t.Run("encode_cycle", func(t *testing.T) {
 		node := &nativeNode{}
 		node.Next = node
-		if _, err := jsonx.Marshal(node); err == nil {
+		if _, err := json.Marshal(node); err == nil {
 			t.Fatal("cyclic pointer must return an error | 循环指针必须返回错误而不是无限递归")
 		}
 	})
@@ -487,7 +487,7 @@ func TestNativeDepthLimit(t *testing.T) {
 		for i := 0; i < 10001; i++ {
 			v = []any{v}
 		}
-		if _, err := jsonx.Marshal(v); err == nil {
+		if _, err := json.Marshal(v); err == nil {
 			t.Fatal("value beyond the encode depth limit must return an error | 超过编码深度上限的值必须返回错误")
 		}
 	})
@@ -510,16 +510,16 @@ func TestNativeDecoderStreamSecurity(t *testing.T) {
 	}
 	for _, in := range inputs {
 		t.Run("", func(t *testing.T) {
-			dec := jsonx.NewDecoder(strings.NewReader(in))
+			dec := json.NewDecoder(strings.NewReader(in))
 			var v any
 			_ = dec.Decode(&v)
 		})
 	}
 	var v any
-	if err := jsonx.NewDecoder(strings.NewReader("{}")).Decode(v); err == nil {
+	if err := json.NewDecoder(strings.NewReader("{}")).Decode(v); err == nil {
 		t.Fatal("non-pointer target must return an error | 非指针目标必须返回错误")
 	}
-	if err := jsonx.NewDecoder(nil).Decode(&v); !errors.Is(err, io.EOF) {
+	if err := json.NewDecoder(nil).Decode(&v); !errors.Is(err, io.EOF) {
 		t.Fatalf("nil reader Decode = %v, want io.EOF (no panic) | nil 读取器应返回 io.EOF 而不是 panic", err)
 	}
 }
@@ -566,13 +566,13 @@ func TestNativeMalformedInputsDoNotPanic(t *testing.T) {
 				}
 			}()
 			var v any
-			_ = jsonx.Unmarshal(in, &v)
+			_ = json.Unmarshal(in, &v)
 			var st nativeOuter
-			_ = jsonx.Unmarshal(in, &st)
+			_ = json.Unmarshal(in, &st)
 			var wide nativeWide
-			_ = jsonx.Unmarshal(in, &wide)
-			_ = jsonx.Valid(in)
-			dec := jsonx.NewDecoder(bytes.NewReader(in))
+			_ = json.Unmarshal(in, &wide)
+			_ = json.Valid(in)
+			dec := json.NewDecoder(bytes.NewReader(in))
 			var dv any
 			_ = dec.Decode(&dv)
 			_ = dec.Decode(&dv)
@@ -596,7 +596,7 @@ func FuzzNativeUnmarshal(f *testing.F) {
 	}
 	f.Fuzz(func(t *testing.T, data []byte) {
 		var got any
-		gotErr := jsonx.Unmarshal(data, &got)
+		gotErr := json.Unmarshal(data, &got)
 		var want any
 		wantErr := stdjson.Unmarshal(data, &want)
 		if (gotErr == nil) != (wantErr == nil) {
@@ -605,14 +605,14 @@ func FuzzNativeUnmarshal(f *testing.F) {
 		if gotErr == nil && !reflect.DeepEqual(got, want) {
 			t.Fatalf("结果不一致: jsonx=%#v stdlib=%#v input=%q", got, want, data)
 		}
-		if gotErr != nil && !errors.Is(gotErr, jsonx.ErrSyntax) && !errors.Is(gotErr, jsonx.ErrTypeMismatch) {
+		if gotErr != nil && !errors.Is(gotErr, json.ErrSyntax) && !errors.Is(gotErr, json.ErrTypeMismatch) {
 			t.Fatalf("错误未归类: %v input=%q", gotErr, data)
 		}
-		if got, want := jsonx.Valid(data), stdjson.Valid(data); got != want {
+		if got, want := json.Valid(data), stdjson.Valid(data); got != want {
 			t.Fatalf("Valid 不一致: jsonx=%v stdlib=%v input=%q", got, want, data)
 		}
 		var typed nativeOuter
-		_ = jsonx.Unmarshal(data, &typed)
+		_ = json.Unmarshal(data, &typed)
 	})
 }
 
@@ -632,7 +632,7 @@ func FuzzNativeMarshalRoundTrip(f *testing.F) {
 		if err := stdjson.Unmarshal(data, &v); err != nil {
 			return
 		}
-		got, gotErr := jsonx.Marshal(v)
+		got, gotErr := json.Marshal(v)
 		want, wantErr := stdjson.Marshal(v)
 		if (gotErr == nil) != (wantErr == nil) {
 			t.Fatalf("编码错误行为不一致: jsonx=%v stdlib=%v input=%q", gotErr, wantErr, data)

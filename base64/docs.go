@@ -1,4 +1,4 @@
-// Package b64x provides an adaptive Base64 codec abstraction layer that hides the differences between underlying implementations. | Package b64x 提供自适应的 Base64 编解码抽象层，隐藏底层实现的差异。
+// Package base64 provides an adaptive Base64 codec abstraction layer that hides the differences between underlying implementations. | Package base64 提供自适应的 Base64 编解码抽象层，隐藏底层实现的差异。
 //
 // Backend routing (determined by build tags, fully transparent to callers): | 后端分流（由构建标签决定，对调用方完全透明）：
 //
@@ -49,6 +49,6 @@
 //
 // Typical usage | 典型用法：
 //
-//	out := b64x.StdEncoding.AppendEncode(dst[:0], src)
-//	data, err := b64x.URLEncoding.DecodeString(token)
-package b64x
+//	out := base64.StdEncoding.AppendEncode(dst[:0], src)
+//	data, err := base64.URLEncoding.DecodeString(token)
+package base64

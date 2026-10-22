@@ -1,4 +1,4 @@
-// Package local implements the first-level cache of cachex. | Package local 实现 cachex 的一级缓存。
+// Package local implements the first-level cache of cache. | Package local 实现 cachex 的一级缓存。
 //
 // The cache is a sharded ring of byte buffers. Entries live entirely inside preallocated | 该缓存是分片的环形字节缓冲区。条目完全存放在预分配的
 // []byte arenas, so the garbage collector never scans the cached values and a cache holding | []byte 区域中，因此垃圾回收器不会扫描缓存值；即使缓存持有
@@ -26,15 +26,15 @@ import (
 // Declared sentinel errors, testable with errors.Is. | 已声明的哨兵错误，可用 errors.Is 判定。
 var (
 	// ErrInvalidOptions indicates an unusable Options value. | ErrInvalidOptions 表示 Options 取值不可用。
-	ErrInvalidOptions = errx.New("local: invalid options | local：非法选项")
+	ErrInvalidOptions = errs.New("local: invalid options | local：非法选项")
 	// ErrClosed indicates the cache was closed. | ErrClosed 表示缓存已关闭。
-	ErrClosed = errx.New("local: cache closed | local：缓存已关闭")
+	ErrClosed = errs.New("local: cache closed | local：缓存已关闭")
 	// ErrEmptyKey indicates Set was called with an empty key. | ErrEmptyKey 表示 Set 收到空键。
-	ErrEmptyKey = errx.New("local: empty key | local：空键")
+	ErrEmptyKey = errs.New("local: empty key | local：空键")
 	// ErrKeyTooLong indicates the key exceeds MaxKeyLength. | ErrKeyTooLong 表示键超过 MaxKeyLength。
-	ErrKeyTooLong = errx.New("local: key too long | local：键过长")
+	ErrKeyTooLong = errs.New("local: key too long | local：键过长")
 	// ErrEntryTooLarge indicates one entry exceeds the shard budget. | ErrEntryTooLarge 表示单条目超过分片预算。
-	ErrEntryTooLarge = errx.New("local: entry too large | local：条目过大")
+	ErrEntryTooLarge = errs.New("local: entry too large | local：条目过大")
 )
 
 // MaxKeyLength is the largest key the ring accepts, in bytes. | MaxKeyLength 是环形缓存接受的键长度上限（字节）。
@@ -116,7 +116,7 @@ func New(o Options) (*Cache, error) {
 		capacity = defaultMaxCost()
 	}
 	if capacity < minShardBytes {
-		return nil, errx.Detail(ErrInvalidOptions, "max cost %d is below %d | 最大开销 %d 低于 %d", capacity, minShardBytes, capacity, minShardBytes)
+		return nil, errs.Detail(ErrInvalidOptions, "max cost %d is below %d | 最大开销 %d 低于 %d", capacity, minShardBytes, capacity, minShardBytes)
 	}
 	if capacity > maxShardBytes*int64(maxShards) {
 		capacity = maxShardBytes * int64(maxShards)
@@ -155,11 +155,11 @@ func New(o Options) (*Cache, error) {
 		}
 	}
 	if int64(maxEntry) > shardBytes/2 {
-		return nil, errx.Detail(ErrInvalidOptions, "max entry %d exceeds half of shard %d | 单条目上限 %d 超过分片 %d 的一半",
+		return nil, errs.Detail(ErrInvalidOptions, "max entry %d exceeds half of shard %d | 单条目上限 %d 超过分片 %d 的一半",
 			maxEntry, shardBytes, maxEntry, shardBytes)
 	}
 	if maxEntry < 64 {
-		return nil, errx.Detail(ErrInvalidOptions, "max entry %d is too small | 单条目上限 %d 太小", maxEntry, maxEntry)
+		return nil, errs.Detail(ErrInvalidOptions, "max entry %d is too small | 单条目上限 %d 太小", maxEntry, maxEntry)
 	}
 
 	cleanup := o.CleanupInterval
@@ -219,7 +219,7 @@ func (c *Cache) GetAppend(dst []byte, key string) ([]byte, bool) {
 // so reads never take the write lock. | 因此读取路径无需获取写锁。
 func (c *Cache) View(key string, fn func(value []byte) error) (bool, error) {
 	if fn == nil {
-		return false, errx.Detail(ErrInvalidOptions, "nil view function | 视图函数为 nil")
+		return false, errs.Detail(ErrInvalidOptions, "nil view function | 视图函数为 nil")
 	}
 	if c.closed.Load() {
 		return false, ErrClosed
@@ -240,7 +240,7 @@ func (c *Cache) Set(key string, value []byte, ttl time.Duration) error {
 		return ErrEmptyKey
 	}
 	if len(key) > MaxKeyLength {
-		return errx.Detail(ErrKeyTooLong, "length %d exceeds %d | 长度 %d 超过 %d", len(key), MaxKeyLength, len(key), MaxKeyLength)
+		return errs.Detail(ErrKeyTooLong, "length %d exceeds %d | 长度 %d 超过 %d", len(key), MaxKeyLength, len(key), MaxKeyLength)
 	}
 	var expireAt int64
 	if ttl > 0 {

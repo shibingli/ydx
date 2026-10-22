@@ -1,6 +1,6 @@
 //go:build !amd64 && !loong64 && !b64x_std
 
-package b64x
+package base64
 
 import (
 	"bytes"
@@ -91,7 +91,7 @@ func (e *Encoding) Decode(dst, src []byte) (int, error) {
 		n, err = e.dec.Decode(dst, src)
 	}
 	if err != nil {
-		return 0, errx.Wrap(err, ErrInvalidData)
+		return 0, errs.Wrap(err, ErrInvalidData)
 	}
 	return n, nil
 }
@@ -107,7 +107,7 @@ func (e *Encoding) DecodeString(s string) ([]byte, error) {
 		out, err = e.dec.DecodeString(s)
 	}
 	if err != nil {
-		return nil, errx.Wrap(err, ErrInvalidData)
+		return nil, errs.Wrap(err, ErrInvalidData)
 	}
 	return out, nil
 }
@@ -138,7 +138,7 @@ func (e *Encoding) AppendDecode(dst, src []byte) ([]byte, error) {
 		n, err = e.dec.Decode(dst[base:], src)
 	}
 	if err != nil {
-		return dst[:base], errx.Wrap(err, ErrInvalidData)
+		return dst[:base], errs.Wrap(err, ErrInvalidData)
 	}
 	return dst[:base+n], nil
 }

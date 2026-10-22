@@ -1,4 +1,4 @@
-package ws
+package websocket
 
 import (
 	"bufio"
@@ -37,9 +37,9 @@ func acceptSum(key string) [sha1.Size]byte {
 // The computation reuses the framework's b64x adaptive Base64 layer (the amd64 path uses a SIMD-accelerated implementation). | 计算复用框架的 b64x 自适应 Base64 层（amd64 走 SIMD 加速实现）。
 // acceptScratch holds the digest and encoded accept value of one handshake.
 // Reusing it through a pool keeps the only per-call allocation the returned
-// string, even though b64x.Encode may let the scratch escape. | acceptScratch
+// string, even though base64.Encode may let the scratch escape. | acceptScratch
 // 保存一次握手的摘要与编码结果；经池复用后，每次调用只剩返回字符串这一次分配，
-// 即使 b64x.Encode 会让暂存对象逃逸。
+// 即使 base64.Encode 会让暂存对象逃逸。
 type acceptScratch struct {
 	sum [sha1.Size]byte
 	b64 [28]byte
@@ -52,7 +52,7 @@ var acceptScratchPool = sync.Pool{New: func() any { return new(acceptScratch) }}
 func acceptKey(key string) string {
 	p := acceptScratchPool.Get().(*acceptScratch)
 	p.sum = acceptSum(key)
-	b64x.StdEncoding.Encode(p.b64[:], p.sum[:])
+	base64.StdEncoding.Encode(p.b64[:], p.sum[:])
 	out := string(p.b64[:])
 	acceptScratchPool.Put(p)
 	return out
@@ -102,20 +102,20 @@ func Upgrade(w http.ResponseWriter, r *http.Request, o Options) (*Conn, error) {
 	if r.Method != http.MethodGet {
 		w.Header().Set("Allow", http.MethodGet)
 		http.Error(w, "WebSocket handshake requires GET | WebSocket 握手必须使用 GET", http.StatusMethodNotAllowed)
-		return nil, errx.Detail(ErrHandshake, "method %[1]s | 方法 %[1]s", r.Method)
+		return nil, errs.Detail(ErrHandshake, "method %[1]s | 方法 %[1]s", r.Method)
 	}
 	if !headerContainsToken(r.Header, "Connection", "upgrade") {
 		http.Error(w, "Connection header lacks upgrade | Connection 头缺少 upgrade", http.StatusBadRequest)
-		return nil, errx.Detail(ErrHandshake, "Connection header lacks upgrade | Connection 头缺少 upgrade")
+		return nil, errs.Detail(ErrHandshake, "Connection header lacks upgrade | Connection 头缺少 upgrade")
 	}
 	if !strings.EqualFold(strings.TrimSpace(r.Header.Get("Upgrade")), "websocket") {
 		http.Error(w, "Upgrade header must be websocket | Upgrade 头必须为 websocket", http.StatusBadRequest)
-		return nil, errx.Detail(ErrHandshake, "Upgrade header is invalid | Upgrade 头非法")
+		return nil, errs.Detail(ErrHandshake, "Upgrade header is invalid | Upgrade 头非法")
 	}
 	if v := r.Header.Get(headerSecWebSocketVersion); v != "13" {
 		w.Header().Set(headerSecWebSocketVersion, "13")
 		http.Error(w, "only WebSocket version 13 is supported | 仅支持 WebSocket 版本 13", http.StatusUpgradeRequired)
-		return nil, errx.Detail(ErrHandshake, "unsupported version %[1]q | 版本 %[1]q 不受支持", v)
+		return nil, errs.Detail(ErrHandshake, "unsupported version %[1]q | 版本 %[1]q 不受支持", v)
 	}
 
 	key := r.Header.Get(headerSecWebSocketKey)
@@ -123,10 +123,10 @@ func Upgrade(w http.ResponseWriter, r *http.Request, o Options) (*Conn, error) {
 	// allocation is needed for the validation. | 解码到栈上数组：key 恰好 16 字节，
 	// 校验不需要为结果分配内存。
 	var keyRaw [24]byte
-	n, err := b64x.StdEncoding.Decode(keyRaw[:], []byte(key))
+	n, err := base64.StdEncoding.Decode(keyRaw[:], []byte(key))
 	if err != nil || n != 16 {
 		http.Error(w, "Sec-WebSocket-Key must be 16 bytes of base64 | Sec-WebSocket-Key 必须是 16 字节的 base64", http.StatusBadRequest)
-		return nil, errx.Detail(ErrHandshake, "invalid Sec-WebSocket-Key | Sec-WebSocket-Key 非法")
+		return nil, errs.Detail(ErrHandshake, "invalid Sec-WebSocket-Key | Sec-WebSocket-Key 非法")
 	}
 
 	if !checkOrigin(r, o.CheckOrigin) {
@@ -153,7 +153,7 @@ func Upgrade(w http.ResponseWriter, r *http.Request, o Options) (*Conn, error) {
 	}
 	netConn, brw, err := hj.Hijack()
 	if err != nil {
-		return nil, errx.WrapDetail(err, ErrHandshake, "Hijack failed | Hijack 失败")
+		return nil, errs.WrapDetail(err, ErrHandshake, "Hijack failed | Hijack 失败")
 	}
 
 	// The HTTP server hands over its bufio pair with the hijacked connection.
@@ -169,7 +169,7 @@ func Upgrade(w http.ResponseWriter, r *http.Request, o Options) (*Conn, error) {
 			if brw.Writer.Buffered() > 0 {
 				if err := brw.Writer.Flush(); err != nil {
 					_ = netConn.Close()
-					return nil, errx.WrapDetail(err, ErrHandshake,
+					return nil, errs.WrapDetail(err, ErrHandshake,
 						"failed to flush hijacked buffers | 刷新劫持缓冲失败")
 				}
 			}
@@ -199,7 +199,7 @@ func Upgrade(w http.ResponseWriter, r *http.Request, o Options) (*Conn, error) {
 	resp = append(resp, "Connection: Upgrade\r\n"...)
 	resp = append(resp, "Sec-WebSocket-Accept: "...)
 	sum := acceptSum(key)
-	resp = b64x.StdEncoding.AppendEncode(resp, sum[:])
+	resp = base64.StdEncoding.AppendEncode(resp, sum[:])
 	resp = append(resp, "\r\n"...)
 	if sub != "" {
 		resp = append(resp, "Sec-WebSocket-Protocol: "...)
@@ -215,7 +215,7 @@ func Upgrade(w http.ResponseWriter, r *http.Request, o Options) (*Conn, error) {
 
 	if _, err := netConn.Write(resp); err != nil {
 		_ = netConn.Close()
-		return nil, errx.WrapDetail(err, ErrHandshake, "failed to write handshake response | 写入握手响应失败")
+		return nil, errs.WrapDetail(err, ErrHandshake, "failed to write handshake response | 写入握手响应失败")
 	}
 
 	c := newConnWithBuffers(netConn, o, false, br, bw)
@@ -235,7 +235,7 @@ func upgradeExtendedConnect(w http.ResponseWriter, r *http.Request, o Options) (
 	if v := r.Header.Get(headerSecWebSocketVersion); v != "13" {
 		w.Header().Set(headerSecWebSocketVersion, "13")
 		http.Error(w, "only WebSocket version 13 is supported | 仅支持 WebSocket 版本 13", http.StatusUpgradeRequired)
-		return nil, errx.Detail(ErrHandshake, "unsupported version %[1]q | 版本 %[1]q 不受支持", v)
+		return nil, errs.Detail(ErrHandshake, "unsupported version %[1]q | 版本 %[1]q 不受支持", v)
 	}
 	if !checkOrigin(r, o.CheckOrigin) {
 		http.Error(w, "Origin check failed | Origin 校验未通过", http.StatusForbidden)
@@ -257,7 +257,7 @@ func upgradeExtendedConnect(w http.ResponseWriter, r *http.Request, o Options) (
 	// 开始前启用全双工；quic-go 的 HTTP/3 写入器天然全双工，会返回 ErrNotSupported。
 	if err := rc.EnableFullDuplex(); err != nil && !errors.Is(err, http.ErrNotSupported) {
 		http.Error(w, "full duplex is unavailable | 当前连接不支持全双工", http.StatusInternalServerError)
-		return nil, errx.WrapDetail(err, ErrHandshake, "failed to enable full duplex | 启用全双工失败")
+		return nil, errs.WrapDetail(err, ErrHandshake, "failed to enable full duplex | 启用全双工失败")
 	}
 	// The server arms a WriteTimeout timer for every HTTP/2 stream. A WebSocket
 	// is long-lived, so the handshake takes ownership of both deadlines. | 服务端会为
@@ -273,7 +273,7 @@ func upgradeExtendedConnect(w http.ResponseWriter, r *http.Request, o Options) (
 	}
 	w.WriteHeader(http.StatusOK)
 	if err := rc.Flush(); err != nil {
-		return nil, errx.WrapDetail(err, ErrHandshake, "failed to flush the handshake response | 刷新握手响应失败")
+		return nil, errs.WrapDetail(err, ErrHandshake, "failed to flush the handshake response | 刷新握手响应失败")
 	}
 
 	body := r.Body
@@ -353,4 +353,4 @@ func selectSubprotocol(r *http.Request, supported []string) string {
 }
 
 // errNotSwitchingProtocols indicates that the peer did not return 101. | errNotSwitchingProtocols 表示对端未返回 101。
-var errNotSwitchingProtocols = errx.New("ws: peer did not return 101 Switching Protocols | ws：对端未返回 101 Switching Protocols")
+var errNotSwitchingProtocols = errs.New("ws: peer did not return 101 Switching Protocols | ws：对端未返回 101 Switching Protocols")

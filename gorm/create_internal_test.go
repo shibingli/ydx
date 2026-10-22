@@ -1,4 +1,4 @@
-package gormx
+package gorm
 
 import (
 	"bytes"
@@ -11,7 +11,7 @@ import (
 	"github.com/glebarez/sqlite"
 	mysqldriver "github.com/go-sql-driver/mysql"
 	"github.com/jackc/pgx/v5/pgconn"
-	"gorm.io/gorm"
+	gormio "gorm.io/gorm"
 
 	"github.com/shibingli/ydx/log"
 )
@@ -31,7 +31,7 @@ func (e *createDenied) Error() string {
 
 // openResult is one preloaded return value of the connection injection point. | openResult 是连接注入口的一次预置返回值。
 type openResult struct {
-	db  *gorm.DB
+	db  *gormio.DB
 	err error
 }
 
@@ -49,7 +49,7 @@ func stubOpen(t *testing.T, results ...openResult) *int {
 	t.Helper()
 	calls := new(int)
 	previous := openDatabaseFunc
-	openDatabaseFunc = func(gorm.Dialector, *gorm.Config) (*gorm.DB, error) {
+	openDatabaseFunc = func(gormio.Dialector, *gormio.Config) (*gormio.DB, error) {
 		*calls++
 		if *calls > len(results) {
 			t.Errorf("连接注入口被调用了 %d 次，用例只准备了 %d 个返回值", *calls, len(results))
@@ -75,10 +75,10 @@ func stubMaintenanceDDL(t *testing.T, err error) *[]ddlCall {
 }
 
 // newSQLiteProbe 打开一个真实的 SQLite 内存库，供注入口当作「重连成功」的返回值交回。
-// 它直接调用 gorm.Open 而不是包级注入口，因此不受用例所装的桩影响。
-func newSQLiteProbe(t *testing.T, suffix string) *gorm.DB {
+// 它直接调用 gormio.Open 而不是包级注入口，因此不受用例所装的桩影响。
+func newSQLiteProbe(t *testing.T, suffix string) *gormio.DB {
 	t.Helper()
-	db, err := gorm.Open(sqlite.Open(memoryProbeDSN(t, suffix)), &gorm.Config{Logger: NewLogger(nil, 0, logLevelSilent)})
+	db, err := gormio.Open(sqlite.Open(memoryProbeDSN(t, suffix)), &gormio.Config{Logger: NewLogger(nil, 0, logLevelSilent)})
 	if err != nil {
 		t.Fatalf("打开 SQLite 探针库失败: %v", err)
 	}
@@ -543,7 +543,7 @@ func TestPlanCreationReadsDSNLikeTheDriver(t *testing.T) {
 func TestOpenCreatesMissingDatabaseAndRetries(t *testing.T) {
 	probe := newSQLiteProbe(t, "retry")
 	var buf bytes.Buffer
-	l := logx.New(logx.Options{Writer: &buf})
+	l := log.New(log.Options{Writer: &buf})
 
 	calls := stubOpen(t,
 		openResult{err: &mysqldriver.MySQLError{Number: 1049, Message: "Unknown database 'prod_users'"}},
@@ -581,7 +581,7 @@ func TestOpenCreatesMissingDatabaseAndRetries(t *testing.T) {
 
 	// The handle returned must be the one obtained on the retry, and it still went through the connection-pool assembly. | 返回的必须是重连那一次拿到的句柄，而且它照样走完了连接池装配。
 	if db != probe {
-		t.Fatalf("Open 返回的 *gorm.DB 不是重连拿到的句柄")
+		t.Fatalf("Open 返回的 *gormio.DB 不是重连拿到的句柄")
 	}
 	if err := Health(context.Background(), db); err != nil {
 		t.Fatalf("重连后的句柄探活失败: %v", err)
@@ -638,10 +638,10 @@ func TestOpenCreateDatabaseDisabledCreatesNothing(t *testing.T) {
 			created := stubMaintenanceDDL(t, nil)
 			buf.Reset()
 
-			db, err := Open(tc.opts, logx.New(logx.Options{Writer: &buf}))
+			db, err := Open(tc.opts, log.New(log.Options{Writer: &buf}))
 			if db != nil {
 				_ = Close(db)
-				t.Fatalf("Open 返回了非 nil 的 *gorm.DB，期望 nil")
+				t.Fatalf("Open 返回了非 nil 的 *gormio.DB，期望 nil")
 			}
 			if !errors.Is(err, ErrOpenFailed) {
 				t.Fatalf("Open 的错误 = %v，期望包装 ErrOpenFailed", err)
@@ -677,10 +677,10 @@ func TestOpenAggregatesMissingDatabaseAndCreateFailure(t *testing.T) {
 		Driver:         DriverMySQL,
 		DSN:            "root:root@tcp(127.0.0.1:3306)/prod_users",
 		CreateDatabase: true,
-	}, logx.New(logx.Options{Writer: &buf}))
+	}, log.New(log.Options{Writer: &buf}))
 	if db != nil {
 		_ = Close(db)
-		t.Fatalf("Open 返回了非 nil 的 *gorm.DB，期望 nil")
+		t.Fatalf("Open 返回了非 nil 的 *gormio.DB，期望 nil")
 	}
 	if err == nil {
 		t.Fatal("Open returned no error | Open 未返回错误")
@@ -747,7 +747,7 @@ func TestOpenTreatsDuplicateDatabaseAsSuccess(t *testing.T) {
 		Driver:         DriverPostgres,
 		DSN:            "postgres://user:pw@127.0.0.1:5432/prod_users?sslmode=disable",
 		CreateDatabase: true,
-	}, logx.New(logx.Options{Writer: &buf}))
+	}, log.New(log.Options{Writer: &buf}))
 	if err != nil {
 		t.Fatalf("Open 失败: %v", err)
 	}
@@ -785,10 +785,10 @@ func TestOpenRetryFailureIsReportedAsOpenFailure(t *testing.T) {
 		Driver:         DriverMySQL,
 		DSN:            "root:root@tcp(127.0.0.1:3306)/prod_users",
 		CreateDatabase: true,
-	}, logx.New(logx.Options{Writer: &buf}))
+	}, log.New(log.Options{Writer: &buf}))
 	if db != nil {
 		_ = Close(db)
-		t.Fatalf("Open 返回了非 nil 的 *gorm.DB，期望 nil")
+		t.Fatalf("Open 返回了非 nil 的 *gormio.DB，期望 nil")
 	}
 	if !errors.Is(err, ErrOpenFailed) {
 		t.Fatalf("Open 的错误 = %v，期望包装 ErrOpenFailed", err)
@@ -821,10 +821,10 @@ func TestOpenDoesNotGuessDatabaseName(t *testing.T) {
 		Driver:         DriverMySQL,
 		DSN:            "root:root@tcp(127.0.0.1:3306)/",
 		CreateDatabase: true,
-	}, logx.New(logx.Options{Writer: &buf}))
+	}, log.New(log.Options{Writer: &buf}))
 	if db != nil {
 		_ = Close(db)
-		t.Fatalf("Open 返回了非 nil 的 *gorm.DB，期望 nil")
+		t.Fatalf("Open 返回了非 nil 的 *gormio.DB，期望 nil")
 	}
 	if !errors.Is(err, ErrOpenFailed) {
 		t.Fatalf("Open 的错误 = %v，期望包装 ErrOpenFailed", err)
@@ -852,7 +852,7 @@ func TestOpenLeavesSQLiteAndUnknownDriversAlone(t *testing.T) {
 		Driver:         DriverSQLite,
 		DSN:            memoryProbeDSN(t, "untouched"),
 		CreateDatabase: true,
-	}, logx.New(logx.Options{Writer: &bytes.Buffer{}}))
+	}, log.New(log.Options{Writer: &bytes.Buffer{}}))
 	if err != nil {
 		t.Fatalf("SQLite 打开失败: %v", err)
 	}

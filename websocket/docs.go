@@ -1,5 +1,5 @@
-// Package ws is a WebSocket implementation covering RFC 6455, RFC 7692,
-// RFC 7936, RFC 8441 and RFC 9220. | Package ws 是覆盖 RFC 6455、7692、7936、8441 与 9220 的
+// Package websocket is a WebSocket implementation covering RFC 6455, RFC 7692,
+// RFC 7936, RFC 8441 and RFC 9220. | Package websocket 是覆盖 RFC 6455、7692、7936、8441 与 9220 的
 // WebSocket 实现。
 //
 // Standards: | 标准：
@@ -29,8 +29,8 @@
 //
 // Typical usage | 典型用法：
 //
-//	r.GET("/ws", ws.HtmxHandler(ws.HtmxOptions{}))
+//	r.GET("/ws", websocket.HtmxHandler(websocket.HtmxOptions{}))
 //
 //	// plain net/http | 原生 net/http
-//	mux.Handle("/ws", ws.HtmxHTTPHandler(ws.HtmxOptions{}))
-package ws
+//	mux.Handle("/ws", websocket.HtmxHTTPHandler(websocket.HtmxOptions{}))
+package websocket

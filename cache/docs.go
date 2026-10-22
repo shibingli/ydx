@@ -1,4 +1,4 @@
-// Package cachex is the framework's two-level cache. | Package cachex 是框架的二级缓存。
+// Package cache is the framework's two-level cache. | Package cache 是框架的二级缓存。
 //
 // A Manager owns one first-level cache shared by every namespace and, optionally, one
 // remote store (Redis). Cache values are serialized into byte envelopes in L1 as well as
@@ -33,7 +33,7 @@
 //
 // Typical usage | 典型用法：
 //
-//	mgr, err := cachex.NewManager(cachex.WithOptions(o))
+//	mgr, err := cache.NewManager(cache.WithOptions(o))
 //	if err != nil {
 //		return err
 //	}
@@ -42,4 +42,4 @@
 //		return err
 //	}
 //	_ = raw
-package cachex
+package cache

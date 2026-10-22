@@ -1,4 +1,4 @@
-package errx_test
+package errs_test
 
 import (
 	"errors"
@@ -10,8 +10,8 @@ import (
 )
 
 var (
-	errSentinel = errx.New("invalid pattern | 非法的路由模式")
-	errOther    = errx.New("other failure | 其它失败")
+	errSentinel = errs.New("invalid pattern | 非法的路由模式")
+	errOther    = errs.New("other failure | 其它失败")
 	errInner    = errors.New("inner cause")
 )
 
@@ -28,7 +28,7 @@ func TestNewIsMatchableByErrorsIs(t *testing.T) {
 }
 
 func TestDetailKeepsSentinelAndRendersDetail(t *testing.T) {
-	err := errx.Detail(errSentinel, "%q must start with /", "/x")
+	err := errs.Detail(errSentinel, "%q must start with /", "/x")
 	if !errors.Is(err, errSentinel) {
 		t.Fatalf("Detail 结果必须能匹配哨兵: %v", err)
 	}
@@ -42,7 +42,7 @@ func TestDetailKeepsSentinelAndRendersDetail(t *testing.T) {
 }
 
 func TestWrapPreservesBothBranches(t *testing.T) {
-	err := errx.Wrap(errInner, errSentinel)
+	err := errs.Wrap(errInner, errSentinel)
 	if !errors.Is(err, errSentinel) {
 		t.Fatalf("Wrap 结果应能匹配哨兵: %v", err)
 	}
@@ -55,19 +55,19 @@ func TestWrapPreservesBothBranches(t *testing.T) {
 }
 
 func TestWrapNilReturnsNil(t *testing.T) {
-	if err := errx.Wrap(nil, errSentinel); err != nil {
+	if err := errs.Wrap(nil, errSentinel); err != nil {
 		t.Fatalf("nil 输入应返回 nil，实际 %v", err)
 	}
-	if err := errx.WrapDetail(nil, errSentinel, "x=%d", 1); err != nil {
+	if err := errs.WrapDetail(nil, errSentinel, "x=%d", 1); err != nil {
 		t.Fatalf("nil 输入应返回 nil，实际 %v", err)
 	}
-	if err := errx.Detail(nil, "x"); err != nil {
+	if err := errs.Detail(nil, "x"); err != nil {
 		t.Fatalf("nil 哨兵应返回 nil，实际 %v", err)
 	}
 }
 
 func TestWrapDetailIncludesAllThreeParts(t *testing.T) {
-	err := errx.WrapDetail(errInner, errSentinel, "record %d", 42)
+	err := errs.WrapDetail(errInner, errSentinel, "record %d", 42)
 	msg := err.Error()
 	for _, want := range []string{errSentinel.Error(), "record 42", "inner cause"} {
 		if !strings.Contains(msg, want) {
@@ -88,7 +88,7 @@ func (e *customErr) Error() string { return fmt.Sprintf("custom error, code=%d",
 // TestWorksWithStdlibErrorsHelpers 验证 errx 构造的错误可与标准库 errors 助手直接配合。
 // TestWorksWithStdlibErrorsHelpers verifies errx errors interoperate with the stdlib helpers.
 func TestWorksWithStdlibErrorsHelpers(t *testing.T) {
-	err := errx.WrapDetail(&customErr{code: 7}, errSentinel, "record %d", 42)
+	err := errs.WrapDetail(&customErr{code: 7}, errSentinel, "record %d", 42)
 
 	var target *customErr
 	if !errors.As(err, &target) || target.code != 7 {

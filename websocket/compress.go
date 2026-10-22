@@ -1,4 +1,4 @@
-package ws
+package websocket
 
 import (
 	"bytes"
@@ -46,7 +46,7 @@ func (mc *messageCompressor) compress(p []byte) ([]byte, error) {
 	if mc.w == nil {
 		w, err := flate.NewWriterWindow(&mc.buf, 1<<mc.windowBits)
 		if err != nil {
-			return nil, errx.WrapDetail(err, ErrCompression,
+			return nil, errs.WrapDetail(err, ErrCompression,
 				"failed to create the deflate writer | 创建 deflate 写出器失败")
 		}
 		mc.w = w
@@ -58,17 +58,17 @@ func (mc *messageCompressor) compress(p []byte) ([]byte, error) {
 		mc.w.Reset(&mc.buf)
 	}
 	if _, err := mc.w.Write(p); err != nil {
-		return nil, errx.WrapDetail(err, ErrCompression,
+		return nil, errs.WrapDetail(err, ErrCompression,
 			"failed to write compressed data | 写入压缩数据失败")
 	}
 	if err := mc.w.Flush(); err != nil {
-		return nil, errx.WrapDetail(err, ErrCompression,
+		return nil, errs.WrapDetail(err, ErrCompression,
 			"failed to flush compressed data | 刷出压缩数据失败")
 	}
 	out := mc.buf.Bytes()
 	if len(out) < len(deflateTail) || !bytes.HasSuffix(out, deflateTail[:]) {
 		// Flush always ends with the empty stored block; a mismatch means the codec state is corrupt. | Flush 必定以空存储块结尾；不匹配说明编解码状态已损坏。
-		return nil, errx.Detail(ErrCompression,
+		return nil, errs.Detail(ErrCompression,
 			"deflate output does not end with the RFC 7692 tail | deflate 输出未以 RFC 7692 尾部结束")
 	}
 	return out[:len(out)-len(deflateTail)], nil
@@ -203,7 +203,7 @@ func (md *messageDecompressor) begin(raw *framePayloadReader) (io.Reader, error)
 		return md.r, nil
 	}
 	if err := md.r.(flate.Resetter).Reset(&md.in, dict); err != nil {
-		return nil, errx.WrapDetail(err, ErrCompression,
+		return nil, errs.WrapDetail(err, ErrCompression,
 			"failed to reset the decompressor | 重置解压器失败")
 	}
 	return md.r, nil

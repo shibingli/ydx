@@ -40,7 +40,7 @@ func (f *fallbackProgram) fallback(w io.Writer, data any) error {
 	}
 	clone, err := f.master.Clone()
 	if err != nil {
-		return errx.Wrap(err, ErrCloneTemplate)
+		return errs.Wrap(err, ErrCloneTemplate)
 	}
 	if b := bindingsFor(tr, az, f.owned, f.funcs); len(b) > 0 {
 		clone.Funcs(b)
@@ -60,7 +60,7 @@ func (f *fallbackProgram) fallbackAppend(dst []byte, data any) ([]byte, error) {
 // execute runs one template set and wraps its failure. | execute 执行一个模板集并包装失败。
 func (f *fallbackProgram) execute(t *template.Template, w io.Writer, data any) error {
 	if err := t.ExecuteTemplate(w, f.name, data); err != nil {
-		return errx.WrapDetail(err, ErrExecuteTemplate, "name=%[1]s | 名称=%[1]s", f.name)
+		return errs.WrapDetail(err, ErrExecuteTemplate, "name=%[1]s | 名称=%[1]s", f.name)
 	}
 	return nil
 }

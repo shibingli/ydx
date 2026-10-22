@@ -1,6 +1,6 @@
 //go:build amd64 && !jsonx_std
 
-package jsonx_test
+package json_test
 
 import (
 	"bytes"
@@ -500,7 +500,7 @@ func TestNativeEmbeddedFieldDominanceMarshal(t *testing.T) {
 	for _, tc := range embFieldCases() {
 		t.Run(tc.name, func(t *testing.T) {
 			value := tc.value()
-			got, gotErr := jsonx.Marshal(value)
+			got, gotErr := json.Marshal(value)
 			want, wantErr := stdjson.Marshal(value)
 			if (gotErr == nil) != (wantErr == nil) {
 				t.Fatalf("错误行为不一致 | error behavior differs: jsonx err=%v, stdlib err=%v", gotErr, wantErr)
@@ -520,7 +520,7 @@ func TestNativeEmbeddedFieldDominanceUnmarshal(t *testing.T) {
 		for _, doc := range tc.docs {
 			t.Run(tc.name+"/"+doc, func(t *testing.T) {
 				got := tc.target()
-				gotErr := jsonx.Unmarshal([]byte(doc), got)
+				gotErr := json.Unmarshal([]byte(doc), got)
 				want := tc.target()
 				wantErr := stdjson.Unmarshal([]byte(doc), want)
 				if (gotErr == nil) != (wantErr == nil) {
@@ -540,21 +540,21 @@ func TestNativeEmbeddedFieldDominanceUnmarshal(t *testing.T) {
 func TestNativeEmbeddedFieldResolvedOnce(t *testing.T) {
 	for _, tc := range embFieldCases() {
 		t.Run(tc.name, func(t *testing.T) {
-			first, err := jsonx.Marshal(tc.value())
+			first, err := json.Marshal(tc.value())
 			if err != nil {
 				t.Fatalf("首次编码失败 | first marshal failed: %v", err)
 			}
 			stdTarget := tc.target()
 			stdErr := stdjson.Unmarshal(first, stdTarget)
 			got := tc.target()
-			gotErr := jsonx.Unmarshal(first, got)
+			gotErr := json.Unmarshal(first, got)
 			if (gotErr == nil) != (stdErr == nil) {
 				t.Fatalf("回读错误行为不一致 | decode error behavior differs: jsonx err=%v, stdlib err=%v", gotErr, stdErr)
 			}
 			if gotErr != nil {
 				return
 			}
-			second, err := jsonx.Marshal(got)
+			second, err := json.Marshal(got)
 			if err != nil {
 				t.Fatalf("二次编码失败 | second marshal failed: %v", err)
 			}

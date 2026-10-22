@@ -1,4 +1,4 @@
-package ws
+package websocket
 
 import (
 	"bytes"
@@ -606,7 +606,7 @@ func TestInteropDialRejectsBadAccept(t *testing.T) {
 		// compute the Accept independently with the standard SHA1 and b64x, not with this package's acceptKey | 用标准库 SHA1 与 b64x 独立计算 Accept，不依赖本包的 acceptKey
 		srv := rawHandshakeServer(t, func(key string) string {
 			sum := sha1.Sum([]byte(key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"))
-			return b64x.StdEncoding.EncodeToString(sum[:])
+			return base64.StdEncoding.EncodeToString(sum[:])
 		})
 		conn, err := Dial(ctx, wsURL(t, srv, "/"), DialOptions{})
 		if err != nil {

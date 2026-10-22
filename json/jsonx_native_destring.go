@@ -1,6 +1,6 @@
 //go:build amd64 && !jsonx_std
 
-package jsonx
+package json
 
 import (
 	"encoding"
@@ -238,9 +238,9 @@ func (d *decoder) storeQuotedValue(item []byte, v reflect.Value) error {
 			if v.Type().Elem().Kind() != reflect.Uint8 {
 				return quotedUseErr(v.Type())
 			}
-			out, err := b64x.StdEncoding.DecodeString(string(s))
+			out, err := base64.StdEncoding.DecodeString(string(s))
 			if err != nil {
-				return errx.Wrap(err, ErrTypeMismatch)
+				return errs.Wrap(err, ErrTypeMismatch)
 			}
 			v.SetBytes(out)
 			return nil

@@ -1,4 +1,4 @@
-package gormx
+package gorm
 
 import (
 	"crypto/sha256"

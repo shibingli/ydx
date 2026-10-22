@@ -1,4 +1,4 @@
-package gormx_test
+package gorm_test
 
 import (
 	"bytes"
@@ -9,18 +9,18 @@ import (
 	"time"
 
 	"github.com/spf13/afero"
-	"gorm.io/gorm"
+	gormio "gorm.io/gorm"
 	gormlogger "gorm.io/gorm/logger"
 
-	"github.com/shibingli/ydx/sfs"
+	"github.com/shibingli/ydx/afs"
 	"github.com/shibingli/ydx/config"
 	"github.com/shibingli/ydx/log"
 	"github.com/shibingli/ydx/gorm"
 )
 
 // NewLogger 的返回值必须满足 GORM 的日志接口；其动态类型还应额外实现
-// gorm.ParamsFilter，把口令等敏感实参从日志中抹除（运行时断言见下方测试）。
-var _ gormlogger.Interface = gormx.NewLogger(nil, 0, "")
+// gormio.ParamsFilter，把口令等敏感实参从日志中抹除（运行时断言见下方测试）。
+var _ gormlogger.Interface = gorm.NewLogger(nil, 0, "")
 
 // probeRow is the minimal model used by the AutoMigrate tests. | probeRow 是 AutoMigrate 测试用的最小模型。
 type probeRow struct {
@@ -51,31 +51,31 @@ func memoryDSN(t *testing.T) string {
 }
 
 // newBufLogger returns a logx logger writing into buf (JSON by default, level Info and above). | newBufLogger 返回写入 buf 的 logx 日志器（默认 JSON、Info 及以上级别）。
-func newBufLogger(buf *bytes.Buffer) *logx.Logger {
-	return logx.New(logx.Options{Writer: buf})
+func newBufLogger(buf *bytes.Buffer) *log.Logger {
+	return log.New(log.Options{Writer: buf})
 }
 
 // openProbe opens an in-memory SQLite database with the given options and closes it when the test ends. | openProbe 用给定选项打开一个 SQLite 内存库，并在测试结束时关闭。
-func openProbe(t *testing.T, o gormx.Options, l *logx.Logger) *gorm.DB {
+func openProbe(t *testing.T, o gorm.Options, l *log.Logger) *gormio.DB {
 	t.Helper()
 	if o.Driver == "" {
-		o.Driver = gormx.DriverSQLite
+		o.Driver = gorm.DriverSQLite
 	}
 	if o.DSN == "" {
 		o.DSN = memoryDSN(t)
 	}
-	db, err := gormx.Open(o, l)
+	db, err := gorm.Open(o, l)
 	if err != nil {
 		t.Fatalf("Open 失败: %v", err)
 	}
-	t.Cleanup(func() { _ = gormx.Close(db) })
+	t.Cleanup(func() { _ = gorm.Close(db) })
 	return db
 }
 
 // TestOpenSQLiteWithPrepareStmtEnabled 断言预编译语句缓存默认开启，
 // 且同一 SQL 连续执行两次只产生一条缓存语句（即两次都走预编译路径）。
 func TestOpenSQLiteWithPrepareStmtEnabled(t *testing.T) {
-	db := openProbe(t, gormx.Options{}, newBufLogger(&bytes.Buffer{}))
+	db := openProbe(t, gorm.Options{}, newBufLogger(&bytes.Buffer{}))
 
 	if !db.Config.PrepareStmt {
 		t.Fatalf("db.Config.PrepareStmt = false，期望框架默认开启")
@@ -84,9 +84,9 @@ func TestOpenSQLiteWithPrepareStmtEnabled(t *testing.T) {
 		t.Fatalf("db.Config.DisableForeignKeyConstraintWhenMigrating = false，期望框架禁止迁移期外键")
 	}
 
-	ps, ok := db.ConnPool.(*gorm.PreparedStmtDB)
+	ps, ok := db.ConnPool.(*gormio.PreparedStmtDB)
 	if !ok {
-		t.Fatalf("db.ConnPool 类型 = %T，期望 *gorm.PreparedStmtDB", db.ConnPool)
+		t.Fatalf("db.ConnPool 类型 = %T，期望 *gormio.PreparedStmtDB", db.ConnPool)
 	}
 
 	if err := db.Exec("CREATE TABLE gormx_prepare_probe (id INTEGER PRIMARY KEY, name TEXT)").Error; err != nil {
@@ -107,7 +107,7 @@ func TestOpenSQLiteWithPrepareStmtEnabled(t *testing.T) {
 	}
 }
 
-// TestSlowQueryLoggedThroughLogx 断言超过阈值的查询经 logx.SlowQuery 打点，
+// TestSlowQueryLoggedThroughLogx 断言超过阈值的查询经 log.SlowQuery 打点，
 // 日志中出现 slow_query 与 duration 字段。
 //
 // 用例刻意使用批量写入：单条 DDL/INSERT 的实际耗时可能不足一个时钟步长
@@ -115,9 +115,9 @@ func TestOpenSQLiteWithPrepareStmtEnabled(t *testing.T) {
 // 批量语句则可稳定超过阈值。
 func TestSlowQueryLoggedThroughLogx(t *testing.T) {
 	var buf bytes.Buffer
-	db := openProbe(t, gormx.Options{SlowThreshold: time.Nanosecond, LogLevel: "warn"}, newBufLogger(&buf))
+	db := openProbe(t, gorm.Options{SlowThreshold: time.Nanosecond, LogLevel: "warn"}, newBufLogger(&buf))
 
-	if err := gormx.AutoMigrate(db, &slowSeedRow{}); err != nil {
+	if err := gorm.AutoMigrate(db, &slowSeedRow{}); err != nil {
 		t.Fatalf("AutoMigrate 失败: %v", err)
 	}
 
@@ -145,9 +145,9 @@ func TestSlowQueryLoggedThroughLogx(t *testing.T) {
 // 中英同步的事件名 + 上游文案字段，并在 silent 级别下完全静默。
 func TestNewLoggerRelaysToLogx(t *testing.T) {
 	var buf bytes.Buffer
-	l := gormx.NewLogger(newBufLogger(&buf), time.Millisecond, "info")
-	if _, ok := l.(gorm.ParamsFilter); !ok {
-		t.Fatalf("NewLogger 返回值 %T 未实现 gorm.ParamsFilter", l)
+	l := gorm.NewLogger(newBufLogger(&buf), time.Millisecond, "info")
+	if _, ok := l.(gormio.ParamsFilter); !ok {
+		t.Fatalf("NewLogger 返回值 %T 未实现 gormio.ParamsFilter", l)
 	}
 
 	l.Info(context.Background(), "creating table %v", "gormx_probe_rows")
@@ -173,7 +173,7 @@ func TestNewLoggerRelaysToLogx(t *testing.T) {
 // TestConnPoolSettingsApplied 断言连接池参数落到 sql.DB 上，
 // 且未显式给出的参数按框架默认补齐。
 func TestConnPoolSettingsApplied(t *testing.T) {
-	db := openProbe(t, gormx.Options{MaxOpenConns: 7, MaxIdleConns: 3}, nil)
+	db := openProbe(t, gorm.Options{MaxOpenConns: 7, MaxIdleConns: 3}, nil)
 
 	sqlDB, err := db.DB()
 	if err != nil {
@@ -183,7 +183,7 @@ func TestConnPoolSettingsApplied(t *testing.T) {
 		t.Fatalf("MaxOpenConnections = %d，期望 7", got)
 	}
 
-	def := openProbe(t, gormx.Options{}, nil)
+	def := openProbe(t, gorm.Options{}, nil)
 	defSQL, err := def.DB()
 	if err != nil {
 		t.Fatalf("获取底层 *sql.DB 失败: %v", err)
@@ -196,9 +196,9 @@ func TestConnPoolSettingsApplied(t *testing.T) {
 // TestAutoMigrateAndHealth asserts the full lifecycle of migrate, write, health probe and close. | TestAutoMigrateAndHealth 断言迁移、写入、探活与关闭的完整生命周期。
 func TestAutoMigrateAndHealth(t *testing.T) {
 	ctx := context.Background()
-	db := openProbe(t, gormx.Options{}, newBufLogger(&bytes.Buffer{}))
+	db := openProbe(t, gorm.Options{}, newBufLogger(&bytes.Buffer{}))
 
-	if err := gormx.AutoMigrate(db, &probeRow{}); err != nil {
+	if err := gorm.AutoMigrate(db, &probeRow{}); err != nil {
 		t.Fatalf("AutoMigrate 失败: %v", err)
 	}
 	if err := db.Create(&probeRow{Name: "alice"}).Error; err != nil {
@@ -212,13 +212,13 @@ func TestAutoMigrateAndHealth(t *testing.T) {
 		t.Fatalf("查询结果 = %+v，期望 ID 非零", got)
 	}
 
-	if err := gormx.Health(ctx, db); err != nil {
+	if err := gorm.Health(ctx, db); err != nil {
 		t.Fatalf("Health 失败: %v", err)
 	}
-	if err := gormx.Close(db); err != nil {
+	if err := gorm.Close(db); err != nil {
 		t.Fatalf("Close 失败: %v", err)
 	}
-	if err := gormx.Health(ctx, db); !errors.Is(err, gormx.ErrHealthCheckFailed) {
+	if err := gorm.Health(ctx, db); !errors.Is(err, gorm.ErrHealthCheckFailed) {
 		t.Fatalf("Close 之后 Health 的错误 = %v，期望包装 ErrHealthCheckFailed", err)
 	}
 }
@@ -232,7 +232,7 @@ func TestParamsFilterRedactsSensitive(t *testing.T) {
 		sql    = "INSERT INTO users (name, password) VALUES (?, ?)"
 	)
 
-	gotSQL, gotParams := gormx.ParamsFilter(ctx, sql)
+	gotSQL, gotParams := gorm.ParamsFilter(ctx, sql)
 	if gotSQL != sql {
 		t.Fatalf("ParamsFilter 返回的 SQL = %q，期望原样返回 %q", gotSQL, sql)
 	}
@@ -246,7 +246,7 @@ func TestParamsFilterRedactsSensitive(t *testing.T) {
 	}
 
 	var buf bytes.Buffer
-	db := openProbe(t, gormx.Options{SlowThreshold: time.Nanosecond, LogLevel: "info"}, newBufLogger(&buf))
+	db := openProbe(t, gorm.Options{SlowThreshold: time.Nanosecond, LogLevel: "info"}, newBufLogger(&buf))
 	if err := db.Exec("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, password TEXT)").Error; err != nil {
 		t.Fatalf("建表失败: %v", err)
 	}
@@ -269,12 +269,12 @@ func TestParamsFilterRedactsSensitive(t *testing.T) {
 // 且文案中英同步。
 func TestUnsupportedDriverReturnsTypedError(t *testing.T) {
 	for _, driver := range []string{"oracle", "mongodb", "SQL Server"} {
-		db, err := gormx.Open(gormx.Options{Driver: driver, DSN: "dsn"}, nil)
+		db, err := gorm.Open(gorm.Options{Driver: driver, DSN: "dsn"}, nil)
 		if db != nil {
-			_ = gormx.Close(db)
-			t.Fatalf("驱动 %q 期望返回 nil *gorm.DB", driver)
+			_ = gorm.Close(db)
+			t.Fatalf("驱动 %q 期望返回 nil *gormio.DB", driver)
 		}
-		if !errors.Is(err, gormx.ErrUnsupportedDriver) {
+		if !errors.Is(err, gorm.ErrUnsupportedDriver) {
 			t.Fatalf("驱动 %q 的错误 = %v，期望包装 ErrUnsupportedDriver", driver, err)
 		}
 		if !strings.Contains(err.Error(), driver) {
@@ -292,24 +292,24 @@ func TestLifecycleSentinels(t *testing.T) {
 	ctx := context.Background()
 
 	nilCases := map[string]error{
-		"AutoMigrate": gormx.AutoMigrate(nil, &probeRow{}),
-		"Health":      gormx.Health(ctx, nil),
-		"Close":       gormx.Close(nil),
+		"AutoMigrate": gorm.AutoMigrate(nil, &probeRow{}),
+		"Health":      gorm.Health(ctx, nil),
+		"Close":       gorm.Close(nil),
 	}
 	for name, err := range nilCases {
-		if !errors.Is(err, gormx.ErrNilDB) {
+		if !errors.Is(err, gorm.ErrNilDB) {
 			t.Fatalf("%s(nil) 的错误 = %v，期望 ErrNilDB", name, err)
 		}
 	}
 
 	for _, sentinel := range []error{
-		gormx.ErrNilDB,
-		gormx.ErrUnsupportedDriver,
-		gormx.ErrOpenFailed,
-		gormx.ErrConnPoolUnavailable,
-		gormx.ErrMigrateFailed,
-		gormx.ErrHealthCheckFailed,
-		gormx.ErrCloseFailed,
+		gorm.ErrNilDB,
+		gorm.ErrUnsupportedDriver,
+		gorm.ErrOpenFailed,
+		gorm.ErrConnPoolUnavailable,
+		gorm.ErrMigrateFailed,
+		gorm.ErrHealthCheckFailed,
+		gorm.ErrCloseFailed,
 	} {
 		if !strings.Contains(sentinel.Error(), " | ") {
 			t.Fatalf("哨兵错误文案未中英同步: %v", sentinel)
@@ -317,8 +317,8 @@ func TestLifecycleSentinels(t *testing.T) {
 	}
 
 	// An unknown model (an absent table name here) triggers the migration-failure path. | 未知模型（此处用不存在的表名）触发迁移失败路径。
-	db := openProbe(t, gormx.Options{}, newBufLogger(&bytes.Buffer{}))
-	if err := gormx.AutoMigrate(db, "gormx_missing_model"); !errors.Is(err, gormx.ErrMigrateFailed) {
+	db := openProbe(t, gorm.Options{}, newBufLogger(&bytes.Buffer{}))
+	if err := gorm.AutoMigrate(db, "gormx_missing_model"); !errors.Is(err, gorm.ErrMigrateFailed) {
 		t.Fatalf("迁移未知模型的错误 = %v，期望包装 ErrMigrateFailed", err)
 	}
 }
@@ -357,8 +357,8 @@ db:
 		return c
 	}
 
-	got := gormx.OptionsFromConfig(load(t, mem))
-	want := gormx.Options{
+	got := gorm.OptionsFromConfig(load(t, mem))
+	want := gorm.Options{
 		Driver:        "postgres",
 		DSN:           "postgres://user:pw@127.0.0.1:5432/yd?sslmode=disable",
 		MaxOpenConns:  42,
@@ -372,7 +372,7 @@ db:
 		t.Fatalf("OptionsFromConfig = %+v，期望 %+v", got, want)
 	}
 
-	def := gormx.OptionsFromConfig(load(t, afs.NewMem()))
+	def := gorm.OptionsFromConfig(load(t, afs.NewMem()))
 	if def.Driver != "sqlite" || def.MaxOpenConns != 100 || def.MaxIdleConns != 10 {
 		t.Fatalf("默认 Options = %+v，期望 sqlite/100/10", def)
 	}
@@ -432,7 +432,7 @@ func TestCreateDatabaseSwitchFromConfig(t *testing.T) {
 			} else {
 				t.Setenv("YDGORMXTEST_DB_CREATE_DATABASE", tc.env)
 			}
-			if got := gormx.OptionsFromConfig(load(t, tc.yaml)).CreateDatabase; got != tc.want {
+			if got := gorm.OptionsFromConfig(load(t, tc.yaml)).CreateDatabase; got != tc.want {
 				t.Fatalf("CreateDatabase = %v，期望 %v", got, tc.want)
 			}
 		})

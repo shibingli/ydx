@@ -198,7 +198,7 @@ func releaseState(s *execState) {
 
 // execErr builds a sentinel-wrapped execution error. | execErr 构造带哨兵的执行错误。
 func execErr(format string, args ...any) error {
-	return errx.Detail(ErrExecuteTemplate, format, args...)
+	return errs.Detail(ErrExecuteTemplate, format, args...)
 }
 
 // push appends a variable. | push 追加变量。

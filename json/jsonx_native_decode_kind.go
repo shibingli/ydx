@@ -1,6 +1,6 @@
 //go:build amd64 && !jsonx_std
 
-package jsonx
+package json
 
 import (
 	"encoding"
@@ -124,9 +124,9 @@ func buildKindDecoder(t reflect.Type) decodeFunc {
 				if err != nil {
 					return err
 				}
-				out, err := b64x.StdEncoding.DecodeString(s)
+				out, err := base64.StdEncoding.DecodeString(s)
 				if err != nil {
-					return errx.Wrap(err, ErrTypeMismatch)
+					return errs.Wrap(err, ErrTypeMismatch)
 				}
 				v.SetBytes(out)
 				return nil

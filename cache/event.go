@@ -1,4 +1,4 @@
-package cachex
+package cache
 
 import (
 	"sync"
@@ -56,7 +56,7 @@ type EventHandler func(Event)
 
 // eventBus fans events out to subscribers without blocking the hot path. | eventBus 在不阻塞热路径的前提下把事件分发给订阅者。
 type eventBus struct {
-	log      *logx.Logger
+	log      *log.Logger
 	queue    chan Event
 	stop     chan struct{}
 	done     chan struct{}
@@ -68,7 +68,7 @@ type eventBus struct {
 }
 
 // newEventBus builds a bus with a buffered queue. | newEventBus 构造带缓冲队列的事件总线。
-func newEventBus(size int, log *logx.Logger) *eventBus {
+func newEventBus(size int, log *log.Logger) *eventBus {
 	if size <= 0 {
 		size = DefaultEventBuffer
 	}
@@ -146,7 +146,7 @@ func (b *eventBus) dispatch() {
 func (b *eventBus) call(h EventHandler, ev Event) {
 	defer func() {
 		if rec := recover(); rec != nil {
-			b.log.Error("cachex: event handler panicked | cachex：事件处理器发生 panic", logx.Any("panic", rec))
+			b.log.Error("cachex: event handler panicked | cachex：事件处理器发生 panic", log.Any("panic", rec))
 		}
 	}()
 	h(ev)

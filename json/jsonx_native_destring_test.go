@@ -1,6 +1,6 @@
 //go:build amd64 && !jsonx_std
 
-package jsonx_test
+package json_test
 
 import (
 	"bytes"
@@ -127,7 +127,7 @@ func TestNativeQuotedMarshalDifferential(t *testing.T) {
 		quotedFields{N: "01"},
 	}
 	for _, value := range values {
-		got, gotErr := jsonx.Marshal(value)
+		got, gotErr := json.Marshal(value)
 		want, wantErr := stdjson.Marshal(value)
 		if (gotErr == nil) != (wantErr == nil) {
 			t.Fatalf("错误行为不一致 | error behavior differs: jsonx err=%v, stdlib err=%v", gotErr, wantErr)
@@ -139,7 +139,7 @@ func TestNativeQuotedMarshalDifferential(t *testing.T) {
 	// A pointer root makes the Marshaler field addressable, so condAddrEncoder selects it.
 	// | 指针根值使 Marshaler 字段可寻址，从而由 condAddrEncoder 选中它。
 	value := quotedFields{NA: "na", I: 1}
-	got, gotErr := jsonx.Marshal(&value)
+	got, gotErr := json.Marshal(&value)
 	want, wantErr := stdjson.Marshal(&value)
 	if (gotErr == nil) != (wantErr == nil) {
 		t.Fatalf("指针错误行为不一致 | pointer error behavior differs: jsonx err=%v, stdlib err=%v", gotErr, wantErr)
@@ -212,7 +212,7 @@ func TestNativeQuotedUnmarshalDifferential(t *testing.T) {
 	for _, doc := range docs {
 		t.Run(doc, func(t *testing.T) {
 			got := new(quotedFields)
-			gotErr := jsonx.Unmarshal([]byte(doc), got)
+			gotErr := json.Unmarshal([]byte(doc), got)
 			want := new(quotedFields)
 			wantErr := stdjson.Unmarshal([]byte(doc), want)
 			if (gotErr == nil) != (wantErr == nil) {
@@ -225,7 +225,7 @@ func TestNativeQuotedUnmarshalDifferential(t *testing.T) {
 				var syn *stdjson.SyntaxError
 				var typ *stdjson.UnmarshalTypeError
 				if errors.As(wantErr, &syn) || errors.As(wantErr, &typ) {
-					if !errors.Is(gotErr, jsonx.ErrSyntax) && !errors.Is(gotErr, jsonx.ErrTypeMismatch) {
+					if !errors.Is(gotErr, json.ErrSyntax) && !errors.Is(gotErr, json.ErrTypeMismatch) {
 						t.Fatalf("错误未归类为 ErrSyntax / ErrTypeMismatch: %v", gotErr)
 					}
 				}
@@ -262,11 +262,11 @@ func TestNativeQuotedErrorClassification(t *testing.T) {
 	}
 	for _, doc := range docs {
 		var v quotedFields
-		err := jsonx.Unmarshal([]byte(doc), &v)
+		err := json.Unmarshal([]byte(doc), &v)
 		if err == nil {
 			t.Fatalf("输入 %s 必须返回错误 | input %s must fail", doc, doc)
 		}
-		if !errors.Is(err, jsonx.ErrTypeMismatch) && !errors.Is(err, jsonx.ErrSyntax) {
+		if !errors.Is(err, json.ErrTypeMismatch) && !errors.Is(err, json.ErrSyntax) {
 			t.Fatalf("输入 %s 的错误未归类: %v | error not classified", doc, err)
 		}
 	}
@@ -278,7 +278,7 @@ func TestNativeQuotedErrorClassification(t *testing.T) {
 func TestNativeQuotedFloatNaN(t *testing.T) {
 	doc := []byte(`{"f":"NaN"}`)
 	var got quotedFields
-	gotErr := jsonx.Unmarshal(doc, &got)
+	gotErr := json.Unmarshal(doc, &got)
 	var want quotedFields
 	wantErr := stdjson.Unmarshal(doc, &want)
 	if (gotErr == nil) != (wantErr == nil) {
@@ -308,7 +308,7 @@ func TestNativeQuotedCustomUnmarshaler(t *testing.T) {
 	}
 	for _, doc := range docs {
 		got := new(quotedFields)
-		gotErr := jsonx.Unmarshal([]byte(doc), got)
+		gotErr := json.Unmarshal([]byte(doc), got)
 		want := new(quotedFields)
 		wantErr := stdjson.Unmarshal([]byte(doc), want)
 		if (gotErr == nil) != (wantErr == nil) {
