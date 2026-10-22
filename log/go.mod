@@ -13,11 +13,3 @@ require (
 	github.com/cristalhq/base64 v0.1.2 // indirect
 	github.com/goccy/go-json v0.11.2 // indirect
 )
-
-replace github.com/shibingli/ydx/base64 => ../base64
-
-replace github.com/shibingli/ydx/errs => ../errs
-
-replace github.com/shibingli/ydx/json => ../json
-
-replace github.com/shibingli/ydx/sysinfo => ../sysinfo

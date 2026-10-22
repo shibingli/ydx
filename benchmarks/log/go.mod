@@ -12,13 +12,3 @@ require (
 	github.com/shibingli/ydx/json v0.1.0 // indirect
 	github.com/shibingli/ydx/sysinfo v0.1.0 // indirect
 )
-
-replace github.com/shibingli/ydx/base64 => D:/developer/go_code/ydx/base64
-
-replace github.com/shibingli/ydx/errs => D:/developer/go_code/ydx/errs
-
-replace github.com/shibingli/ydx/json => D:/developer/go_code/ydx/json
-
-replace github.com/shibingli/ydx/log => D:/developer/go_code/ydx/log
-
-replace github.com/shibingli/ydx/sysinfo => D:/developer/go_code/ydx/sysinfo

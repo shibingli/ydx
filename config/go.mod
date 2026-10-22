@@ -23,7 +23,3 @@ require (
 	golang.org/x/sys v0.49.0 // indirect
 	golang.org/x/text v0.43.0 // indirect
 )
-
-replace github.com/shibingli/ydx/errs => ../errs
-
-replace github.com/shibingli/ydx/afs => ../afs

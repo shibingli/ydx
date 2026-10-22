@@ -17,33 +17,3 @@ require (
 	github.com/shibingli/ydx/sysinfo v0.1.0 // indirect
 	golang.org/x/text v0.43.0 // indirect
 )
-
-replace github.com/shibingli/ydx/errs => D:/developer/go_code/ydx/errs
-
-replace github.com/shibingli/ydx/sysinfo => D:/developer/go_code/ydx/sysinfo
-
-replace github.com/shibingli/ydx/buffpool => D:/developer/go_code/ydx/buffpool
-
-replace github.com/shibingli/ydx/protocol => D:/developer/go_code/ydx/protocol
-
-replace github.com/shibingli/ydx/base64 => D:/developer/go_code/ydx/base64
-
-replace github.com/shibingli/ydx/json => D:/developer/go_code/ydx/json
-
-replace github.com/shibingli/ydx/afs => D:/developer/go_code/ydx/afs
-
-replace github.com/shibingli/ydx/config => D:/developer/go_code/ydx/config
-
-replace github.com/shibingli/ydx/log => D:/developer/go_code/ydx/log
-
-replace github.com/shibingli/ydx/regexpx => D:/developer/go_code/ydx/regexpx
-
-replace github.com/shibingli/ydx/router => D:/developer/go_code/ydx/router
-
-replace github.com/shibingli/ydx/gorm => D:/developer/go_code/ydx/gorm
-
-replace github.com/shibingli/ydx/cache => D:/developer/go_code/ydx/cache
-
-replace github.com/shibingli/ydx/sse => D:/developer/go_code/ydx/sse
-
-replace github.com/shibingli/ydx/websocket => D:/developer/go_code/ydx/websocket
