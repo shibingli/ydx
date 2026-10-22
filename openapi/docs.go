@@ -47,6 +47,14 @@
 //	mux.Handle("/docs", h)
 //	mux.Handle("/openapi/assets/", h)
 //
+// For a fully static deployment, ViewerPage returns the complete page bytes and ViewerScript
+// returns the script bytes; write both to disk and serve them with any file server: | 完全静态部署
+// 时，ViewerPage 返回完整页面字节，ViewerScript 返回脚本字节；把两者写入磁盘并用任意文件服务器托管：
+//
+//	page, _ := openapi.ViewerPage(doc, openapi.Options{ViewerScript: "./yd-openapi-viewer.js"})
+//	os.WriteFile("public/docs/index.html", page, 0o644)
+//	os.WriteFile("public/docs/yd-openapi-viewer.js", openapi.ViewerScript(), 0o644)
+//
 // Callers that package the viewer through their own pipeline can use ViewerScript to obtain the
 // embedded bytes and point Options.ViewerScript at the URL they serve. | 通过自有管线打包查看器的
 // 调用方可以用 ViewerScript 取得内嵌字节，并把 Options.ViewerScript 指向自己的 URL。

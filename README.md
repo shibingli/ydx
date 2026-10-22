@@ -121,8 +121,9 @@ handler := cors.Middleware(cors.CORSOptions{})(mux)
 `jwt` 使用 `HTTPMiddleware` / `FromRequest`，`sse` 使用 `HTTPHandler`，`websocket` 使用 `HtmxHTTPHandler`。
 
 `openapi` 的查看器脚本内嵌在模块中：`HTTPHandler` 同时提供 JSON 文档、查看器页面与
-`AssetsPath` 下的脚本资源，标准 `net/http` 只需把同一个处理器挂载到三个路径；需要接入自有静态
-管线时，用 `openapi.ViewerScript()` 取内嵌字节，并把 `Options.ViewerScript` 指向自己的 URL。
+`AssetsPath` 下的脚本资源，标准 `net/http` 只需把同一个处理器挂载到三个路径。需要完全静态部署时，
+`ViewerPage` 返回完整页面字节，`ViewerScript` 返回脚本字节，两者可直接写入磁盘并由任意文件服务器
+托管；接自有静态管线时，把 `Options.ViewerScript` 指向自己的 URL。
 
 ## 基准与对比
 

@@ -2,8 +2,11 @@ package openapi
 
 import (
 	"bytes"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -518,6 +521,45 @@ func TestViewerScriptIsEmbedded(t *testing.T) {
 	}
 	if !bytes.Contains(raw, []byte("yd-openapi-viewer.js")) {
 		t.Errorf("ViewerScript() does not look like the viewer | ViewerScript() 不像是查看器脚本")
+	}
+}
+
+// TestViewerPageIsStandalone 验证查看器页面可以写成静态文件，并由任意文件服务器独立托管。
+// TestViewerPageIsStandalone verifies the viewer page can be written to disk and served by any static
+// file server without this module's HTTP handler or any framework runtime.
+func TestViewerPageIsStandalone(t *testing.T) {
+	doc := NewBuilder(Info{Title: "Static Demo", Version: "1.0.0"}).Build()
+	page, err := ViewerPage(doc, Options{ViewerScript: "./yd-openapi-viewer.js"})
+	if err != nil {
+		t.Fatalf("ViewerPage: %v", err)
+	}
+	if !bytes.Contains(page, []byte("<!doctype html")) {
+		t.Fatal("ViewerPage did not return a complete HTML document | ViewerPage 未返回完整 HTML 文档")
+	}
+	if !bytes.Contains(page, []byte("./yd-openapi-viewer.js")) {
+		t.Errorf("ViewerPage did not honour ViewerScript | ViewerPage 未使用自定义 ViewerScript")
+	}
+
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "index.html"), page, 0o644); err != nil {
+		t.Fatalf("write page: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "yd-openapi-viewer.js"), ViewerScript(), 0o644); err != nil {
+		t.Fatalf("write script: %v", err)
+	}
+	srv := httptest.NewServer(http.FileServer(http.Dir(dir)))
+	defer srv.Close()
+
+	for _, target := range []string{"/index.html", "/yd-openapi-viewer.js"} {
+		resp, err := http.Get(srv.URL + target)
+		if err != nil {
+			t.Fatalf("GET %s: %v", target, err)
+		}
+		body, _ := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		if resp.StatusCode != http.StatusOK || len(body) == 0 {
+			t.Errorf("GET %s status = %d, bytes = %d | GET %s 状态 = %d，字节数 = %d", target, resp.StatusCode, len(body), target, resp.StatusCode, len(body))
+		}
 	}
 }
 
