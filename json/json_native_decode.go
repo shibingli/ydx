@@ -45,6 +45,56 @@ func (d *decoder) enter() error {
 // leave marks exit from one container. | leave 标记退出一层容器。
 func (d *decoder) leave() { d.depth-- }
 
+const (
+	// minArenaChunk is the first arena chunk size. | minArenaChunk 是 arena 首块的大小。
+	minArenaChunk = 64
+	// maxArenaChunk bounds one arena chunk; longer strings get an exact-size chunk. |
+	// maxArenaChunk 限制单个 arena 块；更长的字符串使用精确大小的块。
+	maxArenaChunk = 16 << 10
+	// maxArenaRetain bounds the arena kept by one pooled decoder. | maxArenaRetain 限制单个池化
+	// 解码器保留的 arena。
+	maxArenaRetain = 64 << 10
+)
+
+// ensureArena allocates the decoder's string arena on first use. Decoded strings are a fraction
+// of the input (keys are not copied and structural bytes take space), so a third of the input is
+// a good first guess. | ensureArena 在首次使用时分配解码器的字符串 arena。解码出的字符串只占输入
+// 的一部分（键不复制、结构字节也占空间），取输入的三分之一作为初始估算。
+func (d *decoder) ensureArena() {
+	if d.arena != nil {
+		return
+	}
+	hint := len(d.data) / 3
+	if hint < minArenaChunk {
+		hint = minArenaChunk
+	}
+	if hint > maxArenaChunk {
+		hint = maxArenaChunk
+	}
+	d.arena = make([]byte, 0, hint)
+}
+
+// ensureArenaSpare makes room for n more bytes. The arena is append-only: bytes before its length
+// are referenced by strings already returned, so an exhausted arena is replaced by a fresh chunk
+// instead of being grown in place. | ensureArenaSpare 为 n 字节腾出空间。arena 只追加：长度之前的
+// 字节已被返回的字符串引用，因此空间不足时换用新块，而不是原地扩容。
+func (d *decoder) ensureArenaSpare(n int) {
+	if cap(d.arena)-len(d.arena) >= n {
+		return
+	}
+	size := 2 * cap(d.arena)
+	if size < minArenaChunk {
+		size = minArenaChunk
+	}
+	if size < n {
+		size = n
+	}
+	if size > maxArenaChunk && n <= maxArenaChunk {
+		size = maxArenaChunk
+	}
+	d.arena = make([]byte, 0, size)
+}
+
 // copyString copies b into the decoder's string arena and returns a string over it. Strings keep
 // the arena alive through interior pointers, so the result stays valid after Unmarshal returns and
 // never aliases the caller's input. | copyString 把 b 复制进解码器的字符串 arena 并返回其字符串；
@@ -53,21 +103,7 @@ func (d *decoder) copyString(b []byte) string {
 	if len(b) == 0 {
 		return ""
 	}
-	if d.arena == nil {
-		// Decoded strings are a fraction of the input (keys are not copied and structural bytes
-		// take space), so a third of the input is a good first guess; too small a hint forces one
-		// growth that keeps the old array alive through the returned strings. | 解码出的字符串
-		// 只占输入的一部分（键不复制、结构字节也占空间），取输入的三分之一作为初始估算；估算过小
-		// 会触发一次扩容，而旧数组会被返回的字符串继续引用。
-		hint := len(d.data) / 3
-		if hint < 64 {
-			hint = 64
-		}
-		if hint > 1<<20 {
-			hint = 1 << 20
-		}
-		d.arena = make([]byte, 0, hint)
-	}
+	d.ensureArena()
 	n := len(b)
 	// Short strings are copied with fixed-size stores. b keeps the input's capacity, so an
 	// eight-byte load may read bytes past its length but never past its capacity; the extra bytes
@@ -92,15 +128,18 @@ func (d *decoder) copyString(b []byte) string {
 			return unsafe.String(unsafe.SliceData(d.arena[start:]), n)
 		}
 	}
+	d.ensureArenaSpare(n)
 	start := len(d.arena)
 	d.arena = append(d.arena, b...)
 	return unsafe.String(unsafe.SliceData(d.arena[start:]), n)
 }
 
-// decoderPool reuses decoder state across Unmarshal calls. The string arena is deliberately
-// dropped on release: returned strings point into it, so it must never be reused. | decoderPool
-// 在多次 Unmarshal 调用间复用解码器状态；字符串 arena 在归还时刻意丢弃，因为返回的字符串
-// 指向它，绝不能复用。
+// decoderPool reuses decoder state across Unmarshal calls. The string arena is append-only and is
+// kept between calls, so a warmed decoder allocates no string storage; bytes referenced by strings
+// already returned are never overwritten, and an oversized arena is dropped instead of retained. |
+// decoderPool 在多次 Unmarshal 调用间复用解码器状态。字符串 arena 只追加并在调用间保留，因此预热
+// 后的解码器不再为字符串分配存储；已返回字符串引用的字节绝不会被覆盖，过大的 arena 会被丢弃而不是
+// 保留。
 var decoderPool = sync.Pool{New: func() any { return new(decoder) }}
 
 // Unmarshal parses data and stores the result in the value pointed to by v. | Unmarshal 解析 data 并写入 v 指向的值。
@@ -110,9 +149,20 @@ func Unmarshal(data []byte, v any) error {
 		return errs.Detail(ErrTypeMismatch, "jsonx: Unmarshal target must be a non-nil pointer | jsonx：Unmarshal 目标必须是非 nil 指针")
 	}
 	d := decoderPool.Get().(*decoder)
-	*d = decoder{data: data}
+	// Keep the append-only string arena and reset only the fields that carry state between
+	// values; the timestamp cache is invalidated by timeLen. | 保留只追加的字符串 arena，只重置
+	// 跨值携带状态的字段；时间戳缓存由 timeLen 失效。
+	d.data = data
+	d.pos = 0
+	d.depth = 0
+	d.useNumber = false
+	d.skipLen = false
+	d.timeLen = 0
 	err := d.unmarshal(rv)
-	*d = decoder{}
+	d.data = nil
+	if cap(d.arena) > maxArenaRetain {
+		d.arena = nil
+	}
 	decoderPool.Put(d)
 	// Classify the backend error so errors.Is(ErrSyntax/ErrTypeMismatch) behaves identically on
 	// every backend; the native path used to return it raw. | 对后端错误归类，使
@@ -137,7 +187,12 @@ func (d *decoder) unmarshal(rv reflect.Value) error {
 			elemSize = 1
 		}
 		maxElems := maxPreallocBytes / elemSize
-		guess := len(d.data) / 128
+		// 64 bytes per element matches a typical compact object and deliberately over-guesses
+		// rather than triggering a doubling growth that would allocate both the guess and its
+		// replacement; maxElems and the 4 MiB ceiling bound the over-allocation. | 每个元素按
+		// 64 字节估算，符合常见紧凑对象，并有意偏大，避免触发一次会让估算数组和替代数组同时
+		// 分配的翻倍扩容；maxElems 与 4 MiB 上限约束过度分配。
+		guess := len(d.data) / 64
 		if guess > maxElems {
 			guess = maxElems
 		}
@@ -146,7 +201,7 @@ func (d *decoder) unmarshal(rv reflect.Value) error {
 			d.skipLen = true
 		}
 	}
-	if err := d.value(target); err != nil {
+	if err := d.decodeTarget(target); err != nil {
 		return err
 	}
 	d.skipSpace()
@@ -154,6 +209,20 @@ func (d *decoder) unmarshal(rv reflect.Value) error {
 		return syntaxErr("invalid character %q after top-level value | 顶层值之后的非法字符 %q", d.data[d.pos], d.data[d.pos])
 	}
 	return nil
+}
+
+// decodeTarget decodes into a top-level target, using the direct-memory struct decoder when the
+// destination is an addressable struct and the type has no competing unmarshal method. This skips
+// the decoder lookup and reflection wrapper that steady-state struct decodes otherwise pay. |
+// decodeTarget 解码顶层目标：当目标是可寻址结构体且类型没有竞争的解码方法时，直接使用按内存的
+// 结构体解码器，省去稳态结构体解码原本要付出的解码器查找与反射包装。
+func (d *decoder) decodeTarget(target reflect.Value) error {
+	if target.Kind() == reflect.Struct && target.CanAddr() {
+		if info := fastStructDecFor(target.Type()); info != nil {
+			return info.dec(d, unsafe.Pointer(target.UnsafeAddr()))
+		}
+	}
+	return d.value(target)
 }
 
 // skipSpace advances past JSON whitespace. | skipSpace 跳过 JSON 空白。
@@ -418,6 +487,58 @@ func decodeTextUnmarshaler(d *decoder, v reflect.Value) error {
 	return v.Interface().(encoding.TextUnmarshaler).UnmarshalText([]byte(s))
 }
 
+// fastStructDecInfo describes a struct whose every field has a direct-memory decoder. |
+// fastStructDecInfo 描述所有字段都可直接按内存解码的结构体。
+type fastStructDecInfo struct {
+	dec  func(*decoder, unsafe.Pointer) error
+	size uintptr
+}
+
+var (
+	fastStructDecCache sync.Map
+	fastStructDecLast  atomic.Pointer[fastStructDecEntry]
+)
+
+// fastStructDecEntry is the most recently resolved type, including a nil decision, so repeated
+// decodes of one type avoid the map lookup. | fastStructDecEntry 保存最近解析的类型（含 nil 判定），
+// 使同一类型的连续解码免去映射查找。
+type fastStructDecEntry struct {
+	typ  reflect.Type
+	info *fastStructDecInfo
+}
+
+// fastStructDecFor returns the direct-memory struct decoder for t, if one was built and the
+// type's own unmarshal methods do not take precedence. | fastStructDecFor 返回 t 的直接按内存解码器
+// （若已构建且类型自身的解码方法不优先）。
+func fastStructDecFor(t reflect.Type) *fastStructDecInfo {
+	if e := fastStructDecLast.Load(); e != nil && e.typ == t {
+		return e.info
+	}
+	info := lookupFastStructDec(t)
+	fastStructDecLast.Store(&fastStructDecEntry{typ: t, info: info})
+	return info
+}
+
+func lookupFastStructDec(t reflect.Type) *fastStructDecInfo {
+	if v, ok := fastStructDecCache.Load(t); ok {
+		return v.(*fastStructDecInfo)
+	}
+	if t.Kind() != reflect.Struct {
+		return nil
+	}
+	tr := cachedTraits(t)
+	if tr.unmarshaler || tr.textUnmarshaler ||
+		reflect.PointerTo(t).Implements(unmarshalerType) ||
+		reflect.PointerTo(t).Implements(textUnmarshalerType) {
+		return nil
+	}
+	decoderFor(t)
+	if v, ok := fastStructDecCache.Load(t); ok {
+		return v.(*fastStructDecInfo)
+	}
+	return nil
+}
+
 func buildStructDecoder(t reflect.Type) decodeFunc {
 	info := cachedStruct(t)
 	type decField struct {
@@ -432,6 +553,7 @@ func buildStructDecoder(t reflect.Type) decodeFunc {
 	fields := make([]*decField, len(info.fields))
 	names := make([]string, len(info.fields))
 	anyFast := false
+	allFast := true
 	for i, f := range info.fields {
 		offset, fastOK := fieldOffset(t, f.index)
 		fast := buildFastFieldDecoder(f.typ)
@@ -448,6 +570,8 @@ func buildStructDecoder(t reflect.Type) decodeFunc {
 		names[i] = f.name
 		if isFast {
 			anyFast = true
+		} else {
+			allFast = false
 		}
 	}
 	var lookup func(string) (*decField, bool)
@@ -601,7 +725,93 @@ func buildStructDecoder(t reflect.Type) decodeFunc {
 			return nil, false
 		}
 	}
+	var fastDec func(*decoder, unsafe.Pointer) error
+	if allFast {
+		// The all-fast loop writes every field through the pointer base, with no reflect.Value,
+		// no per-field capability checks and no deferred leave on the success path. It is shared
+		// by addressable struct values and by the direct-memory []struct decoder. | 全快速循环
+		// 通过指针基址写入每个字段，不创建 reflect.Value、不逐字段检查能力，成功路径也不使用
+		// defer 收尾；可寻址结构体值与直接按内存解码的 []struct 解码器共享该循环。
+		fastDec = func(d *decoder, base unsafe.Pointer) error {
+			if d.data[d.pos] == 'n' {
+				return d.literal("null")
+			}
+			if err := d.enter(); err != nil {
+				return err
+			}
+			if d.data[d.pos] != '{' {
+				return typeErr("cannot unmarshal non-object into %s | 无法把非对象解析进 %s", t, t)
+			}
+			d.pos++
+			d.skipSpace()
+			if d.pos < len(d.data) && d.data[d.pos] == '}' {
+				d.pos++
+				d.leave()
+				return nil
+			}
+			for {
+				if d.pos >= len(d.data) || d.data[d.pos] != '"' {
+					return syntaxErr("expected object key | 期望对象键")
+				}
+				f, ok := matchKey(d)
+				if !ok {
+					key, err := d.parseKey()
+					if err != nil {
+						return err
+					}
+					d.skipSpace()
+					if d.pos >= len(d.data) || d.data[d.pos] != ':' {
+						return syntaxErr("expected ':' after object key | 对象键之后期望 ':'")
+					}
+					d.pos++
+					f, ok = lookup(key)
+				}
+				d.skipSpace()
+				if d.pos >= len(d.data) {
+					return syntaxErr("unexpected end of object | 对象意外结束")
+				}
+				if !ok {
+					if err := d.skipValue(); err != nil {
+						return err
+					}
+				} else if err := f.fast(d, unsafe.Add(base, f.offset)); err != nil {
+					return err
+				}
+				if d.pos < len(d.data) {
+					switch d.data[d.pos] {
+					case ',':
+						d.pos++
+						d.skipSpace()
+						continue
+					case '}':
+						d.pos++
+						d.leave()
+						return nil
+					}
+				}
+				d.skipSpace()
+				if d.pos >= len(d.data) {
+					return syntaxErr("unexpected end of object | 对象意外结束")
+				}
+				switch d.data[d.pos] {
+				case ',':
+					d.pos++
+					d.skipSpace()
+				case '}':
+					d.pos++
+					d.leave()
+					return nil
+				default:
+					return syntaxErr("expected ',' or '}' in object | 对象中期望 ',' 或 '}'")
+				}
+			}
+		}
+		fastStructDecCache.Store(t, &fastStructDecInfo{dec: fastDec, size: t.Size()})
+	}
 	return func(d *decoder, v reflect.Value) error {
+		if allFast && v.CanAddr() {
+			return fastDec(d, unsafe.Pointer(v.UnsafeAddr()))
+		}
 		if d.data[d.pos] == 'n' {
 			return d.literal("null")
 		}

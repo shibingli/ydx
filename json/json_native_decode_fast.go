@@ -178,11 +178,15 @@ func buildFastFieldDecoder(t reflect.Type) fastFieldDec {
 			if d.data[d.pos] == 'n' {
 				return d.literal("null")
 			}
+			if f, ok := d.parseShortFloatField(); ok {
+				*(*float64)(p) = f
+				return nil
+			}
 			b, err := d.parseNumberBytes()
 			if err != nil {
 				return err
 			}
-			if f, ok := parseExactIntegerFloat(b); ok {
+			if f, ok := parseShortDecimalFloat(b); ok {
 				*(*float64)(p) = f
 				return nil
 			}
@@ -314,6 +318,154 @@ func daysFromCivil(y, m, d int) int64 {
 	doy := (153*mp+2)/5 + d - 1
 	doe := yoe*365 + yoe/4 - yoe/100 + doy
 	return int64(era*146097+doe) - 719468
+}
+
+// pow10f holds the exactly representable powers of ten used by the short decimal parser. |
+// pow10f 保存短十进制解析器使用的可精确表示的 10 的幂。
+var pow10f = [23]float64{
+	1e0, 1e1, 1e2, 1e3, 1e4, 1e5, 1e6, 1e7, 1e8, 1e9, 1e10, 1e11,
+	1e12, 1e13, 1e14, 1e15, 1e16, 1e17, 1e18, 1e19, 1e20, 1e21, 1e22,
+}
+
+// parseShortDecimalFloat converts a decimal literal whose mantissa is below 2^53 and whose
+// fraction has at most 22 digits. The mantissa and 10^fraction are exact in float64, so one IEEE
+// division produces the correctly rounded result that strconv.ParseFloat would return, without its
+// general decimal machinery. Anything outside that envelope is rejected for the caller to fall
+// back to strconv. | parseShortDecimalFloat 转换尾数小于 2^53、小数位不超过 22 的十进制字面量。
+// 尾数与 10^小数位在 float64 中都精确可表示，因此一次 IEEE 除法就能得到与 strconv.ParseFloat
+// 完全一致的舍入结果，而无需其通用十进制机制；超出该范围时拒绝，由调用方回退到 strconv。
+func parseShortDecimalFloat(b []byte) (float64, bool) {
+	if len(b) == 0 {
+		return 0, false
+	}
+	neg := false
+	if b[0] == '-' {
+		neg = true
+		b = b[1:]
+	}
+	if len(b) == 0 {
+		return 0, false
+	}
+	const maxMant = 1<<53 - 1
+	var mant uint64
+	intDigits, fracDigits := 0, 0
+	seenDot := false
+	for _, c := range b {
+		if c == '.' {
+			if seenDot {
+				return 0, false
+			}
+			seenDot = true
+			continue
+		}
+		if c < '0' || c > '9' {
+			return 0, false
+		}
+		if mant > maxMant/10 {
+			return 0, false
+		}
+		mant = mant*10 + uint64(c-'0')
+		if mant > maxMant {
+			return 0, false
+		}
+		if seenDot {
+			fracDigits++
+		} else {
+			intDigits++
+		}
+	}
+	if intDigits == 0 || (seenDot && fracDigits == 0) || fracDigits > 22 {
+		return 0, false
+	}
+	f := float64(mant)
+	if fracDigits > 0 {
+		f /= pow10f[fracDigits]
+	}
+	if neg {
+		f = -f
+	}
+	return f, true
+}
+
+// parseShortFloatField scans and converts a short decimal number directly from the input and, on
+// success, advances d.pos past it. It additionally verifies the JSON number grammar and the
+// delimiter that ends the literal; anything outside its envelope (exponents, long mantissas,
+// leading zeros, malformed fractions) is left untouched for the general number parser. |
+// parseShortFloatField 直接从输入扫描并转换短十进制数字，成功时推进 d.pos。它同时校验 JSON 数字
+// 语法与结束分隔符；超出其范围的情况（指数、过长尾数、前导零、畸形小数）保持原状，交给通用数字
+// 解析器。
+func (d *decoder) parseShortFloatField() (float64, bool) {
+	data := d.data
+	i := d.pos
+	neg := false
+	if i < len(data) && data[i] == '-' {
+		neg = true
+		i++
+	}
+	if i >= len(data) || data[i] < '0' || data[i] > '9' {
+		return 0, false
+	}
+	if data[i] == '0' && i+1 < len(data) && data[i+1] >= '0' && data[i+1] <= '9' {
+		return 0, false
+	}
+	const maxMant = 1<<53 - 1
+	var mant uint64
+	for i < len(data) {
+		c := data[i]
+		if c < '0' || c > '9' {
+			break
+		}
+		if mant > maxMant/10 {
+			return 0, false
+		}
+		mant = mant*10 + uint64(c-'0')
+		if mant > maxMant {
+			return 0, false
+		}
+		i++
+	}
+	frac := 0
+	if i < len(data) && data[i] == '.' {
+		i++
+		fracDigits := 0
+		for i < len(data) {
+			c := data[i]
+			if c < '0' || c > '9' {
+				break
+			}
+			if mant > maxMant/10 {
+				return 0, false
+			}
+			mant = mant*10 + uint64(c-'0')
+			if mant > maxMant {
+				return 0, false
+			}
+			frac++
+			fracDigits++
+			i++
+		}
+		if fracDigits == 0 || frac > 22 {
+			return 0, false
+		}
+	}
+	if i < len(data) {
+		switch data[i] {
+		case 'e', 'E':
+			return 0, false
+		case ' ', '\t', '\n', '\r', ',', '}', ']':
+		default:
+			return 0, false
+		}
+	}
+	f := float64(mant)
+	if frac > 0 {
+		f /= pow10f[frac]
+	}
+	if neg {
+		f = -f
+	}
+	d.pos = i
+	return f, true
 }
 
 // parseExactIntegerFloat converts a plain integer literal of at most 15 digits to float64.
@@ -455,28 +607,33 @@ func fastDecodeStringSlice(d *decoder, p unsafe.Pointer) error {
 		*sp = []string{}
 		return nil
 	}
-	*sp = make([]string, 0, 3)
+	out := make([]string, 0, 3)
 	i := 0
 	for {
-		if i >= len(*sp) {
-			*sp = append(*sp, "")
+		if i >= cap(out) {
+			out = append(out, "")
 		}
+		out = out[:i+1]
 		if d.pos >= len(d.data) {
+			*sp = out
 			return syntaxErr("unexpected end of array | 数组意外结束")
 		}
 		switch d.data[d.pos] {
 		case '"':
 			s, err := d.parseString()
 			if err != nil {
+				*sp = out
 				return err
 			}
-			(*sp)[i] = s
+			out[i] = s
 		case 'n':
 			if err := d.literal("null"); err != nil {
+				*sp = out
 				return err
 			}
-			(*sp)[i] = ""
+			out[i] = ""
 		default:
+			*sp = out
 			return typeErr("cannot unmarshal non-string into string | 无法把非字符串解析进字符串")
 		}
 		i++
@@ -488,14 +645,13 @@ func fastDecodeStringSlice(d *decoder, p unsafe.Pointer) error {
 				continue
 			case ']':
 				d.pos++
-				if i < len(*sp) {
-					*sp = (*sp)[:i]
-				}
+				*sp = out[:i]
 				return nil
 			}
 		}
 		d.skipSpace()
 		if d.pos >= len(d.data) {
+			*sp = out
 			return syntaxErr("unexpected end of array | 数组意外结束")
 		}
 		switch d.data[d.pos] {
@@ -504,11 +660,10 @@ func fastDecodeStringSlice(d *decoder, p unsafe.Pointer) error {
 			d.skipSpace()
 		case ']':
 			d.pos++
-			if i < len(*sp) {
-				*sp = (*sp)[:i]
-			}
+			*sp = out[:i]
 			return nil
 		default:
+			*sp = out
 			return syntaxErr("expected ',' or ']' in array | 数组中期望 ',' 或 ']'")
 		}
 	}

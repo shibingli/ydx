@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
+	"unsafe"
 
 	"github.com/shibingli/ydx/base64"
 	"github.com/shibingli/ydx/errs"
@@ -148,93 +149,213 @@ func buildKindDecoder(t reflect.Type) decodeFunc {
 
 func buildSliceDecoder(t reflect.Type) decodeFunc {
 	elem := lazyDecoder(t.Elem())
-	return func(d *decoder, v reflect.Value) error {
-		if d.data[d.pos] == 'n' {
-			if err := d.literal("null"); err != nil {
-				return err
+	if info := fastStructDecFor(t.Elem()); info != nil {
+		return func(d *decoder, v reflect.Value) error {
+			if v.CanAddr() {
+				return decodeFastStructSlice(d, v, t, info)
 			}
-			v.SetZero()
-			return nil
+			return decodeSlice(d, v, t, elem)
 		}
-		if err := d.enter(); err != nil {
+	}
+	return func(d *decoder, v reflect.Value) error {
+		return decodeSlice(d, v, t, elem)
+	}
+}
+
+// decodeSlice is the reflection-based array decoder used for every element type without a direct
+// memory decoder. | decodeSlice 是用于所有没有直接按内存解码器的元素类型的基于反射的数组解码器。
+func decodeSlice(d *decoder, v reflect.Value, t reflect.Type, elem func() decodeFunc) error {
+	if d.data[d.pos] == 'n' {
+		if err := d.literal("null"); err != nil {
 			return err
 		}
-		defer d.leave()
-		if d.data[d.pos] != '[' {
-			return typeErr("cannot unmarshal non-array into %s | 无法把非数组解析进 %s", t, t)
-		}
-		enc := elem()
-		n := -1
-		if d.skipLen {
-			d.skipLen = false
-			n = v.Len()
-		}
+		v.SetZero()
+		return nil
+	}
+	if err := d.enter(); err != nil {
+		return err
+	}
+	defer d.leave()
+	if d.data[d.pos] != '[' {
+		return typeErr("cannot unmarshal non-array into %s | 无法把非数组解析进 %s", t, t)
+	}
+	enc := elem()
+	n := -1
+	if d.skipLen {
+		d.skipLen = false
+		n = v.Len()
+	}
+	d.pos++
+	d.skipSpace()
+	if d.pos < len(d.data) && d.data[d.pos] == ']' {
 		d.pos++
-		d.skipSpace()
-		if d.pos < len(d.data) && d.data[d.pos] == ']' {
-			d.pos++
-			if v.IsNil() {
-				v.Set(reflect.MakeSlice(t, 0, 0))
-			} else {
-				v.SetLen(0)
-			}
-			return nil
-		}
-		if n >= 0 {
-			if v.IsNil() || v.Cap() < n {
-				v.Set(reflect.MakeSlice(t, n, n))
-			} else {
-				v.SetLen(n)
-			}
-		} else if v.IsNil() {
-			v.Set(reflect.MakeSlice(t, 0, 4))
+		if v.IsNil() {
+			v.Set(reflect.MakeSlice(t, 0, 0))
 		} else {
 			v.SetLen(0)
 		}
-		i := 0
-		for {
-			if i >= v.Len() {
-				v.Grow(1)
-				v.SetLen(i + 1)
-			}
-			if d.pos >= len(d.data) {
-				return syntaxErr("unexpected end of array | 数组意外结束")
-			}
-			if err := enc(d, v.Index(i)); err != nil {
-				return err
-			}
-			i++
-			if d.pos < len(d.data) {
-				switch d.data[d.pos] {
-				case ',':
-					d.pos++
-					d.skipSpace()
-					continue
-				case ']':
-					d.pos++
-					if i < v.Len() {
-						v.SetLen(i)
-					}
-					return nil
-				}
-			}
-			d.skipSpace()
-			if d.pos >= len(d.data) {
-				return syntaxErr("unexpected end of array | 数组意外结束")
-			}
+		return nil
+	}
+	if n >= 0 {
+		if v.IsNil() || v.Cap() < n {
+			v.Set(reflect.MakeSlice(t, n, n))
+		} else {
+			v.SetLen(n)
+		}
+	} else if v.IsNil() {
+		v.Set(reflect.MakeSlice(t, 0, 4))
+	} else {
+		v.SetLen(0)
+	}
+	i := 0
+	for {
+		if i >= v.Len() {
+			v.Grow(1)
+			v.SetLen(i + 1)
+		}
+		if d.pos >= len(d.data) {
+			return syntaxErr("unexpected end of array | 数组意外结束")
+		}
+		if err := enc(d, v.Index(i)); err != nil {
+			return err
+		}
+		i++
+		if d.pos < len(d.data) {
 			switch d.data[d.pos] {
 			case ',':
 				d.pos++
 				d.skipSpace()
+				continue
 			case ']':
 				d.pos++
 				if i < v.Len() {
 					v.SetLen(i)
 				}
 				return nil
-			default:
-				return syntaxErr("expected ',' or ']' in array | 数组中期望 ',' 或 ']'")
 			}
+		}
+		d.skipSpace()
+		if d.pos >= len(d.data) {
+			return syntaxErr("unexpected end of array | 数组意外结束")
+		}
+		switch d.data[d.pos] {
+		case ',':
+			d.pos++
+			d.skipSpace()
+		case ']':
+			d.pos++
+			if i < v.Len() {
+				v.SetLen(i)
+			}
+			return nil
+		default:
+			return syntaxErr("expected ',' or ']' in array | 数组中期望 ',' 或 ']'")
+		}
+	}
+}
+
+// unsafeSliceHeader mirrors the runtime representation of a slice header. |
+// unsafeSliceHeader 对应切片的运行时头部表示。
+type unsafeSliceHeader struct {
+	data unsafe.Pointer
+	len  int
+	cap  int
+}
+
+// decodeFastStructSlice decodes a []struct whose element type has a direct-memory decoder. It
+// grows the destination geometrically with typed allocations and advances the slice header
+// directly, so each element costs one decoder call instead of reflect.Index, reflect.Grow,
+// reflect.SetLen and a decoder lookup. | decodeFastStructSlice 解码元素类型具有直接按内存解码器的
+// []struct：以带类型的分配按几何级数扩容，并直接推进切片头，因此每个元素只需一次解码器调用，
+// 而不必执行 reflect.Index、reflect.Grow、reflect.SetLen 与解码器查找。
+func decodeFastStructSlice(d *decoder, v reflect.Value, t reflect.Type, info *fastStructDecInfo) error {
+	if d.data[d.pos] == 'n' {
+		if err := d.literal("null"); err != nil {
+			return err
+		}
+		v.SetZero()
+		return nil
+	}
+	if err := d.enter(); err != nil {
+		return err
+	}
+	if d.data[d.pos] != '[' {
+		return typeErr("cannot unmarshal non-array into %s | 无法把非数组解析进 %s", t, t)
+	}
+	// The preallocated length chosen by Unmarshal is only a capacity hint here. | Unmarshal 预留的
+	// 长度在这里只作为容量提示。
+	d.skipLen = false
+	d.pos++
+	d.skipSpace()
+	if d.pos < len(d.data) && d.data[d.pos] == ']' {
+		d.pos++
+		if v.IsNil() {
+			v.Set(reflect.MakeSlice(t, 0, 0))
+		} else {
+			v.SetLen(0)
+		}
+		d.leave()
+		return nil
+	}
+	if v.IsNil() {
+		v.Set(reflect.MakeSlice(t, 4, 4))
+	}
+	sh := (*unsafeSliceHeader)(unsafe.Pointer(v.UnsafeAddr()))
+	sh.len = 0
+	elemSize := info.size
+	i := 0
+	for {
+		if i == sh.cap {
+			newCap := sh.cap * 2
+			if newCap < 4 {
+				newCap = 4
+			}
+			if newCap <= sh.cap {
+				newCap = i + 1
+			}
+			nv := reflect.MakeSlice(t, newCap, newCap)
+			reflect.Copy(nv, v)
+			v.Set(nv)
+			sh = (*unsafeSliceHeader)(unsafe.Pointer(v.UnsafeAddr()))
+			sh.len = i
+		}
+		if d.pos >= len(d.data) {
+			return syntaxErr("unexpected end of array | 数组意外结束")
+		}
+		// Publish the element before decoding it so a decode error leaves the same partial
+		// slice the reflection path leaves. | 解码前先发布元素长度，使解码错误留下与反射路径
+		// 相同的部分切片。
+		sh.len = i + 1
+		if err := info.dec(d, unsafe.Add(sh.data, uintptr(i)*elemSize)); err != nil {
+			return err
+		}
+		i++
+		if d.pos < len(d.data) {
+			switch d.data[d.pos] {
+			case ',':
+				d.pos++
+				d.skipSpace()
+				continue
+			case ']':
+				d.pos++
+				d.leave()
+				return nil
+			}
+		}
+		d.skipSpace()
+		if d.pos >= len(d.data) {
+			return syntaxErr("unexpected end of array | 数组意外结束")
+		}
+		switch d.data[d.pos] {
+		case ',':
+			d.pos++
+			d.skipSpace()
+		case ']':
+			d.pos++
+			d.leave()
+			return nil
+		default:
+			return syntaxErr("expected ',' or ']' in array | 数组中期望 ',' 或 ']'")
 		}
 	}
 }

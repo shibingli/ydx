@@ -423,6 +423,19 @@ const (
 	wordAmpersand = 0x2626262626262626
 )
 
+// wordZeroMask marks the first zero byte of x with a high bit; later bytes may be false positives,
+// but the lowest set bit always names a true zero byte. | wordZeroMask \u7528\u9ad8\u4f4d\u6807\u8bb0 x \u7684\u9996\u4e2a\u96f6\u5b57\u8282\uff1b
+// \u540e\u7eed\u5b57\u8282\u53ef\u80fd\u662f\u5047\u9633\u6027\uff0c\u4f46\u6700\u4f4e\u7f6e\u4f4d\u59cb\u7ec8\u5bf9\u5e94\u771f\u5b9e\u7684\u96f6\u5b57\u8282\u3002
+func wordZeroMask(x uint64) uint64 {
+	return (x - wordLo) &^ x & wordHi
+}
+
+// wordControlMask is wordZeroMask for bytes below 0x20. | wordControlMask \u662f wordZeroMask \u7684\u5c0f\u4e8e
+// 0x20 \u5b57\u8282\u7248\u672c\u3002
+func wordControlMask(x uint64) uint64 {
+	return (x - wordSpace) &^ x & wordHi
+}
+
 // wordHasZero reports whether any byte of x is zero. | wordHasZero \u62a5\u544a x \u4e2d\u662f\u5426\u6709\u4efb\u4e00\u5b57\u8282\u4e3a\u96f6\u3002
 func wordHasZero(x uint64) bool {
 	return (x-wordLo)&^x&wordHi != 0

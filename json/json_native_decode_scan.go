@@ -3,7 +3,9 @@
 package json
 
 import (
+	"encoding/binary"
 	stdjson "encoding/json"
+	"math/bits"
 	"strconv"
 	"strings"
 	"unicode/utf8"
@@ -33,6 +35,9 @@ func (d *decoder) valueAny() (any, error) {
 		}
 		if d.useNumber {
 			return stdjson.Number(string(b)), nil
+		}
+		if f, ok := parseShortDecimalFloat(b); ok {
+			return f, nil
 		}
 		f, err := strconv.ParseFloat(bytesString(b), 64)
 		if err != nil {
@@ -144,11 +149,89 @@ func (d *decoder) parseBool() (bool, error) {
 	return false, nil
 }
 
+// parseCleanString scans and copies a string body in one pass. It accepts only ASCII bytes that
+// need no JSON unescaping: a closing quote reached before any backslash, control byte or
+// non-ASCII byte. On success it advances d.pos past the quote and returns the copied string;
+// otherwise it restores the arena and leaves d.pos unchanged for the general parser. |
+// parseCleanString 单遍扫描并复制字符串体，仅接受无需 JSON 反转义且为 ASCII 的内容：在反斜杠、
+// 控制字节或非 ASCII 字节之前遇到结束引号。成功时把 d.pos 推进到引号之后并返回复制后的字符串；
+// 否则恢复 arena 且不改变 d.pos，交给通用解析器。
+func (d *decoder) parseCleanString(start int) (string, bool) {
+	data := d.data
+	if start < len(data) && data[start] == '"' {
+		d.pos = start + 1
+		return "", true
+	}
+	d.ensureArena()
+	d.ensureArenaSpare(minArenaChunk)
+	chunk := d.arena
+	arenaStart := len(chunk)
+	i := start
+	written := 0
+	for len(data)-i >= 8 {
+		x := binary.LittleEndian.Uint64(unsafe.Slice(unsafe.SliceData(data[i:]), 8))
+		if x&wordHi != 0 || wordHasControl(x) || wordHasZero(x^wordQuote) || wordHasZero(x^wordBackslash) {
+			// The lowest flagged byte is always a true special byte: false positives from the
+			// borrow trick can only follow an earlier true hit. | 最低的标记字节必定是真实的特殊
+			// 字节：借位技巧的假阳性只会出现在更早的真实命中之后。
+			all := wordZeroMask(x^wordQuote) | wordZeroMask(x^wordBackslash) | wordControlMask(x) | (x & wordHi)
+			j := bits.TrailingZeros64(all) >> 3
+			if data[i+j] != '"' {
+				d.arena = chunk[:arenaStart]
+				return "", false
+			}
+			if j > 0 {
+				if cap(d.arena)-len(d.arena) < 8 {
+					d.arena = chunk[:arenaStart]
+					return "", false
+				}
+				dst := d.arena[len(d.arena) : len(d.arena)+8]
+				binary.LittleEndian.PutUint64(dst, x)
+				d.arena = d.arena[:len(d.arena)+j]
+				written += j
+			}
+			d.pos = i + j + 1
+			return unsafe.String(unsafe.SliceData(d.arena[arenaStart:]), written), true
+		}
+		if cap(d.arena)-len(d.arena) < 8 {
+			d.arena = chunk[:arenaStart]
+			return "", false
+		}
+		dst := d.arena[len(d.arena) : len(d.arena)+8]
+		binary.LittleEndian.PutUint64(dst, x)
+		d.arena = d.arena[:len(d.arena)+8]
+		written += 8
+		i += 8
+	}
+	for ; i < len(data); i++ {
+		c := data[i]
+		if c == '"' {
+			d.pos = i + 1
+			return unsafe.String(unsafe.SliceData(d.arena[arenaStart:]), written), true
+		}
+		if c == '\\' || c < 0x20 || c >= utf8.RuneSelf {
+			d.arena = chunk[:arenaStart]
+			return "", false
+		}
+		if cap(d.arena)-len(d.arena) < 1 {
+			d.arena = chunk[:arenaStart]
+			return "", false
+		}
+		d.arena = append(d.arena, c)
+		written++
+	}
+	d.arena = chunk[:arenaStart]
+	return "", false
+}
+
 func (d *decoder) parseString() (string, error) {
 	if d.pos >= len(d.data) || d.data[d.pos] != '"' {
 		return "", syntaxErr("expected string | 期望字符串")
 	}
 	start := d.pos + 1
+	if s, ok := d.parseCleanString(start); ok {
+		return s, nil
+	}
 	if end, slow, nonASCII := scanStringBody(d.data, start); !slow && (!nonASCII || utf8.Valid(d.data[start:end])) {
 		d.pos = end + 1
 		return d.copyString(d.data[start:end]), nil
