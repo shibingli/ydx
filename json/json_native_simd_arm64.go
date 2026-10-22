@@ -112,3 +112,69 @@ func jsonStringNeedsEscapeNEON(s string, escapeHTML bool) bool {
 	}
 	return false
 }
+
+// skipSpaceRun returns the first position at or after pos that is not JSON whitespace. The first
+// byte rejects the common compact-JSON case; complete 16-byte whitespace blocks are skipped with
+// NEON and mixed blocks fall back to the scalar loop. | skipSpaceRun 返回 pos 之后第一个不是 JSON
+// 空白的位置。首字节快速拒绝常见的紧凑 JSON；完整的 16 字节空白块用 NEON 跳过，混合块回退
+// 标量循环。
+func skipSpaceRun(data []byte, pos int) int {
+	if pos >= len(data) {
+		return pos
+	}
+	switch data[pos] {
+	case ' ', '\t', '\n', '\r':
+	default:
+		return pos
+	}
+	space := archsimd.BroadcastUint8x16(' ')
+	tab := archsimd.BroadcastUint8x16('\t')
+	nl := archsimd.BroadcastUint8x16('\n')
+	cr := archsimd.BroadcastUint8x16('\r')
+	for len(data)-pos >= 16 {
+		v := archsimd.LoadUint8x16(data[pos : pos+16])
+		all := v.Equal(space).Or(v.Equal(tab)).Or(v.Equal(nl)).Or(v.Equal(cr))
+		if all.ToInt8x16().ReduceMax() != -1 {
+			break
+		}
+		pos += 16
+	}
+	for pos < len(data) {
+		switch data[pos] {
+		case ' ', '\t', '\n', '\r':
+			pos++
+		default:
+			return pos
+		}
+	}
+	return pos
+}
+
+// scanDigits returns the first position at or after pos that is not an ASCII digit. The first
+// eight digits stay scalar so short numbers pay no vector setup; longer runs use 16-byte blocks.
+// | scanDigits 返回 pos 之后第一个不是 ASCII 数字的位置。前 8 位保持标量，避免短数字承担向量
+// 初始化开销；更长的数字段使用 16 字节块。
+func scanDigits(data []byte, pos int) int {
+	n := 0
+	for pos < len(data) && n < 8 && data[pos] >= '0' && data[pos] <= '9' {
+		pos++
+		n++
+	}
+	if n < 8 {
+		return pos
+	}
+	zero := archsimd.BroadcastUint8x16('0')
+	nine := archsimd.BroadcastUint8x16('9')
+	for len(data)-pos >= 16 {
+		v := archsimd.LoadUint8x16(data[pos : pos+16])
+		digits := v.GreaterEqual(zero).And(v.LessEqual(nine))
+		if digits.ToInt8x16().ReduceMax() != -1 {
+			break
+		}
+		pos += 16
+	}
+	for pos < len(data) && data[pos] >= '0' && data[pos] <= '9' {
+		pos++
+	}
+	return pos
+}

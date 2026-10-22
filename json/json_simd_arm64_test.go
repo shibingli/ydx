@@ -141,3 +141,42 @@ func TestNEONAppendJSONStringMatchesStdlib(t *testing.T) {
 		check(s)
 	}
 }
+
+// TestNEONSkipSpaceBoundaries pins whitespace runs at 15/16/17 and larger block boundaries. |
+// TestNEONSkipSpaceBoundaries 固定 15/16/17 及更大块边界上的空白段行为。
+func TestNEONSkipSpaceBoundaries(t *testing.T) {
+	spaces := []byte(" \t\n\r")
+	for _, n := range []int{0, 1, 15, 16, 17, 31, 32, 33, 63, 64, 65, 1024} {
+		data := make([]byte, n, n+1)
+		for i := range data {
+			data[i] = spaces[i%len(spaces)]
+		}
+		data = append(data, 'x')
+		if got := skipSpaceRun(data, 0); got != n {
+			t.Fatalf("n=%d: skipSpaceRun=%d, want %d | 空白扫描边界错误", n, got, n)
+		}
+		prefix := []byte("abc")
+		withPrefix := append(append([]byte(nil), prefix...), data...)
+		if got := skipSpaceRun(withPrefix, len(prefix)); got != len(prefix)+n {
+			t.Fatalf("n=%d prefix: skipSpaceRun=%d, want %d | 带前缀空白扫描错误", n, got, len(prefix)+n)
+		}
+	}
+}
+
+// TestNEONScanDigitsBoundaries pins digit runs at the 8-digit scalar threshold and 15/16/17 byte
+// block boundaries. | TestNEONScanDigitsBoundaries 固定 8 位标量阈值与 15/16/17 字节块边界上的
+// 数字段行为。
+func TestNEONScanDigitsBoundaries(t *testing.T) {
+	for _, n := range []int{0, 1, 7, 8, 15, 16, 17, 31, 32, 33, 63, 64, 65, 1024} {
+		data := bytes.Repeat([]byte{'7'}, n)
+		data = append(data, 'x')
+		if got := scanDigits(data, 0); got != n {
+			t.Fatalf("n=%d: scanDigits=%d, want %d | 数字扫描边界错误", n, got, n)
+		}
+		prefix := []byte("abc")
+		withPrefix := append(append([]byte(nil), prefix...), data...)
+		if got := scanDigits(withPrefix, len(prefix)); got != len(prefix)+n {
+			t.Fatalf("n=%d prefix: scanDigits=%d, want %d | 带前缀数字扫描错误", n, got, len(prefix)+n)
+		}
+	}
+}
