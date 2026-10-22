@@ -1,5 +1,3 @@
-// Package openapi embeds the viewer script so the documentation page is self-contained. | Package openapi
-// 内嵌查看器脚本，使文档页面自包含。
 package openapi
 
 import _ "embed"
