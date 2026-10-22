@@ -119,11 +119,20 @@ func (e *Encoding) encodeScalar(dst, src []byte) {
 	di := 0
 	pair := e.pair
 	for len(src) >= 12 {
-		for j := 0; j < 12; j += 3 {
-			v := uint(src[j])<<16 | uint(src[j+1])<<8 | uint(src[j+2])
-			p := uint32(pair[(v>>12)&4095]) | uint32(pair[v&4095])<<16
-			binary.LittleEndian.PutUint32(dst[di+j/3*4:], p)
-		}
+		s := src[:12]
+		d := dst[di : di+16]
+		v0 := uint(s[0])<<16 | uint(s[1])<<8 | uint(s[2])
+		v1 := uint(s[3])<<16 | uint(s[4])<<8 | uint(s[5])
+		v2 := uint(s[6])<<16 | uint(s[7])<<8 | uint(s[8])
+		v3 := uint(s[9])<<16 | uint(s[10])<<8 | uint(s[11])
+		p0 := uint32(pair[(v0>>12)&4095]) | uint32(pair[v0&4095])<<16
+		p1 := uint32(pair[(v1>>12)&4095]) | uint32(pair[v1&4095])<<16
+		p2 := uint32(pair[(v2>>12)&4095]) | uint32(pair[v2&4095])<<16
+		p3 := uint32(pair[(v3>>12)&4095]) | uint32(pair[v3&4095])<<16
+		binary.LittleEndian.PutUint32(d[0:4], p0)
+		binary.LittleEndian.PutUint32(d[4:8], p1)
+		binary.LittleEndian.PutUint32(d[8:12], p2)
+		binary.LittleEndian.PutUint32(d[12:16], p3)
 		src, di = src[12:], di+16
 	}
 	for len(src) >= 3 {
