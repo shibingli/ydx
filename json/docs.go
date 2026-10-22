@@ -1,0 +1,38 @@
+// Package jsonx provides an adaptive JSON codec abstraction layer. | Package jsonx 提供自适应的 JSON 编解码抽象层。
+//
+// The same API automatically selects the best backend under different architectures and build tags, with no need for callers to be aware of the underlying implementation: | 同一套 API 在不同架构与构建标签下自动选择最优后端，调用方无需感知底层实现：
+//
+//   - amd64 without the jsonx_std tag: the self-developed native codec (see jsonx_native*.go) | amd64 且未设置 jsonx_std 标签：自研原生编解码器（见 jsonx_native*.go）
+//   - non-amd64 without the jsonx_std tag: github.com/goccy/go-json (pure-Go high performance, see jsonx_generic.go) | 非 amd64 且未设置 jsonx_std 标签：github.com/goccy/go-json（纯 Go 高性能，见 jsonx_generic.go）
+//   - with the jsonx_std tag: the standard library encoding/json (troubleshooting and compatibility reference, see jsonx_std.go) | 设置 jsonx_std 标签：标准库 encoding/json（排障与兼容性对照，见 jsonx_std.go）
+//
+// All backends export exactly the same symbol set (Marshal / Unmarshal / MarshalIndent / Valid /
+// NewEncoder / NewDecoder / Backend), and each carries its own build constraint, compiling
+// mutually exclusively with unique symbols, so any supported target platform can be built
+// directly. | 各后端导出完全相同的符号集（Marshal / Unmarshal / MarshalIndent / Valid /
+// NewEncoder / NewDecoder / Backend），且都配备对应的构建约束，互斥编译、符号唯一，
+// 因此任何受支持的目标平台都能直接构建。
+//
+// The semantic baseline is encoding/json: strings are HTML-escaped, map keys are output in
+// sorted order, []byte goes through StdEncoding base64, time.Time goes through RFC3339Nano,
+// and json.Marshaler / json.TextMarshaler / json.RawMessage / omitempty are supported. | 语义基准是
+// encoding/json：字符串按 HTML 转义、map 的 key 排序输出、[]byte 走 StdEncoding base64、
+// time.Time 走 RFC3339Nano，并兼容 json.Marshaler / json.TextMarshaler / json.RawMessage /
+// omitempty。
+//
+// Typical usage | 典型用法：
+//
+//	b, err := jsonx.Marshal(v)
+//	if err != nil {
+//		return err
+//	}
+//	if err := jsonx.Unmarshal(b, &out); err != nil {
+//		return err
+//	}
+//
+// To determine errors stably across backends, combine errors.Is with ErrSyntax / ErrTypeMismatch. | 需要跨后端稳定判定错误时，可用 errors.Is 配合 ErrSyntax / ErrTypeMismatch。
+//
+// The import path is github.com/shibingli/ydx/json while the package identifier remains
+// jsonx, so existing yd call sites only change their import path. | 导入路径是
+// github.com/shibingli/ydx/json，包标识符仍是 jsonx，因此 yd 既有调用点只需替换导入路径。
+package jsonx
