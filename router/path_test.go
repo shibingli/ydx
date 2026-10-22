@@ -45,25 +45,3 @@ func TestRequestPathSemantics(t *testing.T) {
 		t.Errorf("requestPath(nil) = %q, want empty | nil URL 应返回空串", got)
 	}
 }
-
-// BenchmarkRequestPath compares the routing path rule with url.URL.EscapedPath for a safe path. | BenchmarkRequestPath
-// 对比安全路径下路由路径规则与 url.URL.EscapedPath。
-func BenchmarkRequestPath(b *testing.B) {
-	u := &url.URL{Path: "/users/42/posts"}
-	b.Run("requestPath", func(b *testing.B) {
-		b.ReportAllocs()
-		for i := 0; i < b.N; i++ {
-			if requestPath(u) == "" {
-				b.Fatal("empty")
-			}
-		}
-	})
-	b.Run("escapedPath", func(b *testing.B) {
-		b.ReportAllocs()
-		for i := 0; i < b.N; i++ {
-			if u.EscapedPath() == "" {
-				b.Fatal("empty")
-			}
-		}
-	})
-}
