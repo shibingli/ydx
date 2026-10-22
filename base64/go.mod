@@ -7,3 +7,7 @@ require (
 	github.com/shibingli/ydx/errs v0.1.0
 	github.com/shibingli/ydx/sysinfo v0.1.0
 )
+
+replace github.com/shibingli/ydx/errs => ../errs
+
+replace github.com/shibingli/ydx/sysinfo => ../sysinfo
