@@ -79,3 +79,31 @@ func TestParallelDecodeCRLFFallsBack(t *testing.T) {
 		t.Fatalf("CRLF decode: n=%d err=%v | CRLF 解码结果不一致", n, err)
 	}
 }
+
+// TestPlanDecodeChunksRejectsNonAdditiveDecodedLen verifies the parallel decoder
+// does not slice past dst when a backend's DecodedLen reserves a per-call
+// margin, as cristalhq does. | TestPlanDecodeChunksRejectsNonAdditiveDecodedLen
+// 验证后端 DecodedLen 每次调用都预留余量时，并行解码不会越过 dst 切片。
+func TestPlanDecodeChunksRejectsNonAdditiveDecodedLen(t *testing.T) {
+	const total = 349527
+	src := make([]byte, total)
+	dst := make([]byte, total*6/8)
+
+	nonAdditive := func(n int) int { return n/4*3 + 1 }
+	if _, ok := planDecodeChunks(src, dst, 4, nonAdditive); ok {
+		t.Fatal("non-additive DecodedLen must fall back to serial | 非可加 DecodedLen 必须回退串行")
+	}
+
+	additive := func(n int) int { return n * 6 / 8 }
+	chunks, ok := planDecodeChunks(src, dst, 4, additive)
+	if !ok {
+		t.Fatal("additive DecodedLen must plan | 可加 DecodedLen 应能分块")
+	}
+	sum := 0
+	for _, c := range chunks {
+		sum += len(c.dst)
+	}
+	if sum != len(dst) {
+		t.Fatalf("planned %d decoded bytes, want %d | 规划输出 %d 字节，期望 %d", sum, len(dst), sum, len(dst))
+	}
+}

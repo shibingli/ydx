@@ -95,6 +95,51 @@ func (e *Encoding) DecodeParallel(dst, src []byte) (int, error) {
 	return e.decodeParallel(dst, src, 0)
 }
 
+// decodeChunk is one source slice and its destination window in a parallel
+// decode. | decodeChunk 是并行解码中的一个源切片及其目标窗口。
+type decodeChunk struct {
+	src []byte
+	dst []byte
+	out int
+}
+
+// planDecodeChunks splits src across workers and computes each chunk's
+// destination window. It reports ok=false when the backend's DecodedLen
+// reserves a per-call margin, so the per-chunk upper bounds do not fit the
+// total destination; the caller must then decode serially instead of slicing
+// past dst. | planDecodeChunks 把 src 分给多个协程并计算每个分块的目标窗口。
+// 后端 DecodedLen 每次调用都预留余量、使各分块上界之和超出总目标时返回 ok=false，
+// 调用方必须改走串行解码，避免越过 dst 切片。
+func planDecodeChunks(src, dst []byte, workers int, decodedLen func(int) int) ([]decodeChunk, bool) {
+	if len(src) == 0 {
+		return nil, true
+	}
+	groups := (len(src) + 3) / 4
+	if workers < 1 {
+		workers = 1
+	}
+	if workers > groups {
+		workers = groups
+	}
+	per := (groups + workers - 1) / workers
+	chunks := make([]decodeChunk, 0, workers)
+	out := 0
+	for off := 0; off < len(src); {
+		n := per * 4
+		if n > len(src)-off {
+			n = len(src) - off
+		}
+		outN := decodedLen(n)
+		if outN < 0 || outN > len(dst)-out {
+			return nil, false
+		}
+		chunks = append(chunks, decodeChunk{src: src[off : off+n], dst: dst[out : out+outN], out: outN})
+		off += n
+		out += outN
+	}
+	return chunks, true
+}
+
 func (e *Encoding) decodeParallel(dst, src []byte, workers int) (int, error) {
 	if len(dst) < e.DecodedLen(len(src)) {
 		return 0, ErrShortBuffer
@@ -115,7 +160,13 @@ func (e *Encoding) decodeParallel(dst, src []byte, workers int) (int, error) {
 	if workers <= 1 {
 		return e.Decode(dst, src)
 	}
-	per := (groups + workers - 1) / workers
+	chunks, ok := planDecodeChunks(src, dst, workers, e.DecodedLen)
+	if !ok {
+		// A backend whose DecodedLen adds a per-call margin cannot be split
+		// without overrunning dst; serial decoding keeps the exact semantics.
+		// | 后端 DecodedLen 每次调用都加余量时，分块会越过 dst；串行解码保持精确语义。
+		return e.Decode(dst, src)
+	}
 	type result struct {
 		err      error
 		n        int
@@ -123,12 +174,7 @@ func (e *Encoding) decodeParallel(dst, src []byte, workers int) (int, error) {
 	}
 	results := make(chan result, workers+1)
 	var wg sync.WaitGroup
-	for off, out := 0, 0; off < len(src); {
-		n := per * 4
-		if n > len(src)-off {
-			n = len(src) - off
-		}
-		outN := e.DecodedLen(n)
+	for _, c := range chunks {
 		wg.Add(1)
 		go func(src, dst []byte) {
 			defer wg.Done()
@@ -143,9 +189,7 @@ func (e *Encoding) decodeParallel(dst, src []byte, workers int) (int, error) {
 			}
 			got, err := e.Decode(dst, src)
 			results <- result{n: got, err: err}
-		}(src[off:off+n], dst[out:out+outN])
-		off += n
-		out += outN
+		}(c.src, c.dst)
 	}
 	wg.Wait()
 	close(results)
