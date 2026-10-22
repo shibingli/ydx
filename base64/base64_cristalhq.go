@@ -1,4 +1,4 @@
-//go:build !amd64 && !loong64 && !b64x_std
+//go:build !amd64 && !arm64 && !loong64 && !b64x_std
 
 package base64
 
@@ -14,7 +14,8 @@ import (
 )
 
 // Encoding is a Base64 codec built on github.com/cristalhq/base64 on
-// non-x86 architectures. | Encoding 是非 x86 架构上建立在
+// architectures without the native backend (currently not amd64/arm64).
+// | Encoding 是在没有自研后端的架构（当前为非 amd64/arm64）上建立在
 // github.com/cristalhq/base64 之上的 Base64 编解码器。
 //
 // Slice operations use cristalhq directly. Inputs containing CR/LF and the

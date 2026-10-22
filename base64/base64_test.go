@@ -388,12 +388,15 @@ func TestBackendNameIsKnown(t *testing.T) {
 	default:
 		t.Fatalf("Backend() = %q，期望 cristalhq/base64、encoding/base64 或 yd-native", got)
 	}
-	if runtime.GOARCH == "amd64" {
+	switch runtime.GOARCH {
+	case "amd64", "arm64":
 		if got == "cristalhq/base64" {
-			t.Fatalf("amd64 不得使用 cristalhq 后端，实际 %q", got)
+			t.Fatalf("%s 不得使用 cristalhq 后端，实际 %q", runtime.GOARCH, got)
 		}
-	} else if got == "yd-native" {
-		t.Fatalf("非 amd64 不得使用自研后端，实际 %q", got)
+	default:
+		if got == "yd-native" {
+			t.Fatalf("非 amd64/arm64 不得使用自研后端，实际 %q", got)
+		}
 	}
 }
 
