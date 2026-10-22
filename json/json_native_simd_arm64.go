@@ -178,3 +178,163 @@ func scanDigits(data []byte, pos int) int {
 	}
 	return pos
 }
+
+// scanCompactOutsideRun returns the first quote or whitespace position. Short remaining runs stay
+// scalar; long runs use the NEON block scan. | scanCompactOutsideRun 返回第一个引号或空白位置。
+// 剩余长度较短时走标量，较长时使用 NEON 块扫描。
+func scanCompactOutsideRun(src []byte, pos int) int {
+	if len(src)-pos < 16 {
+		for pos < len(src) {
+			c := src[pos]
+			if c == '"' || c == ' ' || c == '\t' || c == '\n' || c == '\r' {
+				break
+			}
+			pos++
+		}
+		return pos
+	}
+	return scanCompactOutsideRunNEON(src, pos)
+}
+
+// scanCompactOutsideRunNEON scans complete 16-byte blocks for a quote or whitespace. |
+// scanCompactOutsideRunNEON 按 16 字节块扫描引号或空白。
+func scanCompactOutsideRunNEON(src []byte, pos int) int {
+	quote := archsimd.BroadcastUint8x16('"')
+	space := archsimd.BroadcastUint8x16(' ')
+	tab := archsimd.BroadcastUint8x16('\t')
+	nl := archsimd.BroadcastUint8x16('\n')
+	cr := archsimd.BroadcastUint8x16('\r')
+	for len(src)-pos >= 16 {
+		v := archsimd.LoadUint8x16(src[pos : pos+16])
+		stop := v.Equal(quote).Or(v.Equal(space)).Or(v.Equal(tab)).Or(v.Equal(nl)).Or(v.Equal(cr))
+		if stop.ToInt8x16().ReduceMin() != 0 {
+			for j := 0; j < 16; j++ {
+				c := src[pos+j]
+				if c == '"' || c == ' ' || c == '\t' || c == '\n' || c == '\r' {
+					return pos + j
+				}
+			}
+		}
+		pos += 16
+	}
+	for pos < len(src) {
+		c := src[pos]
+		if c == '"' || c == ' ' || c == '\t' || c == '\n' || c == '\r' {
+			break
+		}
+		pos++
+	}
+	return pos
+}
+
+// scanCompactInsideRun returns the end of a verbatim-copyable string-content run. Short remaining
+// runs stay scalar; long runs use the NEON block scan. | scanCompactInsideRun 返回可原样复制的
+// 字符串内容段结束位置。剩余长度较短时走标量，较长时使用 NEON 块扫描。
+func scanCompactInsideRun(src []byte, pos int, escapeHTML bool) int {
+	if len(src)-pos < 16 {
+		for pos < len(src) {
+			c := src[pos]
+			if c == '"' || c == '\\' || c < 0x20 {
+				break
+			}
+			if escapeHTML && (c == '<' || c == '>' || c == '&' || c == 0xE2) {
+				break
+			}
+			pos++
+		}
+		return pos
+	}
+	return scanCompactInsideRunNEON(src, pos, escapeHTML)
+}
+
+// scanCompactInsideRunNEON scans complete 16-byte blocks for a byte that must be handled by the
+// compact encoder. | scanCompactInsideRunNEON 按 16 字节块扫描压缩编码器必须特殊处理的字节。
+func scanCompactInsideRunNEON(src []byte, pos int, escapeHTML bool) int {
+	quote := archsimd.BroadcastUint8x16('"')
+	backslash := archsimd.BroadcastUint8x16('\\')
+	space := archsimd.BroadcastUint8x16(0x20)
+	var lt, gt, amp, e2 archsimd.Uint8x16
+	if escapeHTML {
+		lt = archsimd.BroadcastUint8x16('<')
+		gt = archsimd.BroadcastUint8x16('>')
+		amp = archsimd.BroadcastUint8x16('&')
+		e2 = archsimd.BroadcastUint8x16(0xE2)
+	}
+	for len(src)-pos >= 16 {
+		v := archsimd.LoadUint8x16(src[pos : pos+16])
+		stop := v.Equal(quote).Or(v.Equal(backslash)).Or(v.Less(space))
+		if escapeHTML {
+			stop = stop.Or(v.Equal(lt)).Or(v.Equal(gt)).Or(v.Equal(amp)).Or(v.Equal(e2))
+		}
+		if stop.ToInt8x16().ReduceMin() != 0 {
+			for j := 0; j < 16; j++ {
+				c := src[pos+j]
+				if c == '"' || c == '\\' || c < 0x20 {
+					return pos + j
+				}
+				if escapeHTML && (c == '<' || c == '>' || c == '&' || c == 0xE2) {
+					return pos + j
+				}
+			}
+		}
+		pos += 16
+	}
+	for pos < len(src) {
+		c := src[pos]
+		if c == '"' || c == '\\' || c < 0x20 {
+			break
+		}
+		if escapeHTML && (c == '<' || c == '>' || c == '&' || c == 0xE2) {
+			break
+		}
+		pos++
+	}
+	return pos
+}
+
+// scanUnescapedASCII returns the end of an ASCII run that needs no unescaping. Short remaining
+// runs stay scalar; long runs use the NEON block scan. | scanUnescapedASCII 返回无需反转义的
+// ASCII 段结束位置。剩余长度较短时走标量，较长时使用 NEON 块扫描。
+func scanUnescapedASCII(data []byte, pos int) int {
+	if len(data)-pos < 16 {
+		for pos < len(data) {
+			c := data[pos]
+			if c == '"' || c == '\\' || c < 0x20 || c >= 0x80 {
+				break
+			}
+			pos++
+		}
+		return pos
+	}
+	return scanUnescapedASCIINEON(data, pos)
+}
+
+// scanUnescapedASCIINEON scans complete 16-byte blocks for a byte that ends the clean ASCII run.
+// | scanUnescapedASCIINEON 按 16 字节块扫描结束干净 ASCII 段的字节。
+func scanUnescapedASCIINEON(data []byte, pos int) int {
+	quote := archsimd.BroadcastUint8x16('"')
+	backslash := archsimd.BroadcastUint8x16('\\')
+	space := archsimd.BroadcastUint8x16(0x20)
+	high := archsimd.BroadcastUint8x16(0x80)
+	for len(data)-pos >= 16 {
+		v := archsimd.LoadUint8x16(data[pos : pos+16])
+		stop := v.Equal(quote).Or(v.Equal(backslash)).Or(v.Less(space)).Or(v.GreaterEqual(high))
+		if stop.ToInt8x16().ReduceMin() != 0 {
+			for j := 0; j < 16; j++ {
+				c := data[pos+j]
+				if c == '"' || c == '\\' || c < 0x20 || c >= 0x80 {
+					return pos + j
+				}
+			}
+		}
+		pos += 16
+	}
+	for pos < len(data) {
+		c := data[pos]
+		if c == '"' || c == '\\' || c < 0x20 || c >= 0x80 {
+			break
+		}
+		pos++
+	}
+	return pos
+}

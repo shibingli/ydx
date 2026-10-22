@@ -180,3 +180,61 @@ func TestNEONScanDigitsBoundaries(t *testing.T) {
 		}
 	}
 }
+
+// TestNEONCompactOutsideBoundaries pins the compact outer scan at the 15/16/17 block boundaries.
+// | TestNEONCompactOutsideBoundaries 固定压缩外部扫描在 15/16/17 块边界上的行为。
+func TestNEONCompactOutsideBoundaries(t *testing.T) {
+	for _, n := range []int{0, 1, 15, 16, 17, 31, 32, 33, 1024} {
+		for _, stop := range []byte{'"', ' ', '\t', '\n', '\r'} {
+			data := append(bytes.Repeat([]byte{'a'}, n), stop, 'b')
+			got, want := scanCompactOutsideRun(data, 0), scanCompactOutsideRunRef(data, 0)
+			if got != want || got != n {
+				t.Fatalf("n=%d stop=%q: got=%d want=%d | 压缩外部扫描边界错误", n, stop, got, want)
+			}
+		}
+		clean := bytes.Repeat([]byte{'a'}, n)
+		if got, want := scanCompactOutsideRun(clean, 0), scanCompactOutsideRunRef(clean, 0); got != want || got != n {
+			t.Fatalf("n=%d clean: got=%d want=%d | 干净压缩段边界错误", n, got, want)
+		}
+	}
+}
+
+// TestNEONCompactInsideBoundaries pins the compact inner scan at the 15/16/17 block boundaries
+// for both HTML modes. | TestNEONCompactInsideBoundaries 固定压缩内部扫描在两种 HTML 模式下
+// 15/16/17 块边界上的行为。
+func TestNEONCompactInsideBoundaries(t *testing.T) {
+	for _, n := range []int{0, 1, 15, 16, 17, 31, 32, 33, 1024} {
+		for _, escapeHTML := range []bool{false, true} {
+			for _, stop := range []byte{'"', '\\', '\n', '<', '>', '&', 0xE2} {
+				data := append(bytes.Repeat([]byte{'a'}, n), stop, 'b')
+				got, want := scanCompactInsideRun(data, 0, escapeHTML), scanCompactInsideRunRef(data, 0, escapeHTML)
+				if got != want {
+					t.Fatalf("n=%d html=%v stop=%q: got=%d want=%d | 压缩内部扫描边界错误", n, escapeHTML, stop, got, want)
+				}
+			}
+			clean := bytes.Repeat([]byte{'a'}, n)
+			if got, want := scanCompactInsideRun(clean, 0, escapeHTML), scanCompactInsideRunRef(clean, 0, escapeHTML); got != want || got != n {
+				t.Fatalf("n=%d html=%v clean: got=%d want=%d | 干净压缩内部段边界错误", n, escapeHTML, got, want)
+			}
+		}
+	}
+}
+
+// TestNEONUnescapedASCIIBoundaries pins the unescaped ASCII run scan at the 15/16/17 block
+// boundaries. | TestNEONUnescapedASCIIBoundaries 固定未转义 ASCII 段扫描在 15/16/17 块边界上的
+// 行为。
+func TestNEONUnescapedASCIIBoundaries(t *testing.T) {
+	for _, n := range []int{0, 1, 15, 16, 17, 31, 32, 33, 1024} {
+		for _, stop := range []byte{'"', '\\', '\n', 0x80} {
+			data := append(bytes.Repeat([]byte{'a'}, n), stop, 'b')
+			got, want := scanUnescapedASCII(data, 0), scanUnescapedASCIIRef(data, 0)
+			if got != want || got != n {
+				t.Fatalf("n=%d stop=%q: got=%d want=%d | 未转义 ASCII 边界错误", n, stop, got, want)
+			}
+		}
+		clean := bytes.Repeat([]byte{'a'}, n)
+		if got, want := scanUnescapedASCII(clean, 0), scanUnescapedASCIIRef(clean, 0); got != want || got != n {
+			t.Fatalf("n=%d clean: got=%d want=%d | 干净未转义 ASCII 段边界错误", n, got, want)
+		}
+	}
+}
