@@ -1,0 +1,5 @@
+.bench/
+bin/
+*.exe
+*.test
+.gitconfig-bootstrap
