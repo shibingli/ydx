@@ -333,6 +333,11 @@ func appendFloat(buf []byte, f float64, bits int) ([]byte, error) {
 		}
 		return appendIntFast(buf, int64(f)), nil
 	}
+	if bits == 64 {
+		if out, ok := appendShortFloat(buf, f); ok {
+			return out, nil
+		}
+	}
 	fmt := byte('f')
 	if abs := math.Abs(f); abs != 0 && (abs < 1e-6 || abs >= 1e21) {
 		fmt = 'e'
@@ -345,6 +350,49 @@ func appendFloat(buf []byte, f float64, bits int) ([]byte, error) {
 		}
 	}
 	return buf, nil
+}
+
+// appendShortFloat formats a float64 with one to six decimal places when the scaled value is an
+// exact integer within the 53-bit range; otherwise it reports !ok and the caller falls back to
+// strconv. | appendShortFloat 在缩放值位于 53 位整数范围内且为整数时，用 1-6 位小数格式化
+// float64；否则返回 !ok，由调用方回退到 strconv。
+func appendShortFloat(buf []byte, f float64) ([]byte, bool) {
+	abs := math.Abs(f)
+	if abs < 1e-6 || abs >= 1e15 {
+		return buf, false
+	}
+	neg := math.Signbit(f)
+	if neg {
+		f = -f
+	}
+	scale := 1.0
+	for prec := 1; prec <= 6; prec++ {
+		scale *= 10
+		g := f * scale
+		if g > 1<<53 {
+			return buf, false
+		}
+		n := int64(g)
+		if float64(n) != g {
+			continue
+		}
+		ip := n / int64(scale)
+		frac := n % int64(scale)
+		if neg {
+			buf = append(buf, '-')
+		}
+		buf = appendIntFast(buf, ip)
+		if frac == 0 {
+			return buf, true
+		}
+		buf = append(buf, '.')
+		div := int64(scale) / 10
+		for ; div > 0; div /= 10 {
+			buf = append(buf, byte('0'+frac/div%10))
+		}
+		return buf, true
+	}
+	return buf, false
 }
 
 const (
