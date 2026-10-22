@@ -12,13 +12,8 @@ import (
 	"testing"
 
 	"github.com/shibingli/ydx/json"
-	"github.com/shibingli/ydx/router"
-	"github.com/spf13/afero"
 	"go.yaml.in/yaml/v3"
 )
-
-// noopHandler is a placeholder route handler used across the tests. | noopHandler 是各测试共用的占位路由处理器。
-func noopHandler(c *router.Ctx) {}
 
 // testAddress is a nested struct used to verify schema generation. | testAddress 是用于校验 Schema 生成的嵌套结构体。
 type testAddress struct {
@@ -41,11 +36,18 @@ type testUser struct {
 	Nickname string
 }
 
-// serve performs one request against the router and returns the recorder. | serve 对路由发起一次请求并返回记录器。
-func serve(r *router.Router, method, target string) *httptest.ResponseRecorder {
+// serve performs one request against a handler and returns the recorder. | serve 对处理器发起一次
+// 请求并返回记录器。
+func serve(h http.Handler, method, target string) *httptest.ResponseRecorder {
 	rec := httptest.NewRecorder()
-	r.ServeHTTP(rec, httptest.NewRequest(method, target, nil))
+	h.ServeHTTP(rec, httptest.NewRequest(method, target, nil))
 	return rec
+}
+
+// pathParam builds the required string path parameter used by route fixtures. | pathParam 构造路由
+// 夹具使用的必填字符串路径参数。
+func pathParam(name string) Parameter {
+	return Parameter{Name: name, In: "path", Required: true, Schema: &Schema{Type: "string"}}
 }
 
 // findParam returns the parameter with the given name, or nil. | findParam 返回指定名称的参数，找不到时返回 nil。
@@ -101,11 +103,12 @@ func normalizeNumbers(v any) any {
 	}
 }
 
-func TestFromRouterConvertsPatternParams(t *testing.T) {
-	r := router.New()
-	r.GET("/report/:id-xx.png", noopHandler)
-
-	doc := FromRouter(r, Info{Title: "Demo", Version: "1.0.0"}, Options{})
+func TestFromRoutesUsesPreconvertedPaths(t *testing.T) {
+	doc := FromRoutes([]Route{{
+		Method: "GET",
+		Path:   "/report/{id}-xx.png",
+		Params: []Parameter{pathParam("id")},
+	}}, Info{Title: "Demo", Version: "1.0.0"}, Options{})
 
 	if _, ok := doc.Paths["/report/:id-xx.png"]; ok {
 		t.Fatalf("raw pattern leaked into paths | 原始模式不应出现在 paths 中: %v", doc.Paths)
@@ -129,21 +132,19 @@ func TestFromRouterConvertsPatternParams(t *testing.T) {
 	}
 }
 
-// TestFromRouterSkipsCoverageForConfiguredPrefixes 验证 SkipPrefixes 中的路由不计入 missing。
-// TestFromRouterSkipsCoverageForConfiguredPrefixes verifies routes under SkipPrefixes never count as missing.
+// TestFromRoutesSkipsCoverageForConfiguredPrefixes 验证 SkipPrefixes 中的路由不计入 missing。
+// TestFromRoutesSkipsCoverageForConfiguredPrefixes verifies routes under SkipPrefixes never count as missing.
 //
 // 静态文件挂载不是 API 操作；把它算进缺失覆盖率会让每个生成项目启动时都报告 missing=1。文档里仍保留
 // 该路径（它确实是可访问的端点），只是覆盖统计不再要求它有注解。| A static file mount is not an API
 // operation; counting it as missing makes every generated project report missing=1 at startup. The path stays
 // in the document (it really is reachable); only coverage reporting stops requiring an annotation.
-func TestFromRouterSkipsCoverageForConfiguredPrefixes(t *testing.T) {
-	r := router.New()
-	r.GET("/api/users", noopHandler)
-	r.StaticFS("/static", afero.NewMemMapFs())
-
+func TestFromRoutesSkipsCoverageForConfiguredPrefixes(t *testing.T) {
 	report := &Report{}
-	doc := FromRouterWithAnnotations(r,
-		Info{Title: "Demo", Version: "1.0.0"},
+	doc := FromRoutesWithAnnotations([]Route{
+		{Method: "GET", Path: "/api/users"},
+		{Method: "GET", Path: "/static/{filepath}", Params: []Parameter{pathParam("filepath")}},
+	}, Info{Title: "Demo", Version: "1.0.0"},
 		Options{SkipPrefixes: []string{"/static/"}},
 		nil, report)
 
@@ -163,51 +164,6 @@ func TestFromRouterSkipsCoverageForConfiguredPrefixes(t *testing.T) {
 	}
 	if _, ok := doc.Paths["/static/{filepath}"]; !ok {
 		t.Errorf("静态路径仍应保留在文档中: %v", doc.Paths)
-	}
-}
-
-func TestFromRouterHandlesWildcardAndTrailingSlash(t *testing.T) {
-	r := router.New()
-	r.GET("/static/*filepath", noopHandler)
-	r.GET("/users/", noopHandler)
-	r.POST("/users/", noopHandler)
-
-	doc := FromRouter(r, Info{Title: "Demo", Version: "1.0.0"}, Options{})
-
-	item, ok := doc.Paths["/static/{filepath}"]
-	if !ok {
-		t.Fatalf("missing wildcard path | 缺少通配路径: %v", doc.Paths)
-	}
-	if item.Get == nil {
-		t.Fatalf("missing GET operation for wildcard | 通配路径缺少 GET 操作")
-	}
-	p := findParam(item.Get.Parameters, "filepath")
-	if p == nil || p.In != "path" || !p.Required {
-		t.Fatalf("wildcard param = %+v, want in:path required | 通配参数应为 in:path 且必填", p)
-	}
-
-	trailing, ok := doc.Paths["/users/"]
-	if !ok {
-		t.Fatalf("trailing slash path lost | 尾斜杠路径丢失: %v", doc.Paths)
-	}
-	if trailing.Get == nil || trailing.Post == nil {
-		t.Fatalf("trailing slash path must keep both methods | 尾斜杠路径应保留两个方法")
-	}
-	if len(trailing.Get.Parameters) != 0 {
-		t.Fatalf("trailing slash produced parameters | 尾斜杠不应产生参数: %+v", trailing.Get.Parameters)
-	}
-
-	for path, pi := range doc.Paths {
-		for _, op := range operationsOf(pi) {
-			if op == nil {
-				continue
-			}
-			for _, param := range op.Parameters {
-				if param.Name == "" {
-					t.Errorf("empty parameter name on %s | %s 上出现空名参数", path, path)
-				}
-			}
-		}
 	}
 }
 
@@ -303,27 +259,29 @@ func TestSchemaFromStruct(t *testing.T) {
 
 func TestViewerHTMLHasNoExternalCDN(t *testing.T) {
 	doc := NewBuilder(Info{Title: "Demo", Version: "1.0.0"}).Build()
-	h := Handler(doc, Options{})
-	r := router.New()
-	r.GET("/docs", h)
+	h := HTTPHandler(doc, Options{})
 
-	rec := serve(r, http.MethodGet, "/docs")
+	rec := serve(h, http.MethodGet, DefaultDocsPath)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200 | 状态码应为 200", rec.Code)
 	}
 	body := strings.ToLower(rec.Body.String())
 	for _, bad := range []string{
 		`src="http`, `src='http`, `href="http`, `href='http`,
-		`url(http`, `@import`, `<link`,
+		`url(http`, `@import`,
 	} {
 		if strings.Contains(body, bad) {
 			t.Errorf("viewer must not reference external assets | 查看器不得引用外部资源: %q", bad)
 		}
 	}
-	// The one script is same-origin, which is what keeps script-src 'self' working. | 唯一的脚本来自同源，
-	// 这正是 script-src 'self' 能继续生效的原因。
-	if !strings.Contains(body, `/openapi/assets/yd-openapi-viewer.js`) {
-		t.Errorf("viewer must load the same-origin viewer script | 查看器必须加载同源查看器脚本")
+	for _, want := range []string{
+		`/openapi/assets/yd-openapi-viewer.js`,
+		`/openapi/assets/index.css`,
+		`/openapi/assets/icons.svg`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("viewer must load the same-origin asset %q | 查看器必须加载同源资源 %q", want, want)
+		}
 	}
 	if strings.Count(body, "<script src=") != 1 {
 		t.Errorf("viewer must load exactly one external script | 查看器只能加载一个外部脚本")
@@ -385,12 +343,9 @@ func TestHandlerServesDocAndViewer(t *testing.T) {
 	doc := NewBuilder(Info{Title: "Demo", Version: "1.0.0"}).Build()
 
 	t.Run("default paths | 默认路径", func(t *testing.T) {
-		h := Handler(doc, Options{})
-		r := router.New()
-		r.GET(DefaultPath, h)
-		r.GET(DefaultDocsPath, h)
+		h := HTTPHandler(doc, Options{})
 
-		rec := serve(r, http.MethodGet, DefaultPath)
+		rec := serve(h, http.MethodGet, DefaultPath)
 		if rec.Code != http.StatusOK {
 			t.Fatalf("doc status = %d, want 200 | 文档状态码应为 200", rec.Code)
 		}
@@ -405,7 +360,7 @@ func TestHandlerServesDocAndViewer(t *testing.T) {
 			t.Errorf("served openapi = %v | 提供的文档版本号不正确", got["openapi"])
 		}
 
-		rec = serve(r, http.MethodGet, DefaultDocsPath)
+		rec = serve(h, http.MethodGet, DefaultDocsPath)
 		if rec.Code != http.StatusOK {
 			t.Fatalf("viewer status = %d, want 200 | 查看器状态码应为 200", rec.Code)
 		}
@@ -418,15 +373,12 @@ func TestHandlerServesDocAndViewer(t *testing.T) {
 	})
 
 	t.Run("custom paths | 自定义路径", func(t *testing.T) {
-		h := Handler(doc, Options{Path: "/api/spec.json", DocsPath: "/api/docs"})
-		r := router.New()
-		r.GET("/api/spec.json", h)
-		r.GET("/api/docs", h)
+		h := HTTPHandler(doc, Options{Path: "/api/spec.json", DocsPath: "/api/docs"})
 
-		if rec := serve(r, http.MethodGet, "/api/spec.json"); rec.Code != http.StatusOK {
+		if rec := serve(h, http.MethodGet, "/api/spec.json"); rec.Code != http.StatusOK {
 			t.Errorf("custom doc status = %d | 自定义文档路径状态码不正确", rec.Code)
 		}
-		if rec := serve(r, http.MethodGet, "/api/docs"); rec.Code != http.StatusOK {
+		if rec := serve(h, http.MethodGet, "/api/docs"); rec.Code != http.StatusOK {
 			t.Errorf("custom viewer status = %d | 自定义查看器路径状态码不正确", rec.Code)
 		}
 	})
@@ -452,42 +404,36 @@ func TestHTTPHandlerServesDocumentViewerAndAsset(t *testing.T) {
 	if viewer.Code != http.StatusOK {
 		t.Fatalf("viewer status = %d, want 200 | 查看器状态码应为 200", viewer.Code)
 	}
-	if body := viewer.Body.String(); !strings.Contains(body, `/openapi/assets/yd-openapi-viewer.js`) {
-		t.Errorf("viewer must load the embedded script | 查看器必须加载内嵌脚本:\n%s", body)
+	if body := viewer.Body.String(); !strings.Contains(body, `/openapi/assets/yd-openapi-viewer.js`) ||
+		!strings.Contains(body, `/openapi/assets/index.css`) ||
+		!strings.Contains(body, `/openapi/assets/icons.svg`) {
+		t.Errorf("viewer must load the embedded assets | 查看器必须加载内嵌资源:\n%s", body)
 	}
 
-	asset := get("/openapi/assets/yd-openapi-viewer.js")
-	if asset.Code != http.StatusOK {
-		t.Fatalf("asset status = %d, want 200 | 资源状态码应为 200", asset.Code)
+	cases := []struct {
+		path        string
+		contentType string
+		want        []byte
+	}{
+		{"/openapi/assets/yd-openapi-viewer.js", "javascript", ViewerScript()},
+		{"/openapi/assets/index.css", "text/css", ViewerCSS()},
+		{"/openapi/assets/icons.svg", "image/svg+xml", ViewerIcons()},
 	}
-	if ct := asset.Header().Get("Content-Type"); !strings.Contains(ct, "javascript") {
-		t.Errorf("asset content-type = %q | 资源 Content-Type 不正确", ct)
-	}
-	if !bytes.Equal(asset.Body.Bytes(), ViewerScript()) {
-		t.Errorf("served asset differs from ViewerScript() | 提供的资源与 ViewerScript() 不一致")
+	for _, tc := range cases {
+		asset := get(tc.path)
+		if asset.Code != http.StatusOK {
+			t.Fatalf("%s status = %d, want 200 | %s 状态码应为 200", tc.path, asset.Code, tc.path)
+		}
+		if ct := asset.Header().Get("Content-Type"); !strings.Contains(ct, tc.contentType) {
+			t.Errorf("%s content-type = %q | %s Content-Type 不正确", tc.path, ct, tc.path)
+		}
+		if !bytes.Equal(asset.Body.Bytes(), tc.want) {
+			t.Errorf("%s differs from its accessor | %s 与访问器返回的内容不一致", tc.path, tc.path)
+		}
 	}
 
 	if rec := get("/openapi/assets/missing.js"); rec.Code != http.StatusNotFound {
 		t.Errorf("missing asset status = %d, want 404 | 缺失资源状态码应为 404", rec.Code)
-	}
-}
-
-// TestHandlerServesEmbeddedAssetOnRouter 验证 YD 路由入口同样能提供内嵌脚本。
-// TestHandlerServesEmbeddedAssetOnRouter verifies the YD router entry serves the embedded script too.
-func TestHandlerServesEmbeddedAssetOnRouter(t *testing.T) {
-	doc := NewBuilder(Info{Title: "Demo", Version: "1.0.0"}).Build()
-	h := Handler(doc, Options{})
-	r := router.New()
-	r.GET(DefaultPath, h)
-	r.GET(DefaultDocsPath, h)
-	r.GET(DefaultAssetsPath+"*filepath", h)
-
-	rec := serve(r, http.MethodGet, DefaultAssetsPath+ViewerScriptName)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("asset status = %d, want 200 | 资源状态码应为 200", rec.Code)
-	}
-	if !bytes.Equal(rec.Body.Bytes(), ViewerScript()) {
-		t.Errorf("router asset differs from ViewerScript() | 路由提供的资源与 ViewerScript() 不一致")
 	}
 }
 
@@ -500,20 +446,51 @@ func TestCustomAssetsPathKeepsViewerSelfContained(t *testing.T) {
 
 	viewer := httptest.NewRecorder()
 	h.ServeHTTP(viewer, httptest.NewRequest(http.MethodGet, DefaultDocsPath, nil))
-	if body := viewer.Body.String(); !strings.Contains(body, `/assets/yd-openapi-viewer.js`) {
-		t.Errorf("viewer script URL did not follow AssetsPath | 查看器脚本地址未跟随 AssetsPath:\n%s", body)
+	for _, want := range []string{
+		`/assets/yd-openapi-viewer.js`,
+		`/assets/index.css`,
+		`/assets/icons.svg`,
+	} {
+		if body := viewer.Body.String(); !strings.Contains(body, want) {
+			t.Errorf("viewer asset URL %q did not follow AssetsPath | 查看器资源地址 %q 未跟随 AssetsPath", want, want)
+		}
 	}
 
-	asset := httptest.NewRecorder()
-	h.ServeHTTP(asset, httptest.NewRequest(http.MethodGet, "/assets/yd-openapi-viewer.js", nil))
-	if asset.Code != http.StatusOK {
-		t.Errorf("custom asset status = %d, want 200 | 自定义资源状态码应为 200", asset.Code)
+	for _, target := range []string{
+		"/assets/yd-openapi-viewer.js",
+		"/assets/index.css",
+		"/assets/icons.svg",
+	} {
+		asset := httptest.NewRecorder()
+		h.ServeHTTP(asset, httptest.NewRequest(http.MethodGet, target, nil))
+		if asset.Code != http.StatusOK {
+			t.Errorf("%s status = %d, want 200 | %s 状态码应为 200", target, asset.Code, target)
+		}
 	}
 }
 
-// TestViewerScriptIsEmbedded 验证查看器脚本随模块发布，可作为独立静态资源使用。
-// TestViewerScriptIsEmbedded verifies the viewer script ships with the module and can be used as a
-// standalone static asset.
+// TestViewerHTMLIsEmbedded 验证独立查看器页面模板 index.html 随模块发布。
+// TestViewerHTMLIsEmbedded verifies the standalone viewer template index.html ships with the module.
+func TestViewerHTMLIsEmbedded(t *testing.T) {
+	raw := ViewerHTML()
+	if !bytes.HasPrefix(raw, []byte("<!doctype html")) {
+		t.Fatal("ViewerHTML() is not a complete HTML document | ViewerHTML() 不是完整 HTML 文档")
+	}
+	for _, placeholder := range []string{
+		"__YD_OPENAPI_TITLE__",
+		"__YD_OPENAPI_DATA__",
+		"__YD_VIEWER_SCRIPT__",
+		"__YD_VIEWER_CSS__",
+		"__YD_VIEWER_ICONS__",
+	} {
+		if !bytes.Contains(raw, []byte(placeholder)) {
+			t.Errorf("ViewerHTML() lost placeholder %q | ViewerHTML() 缺少占位符 %q", placeholder, placeholder)
+		}
+	}
+}
+
+// TestViewerScriptIsEmbedded 验证查看器脚本、样式表与图标 sprite 随模块发布。
+// TestViewerScriptIsEmbedded verifies the viewer script, stylesheet and icon sprite ship with the module.
 func TestViewerScriptIsEmbedded(t *testing.T) {
 	raw := ViewerScript()
 	if len(raw) == 0 {
@@ -522,6 +499,12 @@ func TestViewerScriptIsEmbedded(t *testing.T) {
 	if !bytes.Contains(raw, []byte("yd-openapi-viewer.js")) {
 		t.Errorf("ViewerScript() does not look like the viewer | ViewerScript() 不像是查看器脚本")
 	}
+	if css := ViewerCSS(); len(css) == 0 || !bytes.Contains(css, []byte("--bg")) {
+		t.Errorf("ViewerCSS() is empty or does not look like the viewer stylesheet | ViewerCSS() 为空或不像查看器样式表")
+	}
+	if icons := ViewerIcons(); len(icons) == 0 || !bytes.Contains(icons, []byte("i-lucide-sun")) {
+		t.Errorf("ViewerIcons() is empty or lacks the theme icons | ViewerIcons() 为空或缺少主题图标")
+	}
 }
 
 // TestViewerPageIsStandalone 验证查看器页面可以写成静态文件，并由任意文件服务器独立托管。
@@ -529,28 +512,43 @@ func TestViewerScriptIsEmbedded(t *testing.T) {
 // file server without this module's HTTP handler or any framework runtime.
 func TestViewerPageIsStandalone(t *testing.T) {
 	doc := NewBuilder(Info{Title: "Static Demo", Version: "1.0.0"}).Build()
-	page, err := ViewerPage(doc, Options{ViewerScript: "./yd-openapi-viewer.js"})
+	page, err := ViewerPage(doc, Options{
+		ViewerScript: "./yd-openapi-viewer.js",
+		ViewerCSS:    "./index.css",
+		ViewerIcons:  "./icons.svg",
+	})
 	if err != nil {
 		t.Fatalf("ViewerPage: %v", err)
 	}
 	if !bytes.Contains(page, []byte("<!doctype html")) {
 		t.Fatal("ViewerPage did not return a complete HTML document | ViewerPage 未返回完整 HTML 文档")
 	}
-	if !bytes.Contains(page, []byte("./yd-openapi-viewer.js")) {
-		t.Errorf("ViewerPage did not honour ViewerScript | ViewerPage 未使用自定义 ViewerScript")
+	for _, want := range []string{"./yd-openapi-viewer.js", "./index.css", "./icons.svg"} {
+		if !bytes.Contains(page, []byte(want)) {
+			t.Errorf("ViewerPage did not honour %q | ViewerPage 未使用 %q", want, want)
+		}
 	}
 
 	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "index.html"), page, 0o644); err != nil {
-		t.Fatalf("write page: %v", err)
+	files := map[string][]byte{
+		"index.html":           page,
+		"yd-openapi-viewer.js": ViewerScript(),
+		"index.css":            ViewerCSS(),
+		"icons.svg":            ViewerIcons(),
 	}
-	if err := os.WriteFile(filepath.Join(dir, "yd-openapi-viewer.js"), ViewerScript(), 0o644); err != nil {
-		t.Fatalf("write script: %v", err)
+	for name, body := range files {
+		if err := os.WriteFile(filepath.Join(dir, name), body, 0o644); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
 	}
 	srv := httptest.NewServer(http.FileServer(http.Dir(dir)))
 	defer srv.Close()
 
-	for _, target := range []string{"/index.html", "/yd-openapi-viewer.js"} {
+	for target := range files {
+		target = "/" + target
+		if target == "/index.html" {
+			target = "/"
+		}
 		resp, err := http.Get(srv.URL + target)
 		if err != nil {
 			t.Fatalf("GET %s: %v", target, err)
@@ -565,13 +563,16 @@ func TestViewerPageIsStandalone(t *testing.T) {
 
 func TestBlockedReturnsNotFound(t *testing.T) {
 	doc := NewBuilder(Info{Title: "Demo", Version: "1.0.0"}).Build()
-	h := Handler(doc, Options{Blocked: true})
-	r := router.New()
-	r.GET(DefaultPath, h)
-	r.GET(DefaultDocsPath, h)
+	h := HTTPHandler(doc, Options{Blocked: true})
 
-	for _, target := range []string{DefaultPath, DefaultDocsPath} {
-		if rec := serve(r, http.MethodGet, target); rec.Code != http.StatusNotFound {
+	for _, target := range []string{
+		DefaultPath,
+		DefaultDocsPath,
+		DefaultAssetsPath + ViewerScriptName,
+		DefaultAssetsPath + ViewerCSSName,
+		DefaultAssetsPath + ViewerIconsName,
+	} {
+		if rec := serve(h, http.MethodGet, target); rec.Code != http.StatusNotFound {
 			t.Errorf("%s status = %d, want 404 | %s 状态码应为 404", target, rec.Code, target)
 		}
 	}

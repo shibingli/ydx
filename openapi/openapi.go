@@ -37,14 +37,30 @@ const (
 	// 内嵌查看器脚本的文件名。
 	ViewerScriptName = "yd-openapi-viewer.js"
 
+	// ViewerCSSName is the file name of the embedded viewer stylesheet. | ViewerCSSName 是
+	// 内嵌查看器样式表的文件名。
+	ViewerCSSName = "index.css"
+
+	// ViewerIconsName is the file name of the embedded viewer icon sprite. | ViewerIconsName 是
+	// 内嵌查看器图标 sprite 的文件名。
+	ViewerIconsName = "icons.svg"
+
 	// DefaultViewerScript is the same-origin script the viewer page loads. | DefaultViewerScript 是查看器页面加载的同源脚本。
 	//
 	// It must stay same-origin: generated projects ship `script-src 'self'`, so an inline script is
 	// blocked by the browser and a CDN script would violate the framework's no-CDN rule. The script
-	// is embedded in this module and served by HTTPHandler/Handler under AssetsPath. | 它必须保持
-	// 同源：生成项目的内容安全策略是 `script-src 'self'`，内联脚本会被浏览器拦截，CDN 脚本则违反
-	// 框架的「禁止 CDN」约定。脚本内嵌在本模块中，由 HTTPHandler/Handler 在 AssetsPath 下提供。
+	// is embedded in this module and served by HTTPHandler under AssetsPath. | 它必须保持同源：
+	// 生成项目的内容安全策略是 `script-src 'self'`，内联脚本会被浏览器拦截，CDN 脚本则违反框架的
+	// 「禁止 CDN」约定。脚本内嵌在本模块中，由 HTTPHandler 在 AssetsPath 下提供。
 	DefaultViewerScript = DefaultAssetsPath + ViewerScriptName
+
+	// DefaultViewerCSS is the default stylesheet URL of the viewer page. | DefaultViewerCSS 是
+	// 查看器页面的默认样式表地址。
+	DefaultViewerCSS = DefaultAssetsPath + ViewerCSSName
+
+	// DefaultViewerIcons is the default icon sprite URL of the viewer page. | DefaultViewerIcons 是
+	// 查看器页面的默认图标 sprite 地址。
+	DefaultViewerIcons = DefaultAssetsPath + ViewerIconsName
 
 	// LatestSpecVersion is the newest OpenAPI specification supported by the model. Setting
 	// Document.OpenAPI to this value enables the 3.1 object additions (webhooks,
@@ -609,11 +625,18 @@ type Options struct {
 	// references. | ViewerScript 是查看器脚本的同源 URL，留空表示 AssetsPath + ViewerScriptName。
 	// 它不得是 CDN 地址：框架禁止运行时外部引用。
 	ViewerScript string
+	// ViewerCSS is the same-origin URL of the viewer stylesheet; empty means AssetsPath +
+	// ViewerCSSName. | ViewerCSS 是查看器样式表的同源 URL，留空表示 AssetsPath + ViewerCSSName。
+	ViewerCSS string
+	// ViewerIcons is the same-origin URL of the viewer icon sprite; empty means AssetsPath +
+	// ViewerIconsName. | ViewerIcons 是查看器图标 sprite 的同源 URL，留空表示
+	// AssetsPath + ViewerIconsName。
+	ViewerIcons string
 	// Title is the viewer page title; empty falls back to Info.Title. | Title 为查看器页面标题，留空时回退到 Info.Title。
 	Title string
 	// SourceDirs lists the source directories holding type annotations; when TypeAnnotations
-	// is nil, FromRouterWithAnnotations parses them from these directories. | SourceDirs 列出
-	// 存放类型注解的源码目录；TypeAnnotations 为 nil 时由 FromRouterWithAnnotations 从这些目录解析。
+	// is nil, FromRoutesWithAnnotations parses them from these directories. | SourceDirs 列出
+	// 存放类型注解的源码目录；TypeAnnotations 为 nil 时由 FromRoutesWithAnnotations 从这些目录解析。
 	SourceDirs []string
 	// SkipPrefixes lists route path prefixes excluded from coverage reporting. The routes remain in
 	// the document; only Report.Missing ignores them. A prefix without a trailing slash matches the
@@ -651,6 +674,12 @@ func (o Options) withDefaults() Options {
 	}
 	if strings.TrimSpace(o.ViewerScript) == "" {
 		o.ViewerScript = o.AssetsPath + ViewerScriptName
+	}
+	if strings.TrimSpace(o.ViewerCSS) == "" {
+		o.ViewerCSS = o.AssetsPath + ViewerCSSName
+	}
+	if strings.TrimSpace(o.ViewerIcons) == "" {
+		o.ViewerIcons = o.AssetsPath + ViewerIconsName
 	}
 	return o
 }

@@ -5,7 +5,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/shibingli/ydx/router"
 	"github.com/spf13/afero"
 )
 
@@ -177,19 +176,20 @@ func TestCollectFromSourceReport(t *testing.T) {
 	}
 }
 
-func TestFromRouterWithAnnotationsMergesAndReports(t *testing.T) {
+func TestFromRoutesWithAnnotationsMergesAndReports(t *testing.T) {
 	annots, err := ParseAnnotations(memFSWithAnnotations(t), []string{"/api"})
 	if err != nil {
 		t.Fatalf("ParseAnnotations: %v", err)
 	}
 
-	r := router.New()
-	r.GET("/users/:id", noopHandler)
-	r.POST("/users", noopHandler)
-	r.GET("/health", noopHandler)
+	routes := []Route{
+		{Method: "GET", Path: "/users/{id}", Params: []Parameter{pathParam("id")}},
+		{Method: "POST", Path: "/users"},
+		{Method: "GET", Path: "/health"},
+	}
 
 	report := &Report{}
-	doc := FromRouterWithAnnotations(r, Info{Title: "Demo", Version: "1.0.0"}, Options{}, annots, report)
+	doc := FromRoutesWithAnnotations(routes, Info{Title: "Demo", Version: "1.0.0"}, Options{}, annots, report)
 
 	item, ok := doc.Paths["/users/{id}"]
 	if !ok {

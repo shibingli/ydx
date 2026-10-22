@@ -35,7 +35,8 @@
 | `github.com/shibingli/ydx/websocket` | `websocket` | RFC 6455 / 7692 / 8441 WebSocket |
 | `github.com/shibingli/ydx/render` | `render` | 编译式 `html/template` 引擎 |
 | `github.com/shibingli/ydx/i18n` | `i18n` | 多语言目录加载、语言协商与路由中间件 |
-| `github.com/shibingli/ydx/openapi` | `openapi` | OpenAPI 3.0/3.1 文档构建、注解解析与自包含查看器 |
+| `github.com/shibingli/ydx/openapi` | `openapi` | OpenAPI 3.0/3.1 文档构建、注解解析与自包含查看器（标准 `net/http`，不依赖路由） |
+| `github.com/shibingli/ydx/openapi/ydrouter` | `ydrouter` | `ydx/router` 适配：路由树转 OpenAPI 文档与路由处理器 |
 | `github.com/shibingli/ydx/jwt` | `jwt` | 免反射 JWT 签发、验签与中间件 |
 | `github.com/shibingli/ydx/middleware` | `middleware` | 中间件聚合门面（保持旧 API） |
 | `github.com/shibingli/ydx/middleware/accesslog` | `accesslog` | 访问日志 |
@@ -120,10 +121,14 @@ handler := cors.Middleware(cors.CORSOptions{})(mux)
 
 `jwt` 使用 `HTTPMiddleware` / `FromRequest`，`sse` 使用 `HTTPHandler`，`websocket` 使用 `HtmxHTTPHandler`。
 
-`openapi` 的查看器脚本内嵌在模块中：`HTTPHandler` 同时提供 JSON 文档、查看器页面与
-`AssetsPath` 下的脚本资源，标准 `net/http` 只需把同一个处理器挂载到三个路径。需要完全静态部署时，
-`ViewerPage` 返回完整页面字节，`ViewerScript` 返回脚本字节，两者可直接写入磁盘并由任意文件服务器
-托管；接自有静态管线时，把 `Options.ViewerScript` 指向自己的 URL。
+`openapi` 的前端资源与 Go 代码完全隔离：页面模板在 `openapi/pages/page/index.html`，样式表、
+图标 sprite 与查看器脚本在 `openapi/pages/assets/`，全部经 `go:embed` 随模块发布
+（`ViewerHTML` / `ViewerCSS` / `ViewerIcons` / `ViewerScript` 可取原始字节）。`HTTPHandler`
+同时提供 JSON 文档、查看器页面与 `AssetsPath` 下的三类资源，标准 `net/http` 只需把同一个处理器
+挂载到 `Path`、`DocsPath` 与 `AssetsPath`。需要完全静态部署时，`ViewerPage` 返回完整页面字节，
+四个资源字节可直接写入磁盘并由任意文件服务器托管；接自有静态管线时，把 `Options.ViewerScript`
+/ `ViewerCSS` / `ViewerIcons` 指向自己的 URL。`ydx/router` 项目改用 `openapi/ydrouter` 的
+`FromRouter` / `Handler`；核心模块因此不依赖任何路由器。
 
 ## 基准与对比
 

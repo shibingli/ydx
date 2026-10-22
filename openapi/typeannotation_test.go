@@ -9,7 +9,6 @@ import (
 	"github.com/spf13/afero"
 
 	"github.com/shibingli/ydx/json"
-	"github.com/shibingli/ydx/router"
 )
 
 // typeAnnotatedSource is the struct, const block and variable annotation fixture. It also
@@ -588,13 +587,12 @@ func TestUnannotatedTypesAreReported(t *testing.T) {
 
 // TestFromRouterWithAnnotationsMergesTypeAnnotations 验证类型注解的自动合并与报告填充。
 // TestFromRouterWithAnnotationsMergesTypeAnnotations verifies automatic type annotation merging and reporting.
-func TestFromRouterWithAnnotationsMergesTypeAnnotations(t *testing.T) {
-	r := router.New()
-	r.GET("/users/:id", noopHandler)
+func TestFromRoutesWithAnnotationsMergesTypeAnnotations(t *testing.T) {
+	routes := []Route{{Method: "GET", Path: "/users/{id}", Params: []Parameter{pathParam("id")}}}
 
 	t.Run("explicit annotations | 显式提供注解", func(t *testing.T) {
 		report := &Report{}
-		doc := FromRouterWithAnnotations(r, Info{Title: "Demo", Version: "1.0.0"},
+		doc := FromRoutesWithAnnotations(routes, Info{Title: "Demo", Version: "1.0.0"},
 			Options{TypeAnnotations: parseTypeFixtures(t)}, nil, report)
 
 		schema := doc.Components.Schemas["User"]
@@ -627,7 +625,7 @@ func TestFromRouterWithAnnotationsMergesTypeAnnotations(t *testing.T) {
 		}
 
 		report := &Report{}
-		doc := FromRouterWithAnnotations(r, Info{Title: "Demo", Version: "1.0.0"},
+		doc := FromRoutesWithAnnotations(routes, Info{Title: "Demo", Version: "1.0.0"},
 			Options{SourceDirs: []string{dir}}, nil, report)
 
 		schema := doc.Components.Schemas["User"]

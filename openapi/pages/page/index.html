@@ -1,0 +1,37 @@
+<!doctype html>
+<!--
+  Standalone OpenAPI viewer template. The server substitutes the page title, the JSON document
+  and the asset URLs before serving it. | 独立查看器模板；服务端在输出前替换标题、JSON 文档与资源地址。
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>__YD_OPENAPI_TITLE__</title>
+<link rel="stylesheet" href="__YD_VIEWER_CSS__">
+</head>
+<body>
+<header class="topbar">
+<h1 id="doc-title">API</h1>
+<span class="version" id="doc-version"></span>
+<button type="button" class="theme-toggle" id="theme-toggle" aria-label="Toggle light/dark theme | 切换明暗主题">
+<svg class="theme-icon" data-theme-glyph="light" aria-hidden="true" focusable="false"><use href="__YD_VIEWER_ICONS__#i-lucide-sun"></use></svg>
+<svg class="theme-icon" data-theme-glyph="dark" aria-hidden="true" focusable="false"><use href="__YD_VIEWER_ICONS__#i-lucide-moon"></use></svg>
+<svg class="theme-icon" data-theme-glyph="system" aria-hidden="true" focusable="false"><use href="__YD_VIEWER_ICONS__#i-lucide-monitor"></use></svg>
+<span id="theme-label">System | 跟随系统</span>
+</button>
+<span class="description" id="doc-description"></span>
+</header>
+<main>
+<aside>
+<input id="filter" type="search" placeholder="Filter routes | 过滤路由" autocomplete="off" aria-label="Filter routes">
+<nav id="route-list"></nav>
+</aside>
+<section class="detail" id="detail">
+<p class="hint">Select an entry on the left. | 请在左侧选择一个条目。</p>
+</section>
+</main>
+<noscript>Enable JavaScript to browse the document. | 请启用 JavaScript 以浏览文档。</noscript>
+<script type="application/json" id="openapi-data">__YD_OPENAPI_DATA__</script>
+<script src="__YD_VIEWER_SCRIPT__" defer></script>
+</html>

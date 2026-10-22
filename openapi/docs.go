@@ -47,15 +47,32 @@
 //	mux.Handle("/docs", h)
 //	mux.Handle("/openapi/assets/", h)
 //
-// For a fully static deployment, ViewerPage returns the complete page bytes and ViewerScript
-// returns the script bytes; write both to disk and serve them with any file server: | 完全静态部署
-// 时，ViewerPage 返回完整页面字节，ViewerScript 返回脚本字节；把两者写入磁盘并用任意文件服务器托管：
+// Frontend resources are isolated from Go code: the page template lives in
+// pages/page/index.html, while pages/assets/ holds the stylesheet, the icon sprite and the
+// viewer script. All four ship with the module through go:embed and are available as
+// ViewerHTML, ViewerCSS, ViewerIcons and ViewerScript. For a fully static deployment,
+// ViewerPage returns the complete page bytes; write them and the three assets to disk and
+// serve them with any file server: | 前端资源与 Go 代码相互隔离：页面模板位于
+// pages/page/index.html，pages/assets/ 存放样式表、图标 sprite 与查看器脚本。四者都经 go:embed
+// 随模块发布，可分别通过 ViewerHTML、ViewerCSS、ViewerIcons 与 ViewerScript 取得。完全静态部署时，
+// ViewerPage 返回完整页面字节；把页面与三个资源写入磁盘并用任意文件服务器托管：
 //
-//	page, _ := openapi.ViewerPage(doc, openapi.Options{ViewerScript: "./yd-openapi-viewer.js"})
+//	page, _ := openapi.ViewerPage(doc, openapi.Options{
+//		ViewerScript: "./index.js", ViewerCSS: "./index.css", ViewerIcons: "./icons.svg",
+//	})
 //	os.WriteFile("public/docs/index.html", page, 0o644)
-//	os.WriteFile("public/docs/yd-openapi-viewer.js", openapi.ViewerScript(), 0o644)
+//	os.WriteFile("public/docs/index.js", openapi.ViewerScript(), 0o644)
+//	os.WriteFile("public/docs/index.css", openapi.ViewerCSS(), 0o644)
+//	os.WriteFile("public/docs/icons.svg", openapi.ViewerIcons(), 0o644)
 //
-// Callers that package the viewer through their own pipeline can use ViewerScript to obtain the
-// embedded bytes and point Options.ViewerScript at the URL they serve. | 通过自有管线打包查看器的
-// 调用方可以用 ViewerScript 取得内嵌字节，并把 Options.ViewerScript 指向自己的 URL。
+// Callers that package the viewer through their own pipeline can use ViewerScript, ViewerCSS
+// and ViewerIcons to obtain the embedded bytes and point the matching Options fields at the
+// URLs they serve. | 通过自有管线打包查看器的调用方可以用 ViewerScript、ViewerCSS 与
+// ViewerIcons 取得内嵌字节，并把对应的 Options 字段指向自己的 URL。
+//
+// This package deliberately knows nothing about routers. It accepts converted openapi.Route
+// values through FromRoutes and serves standard net/http handlers through HTTPHandler; the
+// ydx/router bridge lives in the separate openapi/ydrouter module. | 本包刻意不感知任何路由器：
+// 它通过 FromRoutes 接收转换后的 openapi.Route，通过 HTTPHandler 提供标准 net/http 处理器；
+// ydx/router 的桥接位于独立的 openapi/ydrouter 模块。
 package openapi

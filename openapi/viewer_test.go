@@ -63,7 +63,7 @@ func TestViewerScriptIslandStaysValid(t *testing.T) {
 // object kinds and no external asset references. | TestViewerCoversAllObjectKinds 检查模板包含
 // 扩展对象类型的渲染器，且不引用外部资源。
 func TestViewerCoversAllObjectKinds(t *testing.T) {
-	raw, err := os.ReadFile("assets/yd-openapi-viewer.js")
+	raw, err := os.ReadFile("pages/assets/yd-openapi-viewer.js")
 	if err != nil {
 		t.Fatalf("read viewer script: %v | 读取查看器脚本失败：%v", err, err)
 	}
@@ -90,8 +90,14 @@ func TestViewerCoversAllObjectKinds(t *testing.T) {
 			t.Errorf("viewer script lacks %q | 查看器脚本缺少 %q", want, want)
 		}
 	}
+	if !strings.Contains(viewerTemplate, `href="`+viewerCSSPlaceholder+`"`) {
+		t.Errorf("viewer template does not link the same-origin stylesheet | 查看器模板未引用同源样式表")
+	}
+	if !strings.Contains(viewerTemplate, `href="`+viewerIconsPlaceholder+`#i-lucide-sun"`) {
+		t.Errorf("viewer template does not use the same-origin icon sprite | 查看器模板未使用同源图标 sprite")
+	}
 	lower := strings.ToLower(viewerTemplate)
-	for _, bad := range []string{"<link ", "url(http", "@import", "javascript:"} {
+	for _, bad := range []string{"url(http", "@import", "javascript:"} {
 		if strings.Contains(lower, bad) {
 			t.Errorf("viewer template references external or unsafe content %q | 查看器模板引用了外部或不安全内容 %q", bad, bad)
 		}
@@ -122,17 +128,18 @@ func TestViewerThemeButtonUsesBundledIcons(t *testing.T) {
 			t.Errorf("viewer template is missing %q | 查看器模板缺少 %q", want, want)
 		}
 	}
+	stylesheet := string(ViewerCSS())
 	for _, want := range []string{
 		`.theme-toggle[data-theme-choice="light"]`,
 		`.theme-toggle[data-theme-choice="dark"]`,
 		`.theme-toggle[data-theme-choice="auto"]`,
 	} {
-		if !strings.Contains(viewerTemplate, want) {
+		if !strings.Contains(stylesheet, want) {
 			t.Errorf("viewer stylesheet is missing %q | 查看器样式缺少 %q", want, want)
 		}
 	}
 
-	raw, err := os.ReadFile("assets/yd-openapi-viewer.js")
+	raw, err := os.ReadFile("pages/assets/yd-openapi-viewer.js")
 	if err != nil {
 		t.Fatalf("read viewer script: %v | 读取查看器脚本失败：%v", err, err)
 	}

@@ -4,7 +4,7 @@ import _ "embed"
 
 // viewerScript holds the embedded viewer JavaScript. | viewerScript 保存内嵌的查看器 JavaScript。
 //
-//go:embed assets/yd-openapi-viewer.js
+//go:embed pages/assets/yd-openapi-viewer.js
 var viewerScript []byte
 
 // ViewerScript returns a copy of the embedded viewer JavaScript. | ViewerScript 返回内嵌查看器

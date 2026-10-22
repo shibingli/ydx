@@ -9,7 +9,6 @@ import (
 	"testing"
 
 	"github.com/shibingli/ydx/json"
-	"github.com/shibingli/ydx/router"
 )
 
 // decodeDoc marshals the document and decodes it back into a generic map. | decodeDoc 序列化文档
@@ -510,15 +509,14 @@ func Get() {}
 	for _, a := range parseFileAnnotations("handlers.go", src) {
 		annots[a.key()] = a
 	}
-	r := router.New()
-	r.GET("/users/:id", noopHandler)
-	doc := FromRouterWithAnnotations(r, Info{Title: "Demo", Version: "1.0.0"}, Options{}, annots, nil)
+	routes := []Route{{Method: "GET", Path: "/users/{id}", Params: []Parameter{pathParam("id")}}}
+	doc := FromRoutesWithAnnotations(routes, Info{Title: "Demo", Version: "1.0.0"}, Options{}, annots, nil)
 	doc.AddSecurityScheme("BearerAuth", SecurityScheme{Type: "http", Scheme: "bearer", BearerFormat: "JWT"})
 	if err := doc.Validate(); err != nil {
 		t.Fatalf("generated document must validate | 生成的文档应通过校验: %v", err)
 	}
 
-	auto := FromRouter(r, Info{Title: "Auto", Version: "0.1.0"}, Options{})
+	auto := FromRoutes(routes, Info{Title: "Auto", Version: "0.1.0"}, Options{})
 	if err := auto.Validate(); err != nil {
 		t.Fatalf("auto derived document must validate | 自动推导的文档应通过校验: %v", err)
 	}
@@ -619,13 +617,10 @@ func copyResponses(in map[string]Response) map[string]Response {
 func TestHandlerServesETagAndNotModified(t *testing.T) {
 	doc := NewBuilder(Info{Title: "Demo", Version: "1.0.0"}).Build()
 	doc.Paths["/ping"] = PathItem{Get: &Operation{Responses: map[string]Response{"200": {Description: "ok"}}}}
-	r := router.New()
-	h := Handler(doc, Options{})
-	r.GET(DefaultPath, h)
-	r.GET(DefaultDocsPath, h)
+	h := HTTPHandler(doc, Options{})
 
 	for _, target := range []string{DefaultPath, DefaultDocsPath} {
-		rec := serve(r, http.MethodGet, target)
+		rec := serve(h, http.MethodGet, target)
 		if rec.Code != http.StatusOK {
 			t.Fatalf("%s status = %d, want 200 | %s 状态码应为 200", target, rec.Code, target)
 		}
@@ -640,7 +635,7 @@ func TestHandlerServesETagAndNotModified(t *testing.T) {
 		req := httptest.NewRequest(http.MethodGet, target, nil)
 		req.Header.Set("If-None-Match", etag)
 		notModifiedRec := httptest.NewRecorder()
-		r.ServeHTTP(notModifiedRec, req)
+		h.ServeHTTP(notModifiedRec, req)
 		if notModifiedRec.Code != http.StatusNotModified {
 			t.Fatalf("%s conditional status = %d, want 304 | %s 条件请求状态码应为 304",
 				target, notModifiedRec.Code, target)
@@ -652,7 +647,7 @@ func TestHandlerServesETagAndNotModified(t *testing.T) {
 		wildcard := httptest.NewRequest(http.MethodGet, target, nil)
 		wildcard.Header.Set("If-None-Match", "*")
 		wildcardRec := httptest.NewRecorder()
-		r.ServeHTTP(wildcardRec, wildcard)
+		h.ServeHTTP(wildcardRec, wildcard)
 		if wildcardRec.Code != http.StatusNotModified {
 			t.Errorf("%s wildcard status = %d, want 304 | 通配 If-None-Match 应返回 304",
 				target, wildcardRec.Code)
@@ -663,10 +658,7 @@ func TestHandlerServesETagAndNotModified(t *testing.T) {
 func TestHandlerConcurrentRequests(t *testing.T) {
 	doc := NewBuilder(Info{Title: "Demo", Version: "1.0.0"}).Build()
 	doc.Paths["/ping"] = PathItem{Get: &Operation{Responses: map[string]Response{"200": {Description: "ok"}}}}
-	r := router.New()
-	h := Handler(doc, Options{})
-	r.GET(DefaultPath, h)
-	r.GET(DefaultDocsPath, h)
+	h := HTTPHandler(doc, Options{})
 
 	var wg sync.WaitGroup
 	for i := 0; i < 16; i++ {
@@ -675,7 +667,7 @@ func TestHandlerConcurrentRequests(t *testing.T) {
 			defer wg.Done()
 			for j := 0; j < 20; j++ {
 				for _, target := range []string{DefaultPath, DefaultDocsPath} {
-					rec := serve(r, http.MethodGet, target)
+					rec := serve(h, http.MethodGet, target)
 					if rec.Code != http.StatusOK || rec.Body.Len() == 0 {
 						t.Errorf("%s status = %d, body = %d | 并发请求结果不正确",
 							target, rec.Code, rec.Body.Len())

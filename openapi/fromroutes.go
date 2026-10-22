@@ -8,28 +8,41 @@ import (
 	"github.com/spf13/afero"
 
 	"github.com/shibingli/ydx/log"
-	"github.com/shibingli/ydx/router"
 )
 
-// FromRouter derives a document from the routes registered on r. | FromRouter 依据 r 上已注册的路由推导文档。
+// Route is one HTTP method and OpenAPI path handed to the document builder. | Route 是交给文档
+// 构建器的一个 HTTP 方法与 OpenAPI 路径。
 //
-// Patterns are converted into OpenAPI path templates and their path parameters are
-// merged into every operation, so /report/:id-xx.png becomes /report/{id}-xx.png and
-// /static/*filepath becomes /static/{filepath}. | 模式会被转换为 OpenAPI 路径模板，其路径参数
-// 会合并进每个操作，因此 /report/:id-xx.png 变为 /report/{id}-xx.png，/static/*filepath 变为
-// /static/{filepath}。
-//
-// o only provides the fallback document title (Info.Title wins when set), the type annotation
-// sources (TypeAnnotations or SourceDirs) and the serving endpoints configured by Handler. | o
-// 仅用于提供文档标题兜底（Info.Title 非空时优先）、类型注解来源（TypeAnnotations 或 SourceDirs）
-// 以及由 Handler 配置的服务端点。
-func FromRouter(r *router.Router, info Info, o Options) *Document {
-	return FromRouterWithAnnotations(r, info, o, nil, nil)
+// Callers using a router convert its patterns themselves; the YD router adapter in
+// openapi/ydrouter does that conversion for ydx/router. | 使用路由的调用方自行转换模式；
+// openapi/ydrouter 中的 YD 路由适配器负责 ydx/router 的转换。
+type Route struct {
+	// Method is the HTTP method. | Method 是 HTTP 方法。
+	Method string
+	// Path is the already converted OpenAPI path, for example "/users/{id}". | Path 是已经转换好的
+	// OpenAPI 路径，例如 "/users/{id}"。
+	Path string
+	// Params are the path parameters declared by Path. | Params 是 Path 声明的路径参数。
+	Params []Parameter
 }
 
-// FromRouterWithAnnotations derives a document from the routes registered on r and
-// merges the source annotations collected by ParseAnnotations. | FromRouterWithAnnotations
-// 依据 r 上已注册的路由推导文档，并合并由 ParseAnnotations 收集到的源码注解。
+// FromRoutes derives a document from the given method/path pairs. | FromRoutes 依据给定的
+// 方法/路径对推导文档。
+//
+// The caller converts router patterns into OpenAPI paths and supplies their path parameters;
+// the YD router adapter in openapi/ydrouter does that for ydx/router. | 调用方把路由模式转换为
+// OpenAPI 路径并提供路径参数；openapi/ydrouter 中的 YD 路由适配器负责 ydx/router 的转换。
+//
+// o only provides the fallback document title (Info.Title wins when set) and the type annotation
+// sources (TypeAnnotations or SourceDirs). | o 仅用于提供文档标题兜底（Info.Title 非空时优先）
+// 与类型注解来源（TypeAnnotations 或 SourceDirs）。
+func FromRoutes(routes []Route, info Info, o Options) *Document {
+	return FromRoutesWithAnnotations(routes, info, o, nil, nil)
+}
+
+// FromRoutesWithAnnotations derives a document from the given routes and merges the source
+// annotations collected by ParseAnnotations. | FromRoutesWithAnnotations 依据给定路由推导文档，
+// 并合并由 ParseAnnotations 收集到的源码注解。
 //
 // Annotations take precedence over auto derivation: an annotated route gets the
 // operation described by its annotation, every other route gets a minimal operation
@@ -43,27 +56,23 @@ func FromRouter(r *router.Router, info Info, o Options) *Document {
 // 合并：o.TypeAnnotations 非空时直接使用，否则从 o.SourceDirs 经操作系统文件系统解析；解析失败
 // 只记录日志，不会让文档构建失败。因此示例、描述、枚举与变量样例无需额外装配即可进入组件 Schema。
 //
-// The report is filled with the router aware coverage view (Matched, Missing, Orphan,
-// Incomplete) and, when type annotations were merged, with AnnotatedTypes,
-// UnannotatedTypes and EnumCount. | report 会被写入结合路由的覆盖视图（Matched、Missing、Orphan、
-// Incomplete）；合并过类型注解时还会写入 AnnotatedTypes、UnannotatedTypes 与 EnumCount。
+// The report is filled with the coverage view (Matched, Missing, Orphan, Incomplete) and, when
+// type annotations were merged, with AnnotatedTypes, UnannotatedTypes and EnumCount. | report
+// 会被写入覆盖视图（Matched、Missing、Orphan、Incomplete）；合并过类型注解时还会写入
+// AnnotatedTypes、UnannotatedTypes 与 EnumCount。
 //
 // Both annots and report may be nil. | annots 与 report 均允许为 nil。
-func FromRouterWithAnnotations(r *router.Router, info Info, o Options, annots map[string]Annotation, report *Report) *Document {
+func FromRoutesWithAnnotations(routes []Route, info Info, o Options, annots map[string]Annotation, report *Report) *Document {
 	b := NewBuilder(info)
 	if strings.TrimSpace(b.doc.Info.Title) == "" {
 		b.doc.Info.Title = strings.TrimSpace(o.Title)
 	}
 
-	var routes []router.RouteInfo
-	if r != nil {
-		routes = r.Routes()
-	}
 	matched := make([]string, 0, len(routes))
 	missing := make([]string, 0, len(routes))
 	seen := make(map[string]bool, len(routes))
 	for _, route := range routes {
-		path, params := pathTemplate(route.Pattern)
+		path := route.Path
 		key := routeKey(route.Method, path)
 		if seen[key] {
 			continue
@@ -71,17 +80,17 @@ func FromRouterWithAnnotations(r *router.Router, info Info, o Options, annots ma
 		seen[key] = true
 		op := autoOperation()
 		if a, ok := annots[key]; ok {
-			op = a.operation(path, params)
+			op = a.operation(path, route.Params)
 			matched = append(matched, key)
 		} else {
-			op = mergePathParams(op, params)
+			op = mergePathParams(op, route.Params)
 			// Static mounts and other non-API prefixes stay in the document but do not count as
 			// missing annotations. | 静态挂载等非 API 前缀保留在文档中，但不计入缺失注解。
 			if !skipsCoverage(path, o.SkipPrefixes) {
 				missing = append(missing, key)
 			}
 		}
-		b.add(key, path, route.Method, op, params)
+		b.add(key, path, route.Method, op, route.Params)
 	}
 
 	orphan := make([]string, 0, len(annots))
@@ -167,96 +176,4 @@ func autoOperation() Operation {
 			strconv.Itoa(http.StatusOK): {Description: http.StatusText(http.StatusOK)},
 		},
 	}
-}
-
-// pathTemplate converts a router pattern into an OpenAPI path template and returns
-// the path parameters it declares. | pathTemplate 把路由模式转换为 OpenAPI 路径模板，并返回其声明的路径参数。
-//
-// "/report/:id-xx.png" becomes "/report/{id}-xx.png"; "/static/*filepath" becomes
-// "/static/{filepath}"; a trailing slash segment is preserved without producing an
-// empty parameter name. | "/report/:id-xx.png" 变为 "/report/{id}-xx.png"；
-// "/static/*filepath" 变为 "/static/{filepath}"；尾斜杠段被保留且不产生空参数名。
-func pathTemplate(pattern string) (string, []Parameter) {
-	segments, err := router.ParsePattern(pattern)
-	if err != nil {
-		return scanPathTemplate(pattern)
-	}
-	var (
-		b        strings.Builder
-		params   []Parameter
-		trailing bool
-	)
-	for _, segment := range segments {
-		if segment.TrailingSlash {
-			trailing = true
-			continue
-		}
-		b.WriteByte('/')
-		switch segment.Kind {
-		case router.SegStatic:
-			b.WriteString(segment.Literal)
-		case router.SegParam, router.SegWildcard:
-			b.WriteString("{" + segment.Name + "}")
-			params = append(params, pathParameter(segment.Name))
-		case router.SegMixed:
-			for _, token := range segment.Tokens {
-				if token.Kind == router.TokenLiteral {
-					b.WriteString(token.Text)
-					continue
-				}
-				b.WriteString("{" + token.Text + "}")
-				params = append(params, pathParameter(token.Text))
-			}
-		default:
-			b.WriteString(segment.Raw)
-		}
-	}
-	if trailing {
-		b.WriteByte('/')
-	}
-	out := b.String()
-	if out == "" {
-		out = "/"
-	}
-	return out, params
-}
-
-// scanPathTemplate is the textual fallback used when a pattern cannot be parsed. | scanPathTemplate
-// 是模式无法解析时使用的文本兜底转换。
-func scanPathTemplate(pattern string) (string, []Parameter) {
-	var (
-		b      strings.Builder
-		params []Parameter
-		seen   = map[string]bool{}
-	)
-	if !strings.HasPrefix(pattern, "/") {
-		b.WriteByte('/')
-	}
-	for i := 0; i < len(pattern); i++ {
-		c := pattern[i]
-		if c != ':' && c != '*' {
-			b.WriteByte(c)
-			continue
-		}
-		j := i + 1
-		for j < len(pattern) && isPathNameChar(pattern[j]) {
-			j++
-		}
-		if j == i+1 {
-			b.WriteByte(c)
-			continue
-		}
-		name := pattern[i+1 : j]
-		b.WriteString("{" + name + "}")
-		if !seen[name] {
-			seen[name] = true
-			params = append(params, pathParameter(name))
-		}
-		i = j - 1
-	}
-	out := b.String()
-	if out == "" {
-		out = "/"
-	}
-	return out, params
 }

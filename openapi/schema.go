@@ -448,7 +448,7 @@ func (b *Builder) AddSecurityScheme(name string, s SecurityScheme) {
 // already declared a parameter with the same name. | 模式中的路径参数会追加到 o.Parameters，
 // 除非调用方已声明同名参数。
 func (b *Builder) AddRoute(method, pattern string, o Operation) {
-	path, params := pathTemplate(pattern)
+	path, params := ScanPathTemplate(pattern)
 	op := mergePathParams(o, params)
 	b.add(routeKey(method, path), path, method, op, params)
 }
