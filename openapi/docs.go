@@ -23,17 +23,19 @@
 // 处理器注解与类型注解；Document.Validate 检查结构规则与 3.0/3.1 方言；所有以结构体表示的对象都
 // 通过 Extensions 字段承载 x-* 扩展。
 //
-// Handler serves both the JSON document and the built-in viewer without referencing
-// any external CDN. | Handler 同时提供 JSON 文档与内置查看器，且不引用任何外部 CDN。
+// Handler serves the JSON document, the built-in viewer and the embedded viewer script
+// without referencing any external CDN. | Handler 同时提供 JSON 文档、内置查看器与内嵌查看器
+// 脚本，且不引用任何外部 CDN。
 //
 // Typical wiring: | 典型装配方式：
 //
 //	info := openapi.Info{Title: "Demo", Version: "1.0.0"}
-//	opts := openapi.Options{}
+//	opts := openapi.Options{AssetsPath: openapi.DefaultAssetsPath}
 //	doc := openapi.FromRouter(r, info, opts)
 //	h := openapi.Handler(doc, opts)
 //	r.GET(opts.Path, h)
 //	r.GET(opts.DocsPath, h)
+//	r.GET(opts.AssetsPath+"*filepath", h)
 //
 // The viewer script is embedded in this module. With a standard net/http server, mount the
 // same handler on the three endpoints; no framework static filesystem is required: | 查看器脚本
