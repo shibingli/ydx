@@ -10,6 +10,7 @@ import (
 	"reflect"
 	"sync"
 	"time"
+	"unsafe"
 
 	"github.com/shibingli/ydx/errs"
 	"github.com/shibingli/ydx/sysinfo"
@@ -85,6 +86,13 @@ func computeMaxDirectHint() int {
 // 分配输出缓冲、而非先写入池化缓冲再复制的最小估算体积；更小的载荷复制比新分配更便宜。
 const directAllocThreshold = 512
 
+// copyExactThreshold is the estimated size up to which the multi-core path copies the encoded
+// bytes out of the pooled buffer instead of retaining the estimate-sized allocation. Larger
+// payloads keep their direct buffer because copying them would cost more than the allocation. |
+// copyExactThreshold 是多核路径改为从池化缓冲复制精确结果的最大估算体积；更大的载荷保留直接分配的
+// 缓冲，因为复制成本会高于分配成本。
+const copyExactThreshold = 64 << 10
+
 func getEncoder(escapeHTML bool) *encoder {
 	e := encoderPool.Get().(*encoder)
 	e.buf = e.buf[:0]
@@ -100,9 +108,36 @@ func putEncoder(e *encoder) {
 	}
 }
 
+// emptyInterface mirrors the runtime representation of the empty interface. | emptyInterface 对应空接口
+// 的运行时表示。
+type emptyInterface struct {
+	typ  unsafe.Pointer
+	data unsafe.Pointer
+}
+
 // Marshal returns the JSON encoding of v. | Marshal 返回 v 的 JSON 编码。
 func Marshal(v any) ([]byte, error) {
 	rv := reflect.ValueOf(v)
+	// A struct passed by value sits behind a non-addressable reflect.Value, which used to send
+	// the whole encoding through the reflective fallback. The interface's data word already
+	// points at the struct, so the pointer-based fast encoder can read it directly with no copy
+	// and no extra allocation. Nested values keep their existing addressability semantics. |
+	// 以值传递的结构体在 reflect.Value 中不可寻址，过去整段编码走反射回退路径。接口的数据字本身
+	// 就指向该结构体，因此基于指针的快速编码器可直接读取，无需复制、不增加分配；嵌套值仍保持原有
+	// 的可寻址语义。
+	if rv.IsValid() && rv.Kind() == reflect.Struct && !rv.CanAddr() {
+		if info := fastStructFor(rv.Type()); info != nil {
+			e := getEncoder(true)
+			if err := info.enc(e, (*emptyInterface)(unsafe.Pointer(&v)).data); err != nil {
+				putEncoder(e)
+				return nil, err
+			}
+			out := make([]byte, len(e.buf))
+			copy(out, e.buf)
+			putEncoder(e)
+			return out, nil
+		}
+	}
 	if rv.IsValid() && rv.Kind() == reflect.Slice && rv.Len() >= 8 {
 		// For multi-element slices the type/shape estimate is reliable enough to allocate the
 		// output directly, so no final copy and no repeated growth are needed. Small payloads use
@@ -123,6 +158,24 @@ func Marshal(v any) ([]byte, error) {
 			// 比多一次分配更贵，因此每次调用使用独立 encoder。两条路径都由当前
 			// GOMAXPROCS 自动选择。
 			if sysinfo.IsMultiCore() {
+				if est <= copyExactThreshold {
+					// Medium payloads fit the pooled buffer: encode there, then copy the exact
+					// result out. One right-sized allocation replaces the oversized estimate
+					// plus the encoder struct, which matches generated encoders' allocation
+					// profile while the copy stays far cheaper than the saved allocation. |
+					// 中等载荷可放入池化缓冲：在其中编码后复制出精确大小的结果。一次精准分配
+					// 取代偏大的估算分配与编码器结构体分配，与代码生成型编码器的分配特征一致，
+					// 且复制的成本远低于所省下的分配。
+					e := getEncoder(true)
+					if err := e.value(rv); err != nil {
+						putEncoder(e)
+						return nil, err
+					}
+					out := make([]byte, len(e.buf))
+					copy(out, e.buf)
+					putEncoder(e)
+					return out, nil
+				}
 				e := &encoder{escapeHTML: true, buf: make([]byte, 0, est)}
 				if err := e.value(rv); err != nil {
 					return nil, err

@@ -12,6 +12,25 @@ import (
 // appendJSONString 把单个 JSON 字符串字面量追加到 buf。干净路径用 8/4/1 字节 SWAR 字扫描并
 // 一次性追加整个字符串；慢路径逐 rune 转义。
 func appendJSONString(buf []byte, s string, escapeHTML bool) []byte {
+	if len(s) <= 16 {
+		clean := 0
+		if escapeHTML {
+			for clean < len(s) && !escapeTableHTML[s[clean]] {
+				clean++
+			}
+		} else {
+			for clean < len(s) && !escapeTablePlain[s[clean]] {
+				clean++
+			}
+		}
+		if clean == len(s) {
+			buf = append(buf, '"')
+			buf = append(buf, s...)
+			buf = append(buf, '"')
+			return buf
+		}
+		return appendJSONStringSlow(buf, s, escapeHTML)
+	}
 	i := 0
 	for len(s)-i >= 8 {
 		x := binary.LittleEndian.Uint64(unsafe.Slice(unsafe.StringData(s[i:]), 8))

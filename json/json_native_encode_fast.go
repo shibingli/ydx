@@ -334,6 +334,22 @@ func appendFloat(buf []byte, f float64, bits int) ([]byte, error) {
 		return appendIntFast(buf, int64(f)), nil
 	}
 	if bits == 64 {
+		if g := f * 10; g == math.Trunc(g) && math.Abs(g) < 1<<53 {
+			neg := math.Signbit(f)
+			n := int64(g)
+			if neg {
+				n = -n
+			}
+			ip, frac := n/10, n%10
+			if neg {
+				buf = append(buf, '-')
+			}
+			buf = appendIntFast(buf, ip)
+			if frac != 0 {
+				buf = append(buf, '.', byte('0'+frac))
+			}
+			return buf, nil
+		}
 		if out, ok := appendShortFloat(buf, f); ok {
 			return out, nil
 		}
