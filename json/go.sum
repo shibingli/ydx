@@ -2,7 +2,7 @@ github.com/cristalhq/base64 v0.1.2 h1:edsefYyYDiac7Ytdh2xdaiiSSJzcI2f0yIkdGEf1qY
 github.com/cristalhq/base64 v0.1.2/go.mod h1:sy4+2Hale2KbtSqkzpdMeYTP/IrB+HCvxVHWsh2VSYk=
 github.com/goccy/go-json v0.11.2 h1:jdZv93Tt4ioR8yW1CoNsvSxrcZlCXAUU1aZXN7gpXUA=
 github.com/goccy/go-json v0.11.2/go.mod h1:3NdmfEkZlB7YI5UFw/qdFKq8XN1aiWR0YyRPWZNQltY=
-github.com/shibingli/ydx/base64 v0.1.0 h1:f003aRPl6wIMQr5Rmcrx1O+MTqU6wxT8EU0w6owtB4Q=
+github.com/shibingli/ydx/base64 v0.1.0 h1:ClipfZ2FBHRWCeaAIY8nAZZFJ8MYD+h968+zJLJAFEI=
 github.com/shibingli/ydx/base64 v0.1.0/go.mod h1:AtpVmq8YwfgF/IvoYI4i/TpmHRHeiOwZ2wH5akXv+sY=
 github.com/shibingli/ydx/errs v0.1.0 h1:eeCCiENvWt2pl0iPk2OOjGqWBiGCBp/yZp+hxzQpOBk=
 github.com/shibingli/ydx/errs v0.1.0/go.mod h1:TxxdX2XnyvkyoEPtwKjxZFythqeJIYZabjw8S+Mllso=

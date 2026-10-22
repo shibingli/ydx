@@ -16,7 +16,7 @@ github.com/rogpeppe/go-internal v1.9.0 h1:73kH8U+JUqXU8lRuOHeVHaa/SZPifC7BkcraZV
 github.com/rogpeppe/go-internal v1.9.0/go.mod h1:WtVeX8xhTBvf0smdhujwtBcq4Qrzq/fJaraNFVN+nFs=
 github.com/sagikazarmark/locafero v0.12.0 h1:/NQhBAkUb4+fH1jivKHWusDYFjMOOKU88eegjfxfHb4=
 github.com/sagikazarmark/locafero v0.12.0/go.mod h1:sZh36u/YSZ918v0Io+U9ogLYQJ9tLLBmM4eneO6WwsI=
-github.com/shibingli/ydx/afs v0.1.0 h1:vR4S7WLyQkHhkatYrPE4gDGDAIrAobUg9zLjPTaychk=
+github.com/shibingli/ydx/afs v0.1.0 h1:/nfWLlCmspgeuYBxvVZfF0Q6b70Em7/pXM6IdISXx2Q=
 github.com/shibingli/ydx/afs v0.1.0/go.mod h1:ROTml9nh1AA9VHcWE/ZtbnsaamyOS97tEC1swCPWmJk=
 github.com/shibingli/ydx/errs v0.1.0 h1:eeCCiENvWt2pl0iPk2OOjGqWBiGCBp/yZp+hxzQpOBk=
 github.com/shibingli/ydx/errs v0.1.0/go.mod h1:TxxdX2XnyvkyoEPtwKjxZFythqeJIYZabjw8S+Mllso=
