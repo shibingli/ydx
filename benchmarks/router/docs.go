@@ -7,8 +7,11 @@
 // 依赖未导出 routePattern 内部实现的独立匹配器微基准不在此模块中；公开的路由与 Adapt 基准
 // 覆盖同一条热路径。
 //
+// Compared with net/http.ServeMux, httprouter, chi and gin; see README.md for the measured
+// tables. | 对比 net/http.ServeMux、httprouter、chi 与 gin；实测表见 README.md。
+//
 // Run with | 运行方式：
 //
 //	cd benchmarks/router
-//	go test -run '^$' -bench . -benchmem
+//	GOWORK=off go test -run '^$' -bench . -benchmem
 package router

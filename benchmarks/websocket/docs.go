@@ -8,8 +8,11 @@
 // The frame-level microbenchmarks that used unexported codec internals are intentionally not
 // part of this module. | 依赖未导出编解码内部实现的帧级微基准刻意不在此模块中。
 //
+// Compared with gorilla/websocket and coder/websocket; see README.md for the measured
+// tables. | 对比 gorilla/websocket 与 coder/websocket；实测表见 README.md。
+//
 // Run with | 运行方式：
 //
 //	cd benchmarks/websocket
-//	go test -run '^$' -bench . -benchmem
+//	GOWORK=off go test -run '^$' -bench . -benchmem
 package websocket
