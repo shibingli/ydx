@@ -1,4 +1,4 @@
-package log
+package logbench
 
 import (
 	"bufio"
@@ -7,6 +7,8 @@ import (
 	"os"
 	"testing"
 	"time"
+
+	. "github.com/shibingli/ydx/log"
 )
 
 // The benchmarks in this file complement bench_test.go with the scenarios that matter for the

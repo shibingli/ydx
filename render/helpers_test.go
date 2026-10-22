@@ -1,7 +1,6 @@
 package render
 
 import (
-	"io"
 	"path/filepath"
 	"testing"
 
@@ -65,44 +64,4 @@ func newBenchEngine(tb testing.TB) *Engine {
 		tb.Fatal(err)
 	}
 	return e
-}
-
-// BenchmarkRender measures steady-state rendering with translator and authz bindings. |
-// BenchmarkRender 测量带译者与权限绑定的稳态渲染。
-func BenchmarkRender(b *testing.B) {
-	e := newBenchEngine(b)
-	items := []string{"a", "b", "c", "d"}
-	withTr := map[string]any{TranslatorKey: zeroTranslator{}, "Items": items}
-	withBoth := map[string]any{
-		TranslatorKey: zeroTranslator{},
-		AuthzKey:      benchAuthz{key: "admin", allow: true},
-		"Items":       items,
-	}
-	_ = e.Render(io.Discard, "pages/home.html", withBoth)
-
-	b.Run("with_translator", func(b *testing.B) {
-		b.ReportAllocs()
-		for i := 0; i < b.N; i++ {
-			if err := e.Render(io.Discard, "pages/home.html", withTr); err != nil {
-				b.Fatal(err)
-			}
-		}
-	})
-	b.Run("without_bindings", func(b *testing.B) {
-		b.ReportAllocs()
-		plain := map[string]any{"Items": items}
-		for i := 0; i < b.N; i++ {
-			if err := e.Render(io.Discard, "pages/home.html", plain); err != nil {
-				b.Fatal(err)
-			}
-		}
-	})
-	b.Run("with_translator_and_authz", func(b *testing.B) {
-		b.ReportAllocs()
-		for i := 0; i < b.N; i++ {
-			if err := e.Render(io.Discard, "pages/home.html", withBoth); err != nil {
-				b.Fatal(err)
-			}
-		}
-	})
 }

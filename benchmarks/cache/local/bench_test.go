@@ -1,9 +1,11 @@
-package local
+package localbench
 
 import (
 	"fmt"
 	"testing"
 	"time"
+
+	. "github.com/shibingli/ydx/cache/local"
 )
 
 // benchCache builds a cache large enough to avoid eviction during read benchmarks. | benchCache 构造足够大的缓存，避免读基准期间发生驱逐。

@@ -1,9 +1,11 @@
-package base64
+package base64bench
 
 import (
 	"encoding/base64"
 	"fmt"
 	"testing"
+
+	b64x "github.com/shibingli/ydx/base64"
 )
 
 // benchSinkBytes keeps encoded/decoded results observable. | benchSinkBytes 让编解码结果保持可观测。
@@ -26,13 +28,13 @@ func benchBuf(n int) []byte {
 func BenchmarkEncode(b *testing.B) {
 	for _, size := range []int{16, 1 << 10, 64 << 10} {
 		src := benchBuf(size)
-		dst := make([]byte, StdEncoding.EncodedLen(size))
+		dst := make([]byte, b64x.StdEncoding.EncodedLen(size))
 		b.Run(fmt.Sprintf("b64x/%d", size), func(b *testing.B) {
 			b.SetBytes(int64(size))
 			b.ReportAllocs()
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
-				StdEncoding.Encode(dst, src)
+				b64x.StdEncoding.Encode(dst, src)
 			}
 			benchSinkBytes = dst
 		})
@@ -57,7 +59,7 @@ func BenchmarkEncodeToString(b *testing.B) {
 			b.ReportAllocs()
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
-				benchSinkString = StdEncoding.EncodeToString(src)
+				benchSinkString = b64x.StdEncoding.EncodeToString(src)
 			}
 		})
 		b.Run(fmt.Sprintf("stdlib/%d", size), func(b *testing.B) {
@@ -76,13 +78,13 @@ func BenchmarkEncodeToString(b *testing.B) {
 func BenchmarkRawURLEncode(b *testing.B) {
 	for _, size := range []int{16, 1 << 10, 64 << 10} {
 		src := benchBuf(size)
-		dst := make([]byte, RawURLEncoding.EncodedLen(size))
+		dst := make([]byte, b64x.RawURLEncoding.EncodedLen(size))
 		b.Run(fmt.Sprintf("b64x/%d", size), func(b *testing.B) {
 			b.SetBytes(int64(size))
 			b.ReportAllocs()
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
-				RawURLEncoding.Encode(dst, src)
+				b64x.RawURLEncoding.Encode(dst, src)
 			}
 		})
 		b.Run(fmt.Sprintf("stdlib/%d", size), func(b *testing.B) {
@@ -101,15 +103,15 @@ func BenchmarkRawURLEncode(b *testing.B) {
 func BenchmarkDecode(b *testing.B) {
 	for _, size := range []int{16, 1 << 10, 64 << 10} {
 		src := benchBuf(size)
-		encoded := make([]byte, StdEncoding.EncodedLen(size))
-		StdEncoding.Encode(encoded, src)
-		dst := make([]byte, StdEncoding.DecodedLen(len(encoded)))
+		encoded := make([]byte, b64x.StdEncoding.EncodedLen(size))
+		b64x.StdEncoding.Encode(encoded, src)
+		dst := make([]byte, b64x.StdEncoding.DecodedLen(len(encoded)))
 		b.Run(fmt.Sprintf("b64x/%d", size), func(b *testing.B) {
 			b.SetBytes(int64(size))
 			b.ReportAllocs()
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
-				if _, err := StdEncoding.Decode(dst, encoded); err != nil {
+				if _, err := b64x.StdEncoding.Decode(dst, encoded); err != nil {
 					b.Fatalf("Decode failed | Decode 失败: %v", err)
 				}
 			}
@@ -132,13 +134,13 @@ func BenchmarkDecode(b *testing.B) {
 func BenchmarkDecodeString(b *testing.B) {
 	for _, size := range []int{16, 256, 1 << 10, 64 << 10} {
 		src := benchBuf(size)
-		encoded := RawURLEncoding.EncodeToString(src)
+		encoded := b64x.RawURLEncoding.EncodeToString(src)
 		b.Run(fmt.Sprintf("b64x/%d", size), func(b *testing.B) {
 			b.SetBytes(int64(size))
 			b.ReportAllocs()
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
-				out, err := RawURLEncoding.DecodeString(encoded)
+				out, err := b64x.RawURLEncoding.DecodeString(encoded)
 				if err != nil {
 					b.Fatalf("DecodeString failed | DecodeString 失败: %v", err)
 				}
@@ -163,13 +165,13 @@ func BenchmarkDecodeString(b *testing.B) {
 // BenchmarkAppendEncodeDecode measures the zero-copy append APIs. | BenchmarkAppendEncodeDecode 测量零拷贝追加接口。
 func BenchmarkAppendEncodeDecode(b *testing.B) {
 	src := benchBuf(1 << 10)
-	encoded := make([]byte, 0, StdEncoding.EncodedLen(len(src)))
+	encoded := make([]byte, 0, b64x.StdEncoding.EncodedLen(len(src)))
 	b.Run("append_encode", func(b *testing.B) {
 		b.SetBytes(int64(len(src)))
 		b.ReportAllocs()
 		b.ResetTimer()
 		for i := 0; i < b.N; i++ {
-			encoded = StdEncoding.AppendEncode(encoded[:0], src)
+			encoded = b64x.StdEncoding.AppendEncode(encoded[:0], src)
 		}
 		benchSinkBytes = encoded
 	})
@@ -180,7 +182,7 @@ func BenchmarkAppendEncodeDecode(b *testing.B) {
 		b.ResetTimer()
 		for i := 0; i < b.N; i++ {
 			var err error
-			decoded, err = StdEncoding.AppendDecode(decoded[:0], encoded)
+			decoded, err = b64x.StdEncoding.AppendDecode(decoded[:0], encoded)
 			if err != nil {
 				b.Fatalf("AppendDecode failed | AppendDecode 失败: %v", err)
 			}

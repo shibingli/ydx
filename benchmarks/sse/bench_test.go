@@ -1,10 +1,12 @@
-package sse
+package ssebench
 
 import (
 	"net/http"
 	"strconv"
 	"strings"
 	"testing"
+
+	. "github.com/shibingli/ydx/sse"
 )
 
 // benchWriter is a ResponseWriter + Flusher that only counts bytes, so the benchmarks measure
@@ -32,6 +34,11 @@ func (w *benchWriter) WriteHeader(int) {}
 // Flush implements http.Flusher. | Flush 实现 http.Flusher。
 func (w *benchWriter) Flush() {}
 
+// benchDefaultBufferSize mirrors the package's unexported default frame buffer size,
+// keeping the benchmark module independent of component internals. | benchDefaultBufferSize
+// 镜像包内未导出的默认帧缓冲大小，使基准模块不依赖组件内部实现。
+const benchDefaultBufferSize = 512
+
 func benchSSEWriter(b *testing.B, size int) *Writer {
 	b.Helper()
 	w, err := NewWriter(newBenchWriter(), Options{BufferSize: size})
@@ -53,7 +60,7 @@ func BenchmarkWriteData(b *testing.B) {
 	}
 	for _, c := range cases {
 		b.Run(c.name, func(b *testing.B) {
-			w := benchSSEWriter(b, defaultBufferSize)
+			w := benchSSEWriter(b, benchDefaultBufferSize)
 			b.SetBytes(int64(len(c.data)))
 			b.ReportAllocs()
 			b.ResetTimer()
@@ -67,7 +74,7 @@ func BenchmarkWriteData(b *testing.B) {
 }
 
 func BenchmarkWriteEvent(b *testing.B) {
-	w := benchSSEWriter(b, defaultBufferSize)
+	w := benchSSEWriter(b, benchDefaultBufferSize)
 	e := Event{
 		ID:      "evt-12345",
 		Name:    "message",

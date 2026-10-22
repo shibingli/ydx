@@ -1,9 +1,11 @@
-package router
+package routerbench
 
 import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	. "github.com/shibingli/ydx/router"
 )
 
 // discardWriter is a zero-allocation response writer for adapter benchmarks. |

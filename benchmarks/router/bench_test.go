@@ -1,10 +1,12 @@
-package router
+package routerbench
 
 import (
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	. "github.com/shibingli/ydx/router"
 )
 
 // benchRouterRequest builds a request once so the benchmark measures routing, not request

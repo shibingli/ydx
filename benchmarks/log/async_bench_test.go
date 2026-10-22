@@ -1,4 +1,4 @@
-package log
+package logbench
 
 import (
 	"io"
@@ -6,6 +6,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	. "github.com/shibingli/ydx/log"
 )
 
 // BenchmarkAsyncInfoFieldsSerial measures the opt-in async producer path with a single goroutine
@@ -106,6 +108,24 @@ func BenchmarkAsyncWriterFile(b *testing.B) {
 // slowWriterDelay is the per-Write latency used by the slow-writer benchmarks. | slowWriterDelay
 // 是慢写入器基准使用的单次 Write 延迟。
 const slowWriterDelay = 500 * time.Microsecond
+
+// slowWriter sleeps on every Write, simulating a pipe or disk that is much slower than the
+// producers; it counts calls and bytes. It is copied from the component's test helpers because
+// the benchmark module only uses the exported log API. | slowWriter 每次 Write 都休眠，模拟远慢于
+// 生产者的管道或磁盘，并统计调用次数与字节数。它复制自组件测试辅助代码，因为基准模块只使用
+// log 的导出 API。
+type slowWriter struct {
+	delay  time.Duration
+	writes int64
+	bytes  int64
+}
+
+func (w *slowWriter) Write(p []byte) (int, error) {
+	time.Sleep(w.delay)
+	atomic.AddInt64(&w.writes, 1)
+	atomic.AddInt64(&w.bytes, int64(len(p)))
+	return len(p), nil
+}
 
 // BenchmarkSlowWriterSync measures the default synchronous path against a 500µs writer. | BenchmarkSlowWriterSync
 // 测量默认同步路径面对 500µs 写入器时的表现。

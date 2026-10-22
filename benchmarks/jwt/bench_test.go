@@ -1,4 +1,4 @@
-package jwt
+package jwtbench
 
 import (
 	"crypto/ecdsa"
@@ -6,6 +6,8 @@ import (
 	"crypto/rand"
 	"testing"
 	"time"
+
+	. "github.com/shibingli/ydx/jwt"
 )
 
 // benchKey is the HMAC secret used by the symmetric benchmarks; it is longer than one SHA-256 block

@@ -1,4 +1,4 @@
-package cache
+package cachebench
 
 import (
 	"context"
@@ -7,7 +7,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/shibingli/ydx/log"
+	logx "github.com/shibingli/ydx/log"
+
+	. "github.com/shibingli/ydx/cache"
 	"github.com/shibingli/ydx/cache/local"
 )
 
@@ -17,7 +19,7 @@ func benchManager(b *testing.B, remote Remote) *Manager {
 	m, err := NewManager(
 		WithRemote(remote),
 		WithLocalOptions(local.Options{MaxCost: 64 << 20, Shards: 8, MaxEntrySize: 1 << 20, CleanupInterval: time.Hour}),
-		WithLogger(log.New(log.Options{Writer: io.Discard, Level: log.ErrorLevel})),
+		WithLogger(logx.New(logx.Options{Writer: io.Discard, Level: logx.ErrorLevel})),
 		WithLease(time.Minute),
 	)
 	if err != nil {

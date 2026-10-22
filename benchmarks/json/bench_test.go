@@ -1,8 +1,10 @@
-package json
+package jsonbench
 
 import (
 	"encoding/json"
 	"testing"
+
+	jsonx "github.com/shibingli/ydx/json"
 )
 
 // benchSinkBytes keeps serialized results observable. | benchSinkBytes 让序列化结果保持可观测。
@@ -48,7 +50,7 @@ func BenchmarkMarshal(b *testing.B) {
 			b.ReportAllocs()
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
-				out, err := Marshal(c.v)
+				out, err := jsonx.Marshal(c.v)
 				if err != nil {
 					b.Fatalf("Marshal failed | Marshal 失败: %v", err)
 				}
@@ -73,11 +75,11 @@ func BenchmarkMarshal(b *testing.B) {
 func BenchmarkUnmarshal(b *testing.B) {
 	small := benchUsers(1)[0]
 	many := benchUsers(64)
-	smallJSON, err := Marshal(small)
+	smallJSON, err := jsonx.Marshal(small)
 	if err != nil {
 		b.Fatalf("setup failed | 准备失败: %v", err)
 	}
-	manyJSON, err := Marshal(many)
+	manyJSON, err := jsonx.Marshal(many)
 	if err != nil {
 		b.Fatalf("setup failed | 准备失败: %v", err)
 	}
@@ -87,7 +89,7 @@ func BenchmarkUnmarshal(b *testing.B) {
 		b.ResetTimer()
 		for i := 0; i < b.N; i++ {
 			var v benchUser
-			if err := Unmarshal(smallJSON, &v); err != nil {
+			if err := jsonx.Unmarshal(smallJSON, &v); err != nil {
 				b.Fatalf("Unmarshal failed | Unmarshal 失败: %v", err)
 			}
 		}
@@ -107,7 +109,7 @@ func BenchmarkUnmarshal(b *testing.B) {
 		b.ResetTimer()
 		for i := 0; i < b.N; i++ {
 			var v []benchUser
-			if err := Unmarshal(manyJSON, &v); err != nil {
+			if err := jsonx.Unmarshal(manyJSON, &v); err != nil {
 				b.Fatalf("Unmarshal failed | Unmarshal 失败: %v", err)
 			}
 		}

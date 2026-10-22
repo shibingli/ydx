@@ -1,21 +1,12 @@
-package log
+package logbench
 
 import (
 	"io"
 	"testing"
 	"time"
-)
 
-// TestDisabledPathIsAllocationFree is a regression guard: a call at a disabled level must not allocate any heap memory. | TestDisabledPathIsAllocationFree 是回归护栏：禁用级别下调用不得产生任何堆分配。
-func TestDisabledPathIsAllocationFree(t *testing.T) {
-	l := New(Options{Writer: io.Discard, Level: ErrorLevel})
-	allocs := testing.AllocsPerRun(1000, func() {
-		l.Info("request handled", Str("method", "GET"), Int("status", 200))
-	})
-	if allocs != 0 {
-		t.Fatalf("禁用级别路径分配数 = %v，期望 0", allocs)
-	}
-}
+	. "github.com/shibingli/ydx/log"
+)
 
 // BenchmarkInfoFields measures the end-to-end cost of "one 5-field JSON log record" at an enabled level. | BenchmarkInfoFields 测量启用级别下「一条 5 字段 JSON 日志」的端到端开销。
 func BenchmarkInfoFields(b *testing.B) {
