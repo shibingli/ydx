@@ -88,6 +88,108 @@ done:
 	MOVQ R8, ret+56(FP)
 	RET
 
+// func encode32SIMDAsm(dst, src []byte, mode uint64) (int, int)
+// Encodes exactly 32 source bytes into 43 characters using two 12-byte heads and one eight-byte
+// vector tail, without any scalar tail call, then appends padding when mode bit 1 is set. Mode bit
+// 0 selects the URL alphabet and bits 8-15 hold the pad byte. It returns the consumed input and
+// produced output, or two zeroes when the slices do not fit. | 用两个 12 字节头部与一个 8 字节
+// 向量尾部把恰好 32 个源字节编码为 43 个字符，不调用标量尾部；mode 第 1 位置位时追加填充。
+// mode 第 0 位选择 URL 字母表，第 8-15 位保存填充字节。返回消耗的输入与产生的输出；切片不满足
+// 长度要求时返回两个 0。
+TEXT ·encode32SIMDAsm(SB), NOSPLIT, $0-72
+	MOVQ dst_base+0(FP), AX
+	MOVQ dst_len+8(FP), BX
+	MOVQ src_base+24(FP), CX
+	MOVQ src_len+32(FP), DI
+	MOVQ mode+48(FP), R12
+	CMPQ DI, $32
+	JNE len32Fail
+	CMPQ BX, $43
+	JL len32Fail
+	TESTQ $1, R12
+	JZ len32Std
+	LEAQ ·avx2EncURL(SB), SI
+	JMP len32Consts
+len32Std:
+	LEAQ ·avx2EncStd(SB), SI
+len32Consts:
+
+	VMOVDQU 32(SI), X1
+	VMOVDQU 64(SI), X2
+	VMOVDQU 96(SI), X3
+	VMOVDQU 128(SI), X4
+	VMOVDQU 160(SI), X0
+	VMOVDQU 192(SI), X5
+	VMOVDQU 224(SI), X6
+	VMOVDQU 256(SI), X7
+	VMOVDQU 16(SI), X8
+
+	// First 12 bytes. | 前 12 字节。
+	VMOVDQU (CX), X9
+	VPSHUFB X8, X9, X9
+	VPAND X1, X9, X10
+	VPMULHUW X3, X10, X10
+	VPAND X2, X9, X9
+	VPMULLW X4, X9, X9
+	VPOR X10, X9, X9
+	VPSUBUSB X5, X9, X10
+	VPCMPGTB X9, X6, X11
+	VPBLENDVB X11, X7, X10, X10
+	VPSHUFB X10, X0, X10
+	VPADDB X10, X9, X9
+	VMOVDQU X9, (AX)
+
+	// Next 12 bytes. | 接下来 12 字节。
+	VMOVDQU 12(CX), X9
+	VPSHUFB X8, X9, X9
+	VPAND X1, X9, X10
+	VPMULHUW X3, X10, X10
+	VPAND X2, X9, X9
+	VPMULLW X4, X9, X9
+	VPOR X10, X9, X9
+	VPSUBUSB X5, X9, X10
+	VPCMPGTB X9, X6, X11
+	VPBLENDVB X11, X7, X10, X10
+	VPSHUFB X10, X0, X10
+	VPADDB X10, X9, X9
+	VMOVDQU X9, 16(AX)
+
+	// Last 8 bytes: select bytes 8..15 of the load at offset 16 and zero the rest, so the
+	// head math produces two full groups followed by the two-byte remainder. | 最后 8 字节：
+	// 取偏移 16 处加载的第 8..15 字节并将其余字节清零，使头部算法产生两个完整组和两字节余量。
+	VMOVDQU 16(CX), X12
+	VPSHUFB 288(SI), X12, X9
+	VPSHUFB X8, X9, X9
+	VPAND X1, X9, X10
+	VPMULHUW X3, X10, X10
+	VPAND X2, X9, X9
+	VPMULLW X4, X9, X9
+	VPOR X10, X9, X9
+	VPSUBUSB X5, X9, X10
+	VPCMPGTB X9, X6, X11
+	VPBLENDVB X11, X7, X10, X10
+	VPSHUFB X10, X0, X10
+	VPADDB X10, X9, X9
+	VMOVQ X9, 32(AX)
+	VPEXTRW $4, X9, 40(AX)
+	VPEXTRB $10, X9, 42(AX)
+	MOVQ $43, R13
+	TESTQ $2, R12
+	JZ len32Store
+	MOVQ R12, R14
+	SHRQ $8, R14
+	MOVB R14, 43(AX)
+	MOVQ $44, R13
+len32Store:
+	MOVQ $32, ret+56(FP)
+	MOVQ R13, ret1+64(FP)
+	RET
+len32Fail:
+	XORQ R9, R9
+	MOVQ R9, ret+56(FP)
+	MOVQ R9, ret1+64(FP)
+	RET
+
 // func decodeAVX2Asm(dst, src []byte, c *avx2DecConsts) int
 TEXT ·decodeAVX2Asm(SB), NOSPLIT, $0-64
 	MOVQ dst_base+0(FP), AX
@@ -102,13 +204,12 @@ TEXT ·decodeAVX2Asm(SB), NOSPLIT, $0-64
 	VMOVDQU 32(SI), Y4
 	VMOVDQU 64(SI), Y5
 	VMOVDQU 96(SI), Y6
-	VMOVDQU 128(SI), Y7
 	VMOVDQU 160(SI), Y8
 	VMOVDQU 192(SI), Y9
 	VMOVDQU 224(SI), Y10
 	VMOVDQU 256(SI), Y0
 	VMOVDQU 288(SI), Y1
-	VMOVDQU 320(SI), Y2
+	VPXOR Y2, Y2, Y2
 
 decLoop:
 	MOVQ DI, R9
@@ -123,7 +224,7 @@ decLoop:
 	LEAQ (CX)(R8*1), R10
 	VMOVDQU (R10), Y11
 	VPSRLW $4, Y11, Y12
-	VPAND Y7, Y12, Y12
+	VPAND Y6, Y12, Y12
 	VPAND Y6, Y11, Y13
 	VPSHUFB Y13, Y3, Y13
 	VPSHUFB Y12, Y4, Y14
@@ -152,6 +253,74 @@ decLoop:
 	JMP decLoop
 decDone:
 	MOVQ R8, ret+56(FP)
+	RET
+
+// func decode32SIMDAsm(dst, src []byte, mode uint64) (int, int)
+// Decodes exactly 32 valid characters into 24 bytes with one AVX2 block. Mode bit 0 selects the
+// URL alphabet. It returns (32, 24) on success, and (0, 0) when a character is invalid so the
+// scalar path can report or finish the input. | 用一个 AVX2 块把恰好 32 个合法字符解码为 24 字节。
+// mode 第 0 位选择 URL 字母表。成功返回 (32, 24)；遇到非法字符返回 (0, 0)，由标量路径报错或
+// 完成输入。
+TEXT ·decode32SIMDAsm(SB), NOSPLIT, $0-72
+	MOVQ dst_base+0(FP), AX
+	MOVQ dst_len+8(FP), BX
+	MOVQ src_base+24(FP), CX
+	MOVQ src_len+32(FP), DI
+	MOVQ mode+48(FP), R12
+	CMPQ DI, $32
+	JNE decode32Fail
+	CMPQ BX, $24
+	JL decode32Fail
+	TESTQ $1, R12
+	JZ decode32Std
+	LEAQ ·avx2DecURL(SB), SI
+	JMP decode32Consts
+decode32Std:
+	LEAQ ·avx2DecStd(SB), SI
+decode32Consts:
+	VMOVDQU 0(SI), Y3
+	VMOVDQU 32(SI), Y4
+	VMOVDQU 64(SI), Y5
+	VMOVDQU 96(SI), Y6
+	VMOVDQU 160(SI), Y8
+	VMOVDQU 192(SI), Y9
+	VMOVDQU 224(SI), Y10
+	VMOVDQU 256(SI), Y0
+	VMOVDQU 288(SI), Y1
+	VPXOR Y2, Y2, Y2
+
+	VMOVDQU (CX), Y11
+	VPSRLW $4, Y11, Y12
+	VPAND Y6, Y12, Y12
+	VPAND Y6, Y11, Y13
+	VPSHUFB Y13, Y3, Y13
+	VPSHUFB Y12, Y4, Y14
+	VPAND Y14, Y13, Y13
+	VPCMPEQB Y2, Y13, Y13
+	VPMOVMSKB Y13, R15
+	CMPL R15, $-1
+	JNE decode32Fail
+	VPSHUFB Y12, Y5, Y12
+	VPADDB Y12, Y11, Y12
+	VPCMPEQB Y0, Y11, Y11
+	VPBLENDVB Y11, Y1, Y12, Y11
+	VPMADDUBSW Y8, Y11, Y11
+	VPSLLD $12, Y11, Y12
+	VPSRLD $16, Y11, Y11
+	VPOR Y11, Y12, Y11
+	VPSHUFB Y9, Y11, Y11
+	VPERMD Y11, Y10, Y11
+	VMOVDQU X11, (AX)
+	VEXTRACTI128 $1, Y11, X12
+	VMOVQ X12, 16(AX)
+
+	MOVQ $32, ret+56(FP)
+	MOVQ $24, ret1+64(FP)
+	RET
+decode32Fail:
+	XORQ R9, R9
+	MOVQ R9, ret+56(FP)
+	MOVQ R9, ret1+64(FP)
 	RET
 
 // func cpuID(eax, ecx uint32) (a, b, c, d uint32)

@@ -8,7 +8,13 @@ import "encoding/binary"
 func encodeAVX2Asm(dst, src []byte, c *avx2EncConsts) int
 
 //go:noescape
+func encode32SIMDAsm(dst, src []byte, mode uint64) (int, int)
+
+//go:noescape
 func decodeAVX2Asm(dst, src []byte, c *avx2DecConsts) int
+
+//go:noescape
+func decode32SIMDAsm(dst, src []byte, mode uint64) (int, int)
 
 //go:noescape
 func cpuID(eax, ecx uint32) (a, b, c, d uint32)
@@ -21,6 +27,11 @@ type avx2EncConsts struct {
 	maskLo, maskHi, mulHi, mulLo [32]byte
 	lut                          [32]byte
 	b51, b26, b13                [32]byte
+	// tail selects the last eight bytes of a 16-byte load and zeroes the rest; it lets the
+	// 32-byte kernel encode the final two groups plus the two-byte remainder with the same
+	// head math. | tail 选出 16 字节加载中的最后 8 字节并把其余字节清零，使 32 字节内核用同一套
+	// 头部算法编码最后两组与两字节余量。
+	tail [16]byte
 }
 
 type avx2DecConsts struct {
@@ -28,7 +39,7 @@ type avx2DecConsts struct {
 	loMask, hiMask        [32]byte
 	mul, pack             [32]byte
 	dwordIdx              [32]byte
-	eqChar, eqVal, zero   [32]byte
+	eqChar, eqVal        [32]byte
 }
 
 var (
@@ -44,6 +55,8 @@ func init() {
 	if !forceScalar && hasAVX2() {
 		installEncode(1, encodeSIMDAsm)
 		installDecode(1, decodeSIMDAsm)
+		simdEncode32 = encode32SIMDAsm
+		simdDecode32 = decode32SIMDAsm
 	}
 }
 
@@ -71,6 +84,10 @@ func makeEncConsts(url bool) avx2EncConsts {
 	for i := 0; i < 32; i++ {
 		c.lut[i] = byte(lut16[i%16])
 		c.b51[i], c.b26[i], c.b13[i] = 51, 26, 13
+	}
+	for i := 0; i < 8; i++ {
+		c.tail[i] = byte(8 + i)
+		c.tail[8+i] = 0x80
 	}
 	return c
 }
@@ -158,10 +175,11 @@ func hasAVX2() bool {
 	return b&(1<<5) != 0
 }
 
-// encodeSIMDAsm adapts the AVX2 encoder to the SIMD dispatch signature. A 12-byte scalar-vector
-// head seeds the 24-byte block loop; the scalar tail handles the remainder and padding. |
-// encodeSIMDAsm 把 AVX2 编码器适配到 SIMD 分派签名。12 字节向量头部引导 24 字节块循环，标量尾部
-// 处理余量与填充。
+// encodeSIMDAsm adapts the AVX2 encoder to the SIMD dispatch signature. A 12-byte vector head
+// seeds the 24-byte block loop; the scalar tail handles the remainder and padding. Exactly 32
+// bytes take the dedicated full-vector kernel installed as simdEncode32. | encodeSIMDAsm 把 AVX2
+// 编码器适配到 SIMD 分派签名。12 字节向量头部引导 24 字节块循环，标量尾部处理余量与填充；恰好
+// 32 字节的输入走安装在 simdEncode32 上的专用全向量内核。
 func encodeSIMDAsm(dst, src []byte, url, padded bool, pad byte) (int, int) {
 	if len(src) < 16 || len(dst) < 16 {
 		return 0, 0

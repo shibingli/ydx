@@ -82,6 +82,18 @@ var (
 var (
 	simdEncode func(dst, src []byte, url, padded bool, pad byte) (int, int)
 	simdDecode func(dst, src []byte, url, raw bool) (int, int)
+	// simdEncode32 is the dedicated full-vector 32-byte encoder. It takes the alphabet and
+	// padding options packed into mode (bit 0 URL alphabet, bit 1 padded, bits 8-15 pad byte) and
+	// returns the consumed input and produced output; it is nil on architectures without a
+	// 32-byte kernel. | simdEncode32 是专用的 32 字节全向量编码器。选项打包在 mode 中（第 0 位
+	// URL 字母表、第 1 位填充、第 8-15 位填充字节），返回消耗的输入与产生的输出；没有 32 字节内核的
+	// 架构上为 nil。
+	simdEncode32 func(dst, src []byte, mode uint64) (int, int)
+	// simdDecode32 is the dedicated 32-character decoder; mode bit 0 selects the URL alphabet.
+	// It returns (32, 24) on success and (0, 0) when the scalar path must validate the input. |
+	// simdDecode32 是专用的 32 字符解码器；mode 第 0 位选择 URL 字母表。成功返回 (32, 24)，
+	// 需要标量路径校验输入时返回 (0, 0)。
+	simdDecode32 func(dst, src []byte, mode uint64) (int, int)
 	// Instruction-set levels select the widest available kernel independently of init order:
 	// 1 = AVX2/NEON, 3 = AVX-512 VBMI, 4 = AVX-512 VBMI2. | 指令集级别与 init 顺序无关地选择最宽
 	// 可用内核：1 = AVX2/NEON，3 = AVX-512 VBMI，4 = AVX-512 VBMI2。
@@ -223,11 +235,12 @@ func (e *Encoding) encodeScalar(dst, src []byte) {
 	}
 }
 
-// simdEncodeMin is the smallest source length that beats the scalar encoder. Measured on the
-// reference AVX-512 host: 32–60 B are 1.1–5.7 ns faster on the scalar path, while 64 B and above
-// win on SIMD; the kernels' fixed setup cost dominates below the crossover. | simdEncodeMin 是
-// 标量编码器被 SIMD 反超的最小源长度。参考 AVX-512 主机实测：32–60 B 标量快 1.1–5.7 ns，
-// 64 B 起 SIMD 领先；交叉点以下由内核的固定初始化成本主导。
+// simdEncodeMin is the smallest source length that beats the scalar encoder through the block
+// kernel. Measured on the reference AVX-512 host: 33–60 B are still faster on the scalar path,
+// while 64 B and above win on SIMD. Exactly 32 B bypasses this threshold through the dedicated
+// full-vector kernel. | simdEncodeMin 是块内核开始胜过标量编码器的最小源长度。参考 AVX-512
+// 主机实测：33–60 B 仍以标量路径更快，64 B 起 SIMD 领先；恰好 32 B 通过专用全向量内核绕过
+// 该阈值。
 const simdEncodeMin = 64
 
 // simdDecodeMin is the smallest encoded length that beats the scalar decoder. Measured on the
@@ -244,10 +257,28 @@ func (e *Encoding) Encode(dst, src []byte) {
 	// Short inputs stay scalar: the SIMD dispatch and per-group vector setup cost more
 	// than the table lookups they replace. | 短输入保持标量：SIMD 分派与每组向量初始化的
 	// 成本高于它们替代的查表。
+	if simdEncode32 != nil && e.simd != 0 && len(src) == 32 {
+		var mode uint64
+		if e.simd == 2 {
+			mode |= 1
+		}
+		if !e.raw {
+			mode |= 2
+		}
+		mode |= uint64(e.pad) << 8
+		if n, _ := simdEncode32(dst, src, mode); n == 32 {
+			return
+		}
+	}
 	if simdEncode != nil && e.simd != 0 && len(src) >= simdEncodeMin {
 		n, out := simdEncode(dst, src, e.simd == 2, !e.raw, e.pad)
 		src = src[n:]
 		dst = dst[out:]
+		// A kernel that consumed the whole input must not pay for a no-op scalar call. |
+		// 已消费全部输入的内核不应再为标量空调用付出开销。
+		if len(src) == 0 {
+			return
+		}
 	}
 	e.encodeScalar(dst, src)
 }
@@ -301,8 +332,17 @@ func (e *Encoding) Decode(dst, src []byte) (int, error) {
 		return 0, ErrShortBuffer
 	}
 	out, i := 0, 0
-	// Every SIMD decoder handles at least 64 characters; shorter inputs skip the indirect
-	// call and its immediate no-op return. | 所有 SIMD 解码器至少处理 64 个字符，更短的输入跳过
+	if simdDecode32 != nil && e.simd != 0 && len(src) == 32 {
+		var mode uint64
+		if e.simd == 2 {
+			mode = 1
+		}
+		if n, out32 := simdDecode32(dst, src, mode); n == 32 {
+			return out32, nil
+		}
+	}
+	// Every block SIMD decoder handles at least 64 characters; shorter inputs skip the indirect
+	// call and its immediate no-op return. | 所有块 SIMD 解码器至少处理 64 个字符，更短的输入跳过
 	// 间接调用及其立即空返回。
 	if simdDecode != nil && e.simd != 0 && len(src) >= simdDecodeMin {
 		i, out = simdDecode(dst, src, e.simd == 2, e.raw)
