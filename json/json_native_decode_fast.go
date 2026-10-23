@@ -388,13 +388,13 @@ func parseShortDecimalFloat(b []byte) (float64, bool) {
 
 // scanFloatField scans a JSON number starting at d.pos, advances d.pos past the literal, and
 // returns the value when the literal fits the exact short-decimal envelope (mantissa below 2^53,
-// no exponent, at most 22 fraction digits). Otherwise the literal is valid JSON and the caller
-// must convert it with strconv.ParseFloat. The single scan also validates the grammar that
-// parseNumberBytes used to re-check, so long decimals no longer pay three extra passes. |
+// no exponent, at most 22 fraction digits) or the unrounded-scaling fast path. Otherwise the
+// literal is valid JSON and the caller must convert it with strconv.ParseFloat. The single scan
+// also validates the grammar that parseNumberBytes used to re-check. |
 // scanFloatField 从 d.pos 起扫描一个 JSON 数字并推进 d.pos；字面量落在精确短十进制范围内
-// （尾数小于 2^53、无指数、小数位不超过 22）时返回其值；否则字面量是合法 JSON，由调用方交给
-// strconv.ParseFloat。单次扫描同时完成原先由 parseNumberBytes 重复执行的语法校验，因此长小数
-// 不再多付三遍扫描。
+// （尾数小于 2^53、无指数、小数位不超过 22）或非舍入缩放快速路径可处理时返回其值；否则字面量是
+// 合法 JSON，由调用方交给 strconv.ParseFloat。单次扫描同时完成原先由 parseNumberBytes 重复执行
+// 的语法校验。
 func (d *decoder) scanFloatField() (float64, []byte, bool, error) {
 	const maxMant = 1<<53 - 1
 	data := d.data
@@ -467,6 +467,12 @@ func (d *decoder) scanFloatField() (float64, []byte, bool, error) {
 	lit := data[start:i]
 	d.pos = i
 	if overflow || hasExp || frac > 22 {
+		// Long mantissas and exponent forms use unrounded scaling; only literals whose truncated
+		// tail can change the rounding still fall back to strconv. | 长尾数与指数形式使用非舍入
+		// 缩放；只有截断尾部可能改变舍入的字面量仍需回退到 strconv。
+		if f, ok := parseDecimalFloat(lit); ok {
+			return f, lit, true, nil
+		}
 		return 0, lit, false, nil
 	}
 	f := float64(mant)
