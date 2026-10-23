@@ -1,5 +1,5 @@
-github.com/shibingli/ydx/base64 v0.1.4 h1:NifYV0bHFYAh3/OTmMRXqqcZ8hP8tT4M9M6wmGjEsxI=
-github.com/shibingli/ydx/base64 v0.1.4/go.mod h1:o3NFhCwTbXB4OCwoALiQOdgnW620x9G802oB1tow7bs=
+github.com/shibingli/ydx/base64 v0.1.5 h1:isVJLe+/9ljhDZHiK7gCYZtsSIfDDf+h9ueSDWFjz/g=
+github.com/shibingli/ydx/base64 v0.1.5/go.mod h1:o3NFhCwTbXB4OCwoALiQOdgnW620x9G802oB1tow7bs=
 github.com/shibingli/ydx/errs v0.1.0 h1:eeCCiENvWt2pl0iPk2OOjGqWBiGCBp/yZp+hxzQpOBk=
 github.com/shibingli/ydx/errs v0.1.0/go.mod h1:TxxdX2XnyvkyoEPtwKjxZFythqeJIYZabjw8S+Mllso=
 github.com/shibingli/ydx/sysinfo v0.1.0 h1:CAA568Nu4rntF5uDl4PhgI1DRh4/iuRQYEePUrDyOeo=
