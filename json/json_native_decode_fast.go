@@ -178,21 +178,20 @@ func buildFastFieldDecoder(t reflect.Type) fastFieldDec {
 			if d.data[d.pos] == 'n' {
 				return d.literal("null")
 			}
-			if f, ok := d.parseShortFloatField(); ok {
-				*(*float64)(p) = f
-				return nil
-			}
-			b, err := d.parseNumberBytes()
+			f, lit, ok, err := d.scanFloatField()
 			if err != nil {
 				return err
 			}
-			if f, ok := parseShortDecimalFloat(b); ok {
+			if ok {
+				// The short path above already covers this envelope; this branch keeps the
+				// scanner's contract explicit for future size-dependent fast paths. |
+				// 上面的短路径已覆盖该范围；此分支只为让扫描器的契约对未来按尺寸分流保持显式。
 				*(*float64)(p) = f
 				return nil
 			}
-			n, err := strconv.ParseFloat(bytesString(b), 64)
+			n, err := strconv.ParseFloat(bytesString(lit), 64)
 			if err != nil {
-				return typeErr("number %s overflows %s | 数字 %s 超出 %s", bytesString(b), t, bytesString(b), t)
+				return typeErr("number %s overflows %s | 数字 %s 超出 %s", bytesString(lit), t, bytesString(lit), t)
 			}
 			*(*float64)(p) = n
 			return nil
@@ -387,75 +386,88 @@ func parseShortDecimalFloat(b []byte) (float64, bool) {
 	return f, true
 }
 
-// parseShortFloatField scans and converts a short decimal number directly from the input and, on
-// success, advances d.pos past it. It additionally verifies the JSON number grammar and the
-// delimiter that ends the literal; anything outside its envelope (exponents, long mantissas,
-// leading zeros, malformed fractions) is left untouched for the general number parser. |
-// parseShortFloatField 直接从输入扫描并转换短十进制数字，成功时推进 d.pos。它同时校验 JSON 数字
-// 语法与结束分隔符；超出其范围的情况（指数、过长尾数、前导零、畸形小数）保持原状，交给通用数字
-// 解析器。
-func (d *decoder) parseShortFloatField() (float64, bool) {
+// scanFloatField scans a JSON number starting at d.pos, advances d.pos past the literal, and
+// returns the value when the literal fits the exact short-decimal envelope (mantissa below 2^53,
+// no exponent, at most 22 fraction digits). Otherwise the literal is valid JSON and the caller
+// must convert it with strconv.ParseFloat. The single scan also validates the grammar that
+// parseNumberBytes used to re-check, so long decimals no longer pay three extra passes. |
+// scanFloatField 从 d.pos 起扫描一个 JSON 数字并推进 d.pos；字面量落在精确短十进制范围内
+// （尾数小于 2^53、无指数、小数位不超过 22）时返回其值；否则字面量是合法 JSON，由调用方交给
+// strconv.ParseFloat。单次扫描同时完成原先由 parseNumberBytes 重复执行的语法校验，因此长小数
+// 不再多付三遍扫描。
+func (d *decoder) scanFloatField() (float64, []byte, bool, error) {
+	const maxMant = 1<<53 - 1
 	data := d.data
-	i := d.pos
+	start := d.pos
+	i := start
 	neg := false
 	if i < len(data) && data[i] == '-' {
 		neg = true
 		i++
 	}
-	if i >= len(data) || data[i] < '0' || data[i] > '9' {
-		return 0, false
-	}
-	if data[i] == '0' && i+1 < len(data) && data[i+1] >= '0' && data[i+1] <= '9' {
-		return 0, false
-	}
-	const maxMant = 1<<53 - 1
+	digits := i
 	var mant uint64
-	for i < len(data) {
-		c := data[i]
-		if c < '0' || c > '9' {
-			break
+	overflow := false
+	intDigits := 0
+	for i < len(data) && data[i] >= '0' && data[i] <= '9' {
+		if !overflow {
+			if mant > maxMant/10 {
+				overflow = true
+			} else {
+				mant = mant*10 + uint64(data[i]-'0')
+				if mant > maxMant {
+					overflow = true
+				}
+			}
 		}
-		if mant > maxMant/10 {
-			return 0, false
-		}
-		mant = mant*10 + uint64(c-'0')
-		if mant > maxMant {
-			return 0, false
-		}
+		intDigits++
 		i++
+	}
+	if intDigits == 0 {
+		return 0, nil, false, syntaxErr("invalid number | 非法数字")
+	}
+	if data[digits] == '0' && intDigits > 1 {
+		return 0, nil, false, syntaxErr("invalid leading zero | 非法前导零")
 	}
 	frac := 0
 	if i < len(data) && data[i] == '.' {
 		i++
-		fracDigits := 0
-		for i < len(data) {
-			c := data[i]
-			if c < '0' || c > '9' {
-				break
-			}
-			if mant > maxMant/10 {
-				return 0, false
-			}
-			mant = mant*10 + uint64(c-'0')
-			if mant > maxMant {
-				return 0, false
+		fracStart := i
+		for i < len(data) && data[i] >= '0' && data[i] <= '9' {
+			if !overflow {
+				if mant > maxMant/10 {
+					overflow = true
+				} else {
+					mant = mant*10 + uint64(data[i]-'0')
+					if mant > maxMant {
+						overflow = true
+					}
+				}
 			}
 			frac++
-			fracDigits++
 			i++
 		}
-		if fracDigits == 0 || frac > 22 {
-			return 0, false
+		if i == fracStart {
+			return 0, nil, false, syntaxErr("invalid number fraction | 非法数字小数部分")
 		}
 	}
-	if i < len(data) {
-		switch data[i] {
-		case 'e', 'E':
-			return 0, false
-		case ' ', '\t', '\n', '\r', ',', '}', ']':
-		default:
-			return 0, false
+	hasExp := false
+	if i < len(data) && (data[i] == 'e' || data[i] == 'E') {
+		hasExp = true
+		i++
+		if i < len(data) && (data[i] == '+' || data[i] == '-') {
+			i++
 		}
+		expStart := i
+		i = scanDigits(data, i)
+		if i == expStart {
+			return 0, nil, false, syntaxErr("invalid number exponent | 非法数字指数")
+		}
+	}
+	lit := data[start:i]
+	d.pos = i
+	if overflow || hasExp || frac > 22 {
+		return 0, lit, false, nil
 	}
 	f := float64(mant)
 	if frac > 0 {
@@ -464,8 +476,7 @@ func (d *decoder) parseShortFloatField() (float64, bool) {
 	if neg {
 		f = -f
 	}
-	d.pos = i
-	return f, true
+	return f, lit, true, nil
 }
 
 // parseExactIntegerFloat converts a plain integer literal of at most 15 digits to float64.
