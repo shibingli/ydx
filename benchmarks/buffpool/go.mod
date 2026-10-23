@@ -3,6 +3,6 @@ module github.com/shibingli/ydx/benchmarks/buffpool
 go 1.27.2
 
 require (
-	github.com/shibingli/ydx/buffpool v0.1.0
+	github.com/shibingli/ydx/buffpool v0.1.3
 	github.com/valyala/bytebufferpool v1.0.0
 )
