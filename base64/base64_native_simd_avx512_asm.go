@@ -175,3 +175,94 @@ func decodeSIMD512VBMI2(dst, src []byte, url, raw bool) (int, int) {
 
 //go:noescape
 func decodeAVX512VBMI2Asm(dst, src []byte, c *vbmiDecConsts) int
+
+// bwDecConsts holds the lane-local AVX-512BW decode tables. | bwDecConsts 保存按 128 位通道局部
+// 查表的 AVX-512BW 解码常量。
+type bwDecConsts struct {
+	hiMask, loMask, loLUT, hiLUT, rollLUT [64]byte
+	mul, pack, dwordIdx                   [64]byte
+	eqChar, eqVal                         [64]byte
+}
+
+var bwDecStd bwDecConsts
+
+func init() {
+	bwDecStd = makeBWDecConsts()
+	if !forceScalar && hasAVX512BW() {
+		installDecode(2, decodeSIMD512BW)
+	}
+}
+
+func makeBWDecConsts() bwDecConsts {
+	var c bwDecConsts
+	var loBase, hiBase [16]int8
+	rollBase := [16]int8{2: 16, 3: 4, 4: -65, 5: -65, 6: -71, 7: -71}
+	for hi := 0; hi < 16; hi++ {
+		hiBase[hi] = -128
+		if hi >= 2 && hi <= 7 {
+			hiBase[hi] = int8(1 << uint(hi-2))
+		}
+	}
+	for lo := 0; lo < 16; lo++ {
+		v := int8(-128)
+		for hi := 2; hi <= 7; hi++ {
+			if !alphabetHas(stdAlpha, byte(hi<<4|lo)) {
+				v |= int8(1 << uint(hi-2))
+			}
+		}
+		loBase[lo] = v
+	}
+	pack16 := [16]byte{2, 1, 0, 6, 5, 4, 10, 9, 8, 14, 13, 12, 15, 15, 15, 15}
+	dwords := [16]uint32{0, 1, 2, 4, 5, 6, 8, 9, 10, 12, 13, 14, 14, 14, 14, 14}
+	for j := 0; j < 64; j++ {
+		c.hiMask[j], c.loMask[j] = 0x0f, 0x0f
+		c.loLUT[j] = byte(loBase[j&15])
+		c.hiLUT[j] = byte(hiBase[j&15])
+		c.rollLUT[j] = byte(rollBase[j&15])
+		if j&1 == 0 {
+			c.mul[j] = 64
+		} else {
+			c.mul[j] = 1
+		}
+		c.pack[j] = pack16[j&15]
+		c.eqChar[j], c.eqVal[j] = '+', 62
+	}
+	for j, v := range dwords {
+		binary.LittleEndian.PutUint32(c.dwordIdx[j*4:], v)
+	}
+	return c
+}
+
+// hasAVX512BW reports whether AVX-512F and AVX-512BW are usable. | hasAVX512BW 报告 AVX-512F 与
+// AVX-512BW 是否可用。
+func hasAVX512BW() bool {
+	_, _, c1, _ := cpuID(1, 0)
+	const osxsave, avx = 1 << 27, 1 << 28
+	if c1&(osxsave|avx) != osxsave|avx {
+		return false
+	}
+	if xgetbv(0)&0xE6 != 0xE6 {
+		return false
+	}
+	_, b7, _, _ := cpuID(7, 0)
+	const f, bw = 1 << 16, 1 << 30
+	return b7&(f|bw) == f|bw
+}
+
+// decodeSIMD512BW decodes large standard-alphabet inputs with the 512-bit lane-local LUT kernel;
+// smaller inputs and URL inputs stay on AVX2, whose fused kernel wins there. |
+// decodeSIMD512BW 用 512 位按通道局部查表的内核解码较大的标准字母表输入；较小输入与 URL 输入
+// 继续走 AVX2 融合内核。
+func decodeSIMD512BW(dst, src []byte, url, raw bool) (int, int) {
+	if url || len(src) < 4096 || len(src) < 64 || len(dst) < 48 {
+		return decodeSIMDAsm(dst, src, url, raw)
+	}
+	n := decodeAVX512BWAsm(dst, src, &bwDecStd)
+	if n == 0 {
+		return decodeSIMDAsm(dst, src, url, raw)
+	}
+	return n, n / 64 * 48
+}
+
+//go:noescape
+func decodeAVX512BWAsm(dst, src []byte, c *bwDecConsts) int
