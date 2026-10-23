@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
+	"sync"
 	"unsafe"
 
 	"github.com/shibingli/ydx/base64"
@@ -150,8 +151,15 @@ func buildKindDecoder(t reflect.Type) decodeFunc {
 func buildSliceDecoder(t reflect.Type) decodeFunc {
 	elem := lazyDecoder(t.Elem())
 	if info := fastStructDecFor(t.Elem()); info != nil {
+		var pool sync.Pool
+		pool.New = func() any {
+			return &structBufHolder{slice: reflect.MakeSlice(t, 0, 64)}
+		}
 		return func(d *decoder, v reflect.Value) error {
 			if v.CanAddr() {
+				if v.IsNil() {
+					return decodeFastStructSlicePooled(d, v, t, info, &pool)
+				}
 				return decodeFastStructSlice(d, v, t, info)
 			}
 			return decodeSlice(d, v, t, elem)
@@ -159,6 +167,172 @@ func buildSliceDecoder(t reflect.Type) decodeFunc {
 	}
 	return func(d *decoder, v reflect.Value) error {
 		return decodeSlice(d, v, t, elem)
+	}
+}
+
+// structBufHolder is a pooled scratch slice whose length is changed through its own header, so no
+// reflect.Value slice header is allocated per element or per call. | structBufHolder 是池化的暂存
+// 切片，长度经自身头部调整，因此不会按元素或按调用分配 reflect.Value 切片头。
+type structBufHolder struct {
+	hdr   unsafeSliceHeader
+	slice reflect.Value
+}
+
+// reset prepares the holder for a decode, seeding the header from the typed backing slice on first
+// use. | reset 为一次解码准备持有者，首次使用时用带类型的后备切片填充头部。
+func (b *structBufHolder) reset() {
+	if b.hdr.data == nil {
+		b.hdr.data = b.slice.UnsafePointer()
+		b.hdr.cap = b.slice.Cap()
+	}
+	b.hdr.len = 0
+}
+
+// value returns an addressable []T view over the holder's header. | value 返回持有者头部上的可寻址
+// []T 视图。
+func (b *structBufHolder) value(t reflect.Type) reflect.Value {
+	return reflect.NewAt(t, unsafe.Pointer(&b.hdr)).Elem()
+}
+
+// failStructBuf copies the decoded prefix into v, clears the scratch buffer, returns its holder to
+// the pool, and returns err. | failStructBuf 把已解码前缀复制进 v，清空暂存缓冲、归还其持有者并
+// 返回 err。
+func failStructBuf(v reflect.Value, t reflect.Type, pool *sync.Pool, b *structBufHolder, count int, err error) error {
+	if count == 0 {
+		v.Set(reflect.MakeSlice(t, 0, 0))
+	} else {
+		b.hdr.len = count
+		src := b.value(t)
+		v.Grow(count)
+		v.SetLen(count)
+		reflect.Copy(v, src)
+		src.Clear()
+	}
+	b.hdr.len = 0
+	pool.Put(b)
+	return err
+}
+
+// decodeFastStructSlicePooled decodes into a reusable scratch buffer and allocates the destination
+// exactly once at the end, so the result has no excess capacity and the per-call allocation count
+// matches its true size. | decodeFastStructSlicePooled 解码到可复用暂存缓冲，结束时只分配一次精确
+// 大小的目标切片，使结果没有多余容量、每次分配次数与真实大小一致。
+func decodeFastStructSlicePooled(d *decoder, v reflect.Value, t reflect.Type, info *fastStructDecInfo, pool *sync.Pool) error {
+	b := pool.Get().(*structBufHolder)
+	b.reset()
+	if b.hdr.cap < 4 {
+		b.slice = reflect.MakeSlice(t, 4, 4)
+		b.hdr = unsafeSliceHeader{data: b.slice.UnsafePointer(), cap: 4}
+	}
+	if d.data[d.pos] == 'n' {
+		if err := d.literal("null"); err != nil {
+			pool.Put(b)
+			return err
+		}
+		v.SetZero()
+		pool.Put(b)
+		return nil
+	}
+	if err := d.enter(); err != nil {
+		pool.Put(b)
+		return err
+	}
+	if d.data[d.pos] != '[' {
+		pool.Put(b)
+		return typeErr("cannot unmarshal non-array into %s | 无法把非数组解析进 %s", t, t)
+	}
+	d.skipLen = false
+	d.pos++
+	d.skipSpace()
+	if d.pos < len(d.data) && d.data[d.pos] == ']' {
+		d.pos++
+		v.Set(reflect.MakeSlice(t, 0, 0))
+		pool.Put(b)
+		d.leave()
+		return nil
+	}
+	elemSize := info.size
+	data := b.hdr.data
+	capacity := b.hdr.cap
+	n := 0
+	started := false
+	for {
+		if n == capacity {
+			newCap := capacity * 2
+			if newCap < 4 {
+				newCap = 4
+			}
+			if newCap <= capacity {
+				newCap = n + 1
+			}
+			nv := reflect.MakeSlice(t, newCap, newCap)
+			b.hdr.len = n
+			reflect.Copy(nv, b.value(t))
+			b.slice = nv
+			b.hdr = unsafeSliceHeader{data: nv.UnsafePointer(), cap: newCap}
+			data = b.hdr.data
+			capacity = newCap
+		}
+		if d.pos >= len(d.data) {
+			return failStructBuf(v, t, pool, b, n, syntaxErr("unexpected end of array | 数组意外结束"))
+		}
+		started = true
+		if err := info.dec(d, unsafe.Add(data, uintptr(n)*elemSize)); err != nil {
+			return failStructBuf(v, t, pool, b, n+1, err)
+		}
+		started = false
+		n++
+		if d.pos < len(d.data) {
+			switch d.data[d.pos] {
+			case ',':
+				d.pos++
+				d.skipSpace()
+				continue
+			case ']':
+				d.pos++
+				b.hdr.len = n
+				src := b.value(t)
+				v.Grow(n)
+				v.SetLen(n)
+				reflect.Copy(v, src)
+				src.Clear()
+				b.hdr.len = 0
+				pool.Put(b)
+				d.leave()
+				return nil
+			}
+		}
+		d.skipSpace()
+		if d.pos >= len(d.data) {
+			count := n
+			if started {
+				count++
+			}
+			return failStructBuf(v, t, pool, b, count, syntaxErr("unexpected end of array | 数组意外结束"))
+		}
+		switch d.data[d.pos] {
+		case ',':
+			d.pos++
+			d.skipSpace()
+		case ']':
+			d.pos++
+			b.hdr.len = n
+			src := b.value(t)
+			v.Grow(n)
+			v.SetLen(n)
+			reflect.Copy(v, src)
+			src.Clear()
+			b.hdr.len = 0
+			pool.Put(b)
+			d.leave()
+			return nil
+		default:
+			count := n
+			if started {
+				count++
+			}
+			return failStructBuf(v, t, pool, b, count, syntaxErr("expected ',' or ']' in array | 数组中期望 ',' 或 ']'"))
+		}
 	}
 }
 

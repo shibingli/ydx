@@ -177,7 +177,8 @@ func (d *decoder) unmarshal(rv reflect.Value) error {
 		return syntaxErr("unexpected end of JSON input | JSON 输入意外结束")
 	}
 	target := rv.Elem()
-	if target.Kind() == reflect.Slice && target.IsNil() && d.data[d.pos] == '[' {
+	if target.Kind() == reflect.Slice && target.IsNil() && d.data[d.pos] == '[' &&
+		fastStructDecFor(target.Type().Elem()) == nil {
 		// Bound the guess by bytes, not by element count: guessing 1<<20 elements of a 32 KiB
 		// struct would allocate ~32 GiB before parsing a single byte. | 以字节数而不是元素个数限定预分配：
 		// 对 32 KiB 的结构体猜 1<<20 个元素，会在解析第一个字节前分配约 32 GiB。
