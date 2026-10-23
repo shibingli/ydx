@@ -8,6 +8,9 @@ func scanStringBodySSE2(data []byte, start int) int
 //go:noescape
 func scanStringBodyAVX2(data []byte, start int) int
 
+//go:noescape
+func scanStringBodyAVX512(data []byte, start int) int
+
 // scanStringBody scans full blocks with the highest available kernel: AVX2 when the CPU and OS
 // expose it, otherwise the SSE2 baseline. Both are hand-written assembly; the portable tail
 // finishes the block that contains a quote, backslash, control byte or non-ASCII byte. |
@@ -16,9 +19,12 @@ func scanStringBodyAVX2(data []byte, start int) int
 func scanStringBody(data []byte, start int) (end int, slow bool, nonASCII bool) {
 	i := start
 	if n := len(data) - i; n >= 16 {
-		if useAVX2 && n >= 32 {
+		switch {
+		case useAVX512BW && n >= 64:
+			i = scanStringBodyAVX512(data, start)
+		case useAVX2 && n >= 32:
 			i = scanStringBodyAVX2(data, start)
-		} else {
+		default:
 			i = scanStringBodySSE2(data, start)
 		}
 	}
