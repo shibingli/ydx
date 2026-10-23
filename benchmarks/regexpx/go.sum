@@ -4,7 +4,7 @@ github.com/grafana/regexp v0.0.0-20250905093917-f7b3be9d1853 h1:cLN4IBkmkYZNnk7E
 github.com/grafana/regexp v0.0.0-20250905093917-f7b3be9d1853/go.mod h1:+JKpmjMGhpgPL+rXZ5nsZieVzvarn86asRlBg4uNGnk=
 github.com/shibingli/ydx/errs v0.1.3 h1:LkoQ8tRKo/7GqomJNOzOLYn7W/RLNquhRyz9STAtBNQ=
 github.com/shibingli/ydx/errs v0.1.3/go.mod h1:TxxdX2XnyvkyoEPtwKjxZFythqeJIYZabjw8S+Mllso=
-github.com/shibingli/ydx/regexpx v0.1.5 h1:Ra276q5Q/wk0jP/o43/jShaeuaF4HR0wFwZuzzFCU2c=
+github.com/shibingli/ydx/regexpx v0.1.5 h1:LV4v5zgka2NoCYKKv7RoESBRJGTryZ6mJKLPKGlnO2Q=
 github.com/shibingli/ydx/regexpx v0.1.5/go.mod h1:CYkBoGeT/WUjHX95fSUY7s6BoHGd9Zgd87eCcZU3fBc=
 github.com/wasilibs/go-re2 v1.13.0 h1:FImemHDWIeNRuDq/o8Vvx0seJ2k7ofloHLt4z0V+eR0=
 github.com/wasilibs/go-re2 v1.13.0/go.mod h1:E/UzEXX4cjlurXHJwfzKh46OhfQMLmOM0oG0ljyDL/8=
