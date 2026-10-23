@@ -486,16 +486,42 @@ func buildMapEncoder(t reflect.Type) encodeFunc {
 // fastStructInfo describes a struct whose every field has a direct-memory encoder.
 // fastStructInfo 描述所有字段都可直接按内存编码的结构体。
 type fastStructInfo struct {
-	enc      func(*encoder, unsafe.Pointer) error
+	enc func(*encoder, unsafe.Pointer) error
+	// encBuf encodes one struct into a local buffer and returns it. It writes e.buf only once,
+	// for fields that still need the encoder, instead of after every append. |
+	// encBuf 把单个结构体编码进局部缓冲并返回；只在仍需 encoder 的字段上回写 e.buf，
+	// 而不是每次 append 都回写。
+	encBuf   func(*encoder, []byte, unsafe.Pointer) ([]byte, error)
 	encSlice func(*encoder, []byte, unsafe.Pointer, int) ([]byte, error)
 	size     uintptr
 }
 
-var fastStructCache sync.Map
+var (
+	fastStructCache sync.Map
+	fastStructLast  atomic.Pointer[fastStructEntry]
+)
+
+// fastStructEntry caches the most recently resolved fast struct plan, including a nil decision,
+// so repeated Marshal calls of one type avoid hashing the reflect.Type through sync.Map. |
+// fastStructEntry 缓存最近解析的快速结构体计划（含 nil 判定），使同一类型的连续 Marshal 不必每次
+// 经 sync.Map 哈希 reflect.Type。
+type fastStructEntry struct {
+	typ  reflect.Type
+	info *fastStructInfo
+}
 
 // fastStructFor returns the fast struct encoder for t, if one was built. | fastStructFor 返回 t 的快速
 // 结构体编码器（若已构建）。
 func fastStructFor(t reflect.Type) *fastStructInfo {
+	if e := fastStructLast.Load(); e != nil && e.typ == t {
+		return e.info
+	}
+	info := lookupFastStruct(t)
+	fastStructLast.Store(&fastStructEntry{typ: t, info: info})
+	return info
+}
+
+func lookupFastStruct(t reflect.Type) *fastStructInfo {
 	if v, ok := fastStructCache.Load(t); ok {
 		return v.(*fastStructInfo)
 	}
@@ -692,100 +718,115 @@ func buildStructEncoder(t reflect.Type) encodeFunc {
 		e.buf = append(e.buf, '}')
 		return nil
 	}
-	// encSlice encodes a whole []T in one pass with a local buffer. Writing back
-	// e.buf once per slice instead of once per append removes the write barriers
-	// that dominate multi-core Marshal profiles. | encSlice 用局部缓冲一次编码整个
-	// []T：每个切片只回写一次 e.buf，而不是每次 append 都回写，从而消除多核 Marshal
-	// 剖析中的主要写屏障。
+	// encBody encodes one struct into a local buffer and returns it. Writing back e.buf once
+	// instead of once per append removes the write barriers that dominate multi-core Marshal
+	// profiles. A nil e is valid for plans whose fields need neither a timestamp cache nor a
+	// fallback encoder. | encBody 把单个结构体编码进局部缓冲并返回：只回写一次 e.buf，而不是
+	// 每次 append 都回写，从而消除多核 Marshal 剖析中的主要写屏障。字段既不需要时间戳缓存、
+	// 也不需要回退编码器时，e 可以为 nil。
+	var encBody func([]byte, unsafe.Pointer, *encoder, bool) ([]byte, error)
+	var encBuf func(*encoder, []byte, unsafe.Pointer) ([]byte, error)
+	// encSlice encodes a whole []T by repeating encBody with one write-back per slice. |
+	// encSlice 通过重复调用 encBody 编码整个 []T，每个切片只回写一次。
 	var encSlice func(*encoder, []byte, unsafe.Pointer, int) ([]byte, error)
 	if allFast {
 		size := t.Size()
+		encBody = func(buf []byte, base unsafe.Pointer, e *encoder, escapeHTML bool) ([]byte, error) {
+			buf = append(buf, '{')
+			for j := range list {
+				f := &list[j]
+				p := unsafe.Add(base, f.offset)
+				if f.keyFixed && cap(buf)-len(buf) >= len(f.keyPad) {
+					dst := unsafe.Add(unsafe.Pointer(unsafe.SliceData(buf)), len(buf))
+					*(*[16]byte)(dst) = f.keyPad
+					buf = buf[:len(buf)+len(f.fastKey)]
+				} else {
+					buf = append(buf, f.fastKey...)
+				}
+				switch f.kind {
+				case fieldKindString:
+					buf = appendJSONString(buf, *(*string)(p), escapeHTML)
+				case fieldKindBool:
+					buf = strconv.AppendBool(buf, *(*bool)(p))
+				case fieldKindInt:
+					buf = appendIntFast(buf, int64(*(*int)(p)))
+				case fieldKindInt8:
+					buf = appendIntFast(buf, int64(*(*int8)(p)))
+				case fieldKindInt16:
+					buf = appendIntFast(buf, int64(*(*int16)(p)))
+				case fieldKindInt32:
+					buf = appendIntFast(buf, int64(*(*int32)(p)))
+				case fieldKindInt64:
+					buf = appendIntFast(buf, *(*int64)(p))
+				case fieldKindUint:
+					buf = appendUintFast(buf, uint64(*(*uint)(p)))
+				case fieldKindUint8:
+					buf = appendUintFast(buf, uint64(*(*uint8)(p)))
+				case fieldKindUint16:
+					buf = appendUintFast(buf, uint64(*(*uint16)(p)))
+				case fieldKindUint32:
+					buf = appendUintFast(buf, uint64(*(*uint32)(p)))
+				case fieldKindUint64:
+					buf = appendUintFast(buf, *(*uint64)(p))
+				case fieldKindUintptr:
+					buf = appendUintFast(buf, uint64(*(*uintptr)(p)))
+				case fieldKindFloat32:
+					var err error
+					buf, err = appendFloat(buf, float64(*(*float32)(p)), 32)
+					if err != nil {
+						return buf, err
+					}
+				case fieldKindFloat64:
+					var err error
+					buf, err = appendFloat(buf, *(*float64)(p), 64)
+					if err != nil {
+						return buf, err
+					}
+				default:
+					switch f.typ {
+					case timeType:
+						var err error
+						buf, err = appendTimeValue(buf, e, (*time.Time)(p))
+						if err != nil {
+							return buf, err
+						}
+					case stringSliceType:
+						buf = appendStringSlice(buf, *(*[]string)(p), escapeHTML)
+					default:
+						if f.fast == nil {
+							return buf, errUnsupported
+						}
+						e.buf = buf
+						err := f.fast(e, p)
+						buf = e.buf
+						if err != nil {
+							return buf, err
+						}
+					}
+				}
+			}
+			buf = append(buf, '}')
+			return buf, nil
+		}
+		encBuf = func(e *encoder, buf []byte, base unsafe.Pointer) ([]byte, error) {
+			return encBody(buf, base, e, e.escapeHTML)
+		}
 		encSlice = func(e *encoder, buf []byte, base unsafe.Pointer, n int) ([]byte, error) {
 			for i := 0; i < n; i++ {
 				if i > 0 {
 					buf = append(buf, ',')
 				}
-				buf = append(buf, '{')
-				elem := unsafe.Add(base, uintptr(i)*size)
-				for j := range list {
-					f := &list[j]
-					p := unsafe.Add(elem, f.offset)
-					if f.keyFixed && cap(buf)-len(buf) >= len(f.keyPad) {
-						dst := unsafe.Add(unsafe.Pointer(unsafe.SliceData(buf)), len(buf))
-						*(*[16]byte)(dst) = f.keyPad
-						buf = buf[:len(buf)+len(f.fastKey)]
-					} else {
-						buf = append(buf, f.fastKey...)
-					}
-					switch f.kind {
-					case fieldKindString:
-						buf = appendJSONString(buf, *(*string)(p), e.escapeHTML)
-					case fieldKindBool:
-						buf = strconv.AppendBool(buf, *(*bool)(p))
-					case fieldKindInt:
-						buf = appendIntFast(buf, int64(*(*int)(p)))
-					case fieldKindInt8:
-						buf = appendIntFast(buf, int64(*(*int8)(p)))
-					case fieldKindInt16:
-						buf = appendIntFast(buf, int64(*(*int16)(p)))
-					case fieldKindInt32:
-						buf = appendIntFast(buf, int64(*(*int32)(p)))
-					case fieldKindInt64:
-						buf = appendIntFast(buf, *(*int64)(p))
-					case fieldKindUint:
-						buf = appendUintFast(buf, uint64(*(*uint)(p)))
-					case fieldKindUint8:
-						buf = appendUintFast(buf, uint64(*(*uint8)(p)))
-					case fieldKindUint16:
-						buf = appendUintFast(buf, uint64(*(*uint16)(p)))
-					case fieldKindUint32:
-						buf = appendUintFast(buf, uint64(*(*uint32)(p)))
-					case fieldKindUint64:
-						buf = appendUintFast(buf, *(*uint64)(p))
-					case fieldKindUintptr:
-						buf = appendUintFast(buf, uint64(*(*uintptr)(p)))
-					case fieldKindFloat32:
-						var err error
-						buf, err = appendFloat(buf, float64(*(*float32)(p)), 32)
-						if err != nil {
-							return nil, err
-						}
-					case fieldKindFloat64:
-						var err error
-						buf, err = appendFloat(buf, *(*float64)(p), 64)
-						if err != nil {
-							return nil, err
-						}
-					default:
-						switch f.typ {
-						case timeType:
-							var err error
-							buf, err = appendTimeValue(buf, e, (*time.Time)(p))
-							if err != nil {
-								return nil, err
-							}
-						case stringSliceType:
-							buf = appendStringSlice(buf, *(*[]string)(p), e.escapeHTML)
-						default:
-							if f.fast == nil {
-								return nil, errUnsupported
-							}
-							e.buf = buf
-							err := f.fast(e, p)
-							buf = e.buf
-							if err != nil {
-								return nil, err
-							}
-						}
-					}
+				var err error
+				buf, err = encBody(buf, unsafe.Add(base, uintptr(i)*size), e, e.escapeHTML)
+				if err != nil {
+					return buf, err
 				}
-				buf = append(buf, '}')
 			}
 			return buf, nil
 		}
 	}
 	if allFast {
-		fastStructCache.Store(t, &fastStructInfo{enc: fastEnc, encSlice: encSlice, size: t.Size()})
+		fastStructCache.Store(t, &fastStructInfo{enc: fastEnc, encBuf: encBuf, encSlice: encSlice, size: t.Size()})
 	}
 	return func(e *encoder, v reflect.Value) error {
 		if allFast && v.CanAddr() {

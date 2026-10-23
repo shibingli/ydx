@@ -127,8 +127,21 @@ func Marshal(v any) ([]byte, error) {
 	// 的可寻址语义。
 	if rv.IsValid() && rv.Kind() == reflect.Struct && !rv.CanAddr() {
 		if info := fastStructFor(rv.Type()); info != nil {
+			base := (*emptyInterface)(unsafe.Pointer(&v)).data
 			e := getEncoder(true)
-			if err := info.enc(e, (*emptyInterface)(unsafe.Pointer(&v)).data); err != nil {
+			if info.encBuf != nil {
+				buf, err := info.encBuf(e, e.buf, base)
+				e.buf = buf
+				if err != nil {
+					putEncoder(e)
+					return nil, err
+				}
+				out := make([]byte, len(buf))
+				copy(out, buf)
+				putEncoder(e)
+				return out, nil
+			}
+			if err := info.enc(e, base); err != nil {
 				putEncoder(e)
 				return nil, err
 			}

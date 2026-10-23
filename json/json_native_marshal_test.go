@@ -82,8 +82,12 @@ func TestMarshalNonAddressableStructFastPath(t *testing.T) {
 		Tags: []string{"one", "two", "three"},
 		When: when,
 	}
-	if info := fastStructFor(reflect.TypeOf(value)); info == nil {
+	info := fastStructFor(reflect.TypeOf(value))
+	if info == nil {
 		t.Fatal("fast struct encoder is unavailable for the fixture | 测试载荷没有可用的快速结构体编码器")
+	}
+	if info.encBuf == nil {
+		t.Fatal("fast struct buffer encoder is unavailable for the fixture | 测试载荷没有可用的快速结构体缓冲编码器")
 	}
 
 	got, err := Marshal(value)
