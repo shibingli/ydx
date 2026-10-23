@@ -1,11 +1,13 @@
 package log
 
 import (
+	"encoding/binary"
 	"math"
 	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
+	"unsafe"
 
 	"github.com/shibingli/ydx/base64"
 	"github.com/shibingli/ydx/json"
@@ -23,12 +25,12 @@ const hexDigits = "0123456789abcdef"
 // The pid and host identify the emitting process, which makes records from several processes | pid 与 host 标识产生该记录的进程，使多个进程写同一目的地时的记录
 // sharing one destination attributable; both are captured once in New, so this stays allocation-free. | 可以归属到具体进程；两者都在 New 时取一次，因此这里仍保持零分配。
 // Persistent fields (accumulated by With) are written before the fields of the current call. | 持久字段（With 累积）先于本次调用的字段输出。
-func appendJSONRecord(dst []byte, l *Logger, lvl Level, t time.Time, msg, caller string, extra []Field) []byte {
+func appendJSONRecord(dst []byte, cache *buffer, l *Logger, lvl Level, t time.Time, msg, caller string, extra []Field) []byte {
 	dst = append(dst, `{"level":`...)
 	dst = appendJSONLevel(dst, lvl)
 	dst = append(dst, `,"ts":"`...)
 	// The time layout is controlled by the caller and inlined directly (the Options.TimeFormat documentation already restricts layout contents). | 时间布局由使用方控制，直接内联（Options.TimeFormat 文档已限制布局内容）。
-	dst = appendTime(dst, t, l.timeFormat)
+	dst = cache.appendRecordTime(dst, t, l.timeFormat)
 	dst = append(dst, '"')
 	if l.serviceJSON != "" {
 		dst = append(dst, l.serviceJSON...)
@@ -50,6 +52,28 @@ func appendJSONRecord(dst []byte, l *Logger, lvl Level, t time.Time, msg, caller
 	dst = appendJSONFields(dst, l.fields, l.timeFormat)
 	dst = appendJSONFields(dst, extra, l.timeFormat)
 	return append(dst, '}', '\n')
+}
+
+// appendRecordTime appends the record timestamp, reusing the buffer's cached text when the same
+// millisecond and default layout are already present. Custom layouts and console timestamps fall
+// back to the general formatter. | appendRecordTime 追加记录时间戳；若缓冲已缓存同一毫秒与默认
+// 布局的文本则直接复用。自定义布局与 console 时间戳回退到通用格式化器。
+func (b *buffer) appendRecordTime(dst []byte, t time.Time, layout string) []byte {
+	if layout != defaultJSONTimeFormat {
+		return appendTime(dst, t, layout)
+	}
+	ms := t.UnixMilli()
+	if b.tsLen != 0 && b.tsMillis == ms {
+		return append(dst, b.tsBuf[:b.tsLen]...)
+	}
+	start := len(dst)
+	dst = appendUTCMillis(dst, t)
+	if n := len(dst) - start; n > 0 && n <= len(b.tsBuf) {
+		copy(b.tsBuf[:], dst[start:])
+		b.tsMillis = ms
+		b.tsLen = uint8(n)
+	}
+	return dst
 }
 
 // levelJSON holds the pre-escaped JSON form of every valid level, indexed by Level+1. | levelJSON 保存每个合法级别的预转义 JSON 形式，下标为 Level+1。
@@ -134,13 +158,13 @@ func appendJSONValue(dst []byte, f *Field, timeFormat string) []byte {
 		return appendJSONMillis(dst, int64(f.num))
 	case BytesType:
 		dst = append(dst, '"')
-		dst = base64.StdEncoding.AppendEncode(dst, f.bs)
+		dst = base64.StdEncoding.AppendEncode(dst, unsafe.Slice(unsafe.StringData(f.str), len(f.str)))
 		return append(dst, '"')
 	case AnyType:
 		return appendJSONAny(dst, f.obj)
 	case RawType:
 		// The caller guarantees that the fragment is valid JSON. | 调用方保证片段是合法 JSON。
-		return append(dst, f.bs...)
+		return append(dst, f.str...)
 	}
 	return append(dst, "null"...)
 }
@@ -215,6 +239,16 @@ func appendJSONAny(dst []byte, v any) []byte {
 // Escapes '"', '\\' and all C0 control characters (\b \f \n \r \t use the short escapes, the rest use \u00XX); | 转义 '"'、'\\' 与全部 C0 控制字符（\b \f \n \r \t 用短转义，其余用 \u00XX）；
 // The input is assumed to be valid UTF-8 and multi-byte sequences pass through verbatim, so Chinese text is never converted to \uXXXX. | 输入假定为合法 UTF-8，多字节序列原样透传，因此中文不会被转成 \uXXXX。
 func appendJSONString(dst []byte, s string) []byte {
+	// Log keys and most values are printable ASCII without quotes or backslashes. Checking eight
+	// bytes at a time turns the common case into one scan plus a single copy, instead of the
+	// per-byte escape loop below. Non-ASCII text keeps the original validated path. | 日志键与多数
+	// 值都是不含引号或反斜杠的可打印 ASCII。每次检查八个字节，使常见情形只需一次扫描加一次复制，
+	// 而不是下面的逐字节转义循环；非 ASCII 文本仍走原有的校验路径。
+	if jsonCleanString(s) {
+		dst = append(dst, '"')
+		dst = append(dst, s...)
+		return append(dst, '"')
+	}
 	// A single invalid byte would make the whole record invalid JSON and get it dropped by the
 	// collector — exactly the incident record an operator needs. Replace invalid sequences with
 	// U+FFFD, matching encoding/json. | 一个非法字节就会让整条记录成为非法 JSON 并被采集器丢弃——
@@ -267,4 +301,43 @@ func appendJSONString(dst []byte, s string) []byte {
 	}
 	dst = append(dst, s[start:]...)
 	return append(dst, '"')
+}
+
+// jsonCleanString reports whether s consists only of printable ASCII bytes that JSON strings can
+// contain verbatim. It scans eight bytes per iteration and bails out on the first non-ASCII byte,
+// so non-ASCII strings fall back to appendJSONString's validating path. | jsonCleanString 报告 s
+// 是否只由可原样写入 JSON 字符串的可打印 ASCII 字节组成。它每轮扫描八个字节，遇到第一个非 ASCII
+// 字节即退出，因此非 ASCII 字符串会回退到 appendJSONString 的校验路径。
+func jsonCleanString(s string) bool {
+	if len(s) == 0 {
+		return true
+	}
+	b := unsafe.Slice(unsafe.StringData(s), len(s))
+	i := 0
+	for ; i+8 <= len(b); i += 8 {
+		w := binary.LittleEndian.Uint64(b[i:])
+		// Any high bit means non-ASCII; any byte below 0x20, '"' or '\\' needs escaping. | 任一
+		// 高位表示非 ASCII；任一小于 0x20 的字节、引号或反斜杠都需要转义。
+		if w&0x8080808080808080 != 0 {
+			return false
+		}
+		if (w-0x2020202020202020)&^w&0x8080808080808080 != 0 {
+			return false
+		}
+		if hasZeroByte(w^0x2222222222222222) || hasZeroByte(w^0x5c5c5c5c5c5c5c5c) {
+			return false
+		}
+	}
+	for ; i < len(b); i++ {
+		c := b[i]
+		if c < 0x20 || c == '"' || c == '\\' || c >= 0x80 {
+			return false
+		}
+	}
+	return true
+}
+
+// hasZeroByte reports whether w contains a zero byte. | hasZeroByte 报告 w 中是否含有零字节。
+func hasZeroByte(w uint64) bool {
+	return (w-0x0101010101010101)&^w&0x8080808080808080 != 0
 }

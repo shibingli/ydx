@@ -13,6 +13,14 @@ const (
 // buffer is a single-use byte buffer used for log encoding and reused via sync.Pool. | buffer 是日志编码使用的一次性字节缓冲，由 sync.Pool 复用。
 type buffer struct {
 	buf []byte
+	// tsMillis, tsLen and tsBuf cache the last default-JSON timestamp formatted into this
+	// buffer. Reusing a pooled buffer usually happens within the same millisecond, so most
+	// records copy the 24-byte timestamp instead of recomputing the calendar fields. | tsMillis、
+	// tsLen 与 tsBuf 缓存该缓冲最近一次生成的默认 JSON 时间戳。池化缓冲通常在同一毫秒内被复用，
+	// 因此多数记录只需复制 24 字节时间戳，无需重算日历字段。
+	tsMillis int64
+	tsLen    uint8
+	tsBuf    [24]byte
 }
 
 // bufPool reuses encoding buffers. All Loggers (including child Loggers derived by With/Named) share this pool, | bufPool 复用编码缓冲。所有 Logger（含 With/Named 派生出的子 Logger）共享该池，

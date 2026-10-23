@@ -65,7 +65,7 @@ func appendConsoleField(dst []byte, f *Field, timeFormat string) []byte {
 			return dst
 		}
 		dst = append(dst, ' ')
-		return append(dst, f.bs...)
+		return append(dst, f.str...)
 	}
 	dst = append(dst, ' ')
 	dst = appendConsoleString(dst, f.Key)

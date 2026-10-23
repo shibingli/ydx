@@ -4,6 +4,7 @@ import (
 	"errors"
 	"math"
 	"time"
+	"unsafe"
 )
 
 // FieldType identifies the kind of value a Field carries, letting the encoder choose a reflection-free encoding branch. | FieldType 标识 Field 承载的值类型，供编码器选择零反射的编码分支。
@@ -57,10 +58,12 @@ type Field struct {
 	obj any
 	// Key is the field name; when it is empty and the type is RawType it means a keyless fragment injection. | Key 是字段名；为空且类型为 RawType 时表示无键的片段注入。
 	Key string
-	// str carries the text of StringType and ErrorType. | str 承载 StringType 与 ErrorType 的文本。
+	// str carries the text of StringType and ErrorType, plus the zero-copy payload of BytesType
+	// and RawType. Storing byte payloads as a string keeps Field at 64 bytes instead of 88,
+	// which shrinks every variadic call and the persistent field slice. | str 承载 StringType 与
+	// ErrorType 的文本，以及 BytesType 与 RawType 的零拷贝载荷。把字节载荷存为字符串使 Field
+	// 保持 64 字节而非 88 字节，从而缩小每次可变参数调用与持久字段切片。
 	str string
-	// bs carries the raw bytes of BytesType and the JSON fragment of RawType (the caller's data is not copied). | bs 承载 BytesType 的原始字节与 RawType 的 JSON 片段（不复制调用方数据）。
-	bs []byte
 	// num carries the bit pattern or numeric value of Int/Int64/Uint64/Float64/Bool/Dur/Time. | num 承载 Int/Int64/Uint64/Float64/Bool/Dur/Time 的位模式或数值。
 	num uint64
 	// Type is the type tag of the field value. | Type 是字段值的类型标签。
@@ -135,7 +138,7 @@ func Err(err error) Field {
 // Bytes returns a byte slice field, output as base64 in JSON (RFC 4648 standard encoding). | Bytes 返回字节切片字段，JSON 按 base64（RFC 4648 标准编码）输出。
 // The slice is not copied, so the caller must not modify its contents before the log is written. | 该切片不被复制，调用方不得在日志写入前改写其内容。
 func Bytes(k string, v []byte) Field {
-	return Field{Key: k, Type: BytesType, bs: v}
+	return Field{Key: k, Type: BytesType, str: unsafeBytesString(v)}
 }
 
 // Any returns a field holding an arbitrary value and belongs to the slow path. | Any 返回任意值字段，属于慢路径。
@@ -196,13 +199,21 @@ func Any(k string, v any) Field {
 // Raw returns a keyless raw JSON fragment field; the fragment is injected into the output verbatim. | Raw 返回无键的原始 JSON 片段字段，片段被原样注入输出。
 // json must be a complete JSON member (of the form `"key":value`); the caller is responsible for its validity. | json 必须是一个完整的 JSON 成员（形如 `"key":value`），调用方负责其合法性。
 func Raw(json []byte) Field {
-	return Field{Type: RawType, bs: json}
+	return Field{Type: RawType, str: unsafeBytesString(json)}
 }
 
 // RawField returns a keyed raw JSON value field; the key name is JSON-escaped and the value is injected verbatim. | RawField 返回带键的原始 JSON 值字段，键名经 JSON 转义、值被原样注入。
 // json must be a complete JSON value (object, array, number, string, and so on); the caller is responsible for its validity. | json 必须是一个完整的 JSON 值（对象、数组、数字、字符串等），调用方负责其合法性。
 func RawField(key string, json []byte) Field {
-	return Field{Key: key, Type: RawType, bs: json}
+	return Field{Key: key, Type: RawType, str: unsafeBytesString(json)}
+}
+
+// unsafeBytesString aliases b as a string without copying. The caller must keep b unchanged while
+// the field is in use, which is the same contract Bytes and Raw already document. | unsafeBytesString
+// 把 b 零拷贝地别名为字符串；调用方必须在该字段使用期间保持 b 不变，这与 Bytes 和 Raw 已声明的
+// 契约一致。
+func unsafeBytesString(b []byte) string {
+	return unsafe.String(unsafe.SliceData(b), len(b))
 }
 
 // errField constructs an error field with the given key and expands the error chain. | errField 以指定键构造错误字段，并展开错误链。

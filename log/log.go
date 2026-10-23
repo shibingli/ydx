@@ -324,7 +324,7 @@ func (l *Logger) log(lvl Level, msg string, fields []Field) {
 	if l.console {
 		b.buf = appendConsoleRecord(b.buf, l, lvl, now, msg, caller, fields)
 	} else {
-		b.buf = appendJSONRecord(b.buf, l, lvl, now, msg, caller, fields)
+		b.buf = appendJSONRecord(b.buf, b, l, lvl, now, msg, caller, fields)
 	}
 	if a != nil {
 		a.pushBuffer(ring, b)
