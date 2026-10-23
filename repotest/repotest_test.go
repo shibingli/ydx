@@ -287,10 +287,12 @@ func TestNoDirectEncodingOrRegexpImports(t *testing.T) {
 				if !under(rel, "base64") {
 					t.Errorf("%s imports encoding/base64 directly | 必须使用 base64 包装包", rel)
 				}
-			case "regexp", "github.com/dlclark/regexp2":
+			case "regexp":
 				if !under(rel, "regexpx") {
-					t.Errorf("%s imports %s directly | 必须使用 regexpx 包装包", rel, imported)
+					t.Errorf("%s imports regexp directly | 必须使用 regexpx 包装包", rel)
 				}
+			case "github.com/dlclark/regexp2":
+				t.Errorf("%s imports regexp2 directly | 禁止依赖 regexp2", rel)
 			case "log":
 				t.Errorf("%s imports the standard log package | 必须使用 log 包", rel)
 			}
@@ -356,17 +358,50 @@ func TestNoDirectPanic(t *testing.T) {
 			continue
 		}
 		file := parseFile(t, fset, filepath.Join(root, filepath.FromSlash(rel)))
-		walkWithRecover(file, false, func(node ast.Node, allowed bool) {
-			call, ok := node.(*ast.CallExpr)
-			if !ok {
-				return
+		for _, decl := range file.Decls {
+			// Must constructors mirror the standard library's panic contract, which is their only
+			// documented behavior; every other panic stays forbidden. | Must 构造器沿用标准库的 panic
+			// 约定，这是其唯一文档化行为；其余 panic 仍然禁止。
+			if fn, ok := decl.(*ast.FuncDecl); ok && strings.HasPrefix(fn.Name.Name, "Must") {
+				continue
 			}
-			ident, ok := call.Fun.(*ast.Ident)
-			if !ok || ident.Name != "panic" || allowed {
-				return
+			walkWithRecover(decl, false, func(node ast.Node, allowed bool) {
+				call, ok := node.(*ast.CallExpr)
+				if !ok {
+					return
+				}
+				ident, ok := call.Fun.(*ast.Ident)
+				if !ok || ident.Name != "panic" || allowed {
+					return
+				}
+				t.Errorf("%s calls panic outside a recover rethrow or a Must constructor | 仅允许 recover 块内重新抛出 panic 或 Must 构造器", rel)
+			})
+		}
+	}
+}
+
+// TestNoRegexp2Dependency proves that the repository no longer depends on dlclark/regexp2 outside the
+// benchmark modules. | TestNoRegexp2Dependency 证明仓库在基准模块之外不再依赖 dlclark/regexp2。
+func TestNoRegexp2Dependency(t *testing.T) {
+	root := repositoryRoot(t)
+	for _, rel := range walkFiles(t, root) {
+		// Downstream modules still carry regexp2 in go.sum through the previously published
+		// regexpx version; they drop it when they sync the next release. The component module
+		// itself must be clean now. | 下游模块的 go.sum 仍通过已发布的旧 regexpx 版本携带 regexp2；
+		// 它们在同步下个版本时会移除。组件模块本身现在就必须干净。
+		if !under(rel, "regexpx") {
+			continue
+		}
+		switch path.Base(rel) {
+		case "go.mod", "go.sum":
+			data, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(rel)))
+			if err != nil {
+				t.Fatalf("read %s: %v | 读取失败", rel, err)
 			}
-			t.Errorf("%s calls panic outside a recover rethrow | 仅允许 recover 块内重新抛出 panic", rel)
-		})
+			if strings.Contains(string(data), "dlclark/regexp2") {
+				t.Errorf("%s references dlclark/regexp2 | 禁止依赖 regexp2", rel)
+			}
+		}
 	}
 }
 

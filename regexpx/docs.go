@@ -1,32 +1,90 @@
-// Package regexpx is the repository's single regular-expression entry point.
-// | Package regexpx 是本仓唯一的正则表达式入口。
+// Package regexpx is the repository's single regular-expression entry point, implemented by a
+// self-developed engine instead of by wrapping a third-party library.
+// | Package regexpx 是本仓唯一的正则表达式入口，由自研引擎实现，而不是包装第三方库。
 //
-// It owns two engines behind one API and chooses per pattern: | 它在一个 API 背后持有两个引擎，
-// 并按模式选择：
+// # Syntax | 语法
 //
-//   - A pattern that the standard library accepts runs on the RE2 engine: linear time,
-//     no backtracking, zero allocations on the hot paths, and no timeout needed. This
-//     is the path every ordinary pattern takes. | 标准库能接受的模式走 RE2 引擎：线性时间、
-//     不回溯、热路径零分配、无需超时。所有普通模式都走这条路。
-//   - A pattern that needs .NET constructs (lookaround, backreferences, named groups)
-//     does not compile in the standard library, so it runs on
-//     github.com/dlclark/regexp2 in RE2 compatibility mode, with a mandatory match
-//     timeout. A match that exceeds MatchTimeout is reported as "no match", which makes
-//     validation callers fail closed. | 需要 .NET 构造（环视、反向引用、命名分组）的模式
-//     在标准库中无法编译，因此走 github.com/dlclark/regexp2 的 RE2 兼容模式，并强制匹配超时。
-//     超过 MatchTimeout 的匹配按「未匹配」处理，使校验类调用失败关闭。
+// The parser accepts RE2 syntax plus the .NET constructs existing code relies on: lookahead,
+// lookbehind, backreferences, named groups, atomic groups and possessive quantifiers. | 解析器接受
+// RE2 语法，并支持现有代码依赖的 .NET 构造：先行、后行、反向引用、命名分组、原子组与占有量词。
 //
-// The dual engine is a correctness requirement, not an optimization detail: regexp2's
-// iterator re-converts the remaining input to runes on every FindNextMatch, so FindAll
-// over a large file is quadratic and can silently truncate under a timeout. Bulk
-// scanners therefore depend on the RE2 fast path. | 双引擎不是优化细节而是正确性要求：
-// regexp2 的迭代器在每次 FindNextMatch 时都会把剩余输入重新转成符文，因此对大文件的 FindAll
-// 是二次复杂度，并可能在超时后静默截断。批量扫描器因此依赖 RE2 快路径。
+// # Engines | 引擎
 //
-// Indices are always byte offsets, regardless of the engine. | 无论走哪个引擎，索引一律是字节偏移。
+// Two execution engines sit behind one API: | 一个 API 背后有两个执行引擎：
 //
-// Usage | 用法：
+//   - Patterns without lookaround or backreferences run on a linear-time Pike VM. It never
+//     backtracks, so its cost is linear in the input and it needs no timeout. | 不含环视与反向引用的
+//     模式运行在线性时间 Pike VM 上。它不回溯，代价与输入长度线性相关，无需超时。
+//   - Patterns that need those constructs run on a backtracking VM under a mandatory MatchTimeout and
+//     a hard step budget. A match that exceeds either is reported as no match, so validation callers
+//     fail closed. | 需要这些构造的模式运行在回溯 VM 上，并受强制 MatchTimeout 与硬步数预算约束。超过
+//     任一限制的匹配按未匹配处理，因此校验类调用失败关闭。
 //
-//	var nameRe = regexpx.MustCompile(`^[a-z][a-z0-9_-]*$`)
-//	if nameRe.MatchString(name) { /* ... */ }
+// # Fast paths | 快速路径
+//
+// Several common shapes bypass the general engines: | 多种常见形态绕过通用引擎：
+//
+//   - a whole-pattern literal uses a SIMD byte scan; | 整模式字面量使用 SIMD 字节扫描；
+//   - a single repeated single-rune matcher such as \w+ uses a linear run scan; | \w+ 这类单个单符文
+//     匹配器的重复使用线性运行扫描；
+//   - a literal surrounded by dot-all wildcards, such as (?s).*Holmes.*, uses one literal search; |
+//     被 dot-all 通配符包围的字面量（如 (?s).*Holmes.*）使用一次字面量搜索；
+//   - fixed-length sequences such as \d{4}-\d{2}-\d{2} use a deterministic loop, and a punctuation
+//     literal inside a fixed pattern is used as the search anchor instead of its first byte; |
+//     \d{4}-\d{2}-\d{2} 这类定长序列使用确定循环；固定模式内的标点字面量作为搜索锚点，而不扫描
+//     首字节；
+//   - fixed and optional ASCII atoms with one trailing run, such as a URL shape, use a deterministic
+//     walk with a step budget; | 固定与可选 ASCII 原子加一个尾运行（如 URL 形态）使用带步数预算的
+//     确定性遍历；
+//   - the address shape local@domain.tld is located from '@' with a reverse local-part scan; | 邮箱
+//     地址形态 local@domain.tld 从 '@' 定位并反向扫描局部部分；
+//   - anchored ^body$ validation patterns build a compact ASCII DFA lazily on first use. | 锚定的
+//     ^body$ 校验模式在首次使用时惰性构建紧凑 ASCII DFA。
+//
+// # SIMD | 指令集
+//
+// Byte and byte-set prefilters have amd64 SSE4.1 / SSE4.2 / AVX2 / AVX-512BW and arm64 NEON kernels
+// selected at init; case-insensitive literals use a two-byte folded scan. AVX-512 kernels require
+// AVX512F, AVX512BW and OS support for opmask/ZMM state, not VBMI or VBMI2, so Skylake-era and newer
+// AVX-512 CPUs use the same kernels. Without AVX2 the dispatcher prefers SSE4.2, then SSE4.1, with
+// 16-byte kernels, and finally portable scalar code; only CPUs without these extensions use the
+// scalar path. Results are identical on every path. | 字节与字节集合预过滤在初始化时选择 amd64
+// SSE4.1 / SSE4.2 / AVX2 / AVX-512BW 与 arm64 NEON 内核；大小写不敏感字面量使用双字节折叠扫描。
+// AVX-512 内核要求 AVX512F、AVX512BW 与操作系统对 opmask/ZMM 状态的支持，不要求 VBMI/VBMI2，因此
+// Skylake 代及更新的 AVX-512 处理器使用同一套内核。没有 AVX2 时按 SSE4.2、SSE4.1、标量的顺序回退，
+// SSE 内核一次处理 16 字节；只有不具备这些扩展的 CPU 才走标量路径。各路径结果一致。
+//
+// # Large input and parallelism | 大输入与并行
+//
+// The linear engine is streaming and allocation-light. FindAllStringParallel and
+// FindAllStringIndexParallel split large inputs across cores when a sound, selective start filter
+// exists. Patterns that can match empty, anchored patterns and backtracking patterns run
+// sequentially. Results are identical to the sequential methods. | 线性引擎是流式的且分配很少。当存在
+// 可靠且具有选择性的起点过滤器时，FindAllStringParallel 与 FindAllStringIndexParallel 把大输入拆分到
+// 多个核心。可匹配空串的模式、锚定模式与回溯模式按顺序执行。结果与顺序方法一致。
+//
+// # Indices | 下标
+//
+// All indices are byte offsets regardless of the engine. | 无论走哪个引擎，索引一律是字节偏移。
+//
+// # Usage | 用法
+//
+// YD route | YD 路由：
+//
+//	var tenantRe = regexpx.MustCompile(`^[a-z][a-z0-9_-]*$`)
+//	router.GET("/tenants/:name", func(c *router.Context) {
+//		if !tenantRe.MatchString(c.Param("name")) {
+//			c.Status(http.StatusBadRequest)
+//		}
+//	})
+//
+// Native Go | 原生 Go：
+//
+//	var dateRe = regexpx.MustCompile(`\d{4}-\d{2}-\d{2}`)
+//	if loc := dateRe.FindStringIndex(text); loc != nil {
+//		fmt.Println(text[loc[0]:loc[1]])
+//	}
+//
+// The common methods mirror the standard library, and the E variants expose ErrMatchTimeout. |
+// 常用方法镜像标准库，E 变体暴露 ErrMatchTimeout。
 package regexpx

@@ -1,347 +1,430 @@
 package regexpx
 
 import (
-	"regexp"
+	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
+	"unicode"
 	"unicode/utf8"
-
-	"github.com/dlclark/regexp2"
+	"unsafe"
 
 	"github.com/shibingli/ydx/errs"
 )
 
-// MatchTimeout is the per-match wall-clock budget for the regexp2 engine. | MatchTimeout 是 regexp2 引擎单次匹配的实际耗时预算。
-//
-// The RE2 fast path does not need a timeout: it cannot backtrack, so its cost is linear in the input.
-// This budget only fires on catastrophic backtracking in a .NET-only pattern. regexp2 checks the
-// deadline periodically, so the observed time to abort can exceed this value by one check period. | RE2
-// 快路径不需要超时：它不会回溯，代价与输入长度线性相关。该预算只会被 .NET 专有模式中的灾难性
-// 回溯触发。regexp2 周期性检查截止时间，因此实际中止时间可能比该值多一个检查周期。
+// MatchTimeout is the per-match wall-clock budget for the backtracking engine. The linear-time engine
+// never needs a timeout: its cost is linear in the input. This budget only fires on catastrophic
+// backtracking in patterns that need lookaround or backreferences. | MatchTimeout 是回溯引擎单次匹配的
+// 实际耗时预算。线性时间引擎不需要超时：其代价与输入长度线性相关。该预算只会被需要环视或反向引用的
+// 模式中的灾难性回溯触发。
 const MatchTimeout = 100 * time.Millisecond
 
 var (
-	// ErrCompile is returned when a pattern cannot be compiled by either engine. | ErrCompile 表示两个引擎都无法编译该模式。
+	// ErrCompile reports that a pattern cannot be parsed or compiled. | ErrCompile 表示模式无法解析或
+	// 编译。
 	ErrCompile = errs.New("compile regular expression failed | 编译正则表达式失败")
 )
 
-// Regexp is a compiled pattern. It is safe for concurrent use. | Regexp 是已编译的模式，可安全并发使用。
+// Regexp is a compiled pattern. It is safe for concurrent use and must not be copied after first use.
+// | Regexp 是已编译的模式。它可安全并发使用，首次使用后不得复制。
 type Regexp struct {
-	// re2 is the standard-library engine, set when the pattern is RE2-compatible. | re2 是标准库引擎，模式兼容 RE2 时非空。
-	re2 *regexp.Regexp
-	// re2x is the compatibility engine, always compiled, used only when re2 is nil. | re2x 是兼容引擎，总是编译，仅在 re2 为空时使用。
-	re2x *regexp2.Regexp
-	src  string
+	src     string
+	prog    *program
+	exact   *exactInfo
+	run     *runInfo
+	wild    *wildInfo
+	lin     *linInfo
+	email   *emailInfo
+	names   []string
+	nameMap map[string]int
+
+	prefixBytes     string
+	prefixFoldASCII bool
+	firstTables     [128]byte
+	firstASCIISet   bool
+
+	// The full-match DFA is built lazily on first use so package-level Compile stays cheap. |
+	// 全匹配 DFA 在首次使用时惰性构建，使包级 Compile 保持廉价。
+	dfaEligible bool
+	dfaAST      node
+	dfaOnce     sync.Once
+	dfa         *asciiDFA
+
+	pikePool sync.Pool
+	btPool   sync.Pool
+
+	// parallelSearches counts chunked searches for observability in tests. | parallelSearches 统计
+	// 分块搜索次数，供测试观测。
+	parallelSearches atomic.Int64
 }
 
 // Compile parses expr and returns a compiled pattern. | Compile 解析 expr 并返回已编译的模式。
 //
-// The pattern is first compiled with regexp2 in RE2 compatibility mode, which decides whether the
-// syntax is valid at all; when the standard library also accepts it, the fast RE2 engine is used for
-// every operation. A syntax error wraps ErrCompile so callers can test it with errors.Is. | 模式先用
-// regexp2 的 RE2 兼容模式编译，以判定语法是否合法；当标准库也能接受时，所有操作都走 RE2 快引擎。
-// 语法错误包装 ErrCompile，调用方可用 errors.Is 判定。
+// The syntax is RE2 plus the .NET constructs needed to replace regexp2: lookahead, lookbehind,
+// backreferences, named groups, atomic groups and possessive quantifiers. A syntax error wraps
+// ErrCompile so callers can test it with errors.Is. | 语法为 RE2 加上替换 regexp2 所需的 .NET 构造：
+// 先行、后行、反向引用、命名分组、原子组与占有量词。语法错误包装 ErrCompile，调用方可用 errors.Is
+// 判定。
 func Compile(expr string) (*Regexp, error) {
-	compat, err := regexp2.Compile(expr, regexp2.RE2)
+	ast, numCap, names, err := parsePattern(expr)
 	if err != nil {
 		return nil, errs.WrapDetail(err, ErrCompile, "pattern %[1]q | 模式 %[1]q", expr)
 	}
-	compat.MatchTimeout = MatchTimeout
-	r := &Regexp{src: expr, re2x: compat}
-	if fast, err := regexp.Compile(expr); err == nil {
-		r.re2 = fast
+	prog, err := compilePattern(ast, numCap, names)
+	if err != nil {
+		return nil, errs.WrapDetail(err, ErrCompile, "pattern %[1]q | 模式 %[1]q", expr)
 	}
+	r := &Regexp{
+		src:     expr,
+		prog:    prog,
+		names:   make([]string, numCap+1),
+		nameMap: names,
+	}
+	for name, index := range names {
+		r.names[index] = name
+	}
+	if prog.info.prefixOK {
+		r.prefixBytes = string(prog.info.prefix)
+		if prog.info.prefixFold {
+			r.prefixFoldASCII = asciiFoldPrefix(prog.info.prefix)
+		}
+	}
+	if prog.info.firstBytesOK {
+		r.firstTables, r.firstASCIISet = makeByteSetTables(prog.info.firstBytes)
+	}
+	if body, ok := fullMatchBody(ast); ok && asciiBodyOnly(body) && len(prog.insts) <= dfaInstrCap {
+		r.dfaEligible = true
+		r.dfaAST = ast
+	}
+	r.exact = analyzeExact(ast, numCap)
+	r.run = analyzeRun(ast, numCap)
+	r.wild = analyzeWild(ast)
+	r.lin = analyzeLinear(ast, numCap)
+	r.email = analyzeEmail(ast, numCap)
+	r.pikePool.New = func() any { return newPikeMachine(prog, 0) }
+	r.btPool.New = func() any { return newBTMachine(prog, 0) }
 	return r, nil
 }
 
-// MustCompile is like Compile but panics when expr is invalid. | MustCompile 与 Compile 相同，但 expr 非法时 panic。
-//
-// It is meant for package-level initialization, where an invalid pattern is a programming error, and
-// mirrors the contract of the standard library's MustCompile. | 它用于包级初始化：非法模式属于编程错误，
-// 与标准库 MustCompile 的约定一致。
+// MustCompile is like Compile but panics when expr is invalid. It is meant for package-level
+// initialization, where an invalid pattern is a programming error, and mirrors the contract of the
+// standard library's MustCompile. | MustCompile 与 Compile 相同，但 expr 非法时 panic。它用于包级
+// 初始化：非法模式属于编程错误，与标准库 MustCompile 的约定一致。
 func MustCompile(expr string) *Regexp {
-	compat := regexp2.MustCompile(expr, regexp2.RE2)
-	compat.MatchTimeout = MatchTimeout
-	r := &Regexp{src: expr, re2x: compat}
-	if fast, err := regexp.Compile(expr); err == nil {
-		r.re2 = fast
+	r, err := Compile(expr)
+	if err != nil {
+		panic(err)
 	}
 	return r
 }
 
 // QuoteMeta escapes every regular-expression metacharacter in s. | QuoteMeta 转义 s 中的全部正则元字符。
-//
-// The escaping is performed by regexp2 so that a quoted string is safe for either engine. | 转义由 regexp2
-// 完成，因此加引号后的字符串对两个引擎都安全。
-func QuoteMeta(s string) string { return regexp2.Escape(s) }
+func QuoteMeta(s string) string {
+	// A byte loop is correct because every metacharacter is ASCII; invalid UTF-8 bytes are copied
+	// unchanged, matching the standard library. | 字节循环是正确的，因为所有元字符都是 ASCII；非法
+	// UTF-8 字节原样复制，与标准库一致。
+	i := 0
+	for i < len(s) && !isMetaByte(s[i]) {
+		i++
+	}
+	if i >= len(s) {
+		return s
+	}
+	var b strings.Builder
+	b.Grow(len(s) + 8)
+	b.WriteString(s[:i])
+	for ; i < len(s); i++ {
+		if isMetaByte(s[i]) {
+			b.WriteByte('\\')
+		}
+		b.WriteByte(s[i])
+	}
+	return b.String()
+}
+
+// isMetaByte reports whether b must be escaped by QuoteMeta. | isMetaByte 报告 QuoteMeta 是否必须转义 b。
+func isMetaByte(b byte) bool {
+	switch b {
+	case '\\', '.', '+', '*', '?', '(', ')', '|', '[', ']', '{', '}', '^', '$':
+		return true
+	}
+	return false
+}
 
 // String returns the source pattern. | String 返回模式原文。
 func (r *Regexp) String() string { return r.src }
 
+// NumSubexp returns the number of capturing groups, excluding the whole match. | NumSubexp 返回捕获分组
+// 数量，不含整个匹配。
+func (r *Regexp) NumSubexp() int { return len(r.names) - 1 }
+
+// SubexpNames returns the group names; index zero is always empty. | SubexpNames 返回分组名；下标 0
+// 始终为空。
+func (r *Regexp) SubexpNames() []string {
+	out := make([]string, len(r.names))
+	copy(out, r.names)
+	return out
+}
+
+// SubexpIndex returns the index of the named group, or -1. | SubexpIndex 返回命名分组的下标，不存在时
+// 返回 -1。
+func (r *Regexp) SubexpIndex(name string) int {
+	if index, ok := r.nameMap[name]; ok {
+		return index
+	}
+	return -1
+}
+
 // MatchString reports whether s contains a match. | MatchString 报告 s 中是否存在匹配。
 //
-// On the regexp2 path, a match that exceeds MatchTimeout is reported as no match; validation callers
-// therefore fail closed. | 在 regexp2 路径上，超过 MatchTimeout 的匹配按未匹配处理，因此校验类调用失败关闭。
+// A backtracking match that exceeds MatchTimeout is reported as no match, so validation callers fail
+// closed. | 超过 MatchTimeout 的回溯匹配按未匹配处理，因此校验类调用失败关闭。
 func (r *Regexp) MatchString(s string) bool {
-	if r.re2 != nil {
-		return r.re2.MatchString(s)
-	}
-	ok, err := r.re2x.MatchString(s)
-	return err == nil && ok
+	_, ok, err := r.execute(s, 0, 0, -1, false)
+	return ok && err == nil
 }
 
 // Match reports whether b contains a match. | Match 报告 b 中是否存在匹配。
-func (r *Regexp) Match(b []byte) bool {
-	if r.re2 != nil {
-		return r.re2.Match(b)
-	}
-	return r.MatchString(string(b))
-}
+func (r *Regexp) Match(b []byte) bool { return r.MatchString(bytesToString(b)) }
 
-// FindString returns the text of the first match, or the empty string when nothing matches. | FindString 返回首个匹配的文本，没有匹配时返回空串。
-func (r *Regexp) FindString(s string) string {
-	if r.re2 != nil {
-		return r.re2.FindString(s)
-	}
-	m, err := r.re2x.FindStringMatch(s)
-	if err != nil || m == nil {
-		return ""
-	}
-	starts := runeStarts(s)
-	return s[starts[m.Index]:starts[m.Index+m.Length]]
-}
-
-// FindStringIndex returns the byte offset pair of the first match, or nil when nothing matches. | FindStringIndex 返回首个匹配的字节偏移对，没有匹配时返回 nil。
-func (r *Regexp) FindStringIndex(s string) []int {
-	if r.re2 != nil {
-		return r.re2.FindStringIndex(s)
-	}
-	m, err := r.re2x.FindStringMatch(s)
-	if err != nil || m == nil {
-		return nil
-	}
-	starts := runeStarts(s)
-	return []int{starts[m.Index], starts[m.Index+m.Length]}
-}
-
-// FindStringSubmatch returns the first match and its submatches, or nil when nothing matches. | FindStringSubmatch 返回首个匹配及其子匹配，没有匹配时返回 nil。
-func (r *Regexp) FindStringSubmatch(s string) []string {
-	if r.re2 != nil {
-		return r.re2.FindStringSubmatch(s)
-	}
-	m, err := r.re2x.FindStringMatch(s)
-	if err != nil || m == nil {
-		return nil
-	}
-	starts := runeStarts(s)
-	groups := m.Groups()
-	out := make([]string, len(groups))
-	for i := range groups {
-		out[i] = captureString(s, starts, &groups[i])
-	}
-	return out
-}
-
-// FindStringSubmatchIndex returns the byte offset pairs of the first match and its submatches. | FindStringSubmatchIndex 返回首个匹配及其子匹配的字节偏移对。
-//
-// Each group contributes two ints, and an unmatched group contributes -1, -1, matching the standard
-// library's contract. | 每个分组贡献两个整数；未参与匹配的分组贡献 -1, -1，与标准库约定一致。
-func (r *Regexp) FindStringSubmatchIndex(s string) []int {
-	if r.re2 != nil {
-		return r.re2.FindStringSubmatchIndex(s)
-	}
-	m, err := r.re2x.FindStringMatch(s)
-	if err != nil || m == nil {
-		return nil
-	}
-	return appendGroupIndices(nil, m.Groups(), runeStarts(s))
-}
-
-// FindAllString returns the text of every non-overlapping match. | FindAllString 返回每个不重叠匹配的文本。
-//
-// n limits the number of matches; a negative n means all matches. | n 限制匹配数量，负数表示全部。
-func (r *Regexp) FindAllString(s string, n int) []string {
-	out, _ := r.FindAllStringE(s, n)
-	return out
-}
-
-// FindAllStringE is FindAllString with the engine error exposed. | FindAllStringE 是暴露引擎错误的
-// FindAllString。
-//
-// On the regexp2 path a scan aborted by ErrMatchTimeout returns the matches collected before the
-// timeout together with that error, so a validator can fail closed instead of treating a truncated
-// scan as "no match". | 在 regexp2 路径上，被 ErrMatchTimeout 中止的扫描返回超时前已收集的匹配以及
-// 该错误，使校验逻辑能够失败关闭，而不是把截断的扫描当成「无匹配」。
-func (r *Regexp) FindAllStringE(s string, n int) ([]string, error) {
-	if r.re2 != nil {
-		return r.re2.FindAllString(s, n), nil
-	}
-	starts := runeStarts(s)
-	var out []string
-	err := r.eachMatch(s, n, func(m *regexp2.Match) bool {
-		out = append(out, s[starts[m.Index]:starts[m.Index+m.Length]])
-		return true
-	})
-	return out, err
-}
-
-// FindAllStringIndex returns the byte offset pairs of every non-overlapping match. | FindAllStringIndex 返回每个不重叠匹配的字节偏移对。
-//
-// n limits the number of matches; a negative n means all matches. | n 限制匹配数量，负数表示全部。
-func (r *Regexp) FindAllStringIndex(s string, n int) [][]int {
-	out, _ := r.FindAllStringIndexE(s, n)
-	return out
-}
-
-// FindAllStringIndexE is FindAllStringIndex with the engine error exposed. | FindAllStringIndexE 是
-// 暴露引擎错误的 FindAllStringIndex。
-func (r *Regexp) FindAllStringIndexE(s string, n int) ([][]int, error) {
-	if r.re2 != nil {
-		return r.re2.FindAllStringIndex(s, n), nil
-	}
-	starts := runeStarts(s)
-	var out [][]int
-	err := r.eachMatch(s, n, func(m *regexp2.Match) bool {
-		out = append(out, []int{starts[m.Index], starts[m.Index+m.Length]})
-		return true
-	})
-	return out, err
-}
-
-// FindAllStringSubmatch returns every non-overlapping match together with its submatches. | FindAllStringSubmatch 返回每个不重叠匹配及其子匹配。
-func (r *Regexp) FindAllStringSubmatch(s string, n int) [][]string {
-	out, _ := r.FindAllStringSubmatchE(s, n)
-	return out
-}
-
-// FindAllStringSubmatchE is FindAllStringSubmatch with the engine error exposed. | FindAllStringSubmatchE
-// 是暴露引擎错误的 FindAllStringSubmatch。
-func (r *Regexp) FindAllStringSubmatchE(s string, n int) ([][]string, error) {
-	if r.re2 != nil {
-		return r.re2.FindAllStringSubmatch(s, n), nil
-	}
-	starts := runeStarts(s)
-	var out [][]string
-	err := r.eachMatch(s, n, func(m *regexp2.Match) bool {
-		groups := m.Groups()
-		row := make([]string, len(groups))
-		for i := range groups {
-			row[i] = captureString(s, starts, &groups[i])
-		}
-		out = append(out, row)
-		return true
-	})
-	return out, err
-}
-
-// FindAllStringSubmatchIndex returns the byte offset pairs of every match and its submatches. | FindAllStringSubmatchIndex 返回每个匹配及其子匹配的字节偏移对。
-func (r *Regexp) FindAllStringSubmatchIndex(s string, n int) [][]int {
-	out, _ := r.FindAllStringSubmatchIndexE(s, n)
-	return out
-}
-
-// FindAllStringSubmatchIndexE is FindAllStringSubmatchIndex with the engine error exposed. | FindAllStringSubmatchIndexE
-// 是暴露引擎错误的 FindAllStringSubmatchIndex。
-func (r *Regexp) FindAllStringSubmatchIndexE(s string, n int) ([][]int, error) {
-	if r.re2 != nil {
-		return r.re2.FindAllStringSubmatchIndex(s, n), nil
-	}
-	starts := runeStarts(s)
-	var out [][]int
-	err := r.eachMatch(s, n, func(m *regexp2.Match) bool {
-		out = append(out, appendGroupIndices(nil, m.Groups(), starts))
-		return true
-	})
-	return out, err
-}
-
-// ReplaceAllString replaces every match with repl and returns the result. | ReplaceAllString 用 repl 替换每个匹配并返回结果。
-//
-// The replacement follows the contract of the engine that runs: Go's `$name` rules on the RE2 fast
-// path, .NET syntax on the regexp2 path. A regexp2 match that exceeds MatchTimeout leaves src
-// unchanged, so a sanitizer never emits a partially processed string. | 替换遵循实际执行引擎的约定：
-// RE2 快路径按 Go 的 `$name` 规则，regexp2 路径按 .NET 语法。regexp2 匹配超过 MatchTimeout 时
-// src 原样返回，因此清洗逻辑绝不会输出只处理一半的字符串。
-func (r *Regexp) ReplaceAllString(src, repl string) string {
-	if r.re2 != nil {
-		return r.re2.ReplaceAllString(src, repl)
-	}
-	out, err := r.re2x.Replace(src, repl, 0, -1)
-	if err != nil {
-		return src
-	}
-	// regexp2's Replace swallows the iteration error and returns ("", nil) when the match
-	// timeout fires, which an empty result cannot be distinguished from. Re-scan only for that
-	// suspicious shape and leave the source untouched if the scan reports the timeout. | regexp2
-	// 的 Replace 在匹配超时时吞掉迭代错误并返回 ("", nil)，无法与合法的空结果区分。仅对这种可疑
-	// 结果重新扫描一次；扫描报告超时时原样返回源串。
-	if out == "" && src != "" && r.matchScanFailed(src) {
-		return src
-	}
-	return out
-}
-
-// matchScanFailed reports whether a full scan of s stops on an engine error. | matchScanFailed
-// 报告对 s 的完整扫描是否因引擎错误而中止。
-func (r *Regexp) matchScanFailed(s string) bool {
-	m, err := r.re2x.FindStringMatch(s)
-	for err == nil && m != nil {
-		m, err = r.re2x.FindNextMatch(m)
-	}
-	return err != nil
-}
-
-// eachMatch walks the non-overlapping matches, stopping after n when n is positive. | eachMatch
-// 遍历不重叠的匹配，n 为正数时在 n 个之后停止。
-//
-// The returned error is the engine error that aborted the scan (notably ErrMatchTimeout); callers
-// that expose a non-error signature report the matches collected so far. | 返回的错误是中止扫描的
-// 引擎错误（尤其是 ErrMatchTimeout）；非错误签名的调用方报告已收集到的匹配。
-func (r *Regexp) eachMatch(s string, n int, fn func(*regexp2.Match) bool) error {
+// findAll returns every non-overlapping match as capture rows. | findAll 以捕获行返回每个不重叠匹配。
+func (r *Regexp) findAll(s string, n, maxSlot int) ([][]int, error) {
 	if n == 0 {
-		return nil // stdlib semantics: n == 0 means no matches | 标准库语义：n == 0 表示不返回匹配
+		return nil, nil
 	}
-	m, err := r.re2x.FindStringMatch(s)
-	count := 0
-	for err == nil && m != nil {
-		if !fn(m) {
-			return nil
+	var out [][]int
+	pos := 0
+	prevEnd := -1
+	for pos <= len(s) {
+		caps, ok, err := r.execute(s, pos, maxSlot, -1, true)
+		if err != nil {
+			return out, err
 		}
-		count++
-		if n > 0 && count >= n {
-			return nil
+		if !ok {
+			break
 		}
-		m, err = r.re2x.FindNextMatch(m)
+		start, end := caps[0], caps[1]
+		accept := true
+		if start == end && start == prevEnd {
+			accept = false
+		}
+		if accept {
+			out = append(out, caps)
+			if n > 0 && len(out) >= n {
+				break
+			}
+		}
+		prevEnd = end
+		if start == end {
+			if end >= len(s) {
+				break
+			}
+			_, size := utf8.DecodeRuneInString(s[end:])
+			pos = end + size
+		} else {
+			pos = end
+		}
 	}
-	return err
+	return out, nil
 }
 
-// runeStarts returns a rune-index-to-byte-offset table whose final entry is len(s). | runeStarts 返回符文下标到字节偏移的映射表，最后一项是 len(s)。
-func runeStarts(s string) []int {
-	starts := make([]int, 0, utf8.RuneCountInString(s)+1)
-	for i := range s {
-		starts = append(starts, i)
+// execute runs one search. maxSlot limits capture recording; startLimit is an exclusive bound on the
+// match start, or negative for no bound. preferSearch selects the NFA's own start injection for broad
+// first-byte sets, which is cheaper for full scans but more expensive for a single first match. |
+// execute 执行一次搜索。maxSlot 限制捕获记录；startLimit 是匹配起点的排他上界，负数表示无上界。
+// preferSearch 为宽首字节集选择 NFA 自身的起点注入：完整扫描更便宜，单次首匹配更昂贵。
+func (r *Regexp) execute(s string, start, maxSlot, startLimit int, preferSearch bool) ([]int, bool, error) {
+	if start < 0 {
+		start = 0
 	}
-	return append(starts, len(s))
+	if start > len(s) {
+		return nil, false, nil
+	}
+	if startLimit >= 0 && startLimit > len(s)+1 {
+		startLimit = len(s) + 1
+	}
+	if r.exact != nil && maxSlot <= 2 {
+		b, e, ok := r.exactFind(s, start, startLimit)
+		if !ok {
+			return nil, false, nil
+		}
+		if maxSlot == 2 {
+			return []int{b, e}, true, nil
+		}
+		return nil, true, nil
+	}
+	if r.run != nil && maxSlot <= 2 {
+		b, e, ok := r.runFind(s, start, startLimit)
+		if !ok {
+			return nil, false, nil
+		}
+		if maxSlot == 2 {
+			return []int{b, e}, true, nil
+		}
+		return nil, true, nil
+	}
+	if r.wild != nil && maxSlot <= 2 {
+		b, e, ok := r.wildFind(s, start, startLimit)
+		if !ok {
+			return nil, false, nil
+		}
+		if maxSlot == 2 {
+			return []int{b, e}, true, nil
+		}
+		return nil, true, nil
+	}
+	if r.email != nil && maxSlot <= 2 {
+		b, e, ok := r.emailFind(s, start, startLimit)
+		if !ok {
+			return nil, false, nil
+		}
+		if maxSlot == 2 {
+			return []int{b, e}, true, nil
+		}
+		return nil, true, nil
+	}
+	if r.lin != nil && maxSlot <= 2 && (r.lin.anchorStart || r.lin.anchorEnd || r.prog.info.firstBytesOK) {
+		b, e, ok, fallback := r.linFind(s, start, startLimit)
+		if !fallback {
+			if !ok {
+				return nil, false, nil
+			}
+			if maxSlot == 2 {
+				return []int{b, e}, true, nil
+			}
+			return nil, true, nil
+		}
+		// Non-ASCII input or an unsupported walk: use the general engine. | 非 ASCII 输入或不支持的
+		// 遍历：使用通用引擎。
+	}
+	if r.dfaEligible && maxSlot <= 2 {
+		r.dfaOnce.Do(func() { r.dfa = buildASCIIFullMatch(r.dfaAST, r.prog) })
+		// A ^body$ pattern can only match the whole input, so the DFA answers both the boolean and
+		// the index question in one linear pass. | ^body$ 模式只能匹配整个输入，因此 DFA 一次线性扫描
+		// 即可回答布尔与下标问题。
+		if r.dfa != nil {
+			if start != 0 || (startLimit >= 0 && startLimit <= 0) || !r.dfa.match(s) {
+				return nil, false, nil
+			}
+			if maxSlot == 2 {
+				return []int{0, len(s)}, true, nil
+			}
+			return nil, true, nil
+		}
+	}
+	if r.prog.info.hasBacktrack {
+		// Backreferences and lookarounds need every capture slot internally even when the caller
+		// only asks whether a match exists. | 反向引用与环视即使调用方只判断是否匹配，也需要全部
+		// 捕获槽。
+		return r.executeBacktrack(s, start, len(r.names)*2, startLimit)
+	}
+	m := r.pikePool.Get().(*pikeMachine)
+	m.maxSlot = maxSlot
+	m.capLen = maxSlot
+	m.startSet = &r.prog.info.firstBytes
+	m.startTables = &r.firstTables
+	m.startSetOK = r.prog.info.firstBytesOK
+	m.startASCIIOK = r.firstASCIISet
+	ok := false
+	var caps []int
+	switch {
+	case r.prog.info.anchored:
+		if start == 0 && (startLimit < 0 || startLimit > 0) {
+			ok = m.matchAt(s, 0)
+			caps = m.caps()
+		}
+	case r.prog.info.prefixOK && (r.prog.info.selectivePrefilter || !preferSearch):
+		for cand := r.nextPrefix(s, start); cand >= 0; cand = r.nextPrefix(s, cand+1) {
+			if startLimit >= 0 && cand >= startLimit {
+				break
+			}
+			if !utf8.RuneStart(s[cand]) {
+				continue
+			}
+			if m.matchAt(s, cand) {
+				ok = true
+				caps = m.caps()
+				break
+			}
+		}
+	case r.prog.info.firstBytesOK && (r.prog.info.selectivePrefilter || !preferSearch):
+		for cand := r.firstCandidate(s, start); cand >= 0; cand = r.firstCandidate(s, cand+1) {
+			if startLimit >= 0 && cand >= startLimit {
+				break
+			}
+			if !utf8.RuneStart(s[cand]) {
+				continue
+			}
+			if m.matchAt(s, cand) {
+				ok = true
+				caps = m.caps()
+				break
+			}
+		}
+	default:
+		if startLimit < 0 {
+			ok = m.search(s, start)
+			caps = m.caps()
+			break
+		}
+		for cand := start; cand < startLimit && cand <= len(s); {
+			if utf8.RuneStart(s[cand]) && m.matchAt(s, cand) {
+				ok = true
+				caps = m.caps()
+				break
+			}
+			if cand == len(s) {
+				break
+			}
+			_, size := utf8.DecodeRuneInString(s[cand:])
+			cand += size
+		}
+	}
+	r.pikePool.Put(m)
+	if !ok {
+		return nil, false, nil
+	}
+	return caps, true, nil
 }
 
-// captureString slices s for one group; an unmatched group yields the empty string. | captureString 为单个分组切出 s 的文本；未参与匹配的分组返回空串。
-func captureString(s string, starts []int, g *regexp2.Group) string {
-	if len(g.Captures) == 0 {
+// executeBacktrack runs one search on the backtracking engine. | executeBacktrack 在回溯引擎上执行一次
+// 搜索。
+func (r *Regexp) executeBacktrack(s string, start, maxSlot, startLimit int) ([]int, bool, error) {
+	m := r.btPool.Get().(*btMachine)
+	m.maxSlot = maxSlot
+	if cap(m.caps) < maxSlot {
+		m.caps = make([]int, maxSlot)
+	} else {
+		m.caps = m.caps[:maxSlot]
+	}
+	caps, ok, err := m.findFrom(r, s, start, startLimit)
+	m.caps = m.caps[:0]
+	r.btPool.Put(m)
+	return caps, ok, err
+}
+
+// asciiFoldPrefix reports whether every prefix rune and every rune in its simple-fold orbit is ASCII.
+// When true, folding can be checked byte by byte. | asciiFoldPrefix 报告前缀的每个符文及其简单折叠轨道
+// 中的每个符文是否都是 ASCII。为 true 时可按字节检查折叠。
+func asciiFoldPrefix(prefix []rune) bool {
+	for _, r := range prefix {
+		if r >= utf8.RuneSelf {
+			return false
+		}
+		for f := unicode.SimpleFold(r); f != r; f = unicode.SimpleFold(f) {
+			if f >= utf8.RuneSelf {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// bytesToString views b as a string without copying. The result must not outlive b. | bytesToString 在
+// 不复制的情况下把 b 视为字符串；结果不得比 b 存活更久。
+func bytesToString(b []byte) string {
+	if len(b) == 0 {
 		return ""
 	}
-	start, end := starts[g.Index], starts[g.Index+g.Length]
-	return s[start:end]
-}
-
-// appendGroupIndices appends one byte offset pair per group; an unmatched group yields -1, -1. | appendGroupIndices 为每个分组追加一对字节偏移；未参与匹配的分组追加 -1, -1。
-func appendGroupIndices(dst []int, groups []regexp2.Group, starts []int) []int {
-	for i := range groups {
-		g := &groups[i]
-		if len(g.Captures) == 0 {
-			dst = append(dst, -1, -1)
-			continue
-		}
-		dst = append(dst, starts[g.Index], starts[g.Index+g.Length])
-	}
-	return dst
+	return unsafe.String(unsafe.SliceData(b), len(b))
 }

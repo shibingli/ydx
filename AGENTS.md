@@ -111,7 +111,7 @@ git push origin --tags
 - [ ] 默认 `CGO_ENABLED=0`，没有引入 cgo SQLite 或其它 cgo 依赖。
 - [ ] 没有运行时 CDN 引用；资产可离线使用。
 - [ ] 没有把用户输入直接拼进 SQL / shell / 模板。
-- [ ] 正则扫描走 `regexpx` 的 RE2 快路径，避免灾难性回溯。
+- [ ] 正则扫描走 `regexpx` 的自研线性引擎；需要环视/反向引用时受 `MatchTimeout` 保护。
 
 ## 6. 提交纪律（强制）
 
