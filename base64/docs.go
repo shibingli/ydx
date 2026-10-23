@@ -3,12 +3,14 @@
 // Backend routing (determined by build tags, fully transparent to callers): | 后端分流（由构建标签决定，对调用方完全透明）：
 //
 //   - without the b64x_std tag: the self-developed codec on every architecture. amd64
-//     selects AVX-512 VBMI2/VBMI, baseline AVX-512, or AVX2 at runtime when built with
-//     GOEXPERIMENT=simd; arm64 uses NEON when built with GOEXPERIMENT=simd; other
-//     architectures use the pure-Go scalar kernel. Backend() returns "yd-native"; |
-//     未指定 b64x_std 标签：所有架构使用自研编解码器。amd64 在 GOEXPERIMENT=simd 构建下
-//     运行时选择 AVX-512 VBMI2/VBMI、基础 AVX-512 或 AVX2；arm64 在 GOEXPERIMENT=simd
-//     构建下使用 NEON；其他架构使用纯 Go 标量内核。Backend() 返回 "yd-native"；
+//     selects hand-written AVX2, AVX-512BW, AVX-512 VBMI/VBMI2 kernels at runtime by
+//     instruction-set level (VBMI2 > VBMI > AVX-512BW > AVX2 > scalar); arm64 uses
+//     hand-written NEON; other architectures use the pure-Go scalar kernel. No GOEXPERIMENT
+//     is required. Backend() returns "yd-native"; |
+//     未指定 b64x_std 标签：所有架构使用自研编解码器。amd64 按指令集级别（VBMI2 > VBMI >
+//     AVX-512BW > AVX2 > 标量）在运行时选择手写 AVX2、AVX-512BW、AVX-512 VBMI/VBMI2 内核；
+//     arm64 使用手写 NEON；其他架构使用纯 Go 标量内核。不需要 GOEXPERIMENT。Backend() 返回
+//     "yd-native"；
 //   - with the b64x_std tag: the standard library encoding/base64, Backend() returns
 //     "encoding/base64". | 指定 b64x_std 标签：使用标准库 encoding/base64，Backend() 返回
 //     "encoding/base64"。
