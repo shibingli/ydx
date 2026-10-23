@@ -3,12 +3,11 @@ module github.com/shibingli/ydx/middleware/requestid
 go 1.27.2
 
 require (
-	github.com/shibingli/ydx/regexpx v0.1.4
+	github.com/shibingli/ydx/regexpx v0.1.5
 	github.com/shibingli/ydx/router v0.1.6
 )
 
 require (
-	github.com/dlclark/regexp2 v1.12.0 // indirect
 	github.com/shibingli/ydx/afs v0.1.4 // indirect
 	github.com/shibingli/ydx/base64 v0.1.7 // indirect
 	github.com/shibingli/ydx/errs v0.1.3 // indirect

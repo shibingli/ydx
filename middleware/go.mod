@@ -26,6 +26,7 @@ require (
 	github.com/shibingli/ydx/json v0.1.8 // indirect
 	github.com/shibingli/ydx/middleware/reqlog v0.1.6 // indirect
 	github.com/shibingli/ydx/protocol v0.1.3 // indirect
+	github.com/shibingli/ydx/regexpx v0.1.5 // indirect
 	github.com/shibingli/ydx/sysinfo v0.1.3 // indirect
 	github.com/spf13/afero v1.15.0 // indirect
 	go.uber.org/atomic v1.12.0 // indirect
