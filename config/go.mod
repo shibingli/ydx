@@ -4,8 +4,8 @@ go 1.27.2
 
 require (
 	github.com/fsnotify/fsnotify v1.10.1
-	github.com/shibingli/ydx/afs v0.1.0
-	github.com/shibingli/ydx/errs v0.1.0
+	github.com/shibingli/ydx/afs v0.1.4
+	github.com/shibingli/ydx/errs v0.1.3
 	github.com/spf13/afero v1.15.0
 	github.com/spf13/pflag v1.0.10
 	github.com/spf13/viper v1.21.0
