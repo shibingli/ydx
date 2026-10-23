@@ -16,9 +16,10 @@ var errCorrupt = errs.New("b64x: corrupt Base64 input | b64x：损坏的 Base64 
 // b64x_std is set. | Encoding 是除 b64x_std 构建外所有架构上默认使用的自研 Base64
 // 编解码器。
 type Encoding struct {
-	alphabet [64]byte
-	decode   [256]uint8
 	pair     *encodePairLUT
+	quad     *decodeQuadLUT
+	decode   [256]uint8
+	alphabet [64]byte
 	pad      byte
 	raw      bool
 	simd     uint8
@@ -42,6 +43,38 @@ func makeEncodePairLUT(alpha string) *encodePairLUT {
 var (
 	stdEncodePairs = makeEncodePairLUT(stdAlpha)
 	urlEncodePairs = makeEncodePairLUT(urlAlpha)
+)
+
+// decodeQuadLUT pre-shifts every character into its position in a 24-bit group and sets bit 24
+// for invalid characters. One 4-character group then needs four loads and three ORs, and eight
+// characters two more ORs, with no per-character shifting on the decode path. The two alphabets
+// share one table each. | decodeQuadLUT 把每个字符预移位到 24 位组中的位置，非法字符置第 24 位。
+// 一个 4 字符组只需四次加载与三次 OR，八个字符再多两次 OR，解码路径无需逐字符移位；两种字母表
+// 各共享一张表。
+type decodeQuadLUT [4][256]uint32
+
+// decodeInvalidBit marks a character outside the alphabet inside a quad lookup result. |
+// decodeInvalidBit 在四元组查表结果中标记字母表之外的字符。
+const decodeInvalidBit = 1 << 24
+
+func makeDecodeQuadLUT(alpha string) *decodeQuadLUT {
+	q := new(decodeQuadLUT)
+	for i := range q[0] {
+		q[0][i], q[1][i], q[2][i], q[3][i] = decodeInvalidBit, decodeInvalidBit, decodeInvalidBit, decodeInvalidBit
+	}
+	for i := 0; i < len(alpha); i++ {
+		v := uint32(i)
+		q[0][alpha[i]] = v << 18
+		q[1][alpha[i]] = v << 12
+		q[2][alpha[i]] = v << 6
+		q[3][alpha[i]] = v
+	}
+	return q
+}
+
+var (
+	stdDecodeQuads = makeDecodeQuadLUT(stdAlpha)
+	urlDecodeQuads = makeDecodeQuadLUT(urlAlpha)
 )
 
 // simdEncode and simdDecode are installed by the optional SIMD build. | simdEncode 与 simdDecode
@@ -86,9 +119,11 @@ func newEncoding(alpha string, padded bool) *Encoding {
 	case stdAlpha:
 		e.simd = 1
 		e.pair = stdEncodePairs
+		e.quad = stdDecodeQuads
 	case urlAlpha:
 		e.simd = 2
 		e.pair = urlEncodePairs
+		e.quad = urlDecodeQuads
 	}
 	copy(e.alphabet[:], alpha)
 	for i := range e.decode {
@@ -139,44 +174,51 @@ func (e *Encoding) DecodedLen(n int) int {
 // 保留任一切片的前提下把 src 写入 dst；独立出来后，逃逸分析可证明传给它的栈上
 // 短缓冲不会逃逸。
 func (e *Encoding) encodeScalar(dst, src []byte) {
-	di := 0
 	pair := e.pair
-	for len(src) >= 12 {
-		s := src[:12]
-		d := dst[di : di+16]
-		v0 := uint(s[0])<<16 | uint(s[1])<<8 | uint(s[2])
-		v1 := uint(s[3])<<16 | uint(s[4])<<8 | uint(s[5])
-		v2 := uint(s[6])<<16 | uint(s[7])<<8 | uint(s[8])
-		v3 := uint(s[9])<<16 | uint(s[10])<<8 | uint(s[11])
-		p0 := uint32(pair[(v0>>12)&4095]) | uint32(pair[v0&4095])<<16
-		p1 := uint32(pair[(v1>>12)&4095]) | uint32(pair[v1&4095])<<16
-		p2 := uint32(pair[(v2>>12)&4095]) | uint32(pair[v2&4095])<<16
-		p3 := uint32(pair[(v3>>12)&4095]) | uint32(pair[v3&4095])<<16
-		binary.LittleEndian.PutUint32(d[0:4], p0)
-		binary.LittleEndian.PutUint32(d[4:8], p1)
-		binary.LittleEndian.PutUint32(d[8:12], p2)
-		binary.LittleEndian.PutUint32(d[12:16], p3)
-		src, di = src[12:], di+16
+	// One big-endian 32-bit load per 3-byte group (each reading one byte into the next group)
+	// replaces three byte loads and two shifts; one 64-bit store carries the eight characters of
+	// two groups. | 每个 3 字节组用一次大端 32 位加载（各多读一个字节到相邻组），取代三次字节
+	// 加载与两次移位；一次 64 位存储写入两组的八个字符。
+	for len(src) >= 16 {
+		v0 := uint32(binary.BigEndian.Uint32(src[0:4]) >> 8)
+		v1 := uint32(binary.BigEndian.Uint32(src[3:7]) >> 8)
+		v2 := uint32(binary.BigEndian.Uint32(src[6:10]) >> 8)
+		v3 := uint32(binary.BigEndian.Uint32(src[9:13]) >> 8)
+		p0 := uint64(pair[(v0>>12)&4095]) | uint64(pair[v0&4095])<<16
+		p1 := uint64(pair[(v1>>12)&4095]) | uint64(pair[v1&4095])<<16
+		p2 := uint64(pair[(v2>>12)&4095]) | uint64(pair[v2&4095])<<16
+		p3 := uint64(pair[(v3>>12)&4095]) | uint64(pair[v3&4095])<<16
+		binary.LittleEndian.PutUint64(dst[0:8], p0|p1<<32)
+		binary.LittleEndian.PutUint64(dst[8:16], p2|p3<<32)
+		src, dst = src[12:], dst[16:]
+	}
+	for len(src) >= 8 {
+		v0 := uint32(binary.BigEndian.Uint32(src[0:4]) >> 8)
+		v1 := uint32(binary.BigEndian.Uint32(src[3:7]) >> 8)
+		p0 := uint64(pair[(v0>>12)&4095]) | uint64(pair[v0&4095])<<16
+		p1 := uint64(pair[(v1>>12)&4095]) | uint64(pair[v1&4095])<<16
+		binary.LittleEndian.PutUint64(dst[0:8], p0|p1<<32)
+		src, dst = src[6:], dst[8:]
 	}
 	for len(src) >= 3 {
 		v := uint(src[0])<<16 | uint(src[1])<<8 | uint(src[2])
 		p := uint32(pair[(v>>12)&4095]) | uint32(pair[v&4095])<<16
-		binary.LittleEndian.PutUint32(dst[di:], p)
-		src, di = src[3:], di+4
+		binary.LittleEndian.PutUint32(dst, p)
+		src, dst = src[3:], dst[4:]
 	}
 	switch len(src) {
 	case 1:
 		v := uint(src[0]) << 16
-		binary.LittleEndian.PutUint16(dst[di:], pair[(v>>12)&4095])
+		binary.LittleEndian.PutUint16(dst, pair[(v>>12)&4095])
 		if !e.raw {
-			dst[di+2], dst[di+3] = e.pad, e.pad
+			dst[2], dst[3] = e.pad, e.pad
 		}
 	case 2:
 		v := uint(src[0])<<16 | uint(src[1])<<8
-		binary.LittleEndian.PutUint16(dst[di:], pair[(v>>12)&4095])
-		dst[di+2] = byte(pair[v&4095])
+		binary.LittleEndian.PutUint16(dst, pair[(v>>12)&4095])
+		dst[2] = byte(pair[v&4095])
 		if !e.raw {
-			dst[di+3] = e.pad
+			dst[3] = e.pad
 		}
 	}
 }
@@ -210,24 +252,31 @@ func (e *Encoding) AppendEncode(dst, src []byte) []byte {
 	return dst
 }
 
-// encodeToStringStackMax is the largest encoded result staged on the stack.
-// 128 bytes cover SHA-1/SHA-256 digests and other short handshake material, so
-// the string conversion is the only allocation. | encodeToStringStackMax 是栈上
-// 暂存的最大编码结果；128 字节覆盖 SHA-1/SHA-256 摘要等短握手数据，使字符串
-// 转换成为唯一一次分配。
+// encodeToStringStackMax is the largest result that takes the direct scalar path in
+// EncodeToString. 128 bytes cover SHA-1/SHA-256 digests and other short handshake material,
+// where the result allocation is the only allocation. | encodeToStringStackMax 是
+// EncodeToString 走直接标量路径的最大结果；128 字节覆盖 SHA-1/SHA-256 摘要等短握手数据，
+// 此时结果分配是唯一一次分配。
 const encodeToStringStackMax = 128
 
 // EncodeToString returns the Base64-encoded string of src. | EncodeToString 返回 src 的 Base64 编码字符串。
 func (e *Encoding) EncodeToString(src []byte) string {
 	n := e.EncodedLen(len(src))
-	if n <= encodeToStringStackMax {
-		var buf [encodeToStringStackMax]byte
-		e.encodeScalar(buf[:n], src)
-		return string(buf[:n])
+	if n == 0 {
+		return ""
 	}
 	b := make([]byte, n)
-	e.Encode(b, src)
-	return string(b)
+	if n <= encodeToStringStackMax && len(src) < 28 {
+		// Short inputs cannot reach a block kernel, so call the scalar encoder directly and
+		// skip the length re-check and SIMD dispatch. | 短输入到不了块内核，直接调用标量编码器，
+		// 省去长度复检与 SIMD 分派。
+		e.encodeScalar(b, src)
+	} else {
+		e.Encode(b, src)
+	}
+	// b is freshly allocated and never retained, so the string can take ownership without a copy. |
+	// b 是全新分配且不再被保留，字符串可直接接管其存储而无需复制。
+	return unsafe.String(unsafe.SliceData(b), n)
 }
 
 // Decode decodes Base64 text into dst and returns the number of bytes written. | Decode 把 Base64 文本解码到 dst 并返回写入字节数。
@@ -245,65 +294,67 @@ func (e *Encoding) Decode(dst, src []byte) (int, error) {
 	if simdDecode != nil && e.simd != 0 && len(src) >= 32 {
 		i, out = simdDecode(dst, src, e.simd == 2, e.raw)
 	}
+	quad := e.quad
 	for i+16 <= len(src) {
 		s := src[i : i+16]
-		a0 := e.decode[s[0]]
-		b0 := e.decode[s[1]]
-		c0 := e.decode[s[2]]
-		d0 := e.decode[s[3]]
-		a1 := e.decode[s[4]]
-		b1 := e.decode[s[5]]
-		c1 := e.decode[s[6]]
-		d1 := e.decode[s[7]]
-		a2 := e.decode[s[8]]
-		b2 := e.decode[s[9]]
-		c2 := e.decode[s[10]]
-		d2 := e.decode[s[11]]
-		a3 := e.decode[s[12]]
-		b3 := e.decode[s[13]]
-		c3 := e.decode[s[14]]
-		d3 := e.decode[s[15]]
-		// Four independent three-way OR chains feed one tree, replacing a single 15-deep chain. |
-		// 四条独立的三级 OR 链汇入一次树形合并，取代单条 15 级依赖链。
-		q0 := a0 | b0 | c0 | d0
-		q1 := a1 | b1 | c1 | d1
-		q2 := a2 | b2 | c2 | d2
-		q3 := a3 | b3 | c3 | d3
-		if (q0|q1|q2|q3)&0x80 != 0 {
+		// The pre-shifted tables turn each 4-character group into four loads and three ORs; bit 24
+		// flags an invalid character without a separate table lookup. | 预移位表把每个 4 字符组
+		// 降为四次加载与三次 OR；第 24 位直接标记非法字符，无需额外查表。
+		r0 := quad[0][s[0]] | quad[1][s[1]] | quad[2][s[2]] | quad[3][s[3]]
+		r1 := quad[0][s[4]] | quad[1][s[5]] | quad[2][s[6]] | quad[3][s[7]]
+		r2 := quad[0][s[8]] | quad[1][s[9]] | quad[2][s[10]] | quad[3][s[11]]
+		r3 := quad[0][s[12]] | quad[1][s[13]] | quad[2][s[14]] | quad[3][s[15]]
+		if (r0|r1|r2|r3)&decodeInvalidBit != 0 {
 			break
 		}
-		d := dst[out : out+12]
-		d[0] = a0<<2 | b0>>4
-		d[1] = b0<<4 | c0>>2
-		d[2] = c0<<6 | d0
-		d[3] = a1<<2 | b1>>4
-		d[4] = b1<<4 | c1>>2
-		d[5] = c1<<6 | d1
-		d[6] = a2<<2 | b2>>4
-		d[7] = b2<<4 | c2>>2
-		d[8] = c2<<6 | d2
-		d[9] = a3<<2 | b3>>4
-		d[10] = b3<<4 | c3>>2
-		d[11] = c3<<6 | d3
+		// Two 24-bit groups form a 48-bit word whose big-endian bytes are the six decoded bytes,
+		// so two stores replace twelve per-byte stores. | 两个 24 位组合成 48 位字，其大端字节序
+		// 恰为六个解码字节；两次存储取代十二次逐字节存储。
+		w0 := uint64(r0)<<24 | uint64(r1)
+		w1 := uint64(r2)<<24 | uint64(r3)
+		binary.BigEndian.PutUint32(dst[out:], uint32(w0>>16))
+		binary.BigEndian.PutUint16(dst[out+4:], uint16(w0))
+		binary.BigEndian.PutUint32(dst[out+6:], uint32(w1>>16))
+		binary.BigEndian.PutUint16(dst[out+10:], uint16(w1))
 		i += 16
 		out += 12
 	}
 	for i+4 <= len(src) {
-		a := e.decode[src[i]]
-		b := e.decode[src[i+1]]
-		c := e.decode[src[i+2]]
-		d := e.decode[src[i+3]]
-		if (a|b|c|d)&0x80 != 0 {
+		r := quad[0][src[i]] | quad[1][src[i+1]] | quad[2][src[i+2]] | quad[3][src[i+3]]
+		if r&decodeInvalidBit != 0 {
 			break
 		}
-		dst[out] = a<<2 | b>>4
-		dst[out+1] = b<<4 | c>>2
-		dst[out+2] = c<<6 | d
+		dst[out] = byte(r >> 16)
+		dst[out+1] = byte(r >> 8)
+		dst[out+2] = byte(r)
 		i += 4
 		out += 3
 	}
 	if i == len(src) {
 		return out, nil
+	}
+	// Raw encodings end in a 2- or 3-character group, which is the common JWT shape; decoding it
+	// here avoids the general slow path with its per-character state machine. | 原始编码以 2 或 3
+	// 字符组结尾，这是 JWT 的常见形态；在此直接解码可避免带逐字符状态机的通用慢路径。
+	if e.raw {
+		switch len(src) - i {
+		case 2:
+			a := e.decode[src[i]]
+			b := e.decode[src[i+1]]
+			if (a|b)&0x80 == 0 {
+				dst[out] = a<<2 | b>>4
+				return out + 1, nil
+			}
+		case 3:
+			a := e.decode[src[i]]
+			b := e.decode[src[i+1]]
+			c := e.decode[src[i+2]]
+			if (a|b|c)&0x80 == 0 {
+				dst[out] = a<<2 | b>>4
+				dst[out+1] = b<<4 | c>>2
+				return out + 2, nil
+			}
+		}
 	}
 	// Canonical padded tails are the common case for hashes and keys; decoding them here avoids
 	// the general slow path with its per-character state machine. | 规范填充尾部是摘要与密钥的常见
@@ -335,13 +386,6 @@ func (e *Encoding) Decode(dst, src []byte) (int, error) {
 	return out + n, nil
 }
 
-// decodeShortSIMD decodes a short input by padding it to one SIMD block. '=' padding is replaced
-// with 'A' and the rest of the block is filled with 'A', so the kernel decodes a valid block and
-// only the real prefix is copied to dst. It reports ok=false for any shape or character the kernel
-// does not accept, leaving the scalar path to decode or reject the input. |
-// decodeShortSIMD 把短输入补齐到一个 SIMD 块后解码：'=' 填充替换为 'A'，块内其余位置也填 'A'，
-// 使内核解码一个合法块，随后只把真实前缀复制到 dst。形状或字符不被内核接受时返回 ok=false，
-// 由标量路径解码或报错。
 // decodeSlow handles padding, CR/LF and invalid input after the fast path. | decodeSlow 处理快路径之后的填充、CR/LF 与非法输入。
 func (e *Encoding) decodeSlow(dst, src []byte) (int, error) {
 	var quad [4]uint8
