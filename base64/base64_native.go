@@ -216,7 +216,10 @@ func (e *Encoding) Decode(dst, src []byte) (int, error) {
 		return 0, ErrShortBuffer
 	}
 	out, i := 0, 0
-	if simdDecode != nil && e.simd != 0 {
+	// Every SIMD decoder handles at least 32 characters, so shorter inputs skip the indirect
+	// call and its immediate no-op return. | 所有 SIMD 解码器至少处理 32 个字符，更短的输入跳过
+	// 间接调用及其立即空返回。
+	if simdDecode != nil && e.simd != 0 && len(src) >= 32 {
 		i, out = simdDecode(dst, src, e.simd == 2, e.raw)
 	}
 	for i+16 <= len(src) {
@@ -237,7 +240,13 @@ func (e *Encoding) Decode(dst, src []byte) (int, error) {
 		b3 := e.decode[s[13]]
 		c3 := e.decode[s[14]]
 		d3 := e.decode[s[15]]
-		if (a0|b0|c0|d0|a1|b1|c1|d1|a2|b2|c2|d2|a3|b3|c3|d3)&0x80 != 0 {
+		// Four independent three-way OR chains feed one tree, replacing a single 15-deep chain. |
+		// 四条独立的三级 OR 链汇入一次树形合并，取代单条 15 级依赖链。
+		q0 := a0 | b0 | c0 | d0
+		q1 := a1 | b1 | c1 | d1
+		q2 := a2 | b2 | c2 | d2
+		q3 := a3 | b3 | c3 | d3
+		if (q0|q1|q2|q3)&0x80 != 0 {
 			break
 		}
 		d := dst[out : out+12]
@@ -303,6 +312,13 @@ func (e *Encoding) Decode(dst, src []byte) (int, error) {
 	return out + n, nil
 }
 
+// decodeShortSIMD decodes a short input by padding it to one SIMD block. '=' padding is replaced
+// with 'A' and the rest of the block is filled with 'A', so the kernel decodes a valid block and
+// only the real prefix is copied to dst. It reports ok=false for any shape or character the kernel
+// does not accept, leaving the scalar path to decode or reject the input. |
+// decodeShortSIMD 把短输入补齐到一个 SIMD 块后解码：'=' 填充替换为 'A'，块内其余位置也填 'A'，
+// 使内核解码一个合法块，随后只把真实前缀复制到 dst。形状或字符不被内核接受时返回 ok=false，
+// 由标量路径解码或报错。
 // decodeSlow handles padding, CR/LF and invalid input after the fast path. | decodeSlow 处理快路径之后的填充、CR/LF 与非法输入。
 func (e *Encoding) decodeSlow(dst, src []byte) (int, error) {
 	var quad [4]uint8
