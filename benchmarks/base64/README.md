@@ -16,6 +16,9 @@ cristalhq。
 | `encoding/base64` | Go 1.27.2 | 标准库对照 |
 | `github.com/cristalhq/base64` | v0.1.2 | 第三方实现（纯 Go SWAR） |
 
+> v0.1.8 只把短输入 SIMD 阈值提高到 64，不影响本表的 16 B、1 KiB 与 64 KiB 路径；
+> 32 B 的对比与阈值分析见 yd 仓的 `benchmarks/yd-vs-ydx-analysis.md`。
+
 ## 运行环境
 
 - **amd64**：AMD Ryzen AI MAX+ 395（Zen 5，32 逻辑 CPU，AVX-512F/BW/VBMI/VBMI2），

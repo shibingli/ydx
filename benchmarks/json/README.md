@@ -19,6 +19,10 @@ SWAR/标量路径。不需要 `GOEXPERIMENT=simd`，也不依赖 cgo；显式 `j
 | `github.com/segmentio/encoding/json` | v0.5.4 | 默认配置 |
 | `github.com/go-json-experiment/json` | v0.0.0-20260820222146 | 官方实验版（表中 `go-json-v2`） |
 
+> 表中数值采样于 v0.1.8；v0.1.9 只优化超出精确短范围的长小数字面量，不改变本表使用的
+> `Score=98.5` 短小数载荷，差异在采样噪声范围内。长小数与 `time.Time` 载荷的对照见
+> yd 仓的 `benchmarks/yd-vs-ydx-analysis.md`。
+
 ## 运行环境
 
 - **amd64**：AMD Ryzen AI MAX+ 395（Zen 5，32 逻辑 CPU，AVX-512F/BW/VBMI/VBMI2），
