@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	sonic "github.com/bytedance/sonic"
+	expjson "github.com/go-json-experiment/json"
 	goccyjson "github.com/goccy/go-json"
 	jsoniter "github.com/json-iterator/go"
 	segjson "github.com/segmentio/encoding/json"
@@ -64,6 +65,7 @@ func benchMarshalers() []benchMarshaler {
 		{name: "jsoniter", fn: jsoniter.ConfigCompatibleWithStandardLibrary.Marshal},
 		{name: "sonic", fn: sonic.Marshal},
 		{name: "segmentio", fn: segjson.Marshal},
+		{name: "go-json-v2", fn: func(v any) ([]byte, error) { return expjson.Marshal(v) }},
 	}
 }
 
@@ -76,6 +78,7 @@ func benchUnmarshalers() []benchUnmarshaler {
 		{name: "jsoniter", fn: jsoniter.ConfigCompatibleWithStandardLibrary.Unmarshal},
 		{name: "sonic", fn: sonic.Unmarshal},
 		{name: "segmentio", fn: segjson.Unmarshal},
+		{name: "go-json-v2", fn: func(data []byte, v any) error { return expjson.Unmarshal(data, v) }},
 	}
 }
 
