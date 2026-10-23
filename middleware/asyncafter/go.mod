@@ -5,11 +5,11 @@ go 1.27.2
 require (
 	github.com/shibingli/ydx/errs v0.1.3
 	github.com/shibingli/ydx/json v0.1.8
-	github.com/shibingli/ydx/log v0.1.6
-	github.com/shibingli/ydx/middleware/accesslog v0.1.6
-	github.com/shibingli/ydx/middleware/reqlog v0.1.6
-	github.com/shibingli/ydx/middleware/requestid v0.1.6
-	github.com/shibingli/ydx/router v0.1.6
+	github.com/shibingli/ydx/log v0.1.7
+	github.com/shibingli/ydx/middleware/accesslog v0.1.7
+	github.com/shibingli/ydx/middleware/reqlog v0.1.7
+	github.com/shibingli/ydx/middleware/requestid v0.1.7
+	github.com/shibingli/ydx/router v0.1.7
 	github.com/shibingli/ydx/sysinfo v0.1.3
 )
 
