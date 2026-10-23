@@ -1,4 +1,4 @@
-//go:build arm64 && !goexperiment.simd && !b64x_std
+//go:build arm64 && !b64x_std
 
 package base64
 

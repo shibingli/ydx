@@ -1,4 +1,4 @@
-//go:build !jsonx_std && (!arm64 || !goexperiment.simd)
+//go:build !jsonx_std && !amd64 && !arm64
 
 package json
 
@@ -30,43 +30,4 @@ func scanStringBody(data []byte, start int) (end int, slow bool, nonASCII bool) 
 		i += 8
 	}
 	return scanStringBodyTail(data, i, high&wordHi != 0)
-}
-
-// jsonStringNeedsEscape reports whether s needs JSON escaping, using the same 8/4/1-byte SWAR
-// scan as the encoder. | jsonStringNeedsEscape 用与编码器相同的 8/4/1 字节 SWAR 扫描判断 s
-// 是否需要 JSON 转义。
-func jsonStringNeedsEscape(s string, escapeHTML bool) bool {
-	i := 0
-	for len(s)-i >= 8 {
-		x := binary.LittleEndian.Uint64(unsafe.Slice(unsafe.StringData(s[i:]), 8))
-		if x&wordHi != 0 || wordHasControl(x) ||
-			wordHasZero(x^wordQuote) || wordHasZero(x^wordBackslash) ||
-			(escapeHTML && (wordHasZero(x^wordLessThan) || wordHasZero(x^wordGreater) || wordHasZero(x^wordAmpersand))) {
-			return true
-		}
-		i += 8
-	}
-	for len(s)-i >= 4 {
-		x := binary.LittleEndian.Uint32(unsafe.Slice(unsafe.StringData(s[i:]), 4))
-		if x&0x80808080 != 0 || wordHasControl32(x) ||
-			wordHasZero32(x^wordQuote32) || wordHasZero32(x^wordBackslash32) ||
-			(escapeHTML && (wordHasZero32(x^wordLessThan32) || wordHasZero32(x^wordGreater32) || wordHasZero32(x^wordAmpersand32))) {
-			return true
-		}
-		i += 4
-	}
-	if escapeHTML {
-		for ; i < len(s); i++ {
-			if escapeTableHTML[s[i]] {
-				return true
-			}
-		}
-	} else {
-		for ; i < len(s); i++ {
-			if escapeTablePlain[s[i]] {
-				return true
-			}
-		}
-	}
-	return false
 }
