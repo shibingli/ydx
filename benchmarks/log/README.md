@@ -10,7 +10,7 @@
 
 | 实现 | 版本 | 配置 |
 |---|---|---|
-| ydx/log | v0.1.5 | JSON，`io.Discard`，Info 级 |
+| ydx/log | v0.1.6 | JSON，`io.Discard`，Info 级 |
 | `go.uber.org/zap` | v1.28.0 | 生产风格 JSON encoder，`io.Discard` |
 | `github.com/rs/zerolog` | v1.35.1 | JSON，带时间戳，`io.Discard` |
 | `log/slog` | Go 1.27.2 | `NewJSONHandler(io.Discard)` |

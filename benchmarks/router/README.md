@@ -10,7 +10,7 @@
 
 | 实现 | 版本 | 说明 |
 |---|---|---|
-| ydx/router | v0.1.5 | 基数树 + `Ctx` 对象池 |
+| ydx/router | v0.1.6 | 基数树 + `Ctx` 对象池 |
 | `net/http.ServeMux` | Go 1.27.2 | Go 1.22+ 方法/参数模式 |
 | `github.com/julienschmidt/httprouter` | v1.3.0 | 经典基数树路由 |
 | `github.com/go-chi/chi/v5` | v5.5.0 | 轻量组合式路由 |
