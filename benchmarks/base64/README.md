@@ -12,7 +12,7 @@ cristalhq。
 
 | 实现 | 版本/构建 | 说明 |
 |---|---|---|
-| ydx/base64 | v0.1.7，默认构建 | 自研后端，运行时选择最宽可用内核 |
+| ydx/base64 | v0.1.8，默认构建 | 自研后端，运行时选择最宽可用内核 |
 | `encoding/base64` | Go 1.27.2 | 标准库对照 |
 | `github.com/cristalhq/base64` | v0.1.2 | 第三方实现（纯 Go SWAR） |
 

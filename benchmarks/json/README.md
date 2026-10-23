@@ -11,7 +11,7 @@ SWAR/标量路径。不需要 `GOEXPERIMENT=simd`，也不依赖 cgo；显式 `j
 
 | 实现 | 版本 | 配置 |
 |---|---|---|
-| ydx/json | v0.1.8（原生后端） | 默认构建 |
+| ydx/json | v0.1.9（原生后端） | 默认构建 |
 | `encoding/json` | Go 1.27.2 | 标准库 |
 | `github.com/goccy/go-json` | v0.11.2 | 默认配置 |
 | `github.com/json-iterator/go` | v1.1.12 | `ConfigCompatibleWithStandardLibrary` |
