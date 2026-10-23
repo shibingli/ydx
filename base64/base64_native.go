@@ -332,13 +332,17 @@ func (e *Encoding) Decode(dst, src []byte) (int, error) {
 		return 0, ErrShortBuffer
 	}
 	out, i := 0, 0
-	if simdDecode32 != nil && e.simd != 0 && len(src) == 32 {
+	if simdDecode32 != nil && e.simd != 0 && len(src) >= 32 && len(src) < simdDecodeMin {
 		var mode uint64
 		if e.simd == 2 {
 			mode = 1
 		}
+		// Decode the first 32 characters with the 128-bit kernel; the scalar loop below finishes
+		// any remainder. This keeps the cheap block path for 32–63-character inputs whose full
+		// scalar loop would be slower. | 用 128 位内核解码前 32 个字符，余量交给下面的标量循环。
+		// 这样 32–63 字符的输入也能走低成本块路径，而不是整段标量循环。
 		if n, out32 := simdDecode32(dst, src, mode); n == 32 {
-			return out32, nil
+			i, out = 32, out32
 		}
 	}
 	// Every block SIMD decoder handles at least 64 characters; shorter inputs skip the indirect

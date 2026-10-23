@@ -256,11 +256,11 @@ decDone:
 	RET
 
 // func decode32SIMDAsm(dst, src []byte, mode uint64) (int, int)
-// Decodes exactly 32 valid characters into 24 bytes with one AVX2 block. Mode bit 0 selects the
-// URL alphabet. It returns (32, 24) on success, and (0, 0) when a character is invalid so the
-// scalar path can report or finish the input. | 用一个 AVX2 块把恰好 32 个合法字符解码为 24 字节。
-// mode 第 0 位选择 URL 字母表。成功返回 (32, 24)；遇到非法字符返回 (0, 0)，由标量路径报错或
-// 完成输入。
+// Decodes the first 32 characters into 24 bytes with one AVX2 block. Mode bit 0 selects the URL
+// alphabet. It returns (32, 24) on success, and (0, 0) when a character is invalid or fewer than
+// 32 characters remain, so the scalar path can report or finish the input. | 用一个 AVX2 块把前
+// 32 个字符解码为 24 字节。mode 第 0 位选择 URL 字母表。成功返回 (32, 24)；遇到非法字符或剩余
+// 不足 32 个字符时返回 (0, 0)，由标量路径报错或完成输入。
 TEXT ·decode32SIMDAsm(SB), NOSPLIT, $0-72
 	MOVQ dst_base+0(FP), AX
 	MOVQ dst_len+8(FP), BX
@@ -268,7 +268,7 @@ TEXT ·decode32SIMDAsm(SB), NOSPLIT, $0-72
 	MOVQ src_len+32(FP), DI
 	MOVQ mode+48(FP), R12
 	CMPQ DI, $32
-	JNE decode32Fail
+	JL decode32Fail
 	CMPQ BX, $24
 	JL decode32Fail
 	TESTQ $1, R12
