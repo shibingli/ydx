@@ -11,7 +11,7 @@ SWAR/标量路径。不需要 `GOEXPERIMENT=simd`，也不依赖 cgo；显式 `j
 
 | 实现 | 版本 | 配置 |
 |---|---|---|
-| ydx/json | v0.1.9（原生后端） | 默认构建 |
+| ydx/json | v0.1.10（原生后端） | 默认构建 |
 | `encoding/json` | Go 1.27.2 | 标准库 |
 | `github.com/goccy/go-json` | v0.11.2 | 默认配置 |
 | `github.com/json-iterator/go` | v1.1.12 | `ConfigCompatibleWithStandardLibrary` |
@@ -19,9 +19,11 @@ SWAR/标量路径。不需要 `GOEXPERIMENT=simd`，也不依赖 cgo；显式 `j
 | `github.com/segmentio/encoding/json` | v0.5.4 | 默认配置 |
 | `github.com/go-json-experiment/json` | v0.0.0-20260820222146 | 官方实验版（表中 `go-json-v2`） |
 
-> 表中数值采样于 v0.1.8；v0.1.9 只优化超出精确短范围的长小数字面量，不改变本表使用的
-> `Score=98.5` 短小数载荷，差异在采样噪声范围内。长小数与 `time.Time` 载荷的对照见
-> yd 仓的 `benchmarks/yd-vs-ydx-analysis.md`。
+> 表中 `Marshal` 与 `Unmarshal` 的 `ydx` 数值分别采样于 v0.1.8 与 v0.1.10。`Unmarshal`
+> 于 2026-10-23 第三轮重测（3 次中位数）：v0.1.10 为长尾数与指数形式加入非舍入缩放快速
+> 路径，超出 19 位有效数字时用 d 与 d+1 判定截断尾部，仍不确定才回退 strconv；本表使用的
+> `Score=98.5` 短小数不受影响。长小数与 `time.Time` 载荷的对照见 yd 仓的
+> `benchmarks/yd-vs-ydx-analysis.md`。
 
 ## 运行环境
 
@@ -48,16 +50,16 @@ SWAR/标量路径。不需要 `GOEXPERIMENT=simd`，也不依赖 cgo；显式 `j
 | `Marshal/one` | **61.2** | 305.7 | 93.1 | 141.2 | 89.0 | 101.5 | 310.2 |
 | `Marshal/many` | **2.50 µs** | 12.9 µs | 4.18 µs | 6.84 µs | 3.01 µs | 4.88 µs | 13.0 µs |
 | `Marshal/large` | **39.8 µs** | 204 µs | 66.8 µs | 109 µs | 46.7 µs | 77.7 µs | 206 µs |
-| `Unmarshal/one` | **118.6** | 545.6 | 123.2 | 222 | 190.8 | 210.7 | 446.3 |
-| `Unmarshal/many` | **6.44 µs** | 29.0 µs | 6.95 µs | 13.6 µs | 11.0 µs | 13.4 µs | 25.2 µs |
-| `Unmarshal/large` | **100.0 µs** | 456.6 µs | 110.6 µs | 210 µs | 166 µs | 207.7 µs | 398.6 µs |
+| `Unmarshal/one` | **136.5** | 600.2 | 142.0 | 253.0 | 229.1 | 255.8 | 487.1 |
+| `Unmarshal/many` | **7.71 µs** | 30.9 µs | 7.77 µs | 15.7 µs | 13.0 µs | 15.5 µs | 27.4 µs |
+| `Unmarshal/large` | **120.2 µs** | 481.1 µs | 131.6 µs | 247.8 µs | 214.0 µs | 252.8 µs | 428.0 µs |
 
 六个场景全部领先所有对比实现：
 
 - 相对 goccy：`Marshal/one` 快约 34%，`Marshal/many` 快约 40%，`Marshal/large` 快约 40%，
-  `Unmarshal/one` 快约 4%，`Unmarshal/many` 快约 7%，`Unmarshal/large` 快约 10%；
-- 相对 sonic：编码快约 15%–31%，解码快约 38%–42%；
-- 相对标准库：编码快约 5.0–5.2 倍，解码快约 4.5–4.6 倍。
+  `Unmarshal/one` 快约 4%，`Unmarshal/many` 快约 0.8%，`Unmarshal/large` 快约 8.7%；
+- 相对 sonic：编码快约 15%–31%，解码快约 40%–44%；
+- 相对标准库：编码快约 5.0–5.2 倍，解码快约 4.0–4.4 倍。
 
 分配特征（B/op、allocs/op）：
 

@@ -1,8 +1,8 @@
 # ydx 基准与主流实现对比
 
 本目录是 ydx 的基准模块集合。每个带 `go.mod` 的子目录都是一个**独立的 Go 模块**，
-只依赖 ydx 的最新子目录标签（base64 v0.1.7、json v0.1.8；引用 json 的产品模块
-v0.1.7，其余模块 v0.1.4 或 v0.1.3）与对应的对比库；`cache/local` 是 `cache` 基准
+只依赖 ydx 的最新子目录标签（base64 v0.1.9、json v0.1.10、log v0.1.8；引用这些
+组件的产品模块按各自 go.mod 锁定）与对应的对比库；`cache/local` 是 `cache` 基准
 模块内的子包。产品模块本身不包含任何 `Benchmark*`，也不依赖基准专用库。
 
 - 实测日期：2026-10-23
@@ -38,14 +38,14 @@ v0.1.7，其余模块 v0.1.4 或 v0.1.3）与对应的对比库；`cache/local` 
 
 | 模块 | 场景 | ydx | 对比实现 |
 |---|---|---:|---:|
-| base64 | `Encode` 1 KiB | 23.4 ns | stdlib 470 ns / cristalhq 200 ns |
-| base64 | `Decode` 1 KiB | 42.1 ns | stdlib 455 ns / cristalhq 274 ns |
+| base64 | `Encode` 1 KiB | 24.7 ns | stdlib 437.9 ns / cristalhq 199.6 ns |
+| base64 | `Decode` 1 KiB | 44.2 ns | stdlib 458.5 ns / cristalhq 274.9 ns |
 | buffpool | 4 KiB `Get`/`Put` | 18.00 ns | `sync.Pool` 12.08 ns / bytebufferpool 20.78 ns |
 | cache/local | `Get` 命中 | 83.02 ns | bigcache 125.7 ns / freecache 106.9 ns / ristretto 98.97 ns / `sync.Map` 24.49 ns |
 | json | `Marshal` 64 对象 | 2.51 µs | stdlib 12.8 µs / goccy 4.19 µs / sonic 3.00 µs |
 | json | `Unmarshal` 64 对象 | 6.43 µs | stdlib 29.7 µs / goccy 6.90 µs / sonic 10.7 µs |
 | jwt | HS256 `Parse` | 2.819 µs | golang-jwt 7.676 µs / jwx 11.20 µs / go-jose 13.29 µs |
-| log | 5 字段 JSON Info | 394.4 ns | zap 779.7 ns / zerolog 337.9 ns / slog 1.086 µs / logrus 4.867 µs |
+| log | 5 字段 JSON Info | 136.3 ns | zap 441.8 ns / zerolog 157.5 ns / slog 562.4 ns / logrus 2.559 µs |
 | middleware | CORS GET | 374.5 ns | rs/cors 102.7 ns |
 | middleware | 16 KiB gzip | 9.151 µs | gzhttp 9.060 µs |
 | middleware | 限流放行 | 249.0 ns | `x/time/rate` 48.49 ns |
@@ -85,8 +85,8 @@ v0.1.7，其余模块 v0.1.4 或 v0.1.3）与对应的对比库；`cache/local` 
    - `chi.RequestID` 只写请求上下文，基准适配器把它写回响应头；
    - gorilla/coder 没有批量写 API，批量用例逐条调用 `WriteMessage`；
    - `gin`/`chi` 的路由基准包含各自的上下文/中间件基础开销。
-4. 对比库版本锁定在各模块 `go.mod`；ydx 组件按最新子目录标签解析（base64 v0.1.7、
-   json v0.1.8；引用 json 的产品模块 v0.1.7，其余产品模块 v0.1.4 或 v0.1.3）。
+4. 对比库版本锁定在各模块 `go.mod`；ydx 组件按最新子目录标签解析（base64 v0.1.9、
+   json v0.1.10、log v0.1.8；各产品模块按自身 go.mod 解析其余组件）。
 
 ## 复现
 

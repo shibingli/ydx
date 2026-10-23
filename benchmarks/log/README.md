@@ -10,7 +10,7 @@
 
 | 实现 | 版本 | 配置 |
 |---|---|---|
-| ydx/log | v0.1.7 | JSON，`io.Discard`，Info 级 |
+| ydx/log | v0.1.8 | JSON，`io.Discard`，Info 级 |
 | `go.uber.org/zap` | v1.28.0 | 生产风格 JSON encoder，`io.Discard` |
 | `github.com/rs/zerolog` | v1.35.1 | JSON，带时间戳，`io.Discard` |
 | `log/slog` | Go 1.27.2 | `NewJSONHandler(io.Discard)` |
@@ -28,19 +28,20 @@
 
 | 场景 | ydx | zap | zerolog | slog | logrus |
 |---|---:|---:|---:|---:|---:|
-| 5 字段 Info | 394.4 ns | 779.7 ns | 337.9 ns | 1.086 µs | 4.867 µs |
-| 8 字段 Info | 593.8 ns | 1.085 µs | 462.2 ns | 1.885 µs | 6.402 µs |
-| 禁用 Info 调用 | 31.36 ns | 311.4 ns | 12.44 ns | 54.71 ns | 742.9 ns |
-| 并发 5 字段 | 158.8 ns | 342.0 ns | 54.56 ns | 262.6 ns | 2.259 µs |
+| 5 字段 Info | **136.3 ns** | 441.8 ns | 157.5 ns | 562.4 ns | 2.559 µs |
+| 8 字段 Info | **206.0 ns** | 605.3 ns | 215.6 ns | 1.099 µs | 3.603 µs |
+| 禁用 Info 调用 | 10.32 ns | 61.0 ns | **7.16 ns** | 28.67 ns | 305.3 ns |
+| 并发 5 字段 | **133.5 ns** | 440.0 ns | 159.1 ns | 577.5 ns | 2.553 µs |
 
-- 5 字段 JSON：ydx 仅次于 zerolog，约为 zap 的 51%、slog 的 36%、logrus 的 8%；
-  稳态 0 B/op、0 allocs/op。
-- 8 字段 JSON：zerolog 快约 22%（462.2 ns vs 593.8 ns），ydx 仍明显快于 zap、slog、
-  logrus；宽记录下 ydx 的零分配优势保持。
-- 禁用路径：zerolog 的 12.44 ns 最快；ydx 31.36 ns 仍明显快于 zap、slog、logrus，
-  且 0 alloc。
-- 并发：zerolog 54.56 ns 最快；ydx 158.8 ns。ydx 的 `ConcurrentWrites` 免锁模式在
-  同场景为 67.93 ns（见完整数据），但要求 Writer 自身串行化并发写。
+- v0.1.8 的纯 ASCII 快速转义、64 字节 Field 与毫秒时间戳缓存把 5 字段 Info 从
+  394.4 ns 降到 136.3 ns：现在快于 zerolog 约 13%，约为 zap 的 31%、slog 的 24%，
+  稳态仍为 0 B/op、0 allocs/op。
+- 8 字段 JSON：ydx 206.0 ns，快于 zerolog（215.6 ns）约 4.5%，并明显快于 zap、
+  slog、logrus；宽记录下零分配优势保持。
+- 禁用路径：zerolog 的 7.16 ns 仍最快；ydx 10.32 ns 较 v0.1.7 的 31.36 ns 明显
+  收窄，且 0 alloc。
+- 并发：ydx 133.5 ns 快于 zerolog 159.1 ns；`ConcurrentWrites` 免锁模式见完整数据，
+  但要求 Writer 自身串行化并发写。
 
 **异步与 I/O 场景（仅 ydx 内部对照）**
 
@@ -60,54 +61,54 @@
 ## 完整数据
 
 <details>
-<summary>5 轮均值</summary>
+<summary>3 次中位数（v0.1.8，2026-10-23）</summary>
 
 
 **github.com/shibingli/ydx/benchmarks/log**
 
 | Benchmark | ns/op | B/op | allocs/op | MB/s |
 |---|---:|---:|---:|---:|
-| `AsyncInfoFieldsSerial` | 904.4 ns | 0 | 0 |  |
-| `AsyncInfoFieldsParallel` | 217.7 ns | 5 | 0 |  |
-| `AsyncWriterFile` | 659.7 ns | 1 | 0 |  |
-| `SlowWriterSync` | 905.8 µs | 3 | 0 |  |
-| `AsyncSlowWriterBatch4K` | 26.57 µs | 355 | 0 |  |
-| `AsyncSlowWriterBatch64K` | 1.727 µs | 24 | 0 |  |
-| `InfoNoFields` | 123.0 ns | 0 | 0 |  |
-| `Info8Fields` | 583.3 ns | 0 | 0 |  |
-| `Console8Fields` | 545.7 ns | 0 | 0 |  |
-| `InfoFieldsParallel` | 159.1 ns | 0 | 0 |  |
-| `ConsoleFieldsParallel` | 159.3 ns | 0 | 0 |  |
-| `WriterDiscard` | 385.3 ns | 0 | 0 |  |
-| `WriterBuffer` | 406.5 ns | 0 | 0 |  |
-| `WriterFile` | 3.717 µs | 0 | 0 |  |
-| `WriterBufferedFile` | 501.7 ns | 0 | 0 |  |
-| `InfoFieldsParallelConcurrent` | 67.93 ns | 0 | 0 |  |
-| `InfoFieldsConcurrent` | 388.5 ns | 0 | 0 |  |
-| `InfoFields` | 382.7 ns | 0 | 0 |  |
-| `ConsoleFields` | 323.5 ns | 0 | 0 |  |
-| `SlowQuery` | 313.8 ns | 0 | 0 |  |
-| `DisabledLevel` | 12.99 ns | 0 | 0 |  |
-| `InfoFieldsCompare/ydx` | 394.4 ns | 0 | 0 |  |
-| `InfoFieldsCompare/zap` | 779.7 ns | 320 | 1 |  |
-| `InfoFieldsCompare/zerolog` | 337.9 ns | 0 | 0 |  |
-| `InfoFieldsCompare/slog` | 1.086 µs | 32 | 2 |  |
-| `InfoFieldsCompare/logrus` | 4.867 µs | 1.653 KiB | 36 |  |
-| `Info8FieldsCompare/ydx` | 593.8 ns | 0 | 0 |  |
-| `Info8FieldsCompare/zap` | 1.085 µs | 513 | 1 |  |
-| `Info8FieldsCompare/zerolog` | 462.2 ns | 0 | 0 |  |
-| `Info8FieldsCompare/slog` | 1.885 µs | 200 | 6 |  |
-| `Info8FieldsCompare/logrus` | 6.402 µs | 2.108 KiB | 47 |  |
-| `DisabledCompare/ydx` | 31.36 ns | 0 | 0 |  |
-| `DisabledCompare/zap` | 311.4 ns | 320 | 1 |  |
-| `DisabledCompare/zerolog` | 12.44 ns | 0 | 0 |  |
-| `DisabledCompare/slog` | 54.71 ns | 32 | 2 |  |
-| `DisabledCompare/logrus` | 742.9 ns | 528 | 6 |  |
-| `ParallelCompare/ydx` | 158.8 ns | 0 | 0 |  |
-| `ParallelCompare/zap` | 342.0 ns | 321 | 1 |  |
-| `ParallelCompare/zerolog` | 54.56 ns | 0 | 0 |  |
-| `ParallelCompare/slog` | 262.6 ns | 32 | 2 |  |
-| `ParallelCompare/logrus` | 2.259 µs | 1.662 KiB | 36 |  |
+| `AsyncInfoFieldsSerial` | 200.5 ns | 7 | 0 |  |
+| `AsyncInfoFieldsParallel` | 198.4 ns | 7 | 0 |  |
+| `AsyncWriterFile` | 222.8 ns | 8 | 0 |  |
+| `SlowWriterSync` | 1.052 ms | 0 | 0 |  |
+| `AsyncSlowWriterBatch4K` | 34.95 µs | 913 | 1 |  |
+| `AsyncSlowWriterBatch64K` | 3.256 µs | 92 | 0 |  |
+| `InfoNoFields` | 61.9 ns | 0 | 0 |  |
+| `Info8Fields` | 203.6 ns | 0 | 0 |  |
+| `Console8Fields` | 270.3 ns | 0 | 0 |  |
+| `InfoFieldsParallel` | 137.2 ns | 0 | 0 |  |
+| `ConsoleFieldsParallel` | 189.8 ns | 0 | 0 |  |
+| `WriterDiscard` | 136.0 ns | 0 | 0 |  |
+| `WriterBuffer` | 139.5 ns | 0 | 0 |  |
+| `WriterFile` | 365.3 ns | 0 | 0 |  |
+| `WriterBufferedFile` | 162.9 ns | 0 | 0 |  |
+| `InfoFieldsParallelConcurrent` | 135.5 ns | 0 | 0 |  |
+| `InfoFieldsConcurrent` | 136.5 ns | 0 | 0 |  |
+| `InfoFields` | 135.1 ns | 0 | 0 |  |
+| `ConsoleFields` | 164.8 ns | 0 | 0 |  |
+| `SlowQuery` | 123.5 ns | 0 | 0 |  |
+| `DisabledLevel` | 5.29 ns | 0 | 0 |  |
+| `InfoFieldsCompare/ydx` | 136.3 ns | 0 | 0 |  |
+| `InfoFieldsCompare/zap` | 441.8 ns | 320 | 1 |  |
+| `InfoFieldsCompare/zerolog` | 157.5 ns | 0 | 0 |  |
+| `InfoFieldsCompare/slog` | 562.4 ns | 32 | 2 |  |
+| `InfoFieldsCompare/logrus` | 2.559 µs | 1.653 KiB | 36 |  |
+| `Info8FieldsCompare/ydx` | 206.0 ns | 0 | 0 |  |
+| `Info8FieldsCompare/zap` | 605.3 ns | 512 | 1 |  |
+| `Info8FieldsCompare/zerolog` | 215.6 ns | 0 | 0 |  |
+| `Info8FieldsCompare/slog` | 1.099 µs | 200 | 6 |  |
+| `Info8FieldsCompare/logrus` | 3.603 µs | 2.108 KiB | 47 |  |
+| `DisabledCompare/ydx` | 10.32 ns | 0 | 0 |  |
+| `DisabledCompare/zap` | 61.0 ns | 320 | 1 |  |
+| `DisabledCompare/zerolog` | 7.16 ns | 0 | 0 |  |
+| `DisabledCompare/slog` | 28.67 ns | 32 | 2 |  |
+| `DisabledCompare/logrus` | 305.3 ns | 528 | 6 |  |
+| `ParallelCompare/ydx` | 133.5 ns | 0 | 0 |  |
+| `ParallelCompare/zap` | 440.0 ns | 320 | 1 |  |
+| `ParallelCompare/zerolog` | 159.1 ns | 0 | 0 |  |
+| `ParallelCompare/slog` | 577.5 ns | 32 | 2 |  |
+| `ParallelCompare/logrus` | 2.553 µs | 1.688 KiB | 36 |  |
 
 </details>
 

@@ -4,7 +4,7 @@ go 1.27.2
 
 require (
 	github.com/rs/zerolog v1.35.1
-	github.com/shibingli/ydx/log v0.1.7
+	github.com/shibingli/ydx/log v0.1.8
 	github.com/sirupsen/logrus v1.10.2
 	go.uber.org/zap v1.28.0
 )

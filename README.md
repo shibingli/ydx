@@ -145,12 +145,13 @@ for d in benchmarks/*/; do
 done
 ```
 
-本机（Windows 11 / i9-10980HK / Go 1.27.2）的几组代表结果：
+本机（Windows 11 / i9-10980HK / Go 1.27.2）的几组代表结果（`log` 一组为 Linux 参考
+主机第三轮，对应 `ydx/log v0.1.8`）：
 
 - `json`：`Marshal` 64 对象 10.84 µs，标准库 31.15 µs；goccy 9.973 µs、sonic 8.262 µs。
 - `jwt`：HS256 `Parse`（同一规范 token）2.819 µs，golang-jwt 7.676 µs、jwx 11.20 µs、
   go-jose 13.29 µs。
-- `log`：5 字段 JSON 394.4 ns，zap 779.7 ns、zerolog 337.9 ns、slog 1.086 µs。
+- `log`：5 字段 JSON 136.3 ns，zap 441.8 ns、zerolog 157.5 ns、slog 562.4 ns。
 - `router`：静态路由 27.29 ns，gin 49.54 ns、httprouter 53.14 ns、`ServeMux` 323.5 ns。
 - `render`：带绑定渲染 635.3 ns，`html/template` 6.985 µs、`text/template` 4.437 µs。
 
