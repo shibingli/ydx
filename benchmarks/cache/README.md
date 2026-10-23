@@ -10,7 +10,7 @@ Redis；值在两层都以字节信封保存，`Raw.View`/`GetOrLoadView` 提供
 
 | 实现 | 版本 | 说明 |
 |---|---|---|
-| ydx/cache/local | v0.1.6 | 分片、字节预算、TinyLFU、TTL、零拷贝 View |
+| ydx/cache/local | v0.1.7 | 分片、字节预算、TinyLFU、TTL、零拷贝 View |
 | `github.com/allegro/bigcache/v3` | v3.2.0 | 分片、字节数组存储、无 GC 扫描 |
 | `github.com/coocood/freecache` | v1.2.7 | 环形缓冲、无 GC 扫描 |
 | `github.com/dgraph-io/ristretto/v2` | v2.4.2 | TinyLFU + 采样 LFU，异步写 |

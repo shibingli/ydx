@@ -7,8 +7,8 @@ require (
 	github.com/coocood/freecache v1.2.7
 	github.com/dgraph-io/ristretto/v2 v2.4.2
 	github.com/patrickmn/go-cache v2.1.0+incompatible
-	github.com/shibingli/ydx/cache v0.1.6
-	github.com/shibingli/ydx/log v0.1.6
+	github.com/shibingli/ydx/cache v0.1.7
+	github.com/shibingli/ydx/log v0.1.7
 )
 
 require (
