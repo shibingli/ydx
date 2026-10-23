@@ -14,10 +14,10 @@
 //   - with the jsonx_std tag: the standard library encoding/json (troubleshooting and compatibility reference, see jsonx_std.go) | 设置 jsonx_std 标签：标准库 encoding/json（排障与兼容性对照，见 jsonx_std.go）
 //
 // All backends export exactly the same symbol set (Marshal / Unmarshal / MarshalIndent / Valid /
-// NewEncoder / NewDecoder / Backend), and each carries its own build constraint, compiling
-// mutually exclusively with unique symbols, so any supported target platform can be built
-// directly. | 各后端导出完全相同的符号集（Marshal / Unmarshal / MarshalIndent / Valid /
-// NewEncoder / NewDecoder / Backend），且都配备对应的构建约束，互斥编译、符号唯一，
+// NewEncoder / NewDecoder / Prewarm / Backend), and each carries its own build constraint,
+// compiling mutually exclusively with unique symbols, so any supported target platform can be
+// built directly. | 各后端导出完全相同的符号集（Marshal / Unmarshal / MarshalIndent / Valid /
+// NewEncoder / NewDecoder / Prewarm / Backend），且都配备对应的构建约束，互斥编译、符号唯一，
 // 因此任何受支持的目标平台都能直接构建。
 //
 // The semantic baseline is encoding/json: strings are HTML-escaped, map keys are output in
@@ -38,6 +38,16 @@
 //	}
 //
 // To determine errors stably across backends, combine errors.Is with ErrSyntax / ErrTypeMismatch. | 需要跨后端稳定判定错误时，可用 errors.Is 配合 ErrSyntax / ErrTypeMismatch。
+//
+// For services whose payload types are fixed at startup, Prewarm compiles the encoder and decoder
+// plans before the first request, so plan construction never lands on a latency-sensitive path.
+// Pass a value to warm Marshal for its type and a typed nil pointer to warm Unmarshal for the
+// pointed-to type; nested struct, slice, array and map types are warmed recursively. |
+// 对于启动期即固定载荷类型的服务，Prewarm 会在首个请求之前编译编解码计划，使计划构建成本不会
+// 落在延迟敏感路径上。传入值可预热其类型的 Marshal，传入类型化 nil 指针可预热其指向类型的
+// Unmarshal；嵌套结构体、切片、数组与映射类型会递归预热。
+//
+//	json.Prewarm(User{}, (*User)(nil), (*[]User)(nil))
 //
 // The import path is github.com/shibingli/ydx/json while the package identifier is json,
 // json, matching the directory name. | 导入路径是

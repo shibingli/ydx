@@ -19,6 +19,21 @@ var (
 	ErrTypeMismatch = errs.New("jsonx: JSON value does not match target Go type | jsonx：JSON 值与目标 Go 类型不匹配")
 )
 
+// Prewarm compiles and installs the encoding and decoding plans for the given samples, moving
+// plan construction out of the first request. Pass a value or pointer to warm the encoder for its
+// type; pass a typed nil pointer such as (*User)(nil) to warm the decoder for the type it points
+// to, the same shape Unmarshal receives. Nested struct, slice, array and pointer types reachable
+// from a sample are warmed recursively, and map key/value types are warmed as well. Prewarm is
+// idempotent and safe to call concurrently; under the jsonx_std backend it is a no-op because the
+// standard library owns its own caches. |
+// Prewarm 为给定样本编译并安装编解码计划，把计划构建成本移出首个请求。传入值或指针可预热其
+// 类型的编码器；传入 (*User)(nil) 这类类型化 nil 指针可预热其指向类型的解码器，与 Unmarshal
+// 接收的指针形态一致。样本可达的嵌套结构体、切片、数组与指针类型会递归预热，映射的键与值
+// 类型也会预热。Prewarm 幂等且可并发调用；jsonx_std 后端下为空操作，因为标准库管理自己的缓存。
+func Prewarm(samples ...any) {
+	prewarm(samples...)
+}
+
 // wrapDecodeError performs a one-time cross-backend classification of the parse error returned by a backend on the error path: | wrapDecodeError 在错误路径上对后端返回的解析错误做一次跨后端归类：
 // when the input is not valid JSON it is wrapped as ErrSyntax, otherwise as ErrTypeMismatch. | 输入不是合法 JSON 时包装为 ErrSyntax，否则包装为 ErrTypeMismatch。
 //

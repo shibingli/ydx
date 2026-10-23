@@ -87,11 +87,11 @@ func computeMaxDirectHint() int {
 const directAllocThreshold = 512
 
 // copyExactThreshold is the estimated size up to which the multi-core path copies the encoded
-// bytes out of the pooled buffer instead of retaining the estimate-sized allocation. Larger
-// payloads keep their direct buffer because copying them would cost more than the allocation. |
-// copyExactThreshold 是多核路径改为从池化缓冲复制精确结果的最大估算体积；更大的载荷保留直接分配的
-// 缓冲，因为复制成本会高于分配成本。
-const copyExactThreshold = 64 << 10
+// bytes out of the pooled buffer instead of retaining the estimate-sized allocation. It follows
+// the pool ceiling: above encoderPoolMax the pooled buffer is not retained, so a copy would only
+// add work. | copyExactThreshold 是多核路径改为从池化缓冲复制精确结果的最大估算体积。它跟随池上限：
+// 超过 encoderPoolMax 后池化缓冲不会被保留，复制只会增加开销。
+var copyExactThreshold = encoderPoolMax
 
 func getEncoder(escapeHTML bool) *encoder {
 	e := encoderPool.Get().(*encoder)
