@@ -10,7 +10,7 @@
 
 | 实现 | 版本 | 说明 |
 |---|---|---|
-| ydx/jwt | v0.1.0 | 免反射，支持 `Release` 复用 |
+| ydx/jwt | v0.1.5 | 免反射，支持 `Release` 复用 |
 | `github.com/golang-jwt/jwt/v5` | v5.3.1 | 最常用的 JWT 库 |
 | `github.com/lestrrat-go/jwx/v4` | v4.5.0 | JWS/JWE/JWK 全家桶，默认校验声明 |
 | `github.com/go-jose/go-jose/v4` | v4.1.6 | JOSE 实现，只验签，声明需调用方校验 |
