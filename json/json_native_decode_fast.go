@@ -186,14 +186,7 @@ func buildFastFieldDecoder(t reflect.Type) fastFieldDec {
 				*(*float64)(p) = f
 				return nil
 			}
-			// Long mantissas and exponent forms use unrounded scaling; only literals whose
-			// truncated tail can change the rounding still fall back to strconv. | 长尾数与指数
-			// 形式使用非舍入缩放；只有截断尾部可能改变舍入的字面量仍需回退到 strconv。
-			if f, ok := parseDecimalFloat(lit); ok {
-				*(*float64)(p) = f
-				return nil
-			}
-			n, err := strconv.ParseFloat(bytesString(lit), 64)
+			n, err := parseDecimalOrFloat64(lit)
 			if err != nil {
 				return typeErr("number %s overflows %s | 数字 %s 超出 %s", bytesString(lit), t, bytesString(lit), t)
 			}

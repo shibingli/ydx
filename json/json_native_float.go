@@ -14,6 +14,7 @@ package json
 import (
 	"math"
 	"math/bits"
+	"strconv"
 )
 
 // bool2 converts b to 1 or 0. | bool2 把 b 转换为 1 或 0。
@@ -214,6 +215,19 @@ func parseDecimalFloat(b []byte) (float64, bool) {
 		return math.Float64frombits(sign), true
 	}
 	return convertDecimalDigits(d, dp-ndMant, sign, trunc)
+}
+
+// parseDecimalOrFloat64 converts a valid JSON number that missed the short-decimal envelope. It
+// tries unrounded scaling first and falls back to strconv only when the truncated tail can change
+// the rounding or the value overflows. Keeping this fallback out of the field decoder's closure
+// preserves the short path's frame and code layout. | parseDecimalOrFloat64 转换未落入精确短十进制
+// 范围的合法 JSON 数字：先尝试非舍入缩放，仅在截断尾部可能改变舍入或值溢出时回退 strconv。把该
+// 回退放在字段解码闭包之外，可保持短路径的栈帧与代码布局不变。
+func parseDecimalOrFloat64(b []byte) (float64, error) {
+	if f, ok := parseDecimalFloat(b); ok {
+		return f, nil
+	}
+	return strconv.ParseFloat(bytesString(b), 64)
 }
 
 // convertDecimalDigits converts d * 10**p, where d holds up to 19 significant digits. When digits
