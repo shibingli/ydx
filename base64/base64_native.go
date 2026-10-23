@@ -49,7 +49,30 @@ var (
 var (
 	simdEncode func(dst, src []byte, url, padded bool, pad byte) (int, int)
 	simdDecode func(dst, src []byte, url, raw bool) (int, int)
+	// Instruction-set levels select the widest available kernel independently of init order:
+	// 1 = AVX2/NEON, 3 = AVX-512 VBMI, 4 = AVX-512 VBMI2. | 指令集级别与 init 顺序无关地选择最宽
+	// 可用内核：1 = AVX2/NEON，3 = AVX-512 VBMI，4 = AVX-512 VBMI2。
+	simdEncodeLevel int
+	simdDecodeLevel int
 )
+
+// installEncode installs the encoder when its instruction-set level is at least the current one. |
+// installEncode 在指令集级别不低于当前级别时安装编码器。
+func installEncode(level int, fn func(dst, src []byte, url, padded bool, pad byte) (int, int)) {
+	if level >= simdEncodeLevel {
+		simdEncode = fn
+		simdEncodeLevel = level
+	}
+}
+
+// installDecode installs the decoder when its instruction-set level is at least the current one. |
+// installDecode 在指令集级别不低于当前级别时安装解码器。
+func installDecode(level int, fn func(dst, src []byte, url, raw bool) (int, int)) {
+	if level >= simdDecodeLevel {
+		simdDecode = fn
+		simdDecodeLevel = level
+	}
+}
 
 const (
 	stdAlpha = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"

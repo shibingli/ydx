@@ -42,8 +42,8 @@ func init() {
 	avx2DecStd = makeDecConsts(false)
 	avx2DecURL = makeDecConsts(true)
 	if !forceScalar && hasAVX2() {
-		simdEncode = encodeSIMDAsm
-		simdDecode = decodeSIMDAsm
+		installEncode(1, encodeSIMDAsm)
+		installDecode(1, decodeSIMDAsm)
 	}
 }
 

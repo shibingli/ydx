@@ -42,8 +42,8 @@ func init() {
 	decodeLUT2URL['_'-63] = 63
 
 	if !forceScalar {
-		simdEncode = encodeSIMDNEONAsm
-		simdDecode = decodeSIMDNEONAsm
+		installEncode(1, encodeSIMDNEONAsm)
+		installDecode(1, decodeSIMDNEONAsm)
 	}
 }
 
