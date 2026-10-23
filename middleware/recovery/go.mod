@@ -4,9 +4,9 @@ go 1.27.2
 
 require (
 	github.com/shibingli/ydx/json v0.1.8
-	github.com/shibingli/ydx/log v0.1.4
-	github.com/shibingli/ydx/middleware/requestid v0.1.4
-	github.com/shibingli/ydx/router v0.1.4
+	github.com/shibingli/ydx/log v0.1.5
+	github.com/shibingli/ydx/middleware/requestid v0.1.5
+	github.com/shibingli/ydx/router v0.1.5
 )
 
 require (

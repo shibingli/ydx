@@ -9,10 +9,10 @@ require (
 	github.com/shibingli/ydx/base64 v0.1.7
 	github.com/shibingli/ydx/errs v0.1.3
 	github.com/shibingli/ydx/json v0.1.8
-	github.com/shibingli/ydx/log v0.1.4
+	github.com/shibingli/ydx/log v0.1.5
 	github.com/shibingli/ydx/protocol v0.1.3
 	github.com/shibingli/ydx/regexpx v0.1.4
-	github.com/shibingli/ydx/router v0.1.4
+	github.com/shibingli/ydx/router v0.1.5
 	github.com/shibingli/ydx/sysinfo v0.1.3
 	golang.org/x/net v0.61.0
 )
