@@ -94,6 +94,7 @@ func BenchmarkMarshal(b *testing.B) {
 	}{
 		{name: "one", v: benchUsers(1)[0]},
 		{name: "many", v: benchUsers(64)},
+		{name: "large", v: benchUsers(1024)},
 	}
 	for _, c := range cases {
 		for _, enc := range benchMarshalers() {
@@ -121,11 +122,16 @@ func BenchmarkMarshal(b *testing.B) {
 func BenchmarkUnmarshal(b *testing.B) {
 	small := benchUsers(1)[0]
 	many := benchUsers(64)
+	large := benchUsers(1024)
 	smallJSON, err := jsonx.Marshal(small)
 	if err != nil {
 		b.Fatalf("setup failed | 准备失败: %v", err)
 	}
 	manyJSON, err := jsonx.Marshal(many)
+	if err != nil {
+		b.Fatalf("setup failed | 准备失败: %v", err)
+	}
+	largeJSON, err := jsonx.Marshal(large)
 	if err != nil {
 		b.Fatalf("setup failed | 准备失败: %v", err)
 	}
@@ -137,6 +143,7 @@ func BenchmarkUnmarshal(b *testing.B) {
 	}{
 		{name: "one", in: smallJSON, new: func() any { return new(benchUser) }},
 		{name: "many", in: manyJSON, new: func() any { return new([]benchUser) }},
+		{name: "large", in: largeJSON, new: func() any { return new([]benchUser) }},
 	}
 	for _, c := range cases {
 		for _, dec := range benchUnmarshalers() {

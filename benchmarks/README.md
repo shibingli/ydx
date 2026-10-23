@@ -1,17 +1,18 @@
 # ydx 基准与主流实现对比
 
 本目录是 ydx 的基准模块集合。每个带 `go.mod` 的子目录都是一个**独立的 Go 模块**，
-只依赖 ydx 的 `v0.1.0` 子目录标签与对应的对比库；`cache/local` 是 `cache` 基准
+只依赖 ydx 的 `v0.1.7` 子目录标签与对应的对比库；`cache/local` 是 `cache` 基准
 模块内的子包。产品模块本身不包含任何 `Benchmark*`，也不依赖基准专用库。
 
-- 本机实测日期：2026-10-22
-- 运行环境：Windows 11 Pro for Workstations，Intel Core i9-10980HK（16 逻辑 CPU），
-  Go 1.27.2 windows/amd64，`GOMAXPROCS=16`
-- 采样方式：每项 `-count=5 -benchtime=500ms -benchmem`，用 `benchstat` 取均值；
-  同一轮内 5 个样本不足以给出 95% 置信区间，因此**同一轮内小于约 5% 的差异视为噪声**。
-- 跨轮漂移：笔记本 CPU 的频率/温度与后台负载会让同一份代码在不同轮次的绝对 ns/op
-  相差数十个百分点（日志模块重跑时部分基准观察到 20%–50% 的漂移）。只比较**同一轮
-  表格内**的相对关系；不要把不同模块/不同时间的绝对值直接混比。
+- 实测日期：2026-10-23
+- 运行环境：`base64`/`json` 的数字来自 Linux AMD Ryzen AI MAX+ 395（Zen 5，32 逻辑
+  CPU，AVX-512 VBMI/VBMI2）与 Linux Neoverse-N2（4 vCPU）两台主机，Go 1.27.2；
+  其余模块的数字来自较早一轮 Windows 11 / Intel Core i9-10980HK（16 逻辑 CPU），
+  `GOMAXPROCS=16`。各行来源不同，**不要跨行比较绝对值**。
+- 采样方式：每项 `-count=3` 或 `-count=5`、`-benchtime=500ms`、`-benchmem`，取中位数
+  或均值；同一轮内样本不足以给出 95% 置信区间，因此**同一轮内小于约 5% 的差异视为噪声**。
+- 跨轮漂移：CPU 的频率/温度与后台负载会让同一份代码在不同轮次的绝对 ns/op 相差数十个
+  百分点。只比较**同一轮表格内**的相对关系；不要把不同模块/不同时间的绝对值直接混比。
 
 ## 模块与对比对象
 
@@ -20,7 +21,7 @@
 | `benchmarks/base64` | `encoding/base64`、`cristalhq/base64` | [base64/README.md](base64/README.md) |
 | `benchmarks/buffpool` | `sync.Pool`、`valyala/bytebufferpool` | [buffpool/README.md](buffpool/README.md) |
 | `benchmarks/cache` | `bigcache`、`freecache`、`ristretto`、`sync.Map`、`go-cache` | [cache/README.md](cache/README.md) |
-| `benchmarks/json` | `encoding/json`、`goccy/go-json`、`json-iterator/go`、`bytedance/sonic`、`segmentio/encoding` | [json/README.md](json/README.md) |
+| `benchmarks/json` | `encoding/json`、`goccy/go-json`、`json-iterator/go`、`bytedance/sonic`、`segmentio/encoding`、`go-json-experiment/json` | [json/README.md](json/README.md) |
 | `benchmarks/jwt` | `golang-jwt/jwt/v5`、`lestrrat-go/jwx/v4`、`go-jose/v4` | [jwt/README.md](jwt/README.md) |
 | `benchmarks/log` | `zap`、`zerolog`、`slog`、`logrus` | [log/README.md](log/README.md) |
 | `benchmarks/middleware` | `rs/cors`、`chi`、`klauspost/compress/gzhttp`、`x/time/rate` | [middleware/README.md](middleware/README.md) |
@@ -36,11 +37,12 @@
 
 | 模块 | 场景 | ydx | 对比实现 |
 |---|---|---:|---:|
-| base64（默认构建） | `Encode` 1 KiB | 1.245 µs | stdlib 972.3 ns / cristalhq 505.4 ns |
-| base64（`GOEXPERIMENT=simd`） | `Encode` 1 KiB | 124.5 ns | stdlib 782.5 ns / cristalhq 373.5 ns |
+| base64 | `Encode` 1 KiB | 23.4 ns | stdlib 470 ns / cristalhq 200 ns |
+| base64 | `Decode` 1 KiB | 42.1 ns | stdlib 455 ns / cristalhq 274 ns |
 | buffpool | 4 KiB `Get`/`Put` | 18.00 ns | `sync.Pool` 12.08 ns / bytebufferpool 20.78 ns |
 | cache/local | `Get` 命中 | 83.02 ns | bigcache 125.7 ns / freecache 106.9 ns / ristretto 98.97 ns / `sync.Map` 24.49 ns |
-| json | `Marshal` 64 对象 | 10.84 µs | stdlib 31.15 µs / goccy 9.973 µs / sonic 8.262 µs |
+| json | `Marshal` 64 对象 | 2.51 µs | stdlib 12.8 µs / goccy 4.19 µs / sonic 3.00 µs |
+| json | `Unmarshal` 64 对象 | 6.43 µs | stdlib 29.7 µs / goccy 6.90 µs / sonic 10.7 µs |
 | jwt | HS256 `Parse` | 2.819 µs | golang-jwt 7.676 µs / jwx 11.20 µs / go-jose 13.29 µs |
 | log | 5 字段 JSON Info | 394.4 ns | zap 779.7 ns / zerolog 337.9 ns / slog 1.086 µs / logrus 4.867 µs |
 | middleware | CORS GET | 374.5 ns | rs/cors 102.7 ns |
@@ -82,7 +84,7 @@
    - `chi.RequestID` 只写请求上下文，基准适配器把它写回响应头；
    - gorilla/coder 没有批量写 API，批量用例逐条调用 `WriteMessage`；
    - `gin`/`chi` 的路由基准包含各自的上下文/中间件基础开销。
-4. 对比库版本锁定在各模块 `go.mod`；ydx 组件按 `v0.1.0` 子目录标签解析。
+4. 对比库版本锁定在各模块 `go.mod`；ydx 组件按 `v0.1.7` 子目录标签解析。
 
 ## 复现
 
@@ -124,7 +126,7 @@ benchstat result.txt
 
 基准模块的 `go.mod` 按已发布标签引用 ydx 组件。若刚修改了组件源码、尚未打新标签，
 可在**两个仓库之外**临时创建 `go.work` 指向本地模块；`go.work` 与本地 `replace` 都
-不得提交。组件源码与 `v0.1.0` 标签一致时，直接运行即可复现本文数字。
+不得提交。组件源码与 `v0.1.7` 标签一致时，直接运行即可复现本文数字。
 
 ## 目录约定
 

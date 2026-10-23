@@ -2,19 +2,26 @@
 
 > 环境、指标口径与公平性约定见 [../README.md](../README.md)。
 
-`ydx/base64` 在所有架构上默认使用自研后端：amd64 在 `GOEXPERIMENT=simd` 下按 CPU 选择
-AVX-512 VBMI2/VBMI、AVX-512 或 AVX2；arm64 在 `GOEXPERIMENT=simd` 下使用 NEON；其他架构
-使用纯 Go 标量内核；显式 `b64x_std` 构建标签回退到 `encoding/base64`。本基准在同一台
-机器上比较标量构建、SIMD 构建、标准库与 cristalhq。
+`ydx/base64` 在所有架构上默认使用自研后端：amd64 在运行时按指令集完整性与优先级自动选择
+手写 AVX-512 VBMI2/VBMI、AVX-512BW、AVX2 或标量内核；arm64 使用手写 NEON；其他架构使用
+纯 Go 标量内核。全程不需要 `GOEXPERIMENT=simd`，也不依赖 cgo；显式 `b64x_std` 构建标签
+回退到 `encoding/base64`。本基准在同一台机器、同一轮采样中比较默认自研后端、标准库与
+cristalhq。
 
 ## 对比对象
 
 | 实现 | 版本/构建 | 说明 |
 |---|---|---|
-| ydx/base64 | v0.1.0，默认构建 | 纯 Go 标量内核（amd64/arm64 可启用 SIMD） |
-| ydx/base64 | v0.1.0，`GOEXPERIMENT=simd` | 运行时 SIMD 分派 |
+| ydx/base64 | v0.1.7，默认构建 | 自研后端，运行时选择最宽可用内核 |
 | `encoding/base64` | Go 1.27.2 | 标准库对照 |
-| `github.com/cristalhq/base64` | v0.1.2 | 第三方 SIMD/汇编实现 |
+| `github.com/cristalhq/base64` | v0.1.2 | 第三方实现（纯 Go SWAR） |
+
+## 运行环境
+
+- **amd64**：AMD Ryzen AI MAX+ 395（Zen 5，32 逻辑 CPU，AVX-512F/BW/VBMI/VBMI2），
+  Linux，Go 1.27.2，`GOMAXPROCS=32`。
+- **arm64**：Neoverse-N2，4 vCPU，3.0 GHz，Linux，Go 1.27.2。
+- 实测日期：2026-10-23。
 
 ## 场景
 
@@ -22,164 +29,149 @@ AVX-512 VBMI2/VBMI、AVX-512 或 AVX2；arm64 在 `GOEXPERIMENT=simd` 下使用 
 - `EncodeToString` / `DecodeString`：分配式入口；覆盖 16 B 到 64 KiB。
 - `RawURLEncode`：JWT 使用的无填充 URL 安全变体。
 - `AppendEncodeDecode`：零拷贝 append 入口。
+- `BenchmarkParallel*`：`RunParallel` 聚合吞吐，每个 goroutine 独占目标缓冲。
 
-## 关键结果
+## amd64 关键结果
 
-**默认标量构建（`GOWORK=off`，无 `GOEXPERIMENT=simd`）**
+单位 ns/op，同一轮 3 次采样中位数；越小越好。
 
-| 场景 | ydx | stdlib | cristalhq |
+| 场景 | ydx/base64 | stdlib | cristalhq |
 |---|---:|---:|---:|
-| `Encode` 1 KiB | 1.245 µs | 972.3 ns | 505.4 ns |
-| `Encode` 64 KiB | 81.47 µs | 60.44 µs | 31.56 µs |
-| `Decode` 1 KiB | 1.266 µs | 1.094 µs | 661.5 ns |
-| `Decode` 64 KiB | 78.21 µs | 68.44 µs | 40.25 µs |
-| `EncodeToString` 1 KiB | 2.138 µs | 1.643 µs | 698.4 ns |
-| `DecodeString` 1 KiB | 1.743 µs | 1.325 µs | 934.2 ns |
+| `Encode` 16 B | **5.61** | 7.42 | 6.10 |
+| `Encode` 1 KiB | **23.4** | 470 | 200 |
+| `Encode` 64 KiB | **1.03 µs** | 29.9 µs | 12.8 µs |
+| `EncodeToString` 16 B | **13.1** | 17.5 | 13.2 |
+| `EncodeToString` 1 KiB | **112** | 639 | 284 |
+| `RawURLEncode` 16 B | **5.42** | 7.26 | 6.02 |
+| `RawURLEncode` 1 KiB | **23.1** | 471 | 200 |
+| `RawURLEncode` 64 KiB | **1.04 µs** | 29.9 µs | 12.9 µs |
+| `Decode` 16 B | **7.15** | 12.1 | 7.58 |
+| `Decode` 1 KiB | **42.1** | 455 | 274 |
+| `Decode` 64 KiB | **2.34 µs** | 28.6 µs | 17.4 µs |
+| `DecodeString` 16 B | **14.6** | 19.9 | 16.9 |
+| `DecodeString` 256 B | **44.1** | 147.5 | 97.6 |
+| `DecodeString` 1 KiB | **127.9** | 542 | 372 |
+| `DecodeString` 64 KiB | **6.00 µs** | 31.3 µs | 21.1 µs |
+| `AppendEncodeDecode` 1 KiB encode | 25.8 | — | — |
+| `AppendEncodeDecode` 1 KiB decode | 45.7 | — | — |
 
-默认构建下，amd64 标量内核在 1 KiB/64 KiB 原地路径上**慢于**标准库与 cristalhq；
-这是未启用 SIMD 实验特性时的预期结果，不应把它当作 ydx 的最终性能。
+所有场景均领先标准库与 cristalhq：
 
-**`GOEXPERIMENT=simd` 构建**
+- 块路径（1 KiB / 64 KiB）领先 cristalhq 约 **6.5–12.5 倍**，领先标准库约 **11–29 倍**；
+- 16 B 短路径领先 cristalhq 约 **1%–14%**，其中 `EncodeToString` 16 B 仅约 1%，属于
+  同一轮内的噪声边界；
+- `DecodeString` 所有尺寸均为 **1 次分配**（标准库 1 次、cristalhq 1 次），不再有过渡
+  缓冲；`EncodeToString` 同样只有结果分配。
 
-| 场景 | ydx | stdlib | cristalhq |
+## arm64 关键结果
+
+单位 ns/op，同一轮 3 次采样中位数。
+
+| 场景 | ydx/base64 | stdlib | cristalhq |
 |---|---:|---:|---:|
-| `Encode` 1 KiB | 124.5 ns | 782.5 ns | 373.5 ns |
-| `Encode` 64 KiB | 5.538 µs | 50.42 µs | 25.26 µs |
-| `Decode` 1 KiB | 215.7 ns | 1.068 µs | 570.9 ns |
-| `Decode` 64 KiB | 11.62 µs | 102.7 µs | 38.80 µs |
-| `RawURLEncode` 1 KiB | 136.9 ns | 875.9 ns | 439.4 ns |
-| `EncodeToString` 1 KiB | 551.2 ns | 1.326 µs | 654.8 ns |
+| `Encode` 16 B | **10.7** | 15.9 | 13.1 |
+| `Encode` 1 KiB | **134** | 787 | 382 |
+| `EncodeToString` 16 B | **34.4** | 36.2 | 38.2 |
+| `EncodeToString` 1 KiB | **436** | 1.42 µs | 693 |
+| `Decode` 16 B | **17.25** | 25.2 | 17.68 |
+| `Decode` 1 KiB | **279** | 781 | 566 |
+| `DecodeString` 16 B | **37.4** | 46.5 | 44.2 |
+| `DecodeString` 1 KiB | **526** | 1.04 µs | 890 |
 
-启用 SIMD 后，原地 `Encode`/`Decode` 比标准库快约 5–9 倍，64 KiB 场景接近或超过
-cristalhq；分配式 `EncodeToString`/`DecodeString` 仍包含结果分配，优势小于原地路径。
+arm64 上 NEON 块内核与同一套标量快速路径在所有场景领先两个对照实现；短输入由标量
+SWAR 路径承担，未额外引入 NEON 短块开销。
+
+## 并行吞吐
+
+`RunParallel` 聚合 ns/op，Ryzen 主机，同一二进制按 `-cpu 1,16,32` 运行：
+
+| 场景 | 1 P | 16 P | 32 P | 16 P 加速比 |
+|---|---:|---:|---:|---:|
+| `Encode` 16 B | 6.41 ns | 0.48 ns | 0.47 ns | 13.4× |
+| `Decode` 16 B | 8.18 ns | 0.59 ns | 0.585 ns | 13.9× |
+| `Encode` 64 KiB | 1.06 µs | 84.0 ns | 83.9 ns | 12.6× |
+| `Decode` 64 KiB | 2.37 µs | 171 ns | 160 ns | 13.8× |
+
+编解码在 `init` 之后完全无共享可变状态：常量表与内核指针只读，目标缓冲由调用方持有，
+因此扩展性只受内存带宽限制。16 B 在 16 线程仍有约 13–14 倍聚合吞吐；64 KiB 在 32 线程
+进入写带宽瓶颈，继续增加并发不再线性增长。没有需要额外优化的锁或全局池竞争。
+
+## 指令集内核
+
+| 级别 | amd64 内核 | 覆盖 |
+|---|---|---|
+| 4 | AVX-512 VBMI2 解码 | 64 字符 → 48 字节，`VPERMB` + `VPMADDUBSW` + `VPCOMPRESSB` |
+| 3 | AVX-512 VBMI 编码 | 48 字节 → 64 字符，`VPERMB` 查表 |
+| 2 | AVX-512BW 编码/解码 | 按 128 位通道局部 `VPSHUFB`，解码用于 ≥4 KiB 输入 |
+| 1 | AVX2 编码/解码 | 24 字节 ↔ 32 字符，全部输入的基线向量路径 |
+| 0 | 标量 | 8 字符 SWAR 解码（24 位预移位表 + 64 位存储）、32 位分组加载 + 64 位存储编码 |
+
+- 内核按指令集级别安装，与 `init` 顺序无关；同一级别内后安装者覆盖前者，高优先级内核
+  始终胜出。URL 变体在 VBMI2 解码上继续使用 AVX2（其融合内核在该场景更快）。
+- 标量路径不是兜底摆设：16 B 等短输入走 8 字符 SWAR 与宽加载/存储，避免 SIMD 分派和
+  常量装载成本；raw 尾部 2/3 字符与 padded 尾部在快路径内直接解码，不再进入逐字符状态机。
+- arm64 使用手写 NEON：48 字节 → 64 字符编码、64 字符 → 48 字节解码，标量路径负责尾部。
 
 ## 完整数据
 
 <details>
-<summary>默认构建（5 轮均值）</summary>
+<summary>amd64 完整采样（3 次，ns/op）</summary>
 
-**github.com/shibingli/ydx/benchmarks/base64**
-
-| Benchmark | ns/op | B/op | allocs/op | MB/s |
-|---|---:|---:|---:|---:|
-| `Encode/b64x/16` | 24.48 ns | 0 | 0 | 623.4 MiB/s |
-| `Encode/stdlib/16` | 19.62 ns | 0 | 0 | 777.8 MiB/s |
-| `Encode/cristalhq/16` | 13.81 ns | 0 | 0 | 1.079 GiB/s |
-| `Encode/b64x/1024` | 1.245 µs | 0 | 0 | 784.1 MiB/s |
-| `Encode/stdlib/1024` | 972.3 ns | 0 | 0 | 1004.4 MiB/s |
-| `Encode/cristalhq/1024` | 505.4 ns | 0 | 0 | 1.887 GiB/s |
-| `Encode/b64x/65536` | 81.47 µs | 0 | 0 | 767.2 MiB/s |
-| `Encode/stdlib/65536` | 60.44 µs | 0 | 0 | 1.010 GiB/s |
-| `Encode/cristalhq/65536` | 31.56 µs | 0 | 0 | 1.934 GiB/s |
-| `EncodeToString/b64x/16` | 44.85 ns | 24 | 1 | 340.2 MiB/s |
-| `EncodeToString/stdlib/16` | 45.97 ns | 24 | 1 | 331.9 MiB/s |
-| `EncodeToString/cristalhq/16` | 33.54 ns | 24 | 1 | 455.0 MiB/s |
-| `EncodeToString/b64x/1024` | 2.138 µs | 2.750 KiB | 2 | 456.8 MiB/s |
-| `EncodeToString/stdlib/1024` | 1.643 µs | 2.750 KiB | 2 | 594.3 MiB/s |
-| `EncodeToString/cristalhq/1024` | 698.4 ns | 1.375 KiB | 1 | 1.366 GiB/s |
-| `RawURLEncode/b64x/16` | 41.96 ns | 0 | 0 | 363.7 MiB/s |
-| `RawURLEncode/stdlib/16` | 39.67 ns | 0 | 0 | 384.7 MiB/s |
-| `RawURLEncode/cristalhq/16` | 31.65 ns | 0 | 0 | 482.1 MiB/s |
-| `RawURLEncode/b64x/1024` | 2.309 µs | 0 | 0 | 422.9 MiB/s |
-| `RawURLEncode/stdlib/1024` | 970.9 ns | 0 | 0 | 1005.9 MiB/s |
-| `RawURLEncode/cristalhq/1024` | 479.1 ns | 0 | 0 | 1.991 GiB/s |
-| `RawURLEncode/b64x/65536` | 87.03 µs | 0 | 0 | 718.1 MiB/s |
-| `RawURLEncode/stdlib/65536` | 82.28 µs | 0 | 0 | 759.6 MiB/s |
-| `RawURLEncode/cristalhq/65536` | 66.48 µs | 0 | 0 | 940.1 MiB/s |
-| `Decode/b64x/16` | 87.54 ns | 0 | 0 | 174.3 MiB/s |
-| `Decode/stdlib/16` | 64.93 ns | 0 | 0 | 235.0 MiB/s |
-| `Decode/cristalhq/16` | 33.26 ns | 0 | 0 | 458.8 MiB/s |
-| `Decode/b64x/1024` | 1.266 µs | 0 | 0 | 771.4 MiB/s |
-| `Decode/stdlib/1024` | 1.094 µs | 0 | 0 | 892.9 MiB/s |
-| `Decode/cristalhq/1024` | 661.5 ns | 0 | 0 | 1.442 GiB/s |
-| `Decode/b64x/65536` | 78.21 µs | 0 | 0 | 799.2 MiB/s |
-| `Decode/stdlib/65536` | 68.44 µs | 0 | 0 | 913.3 MiB/s |
-| `Decode/cristalhq/65536` | 40.25 µs | 0 | 0 | 1.516 GiB/s |
-| `DecodeString/b64x/16` | 71.61 ns | 40 | 2 | 213.1 MiB/s |
-| `DecodeString/stdlib/16` | 44.23 ns | 16 | 1 | 345.0 MiB/s |
-| `DecodeString/cristalhq/16` | 36.89 ns | 24 | 1 | 413.6 MiB/s |
-| `DecodeString/b64x/256` | 419.5 ns | 608 | 2 | 582.0 MiB/s |
-| `DecodeString/stdlib/256` | 326.9 ns | 256 | 1 | 746.8 MiB/s |
-| `DecodeString/cristalhq/256` | 254.4 ns | 288 | 1 | 959.8 MiB/s |
-| `DecodeString/b64x/1024` | 1.743 µs | 2.375 KiB | 2 | 560.3 MiB/s |
-| `DecodeString/stdlib/1024` | 1.325 µs | 1.000 KiB | 1 | 737.3 MiB/s |
-| `DecodeString/cristalhq/1024` | 934.2 ns | 1.125 KiB | 1 | 1.021 GiB/s |
-| `DecodeString/b64x/65536` | 92.90 µs | 152.0 KiB | 2 | 672.8 MiB/s |
-| `DecodeString/stdlib/65536` | 71.83 µs | 64.00 KiB | 1 | 870.2 MiB/s |
-| `DecodeString/cristalhq/65536` | 52.27 µs | 72.00 KiB | 1 | 1.168 GiB/s |
-| `AppendEncodeDecode/append_encode` | 1.112 µs | 0 | 0 | 878.4 MiB/s |
-| `AppendEncodeDecode/append_decode` | 1.075 µs | 0 | 0 | 908.3 MiB/s |
-</details>
-
-<details>
-<summary>GOEXPERIMENT=simd（5 轮均值）</summary>
-
-**github.com/shibingli/ydx/benchmarks/base64**
-
-| Benchmark | ns/op | B/op | allocs/op | MB/s |
-|---|---:|---:|---:|---:|
-| `Encode/b64x/16` | 22.26 ns | 0 | 0 | 685.6 MiB/s |
-| `Encode/stdlib/16` | 15.46 ns | 0 | 0 | 987.0 MiB/s |
-| `Encode/cristalhq/16` | 12.89 ns | 0 | 0 | 1.156 GiB/s |
-| `Encode/b64x/1024` | 124.5 ns | 0 | 0 | 7.659 GiB/s |
-| `Encode/stdlib/1024` | 782.5 ns | 0 | 0 | 1.219 GiB/s |
-| `Encode/cristalhq/1024` | 373.5 ns | 0 | 0 | 2.553 GiB/s |
-| `Encode/b64x/65536` | 5.538 µs | 0 | 0 | 11.02 GiB/s |
-| `Encode/stdlib/65536` | 50.42 µs | 0 | 0 | 1.211 GiB/s |
-| `Encode/cristalhq/65536` | 25.26 µs | 0 | 0 | 2.416 GiB/s |
-| `EncodeToString/b64x/16` | 40.77 ns | 24 | 1 | 374.3 MiB/s |
-| `EncodeToString/stdlib/16` | 33.15 ns | 24 | 1 | 460.2 MiB/s |
-| `EncodeToString/cristalhq/16` | 28.14 ns | 24 | 1 | 542.3 MiB/s |
-| `EncodeToString/b64x/1024` | 551.2 ns | 2.750 KiB | 2 | 1.730 GiB/s |
-| `EncodeToString/stdlib/1024` | 1.326 µs | 2.750 KiB | 2 | 736.3 MiB/s |
-| `EncodeToString/cristalhq/1024` | 654.8 ns | 1.375 KiB | 1 | 1.456 GiB/s |
-| `RawURLEncode/b64x/16` | 24.89 ns | 0 | 0 | 613.0 MiB/s |
-| `RawURLEncode/stdlib/16` | 15.22 ns | 0 | 0 | 1002.4 MiB/s |
-| `RawURLEncode/cristalhq/16` | 16.58 ns | 0 | 0 | 920.5 MiB/s |
-| `RawURLEncode/b64x/1024` | 136.9 ns | 0 | 0 | 6.967 GiB/s |
-| `RawURLEncode/stdlib/1024` | 875.9 ns | 0 | 0 | 1.089 GiB/s |
-| `RawURLEncode/cristalhq/1024` | 439.4 ns | 0 | 0 | 2.170 GiB/s |
-| `RawURLEncode/b64x/65536` | 7.353 µs | 0 | 0 | 8.301 GiB/s |
-| `RawURLEncode/stdlib/65536` | 54.92 µs | 0 | 0 | 1.111 GiB/s |
-| `RawURLEncode/cristalhq/65536` | 26.24 µs | 0 | 0 | 2.326 GiB/s |
-| `Decode/b64x/16` | 44.06 ns | 0 | 0 | 346.3 MiB/s |
-| `Decode/stdlib/16` | 32.16 ns | 0 | 0 | 474.4 MiB/s |
-| `Decode/cristalhq/16` | 16.71 ns | 0 | 0 | 913.0 MiB/s |
-| `Decode/b64x/1024` | 215.7 ns | 0 | 0 | 4.422 GiB/s |
-| `Decode/stdlib/1024` | 1.068 µs | 0 | 0 | 914.4 MiB/s |
-| `Decode/cristalhq/1024` | 570.9 ns | 0 | 0 | 1.670 GiB/s |
-| `Decode/b64x/65536` | 11.62 µs | 0 | 0 | 5.251 GiB/s |
-| `Decode/stdlib/65536` | 102.7 µs | 0 | 0 | 608.8 MiB/s |
-| `Decode/cristalhq/65536` | 38.80 µs | 0 | 0 | 1.573 GiB/s |
-| `DecodeString/b64x/16` | 88.48 ns | 40 | 2 | 172.5 MiB/s |
-| `DecodeString/stdlib/16` | 49.90 ns | 16 | 1 | 305.8 MiB/s |
-| `DecodeString/cristalhq/16` | 42.78 ns | 24 | 1 | 356.6 MiB/s |
-| `DecodeString/b64x/256` | 248.1 ns | 608 | 2 | 984.0 MiB/s |
-| `DecodeString/stdlib/256` | 387.2 ns | 256 | 1 | 630.6 MiB/s |
-| `DecodeString/cristalhq/256` | 292.5 ns | 288 | 1 | 834.6 MiB/s |
-| `DecodeString/b64x/1024` | 762.9 ns | 2.375 KiB | 2 | 1.250 GiB/s |
-| `DecodeString/stdlib/1024` | 1.816 µs | 1.000 KiB | 1 | 537.9 MiB/s |
-| `DecodeString/cristalhq/1024` | 1.074 µs | 1.125 KiB | 1 | 909.3 MiB/s |
-| `DecodeString/b64x/65536` | 50.65 µs | 152.0 KiB | 2 | 1.205 GiB/s |
-| `DecodeString/stdlib/65536` | 120.3 µs | 64.00 KiB | 1 | 519.4 MiB/s |
-| `DecodeString/cristalhq/65536` | 66.56 µs | 72.00 KiB | 1 | 939.1 MiB/s |
-| `AppendEncodeDecode/append_encode` | 138.8 ns | 0 | 0 | 6.871 GiB/s |
-| `AppendEncodeDecode/append_decode` | 154.0 ns | 0 | 0 | 6.192 GiB/s |
+| Benchmark | ns/op |
+|---|---:|
+| `Encode/b64x/16` | 5.60–5.62 |
+| `Encode/stdlib/16` | 7.42 |
+| `Encode/cristalhq/16` | 6.10 |
+| `Encode/b64x/1024` | 23.4 |
+| `Encode/stdlib/1024` | 470–472 |
+| `Encode/cristalhq/1024` | 200 |
+| `Encode/b64x/65536` | 1.027–1.028 µs |
+| `Encode/stdlib/65536` | 29.85 µs |
+| `Encode/cristalhq/65536` | 12.83–12.85 µs |
+| `EncodeToString/b64x/16` | 12.96–13.06 |
+| `EncodeToString/stdlib/16` | 17.44–17.61 |
+| `EncodeToString/cristalhq/16` | 13.15–13.20 |
+| `EncodeToString/b64x/1024` | 109.4–117.1 |
+| `EncodeToString/stdlib/1024` | 639–643 |
+| `EncodeToString/cristalhq/1024` | 284–286 |
+| `Decode/b64x/16` | 7.14–7.19 |
+| `Decode/stdlib/16` | 12.07–12.08 |
+| `Decode/cristalhq/16` | 7.57–7.58 |
+| `Decode/b64x/1024` | 42.1–42.2 |
+| `Decode/stdlib/1024` | 455–457 |
+| `Decode/cristalhq/1024` | 274–281 |
+| `Decode/b64x/65536` | 2.339–2.348 µs |
+| `Decode/stdlib/65536` | 28.63 µs |
+| `Decode/cristalhq/65536` | 17.45–17.46 µs |
+| `DecodeString/b64x/16` | 14.57–14.90 |
+| `DecodeString/stdlib/16` | 19.81–20.13 |
+| `DecodeString/cristalhq/16` | 16.75–16.96 |
+| `DecodeString/b64x/256` | 43.90–44.15 |
+| `DecodeString/stdlib/256` | 147.4–147.5 |
+| `DecodeString/cristalhq/256` | 97.60–97.93 |
+| `DecodeString/b64x/1024` | 127.8–128.4 |
+| `DecodeString/stdlib/1024` | 542–551 |
+| `DecodeString/cristalhq/1024` | 372.4 |
+| `DecodeString/b64x/65536` | 6.00–6.30 µs |
+| `DecodeString/stdlib/65536` | 31.3–31.4 µs |
+| `DecodeString/cristalhq/65536` | 21.05–21.52 µs |
 </details>
 
 ## 复现
 
 ```bash
 cd benchmarks/base64
-GOWORK=off go test -run '^$' -bench . -benchmem -count=5 -benchtime=500ms
-GOWORK=off GOEXPERIMENT=simd go test -run '^$' -bench . -benchmem -count=5 -benchtime=500ms
+GOWORK=off go test -run '^$' -bench . -benchmem -count=3 -benchtime=500ms
+GOWORK=off go test -run '^$' -bench 'BenchmarkParallel' -cpu 1,16,32 -count=3
 ```
 
 ## 口径与限制
 
-- 默认构建与 SIMD 构建是两次独立编译；两次运行的 CPU 频率/背景负载可能不同。
-- `GOEXPERIMENT=simd` 是 Go 1.27 的实验特性；生产构建需确认工具链与目标 CPU 支持。
-- `Encode`/`Decode` 复用目标缓冲区，`EncodeToString`/`DecodeString` 包含结果分配；
-  后者的分配次数差异（ydx 2 次 vs 标准库 1 次）来自结果构造与内部缓冲路径。
-- 同一轮内 5 个样本不足以给出 95% 置信区间；同一轮内小于约 5% 的差异视为噪声；
-  跨轮次绝对数值可能因 CPU 频率/温度漂移。
+- `Encode`/`Decode` 复用目标缓冲区，只测编解码成本；`EncodeToString`/`DecodeString`
+  包含结果分配，不能与原地路径直接混比。
+- 同一轮 3–5 个样本不足以给出 95% 置信区间；同一轮内小于约 5% 的差异视为噪声，
+  `EncodeToString` 16 B 的领先幅度正处在该边界。
+- 不同主机、不同 CPU 频率/温度或不同内核版本之间，绝对 ns/op 不可直接混比；请比较
+  同一轮表格内的相对关系。
+- cristalhq 为纯 Go 实现，不使用汇编；amd64 上与本实现的块路径差距主要来自 SIMD 宽度，
+  arm64 上块路径来自 NEON 内核、短路径来自宽加载/存储标量路径。
