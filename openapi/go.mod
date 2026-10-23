@@ -6,7 +6,7 @@ require (
 	github.com/shibingli/ydx/afs v0.1.4
 	github.com/shibingli/ydx/errs v0.1.3
 	github.com/shibingli/ydx/json v0.1.8
-	github.com/shibingli/ydx/log v0.1.5
+	github.com/shibingli/ydx/log v0.1.6
 	github.com/shibingli/ydx/sysinfo v0.1.3
 	github.com/spf13/afero v1.15.0
 	go.yaml.in/yaml/v3 v3.0.5

@@ -6,8 +6,8 @@ require (
 	github.com/alicebob/miniredis/v2 v2.40.0
 	github.com/redis/go-redis/v9 v9.23.0
 	github.com/shibingli/ydx/errs v0.1.3
-	github.com/shibingli/ydx/log v0.1.5
-	github.com/shibingli/ydx/router v0.1.5
+	github.com/shibingli/ydx/log v0.1.6
+	github.com/shibingli/ydx/router v0.1.6
 )
 
 require (
