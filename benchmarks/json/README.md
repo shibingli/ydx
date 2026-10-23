@@ -71,7 +71,7 @@ SWAR/标量路径。不需要 `GOEXPERIMENT=simd`，也不依赖 cgo；显式 `j
 
 | 场景 | ydx | stdlib | goccy | sonic |
 |---|---:|---:|---:|---:|
-| `Marshal/one` | **180** | 689 | 206 | 428 |
+| `Marshal/one` | **162** | 689 | 206 | 428 |
 | `Marshal/many` | **5.97 µs** | 28.2 µs | 9.73 µs | 20.3 µs |
 | `Unmarshal/one` | **303** | 1.25 µs | 334 | 704 |
 | `Unmarshal/many` | **15.3 µs** | 70.9 µs | 17.3 µs | 26.3 µs |
