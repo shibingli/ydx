@@ -203,3 +203,65 @@ done:
 	VZEROUPPER
 	MOVQ R8, ret+56(FP)
 	RET
+
+// func encodeAVX512BWAsm(dst, src []byte, c *bwEncConsts) int
+// Encodes complete 48-byte blocks with baseline AVX-512BW (lane-local VPSHUFB) and returns the
+// logical input bytes consumed; src includes the four-byte prefix before the first block. |
+// 用基础 AVX-512BW（按 128 位通道局部的 VPSHUFB）编码完整 48 字节块，返回消耗的逻辑输入字节数；
+// src 包含首块之前的四字节前缀。
+TEXT ·encodeAVX512BWAsm(SB), NOSPLIT, $0-64
+	MOVQ dst_base+0(FP), AX
+	MOVQ dst_len+8(FP), BX
+	MOVQ src_base+24(FP), CX
+	MOVQ src_len+32(FP), DI
+	MOVQ c+48(FP), SI
+	XORQ R8, R8
+	XORQ R11, R11
+
+	VMOVDQU 0(SI), Y1
+	VMOVDQU64 32(SI), Z2
+	VMOVDQU64 96(SI), Z3
+	VMOVDQU64 160(SI), Z4
+	VMOVDQU64 224(SI), Z5
+	VMOVDQU64 288(SI), Z6
+	VMOVDQU64 352(SI), Z7
+	VMOVDQU64 416(SI), Z8
+	VMOVDQU64 480(SI), Z9
+
+loop:
+	MOVQ DI, R9
+	SUBQ R8, R9
+	CMPQ R9, $56
+	JL done
+	MOVQ BX, R9
+	SUBQ R11, R9
+	CMPQ R9, $64
+	JL done
+
+	LEAQ (CX)(R8*1), R10
+	VMOVDQU (R10), Y0
+	VPSHUFB Y1, Y0, Y0
+	VMOVDQU 24(R10), Y10
+	VPSHUFB Y1, Y10, Y10
+	VINSERTI64X4 $1, Y10, Z0, Z0
+	VPANDQ Z2, Z0, Z11
+	VPMULHUW Z4, Z11, Z11
+	VPANDQ Z3, Z0, Z0
+	VPMULLW Z5, Z0, Z0
+	VPORQ Z11, Z0, Z11
+	VPSUBUSB Z7, Z11, Z12
+	VPCMPGTB Z11, Z8, K1
+	VMOVDQU8 Z9, K1, Z12
+	VPSHUFB Z12, Z6, Z12
+	VPADDB Z11, Z12, Z11
+	LEAQ (AX)(R11*1), R10
+	VMOVDQU64 Z11, (R10)
+
+	ADDQ $48, R8
+	ADDQ $64, R11
+	JMP loop
+
+done:
+	VZEROUPPER
+	MOVQ R8, ret+56(FP)
+	RET

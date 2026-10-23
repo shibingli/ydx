@@ -266,3 +266,74 @@ func decodeSIMD512BW(dst, src []byte, url, raw bool) (int, int) {
 
 //go:noescape
 func decodeAVX512BWAsm(dst, src []byte, c *bwDecConsts) int
+
+// bwEncConsts holds the lane-local AVX-512BW encode tables. | bwEncConsts 保存按 128 位通道局部
+// 查表的 AVX-512BW 编码常量。
+type bwEncConsts struct {
+	shuf32                       [32]byte
+	maskLo, maskHi, mulHi, mulLo [64]byte
+	lut                          [64]byte
+	b51, b26, b13                [64]byte
+}
+
+var (
+	bwEncStd, bwEncURL bwEncConsts
+)
+
+func init() {
+	bwEncStd = makeBWEncConsts(false)
+	bwEncURL = makeBWEncConsts(true)
+	if !forceScalar && hasAVX512BW() {
+		installEncode(2, encodeSIMD512BW)
+	}
+}
+
+func makeBWEncConsts(url bool) bwEncConsts {
+	var c bwEncConsts
+	shuf16 := [16]byte{1, 0, 2, 1, 4, 3, 5, 4, 7, 6, 8, 7, 10, 9, 11, 10}
+	for j := 0; j < 16; j++ {
+		c.shuf32[j] = shuf16[j] + 4
+		c.shuf32[16+j] = shuf16[j]
+	}
+	for j := 0; j < 32; j++ {
+		lo, hi, mh, ml := uint16(0x0fc0), uint16(0x003f), uint16(0x0400), uint16(0x0100)
+		if j&1 == 0 {
+			lo, hi, mh, ml = 0xfc00, 0x03f0, 0x0040, 0x0010
+		}
+		binary.LittleEndian.PutUint16(c.maskLo[j*2:], lo)
+		binary.LittleEndian.PutUint16(c.maskHi[j*2:], hi)
+		binary.LittleEndian.PutUint16(c.mulHi[j*2:], mh)
+		binary.LittleEndian.PutUint16(c.mulLo[j*2:], ml)
+	}
+	lut16 := [16]int8{71, -4, -4, -4, -4, -4, -4, -4, -4, -4, -4, -19, -16, 65, 0, 0}
+	if url {
+		lut16[11], lut16[12] = -17, 32
+	}
+	for j := 0; j < 64; j++ {
+		c.lut[j] = byte(lut16[j&15])
+		c.b51[j], c.b26[j], c.b13[j] = 51, 26, 13
+	}
+	return c
+}
+
+// encodeSIMD512BW encodes a 12-byte head and complete 48-byte blocks with baseline AVX-512BW,
+// leaving the tail to the scalar path. | encodeSIMD512BW 用基础 AVX-512BW 编码 12 字节头部与完整
+// 48 字节块，尾部交给标量路径。
+func encodeSIMD512BW(dst, src []byte, url, padded bool, pad byte) (int, int) {
+	if len(src) < 52 || len(dst) < 64 {
+		return encodeSIMDAsm(dst, src, url, padded, pad)
+	}
+	n, o := encodeSIMDAsm(dst, src[:16], url, padded, pad)
+	if n < 12 {
+		return 0, 0
+	}
+	c := &bwEncStd
+	if url {
+		c = &bwEncURL
+	}
+	k := encodeAVX512BWAsm(dst[o:], src[8:], c)
+	return n + k, o + k/48*64
+}
+
+//go:noescape
+func encodeAVX512BWAsm(dst, src []byte, c *bwEncConsts) int
