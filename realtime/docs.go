@@ -13,9 +13,14 @@
 //     the local node id are dropped on arrival because they were already
 //     delivered locally. | 多机形态增加 Backend。每个节点把消息发往后端，并只订阅本地
 //     存在订阅者的主题；携带本节点 id 的消息在到达时被丢弃，因为它已在本地投递过。
-//   - Delivery is at-most-once with per-node ordering. Redis Pub/Sub is not
-//     durable; callers that need replay keep a cursor in their own store. |
-//     投递为至多一次并按节点保序。Redis Pub/Sub 不持久；需要重放的调用方自行保存游标。
+//   - Live delivery is at-most-once with per-node ordering. Redis Pub/Sub is
+//     not durable; callers that need replay keep a cursor in their own store.
+//     A failed backend publish can be made durable with Options.Retry: the hub
+//     enqueues the message (for example into asynq) and a worker later calls
+//     PublishRemote, which only publishes and never fans out locally again. |
+//     实时投递为至多一次并按节点保序。Redis Pub/Sub 不持久；需要重放的调用方自行保存游标。
+//     后端发布失败可经 Options.Retry 变得持久：Hub 把消息入队（例如交给 asynq），工作器稍后调用
+//     PublishRemote，后者只发布、绝不再本地扇出。
 //   - Slow consumers never block a publisher: each subscription has a bounded
 //     queue and a policy (drop the message, or close that subscription). |
 //     慢消费者永不阻塞发布方：每个订阅者都有有界队列与策略（丢弃该消息，或关闭该订阅）。
@@ -29,8 +34,8 @@
 //	hub := realtime.NewHub(realtime.Options{})
 //	hub.Use(realtime.NewRedisBackend(rdb, realtime.RedisOptions{}))
 //
-//	sub, err := hub.Subscribe(r.Context(), "chat:42", func(msg []byte) error {
-//		return conn.WriteMessage(websocket.TextMessage, msg)
+//	sub, err := hub.Subscribe(r.Context(), "chat:42", func(msg realtime.Message) error {
+//		return conn.WriteMessage(websocket.TextMessage, msg.Body)
 //	})
 //	defer sub.Close()
 //	_ = hub.Publish(ctx, "chat:42", []byte("hello"))

@@ -2,6 +2,7 @@ package realtime
 
 import (
 	"context"
+	"errors"
 	"os"
 	"strconv"
 	"strings"
@@ -111,6 +112,9 @@ type Stats struct {
 	Dropped    uint64
 	ClosedSlow uint64
 	Errors     uint64
+	// Retried counts messages handed to the durable queue after a failed
+	// backend publish. | Retried 统计后端发布失败后交给持久队列的消息数。
+	Retried uint64
 }
 
 // Options configures a Hub. | Options 配置 Hub。
@@ -128,6 +132,12 @@ type Options struct {
 	MaxMessageBytes int
 	// SlowPolicy selects the full-queue behaviour. | SlowPolicy 选择队列满时的行为。
 	SlowPolicy SlowPolicy
+	// Retry, when non-nil, receives every message whose backend publish failed,
+	// so a durable queue (asynq) can republish it later. It must not deliver the
+	// message locally again: local delivery already happened before the publish. |
+	// Retry 非 nil 时接收每条后端发布失败的消息，使持久队列（asynq）稍后重发。它不得再次
+	// 本地投递：本地投递已在发布之前完成。
+	Retry RetryQueue
 	// Authorize, when non-nil, is consulted on Subscribe; a non-nil error
 	// denies the subscription and is returned wrapped in ErrUnauthorized. |
 	// Authorize 非 nil 时在 Subscribe 时调用；非 nil 错误拒绝订阅并以
@@ -166,6 +176,18 @@ type Backend interface {
 	Close() error
 }
 
+// RetryQueue makes a failed cross-node publish durable. | RetryQueue 让失败的跨节点发布变得持久。
+//
+// The queue is for delivery recovery, not for fan-out: the hub has already
+// delivered locally, and a worker that later calls PublishRemote must not touch
+// local subscribers again. | 该队列用于投递恢复而非扇出：hub 已在本地投递，稍后调用
+// PublishRemote 的工作器不得再次触碰本地订阅者。
+type RetryQueue interface {
+	// Enqueue stores one message for a later PublishRemote. | Enqueue 保存一条消息供稍后
+	// PublishRemote 使用。
+	Enqueue(ctx context.Context, msg Message) error
+}
+
 // Hub fans messages out to local subscribers and, optionally, across nodes. |
 // Hub 把消息扇出给本地订阅者，并可选地跨节点传递。
 type Hub struct {
@@ -183,6 +205,7 @@ type Hub struct {
 	dropped    atomic.Uint64
 	closedSlow atomic.Uint64
 	errors     atomic.Uint64
+	retried    atomic.Uint64
 }
 
 // topicState is one topic's local and remote subscription state. | topicState 是单个主题的
@@ -241,6 +264,7 @@ func (h *Hub) Stats() Stats {
 		Dropped:    h.dropped.Load(),
 		ClosedSlow: h.closedSlow.Load(),
 		Errors:     h.errors.Load(),
+		Retried:    h.retried.Load(),
 	}
 }
 
@@ -264,9 +288,10 @@ func validTopic(topic string) bool {
 // Publish assigns a message id, fans the body out locally and forwards it to
 // the backend. | Publish 分配消息 id，把正文扇出到本地并转发给后端。
 //
-// A backend failure is returned after local delivery: local subscribers have
-// already received the message, and the caller decides whether to retry. |
-// 后端失败在本地投递之后返回：本地订阅者已经收到消息，由调用方决定是否重试。
+// Local delivery always happens first. A backend failure is returned after it,
+// unless Options.Retry accepted the message, in which case Publish reports
+// success and the durable queue owns the retry. | 本地投递总是先发生。后端失败在本地
+// 投递之后返回；若 Options.Retry 已接收该消息，Publish 报告成功，由持久队列负责重试。
 func (h *Hub) Publish(ctx context.Context, topic string, body []byte) error {
 	if !validTopic(topic) {
 		return errs.Detail(ErrInvalidTopic, "topic %q | 主题 %q", topic, topic)
@@ -293,6 +318,53 @@ func (h *Hub) Publish(ctx context.Context, topic string, body []byte) error {
 	h.fanOut(msg)
 	if backend == nil {
 		return nil
+	}
+	if err := backend.Publish(ctx, msg); err != nil {
+		h.errors.Add(1)
+		if h.opts.Retry != nil {
+			if qerr := h.opts.Retry.Enqueue(ctx, msg); qerr == nil {
+				h.retried.Add(1)
+				return nil
+			} else {
+				return errors.Join(err, qerr)
+			}
+		}
+		return err
+	}
+	return nil
+}
+
+// PublishRemote sends an already delivered message to the backend only. It is
+// the entry point for a durable retry worker: local subscribers are not
+// touched, and the message keeps its original id and node. | PublishRemote 只把
+// 已本地投递过的消息发往后端。它是持久重试工作器的入口：不触碰本地订阅者，消息保留原始
+// id 与节点。
+func (h *Hub) PublishRemote(ctx context.Context, msg Message) error {
+	if !validTopic(msg.Topic) {
+		return errs.Detail(ErrInvalidTopic, "topic %q | 主题 %q", msg.Topic, msg.Topic)
+	}
+	if len(msg.Body) > h.opts.MaxMessageBytes {
+		return errs.Detail(ErrMessageTooLarge, "length %d exceeds %d | 长度 %d 超过 %d",
+			len(msg.Body), h.opts.MaxMessageBytes, len(msg.Body), h.opts.MaxMessageBytes)
+	}
+	h.mu.Lock()
+	if h.closed {
+		h.mu.Unlock()
+		return ErrClosed
+	}
+	backend := h.backend
+	h.mu.Unlock()
+	if backend == nil {
+		return nil
+	}
+	// A retried payload may have been serialized without its identity; fill it
+	// so other nodes can still deduplicate the echo. | 重试载荷可能在序列化时丢失标识；
+	// 这里补齐，使其它节点仍能识别回声。
+	if msg.Node == "" {
+		msg.Node = h.opts.NodeID
+	}
+	if msg.ID == "" {
+		msg.ID = msg.Node + ":" + strconv.FormatUint(h.seq.Add(1), 10)
 	}
 	if err := backend.Publish(ctx, msg); err != nil {
 		h.errors.Add(1)
