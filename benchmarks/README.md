@@ -1,9 +1,10 @@
 # ydx 基准与主流实现对比
 
-本目录是 ydx 的基准模块集合，共 **15 个独立 Go 模块**。原 yd 仓 `benchmarks/` 的独有场景
+本目录是 ydx 的基准模块集合，共 **14 个独立 Go 模块**。原 yd 仓 `benchmarks/` 的独有场景
 已全部并入本目录（json 的 7 字段载荷、base64 的 32 B/1 MiB、jwt 的 cristal/jwt 与
 kataras/jwt、log 的 prebound 场景、router 的 echo/fiber、websocket 的 gobwas/gws、
-cache 的 TTL/命中率轨迹，以及 compress/crypto/template 整模块），yd 仓不再保留基准目录。
+cache 的 TTL/命中率轨迹，以及 compress/crypto/template 整模块；render 的微基准已并入
+template 模块，避免同一引擎在两处重复对比），yd 仓不再保留基准目录。
 每个模块只依赖 ydx 的已发布子目录标签与对应的对比库；`cache/local` 与 `cache/compare`
 是 `cache` 模块内的子包。产品模块本身不包含任何 `Benchmark*`，也不依赖基准专用库。
 
@@ -33,7 +34,6 @@ cache 的 TTL/命中率轨迹，以及 compress/crypto/template 整模块），y
 | `benchmarks/log` | `zap`、`zerolog`、`slog`、`logrus` | [log/README.md](log/README.md) |
 | `benchmarks/middleware` | `rs/cors`、`chi`、`klauspost/compress/gzhttp`、`x/time/rate` | [middleware/README.md](middleware/README.md) |
 | `benchmarks/regexpx` | 标准库 `regexp`、`grafana/regexp`、`regexp2`、`go-re2` | [regexpx/README.md](regexpx/README.md) |
-| `benchmarks/render` | `html/template`、`text/template` | [render/README.md](render/README.md) |
 | `benchmarks/router` | `net/http.ServeMux`、`httprouter`、`chi`、`gin`、`echo`、`fiber` | [router/README.md](router/README.md) |
 | `benchmarks/sse` | `gin-contrib/sse`、手写 `fmt.Fprintf` 基线 | [sse/README.md](sse/README.md) |
 | `benchmarks/template` | `html/template`、`text/template`、Jet、Pongo2、Liquid、Raymond、Mustache、quicktemplate、templ | [template/README.md](template/README.md) |
@@ -69,11 +69,11 @@ README 与 [optimization-report.md](optimization-report.md)。
 | middleware | 恢复（无 panic） | **7.85 ns** | chi 8.62 ns |
 | middleware | 限流放行 | 136.5 ns | `x/time/rate` 59.92 ns（全局、不写头）；+headers 127.8 ns；按 IP + headers 139.0 ns |
 | regexpx | `FindAll/email` | **94.98 µs** | go-re2 732.3 µs / stdlib 5.679 ms |
-| render | 带绑定渲染 | **258.2 ns** | html/template 3.473 µs / text/template 2.208 µs |
 | router | 静态路由（`GETRaw`） | **8.40 ns** | httprouter 12.86 ns / stdlib 60.15 ns |
 | router | 参数 / 通配 / 未命中 | **18.9 / 18.9 / 25.8 ns** | httprouter 29.0 / 28.1 / 158.3 ns；gin 41.8 / 25.6 / 28.1 ns |
 | sse | 32 B / 4 KiB `WriteData` | 14.1 ns / 63.7 ns | gin-contrib 47.5 ns / 1.45 µs；手写 33.6 ns / 52.3 ns |
 | template | 100 行页面（物化） | **18.78 µs** | quicktemplate 21.46 µs / html/template 473.2 µs |
+| template | 绑定渲染微基准（`BenchmarkRender`） | **253.7 ns** | html/template 3.43 µs / text/template 2.12 µs |
 | websocket | 32 B 回显往返 | **4.07 µs** | gorilla 4.26 µs / gobwas 4.34 µs / coder 5.59 µs |
 | websocket | 64×1 KiB 批量写 | **14.06 µs** | coder 73.7 µs / gorilla 124.3 µs |
 

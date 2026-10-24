@@ -21,8 +21,9 @@ Ubuntu 26.04.1，Linux 7.0.0-38，Go 1.27.3 linux/amd64，CPU governor `performa
   - `websocket`：gobwas/ws、lxzan/gws、顺序回显、并发矩阵、流水线批量写、兼容性测试。
   - `cache`：TTL、Mixed、命中率轨迹、全部主流本地缓存对比（`cache/compare` 子包）。
   - `compress`、`crypto`、`template`：整模块迁入 ydx。
-- 合并后的模块共 15 个：`base64`、`buffpool`、`cache`、`compress`、`crypto`、`json`、
-  `jwt`、`log`、`middleware`、`regexpx`、`render`、`router`、`sse`、`template`、`websocket`。
+- 合并后的模块共 14 个：`base64`、`buffpool`、`cache`、`compress`、`crypto`、`json`、
+  `jwt`、`log`、`middleware`、`regexpx`、`router`、`sse`、`template`、`websocket`；
+  `render` 的微基准已并入 `template`，同一引擎不再在两处重复对比。
 - yd 仓的文档只保留指向 ydx 最终结果的链接，不再保留任何基准源码或历史口径文档。
 
 ## 2. 低效指标点与优化结果
@@ -227,7 +228,7 @@ Ubuntu 26.04.1，Linux 7.0.0-38，Go 1.27.3 linux/amd64，CPU governor `performa
 
 ## 7. 结论
 
-- 合并后的 15 个基准模块全部位于 `ydx/benchmarks/`，yd 仓不再保留基准目录。
+- 合并后的 14 个基准模块全部位于 `ydx/benchmarks/`，yd 仓不再保留基准目录。
 - 本次定位并修复的低效点（CORS、恢复、并发日志、SSE、限流、路由静态路径、缓冲池分级）
   均在最终一轮同口径测量中转正：CORS 36.7 ns、恢复 7.85 ns、限流 136.5 ns、SSE
   14.1/63.7 ns、静态路由 8.40 ns、日志并发 8.08 ns。

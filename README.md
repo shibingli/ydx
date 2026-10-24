@@ -66,7 +66,6 @@
 | `benchmarks/log` | `zap`、`zerolog`、`slog`、`logrus` | [log](benchmarks/log/README.md) |
 | `benchmarks/middleware` | `rs/cors`、`chi`、`gzhttp`、`x/time/rate` | [middleware](benchmarks/middleware/README.md) |
 | `benchmarks/regexpx` | 标准库 `regexp`、`grafana/regexp`、`regexp2`、`go-re2` | [regexpx](benchmarks/regexpx/README.md) |
-| `benchmarks/render` | `html/template`、`text/template` | [render](benchmarks/render/README.md) |
 | `benchmarks/router` | `net/http.ServeMux`、`httprouter`、`chi`、`gin`、`echo`、`fiber` | [router](benchmarks/router/README.md) |
 | `benchmarks/sse` | `gin-contrib/sse`、手写 `fmt.Fprintf` 基线 | [sse](benchmarks/sse/README.md) |
 | `benchmarks/template` | `html/template`、`text/template`、Jet、Pongo2、Liquid、Raymond、Mustache、quicktemplate、templ | [template](benchmarks/template/README.md) |

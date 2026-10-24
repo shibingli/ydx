@@ -43,6 +43,24 @@ done
 
 `YD_BENCH_ONLY` 接受逗号分隔的引擎名。
 
+## 渲染微基准（并入自原 benchmarks/render）
+
+原 `benchmarks/render` 与 `benchmarks/template` 都在对比 `ydx/render` 与 `html/template`、
+`text/template`，属于同一引擎的重复对比，已合并到本模块：
+
+- `BenchmarkRender`：`tr` / `can` 绑定、权限主体与无绑定回退的稳态执行成本；
+- `BenchmarkRenderCompare`：同一页面在 ydx、`html/template`、`text/template` 上的
+  `bindings` / `fallback` 两组对比，并有 `TestRenderCompareParity` 校验三者输出逐字节一致。
+
+```bash
+go test -run '^$' -bench '^BenchmarkRender$' -benchmem -count=5 -benchtime=500ms
+go test -run '^$' -bench '^BenchmarkRenderCompare$' -benchmem -count=5 -benchtime=500ms
+```
+
+Zen 5 参考主机结果：`bindings/ydx` **253.7 ns**（html/template 3.43 µs、text/template
+2.12 µs），`fallback/ydx` **253.5 ns**（html/template 3.41 µs、text/template 2.13 µs）；
+ydx 为 4 allocs/op、64 B/op，另两者为 70/45 allocs、1.7/1.2 KiB/op。
+
 ## 兼容性矩阵
 
 ✅ 原生支持；⚠️ 需要显式配置或仅部分支持；❌ 不支持。
