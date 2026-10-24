@@ -38,6 +38,7 @@
 | `github.com/shibingli/ydx/openapi` | `openapi` | OpenAPI 3.0/3.1 文档构建、注解解析与自包含查看器（标准 `net/http`，不依赖路由） |
 | `github.com/shibingli/ydx/openapi/ydrouter` | `ydrouter` | `ydx/router` 适配：路由树转 OpenAPI 文档与路由处理器 |
 | `github.com/shibingli/ydx/jwt` | `jwt` | 免反射 JWT 签发、验签与中间件 |
+| `github.com/shibingli/ydx/guomi` | `guomi` | 纯 Go 国密套件（SM2/SM3/SM4） |
 | `github.com/shibingli/ydx/middleware` | `middleware` | 中间件聚合门面（保持旧 API） |
 | `github.com/shibingli/ydx/middleware/accesslog` | `accesslog` | 访问日志 |
 | `github.com/shibingli/ydx/middleware/asyncafter` | `asyncafter` | 响应后异步管线 |

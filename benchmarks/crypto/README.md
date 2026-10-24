@@ -30,7 +30,7 @@ SHA-256/AES-GCM。下方各节保留更细的历史表格与封装开销分析�
 
 | 标签 | 实现 | 说明 |
 |---|---|---|
-| `emmansun` | `github.com/emmansun/gmsm v0.45.0` | yd/security/guomi 的后端；纯 Go、无 cgo |
+| `emmansun` | `github.com/emmansun/gmsm v0.45.0` | ydx/guomi 的后端；纯 Go、无 cgo |
 | `tjfoc` | `github.com/tjfoc/gmsm v1.4.1` | 切换前的旧后端，保留为「改动前」基线 |
 | `stdlib` | Go 1.27.3 `crypto/*` | SHA-256、HMAC-SHA256、PBKDF2-SHA256、AES-GCM、ChaCha20-Poly1305、ECDSA P-256、Ed25519 |
 
