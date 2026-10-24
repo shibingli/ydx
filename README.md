@@ -157,7 +157,8 @@ done
   go-jose 5.846 µs。
 - `log`：5 字段 JSON 134.1 ns，zap 395.2 ns、zerolog 168.6 ns、slog 529.9 ns。
 - `router`：静态路由 8.40 ns，httprouter 12.86 ns、gin 33.17 ns、`ServeMux` 60.15 ns。
-- `render`：带绑定渲染 258.2 ns，`html/template` 3.473 µs、`text/template` 2.208 µs。
+- `template`：渲染微基准（原 render 模块，现已并入 template）带绑定 253.7 ns，
+  `html/template` 3.43 µs、`text/template` 2.12 µs。
 
 这些数字只用于同机相对比较，不是跨硬件或跨轮次承诺；CPU 频率/温度会让同一份代码在
 不同轮次的绝对 ns/op 漂移数十个百分点。每个模块的完整表格、语义差异与
