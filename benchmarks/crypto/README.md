@@ -26,6 +26,10 @@ Zen 5 + Go 1.27.3，`GOMAXPROCS=32`，5 轮中位数：
 ECDSA P-256；SM3/SM4 没有 SHA-NI/AES-NI 对应指令，绝对吞吐仍低于硬件加速的
 SHA-256/AES-GCM。下方各节保留更细的历史表格与封装开销分析。
 
+`ydx/guomi` 封装层的基准已随模块迁移并入本目录（`BenchmarkGuomi*`）：SM2 签名/验签
+14.4/34.5 µs、SM4-GCM 4 KiB seal/open 5.41/5.74 µs、SM3 与 PBKDF2 与上表同量级，
+证明封装层只做参数校验与格式转换，不引入可测量的每操作成本。
+
 ## 实现与版本
 
 | 标签 | 实现 | 说明 |
