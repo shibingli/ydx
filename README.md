@@ -20,6 +20,7 @@
 | `github.com/shibingli/ydx/sysinfo` | `sysinfo` | GOMAXPROCS / cgroup / 主机内存探测 |
 | `github.com/shibingli/ydx/buffpool` | `buffpool` | 按尺寸分级的字节缓冲池 |
 | `github.com/shibingli/ydx/protocol` | `protocol` | HTTP 协议判定（extended CONNECT 等） |
+| `github.com/shibingli/ydx/nodeid` | `nodeid` | 稳定节点身份：显式配置、持久身份文件、平台种子、容器策略与唯一性 Claim |
 | `github.com/shibingli/ydx/base64` | `base64` | 硬件自适应 Base64 |
 | `github.com/shibingli/ydx/json` | `json` | 硬件自适应 JSON |
 | `github.com/shibingli/ydx/afs` | `afs` | afero 之上的文件系统门面（OS / 内存 / embed） |
