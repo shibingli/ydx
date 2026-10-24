@@ -64,23 +64,23 @@ type Options struct {
 	Logger *log.Logger
 	// Namespace is the cache namespace; empty means "gorm". | Namespace 是缓存命名空间；空值表示 "gorm"。
 	Namespace string
+	// SensitiveNamespace is the namespace of SensitiveTables; empty derives
+	// Namespace+".sensitive". It must differ from Namespace. | SensitiveNamespace 是
+	// SensitiveTables 的命名空间；为空时取 Namespace+".sensitive"，且必须与 Namespace 不同。
+	SensitiveNamespace string
 	// Tables is an allowlist; empty means every table. | Tables 是白名单；空表示所有表。
 	Tables []string
 	// IgnoreTables is a denylist applied before Tables; ignored tables are never
 	// read from or written to the cache. | IgnoreTables 是优先于 Tables 应用的黑名单；被忽略的
 	// 表既不读缓存也不写缓存。
 	IgnoreTables []string
-	// TTL is the lifetime of a cached query result; <=0 means 30 seconds. | TTL 是查询结果的存活时间；<=0 表示 30 秒。
-	TTL time.Duration
 	// SensitiveTables are cached in a separate namespace with SensitiveTTL. Use it
 	// for auth roles, memberships and similar data that must not share keys with
 	// ordinary query results. | SensitiveTables 使用独立命名空间与 SensitiveTTL 缓存。用于
 	// 鉴权角色、成员关系等不得与普通查询结果共用键的数据。
 	SensitiveTables []string
-	// SensitiveNamespace is the namespace of SensitiveTables; empty derives
-	// Namespace+".sensitive". It must differ from Namespace. | SensitiveNamespace 是
-	// SensitiveTables 的命名空间；为空时取 Namespace+".sensitive"，且必须与 Namespace 不同。
-	SensitiveNamespace string
+	// TTL is the lifetime of a cached query result; <=0 means 30 seconds. | TTL 是查询结果的存活时间；<=0 表示 30 秒。
+	TTL time.Duration
 	// SensitiveTTL is the lifetime of a sensitive entry; <=0 means 10 seconds. |
 	// SensitiveTTL 是敏感条目的存活时间；<=0 表示 10 秒。
 	SensitiveTTL time.Duration
