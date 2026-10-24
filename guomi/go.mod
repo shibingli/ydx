@@ -9,6 +9,6 @@ require (
 )
 
 require (
-	github.com/shibingli/ydx/sysinfo v0.1.3 // indirect
+	github.com/shibingli/ydx/sysinfo v0.1.4 // indirect
 	golang.org/x/crypto v0.58.0 // indirect
 )
