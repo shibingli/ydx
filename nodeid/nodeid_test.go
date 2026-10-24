@@ -17,6 +17,8 @@ func fixedEnvironment(t *testing.T, env Environment) {
 	t.Helper()
 	t.Setenv(kubernetesEnv, "")
 	t.Setenv(containerEnv, "")
+	t.Setenv(EnvID, "")
+	t.Setenv(FileEnv, "")
 	oldToken, oldMarkers, oldCgroup, oldFacts := kubernetesTokenPath, containerMarkers, initCgroupPath, platformFactsFunc
 	t.Cleanup(func() {
 		kubernetesTokenPath = oldToken

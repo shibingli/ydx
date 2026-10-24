@@ -41,6 +41,9 @@ var (
 	// instance already holds it. | ErrDuplicate 表示 Claimer 拒绝了该身份，因为另一个活动实例
 	// 已占用它。
 	ErrDuplicate = errs.New("nodeid: identity is already active | nodeid：身份已被另一个活动实例占用")
+	// ErrClaim indicates a claimer failure other than a duplicate (for example an
+	// unreachable lease store). | ErrClaim 表示除重复之外的 Claimer 故障（例如租约存储不可达）。
+	ErrClaim = errs.New("nodeid: identity claim failed | nodeid：身份声明失败")
 )
 
 // Source records where the resolved identity came from. | Source 记录解析出的身份来源。
@@ -153,9 +156,12 @@ type Options struct {
 }
 
 // Resolve returns the identity for this process, creating and persisting one when
-// Options.Create is set. It never returns an empty ID with a nil error. |
-// Resolve 返回本进程的身份；Options.Create 为真时会创建并持久化。它绝不会在返回 nil 错误时
-// 给出空 ID。
+// Options.Create is set. It never returns an empty ID with a nil error. Call it
+// once per process and reuse the result: a Claimer sees one claim per call, so
+// resolving twice with the same id but different instance ids would look like a
+// duplicate. | Resolve 返回本进程的身份；Options.Create 为真时会创建并持久化。它绝不会在
+// 返回 nil 错误时给出空 ID。每个进程只应调用一次并复用结果：Claimer 每次调用都会看到一次声明，
+// 同一 id 用不同 instance 再解析一次会被当成重复。
 func Resolve(ctx context.Context, o Options) (Identity, error) {
 	if ctx == nil {
 		ctx = context.Background()
@@ -252,6 +258,7 @@ func Resolve(ctx context.Context, o Options) (Identity, error) {
 		// Another process won the creation race; its value is authoritative. |
 		// 另一个进程赢得了创建竞争，以它的值为准。
 		generated = written
+		source = SourceFile
 	}
 	durable := IsDurable(file)
 	out := Identity{
@@ -319,7 +326,7 @@ func claim(ctx context.Context, c Claimer, id Identity) error {
 		if errors.Is(err, ErrDuplicate) {
 			return errs.WrapDetail(err, ErrDuplicate, "id %[1]q instance %[2]q | id %[1]q 实例 %[2]q", id.ID, id.Instance)
 		}
-		return errs.Wrap(err, ErrIdentityFile)
+		return errs.Wrap(err, ErrClaim)
 	}
 	return nil
 }
