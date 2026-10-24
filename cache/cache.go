@@ -1,15 +1,13 @@
 package cache
 
 import (
-	cryptorand "crypto/rand"
-	"encoding/hex"
 	"math/rand/v2"
-	"strconv"
 	"time"
 
 	"github.com/shibingli/ydx/cache/local"
 	"github.com/shibingli/ydx/errs"
 	"github.com/shibingli/ydx/log"
+	"github.com/shibingli/ydx/nodeid"
 )
 
 // Declared sentinel errors, testable with errors.Is. | 已声明的哨兵错误，可用 errors.Is 判定。
@@ -200,14 +198,11 @@ func (o Options) withDefaults() Options {
 	return o
 }
 
-// newNodeID returns a 96-bit random identifier, falling back to the clock. | newNodeID 返回 96 位随机标识，失败时回退到时钟。
-func newNodeID() string {
-	var b [12]byte
-	if _, err := cryptorand.Read(b[:]); err != nil {
-		return strconv.FormatInt(time.Now().UnixNano(), 16)
-	}
-	return hex.EncodeToString(b[:])
-}
+// newNodeID returns a fresh per-process event source. It is an instance id,
+// not the stable node identity: two processes (even on one host) must not ignore
+// each other's invalidation events. | newNodeID 返回新的每进程事件来源。它是实例 id，
+// 不是稳定节点身份：两个进程（即使同一主机）不得互相忽略对方的失效事件。
+func newNodeID() string { return nodeid.InstanceID() }
 
 // jittered adds a random duration in [0, jitter) to ttl. | jittered 给 ttl 叠加 [0, jitter) 内的随机时长。
 func jittered(ttl, jitter time.Duration) time.Duration {

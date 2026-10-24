@@ -7,10 +7,11 @@ require (
 	github.com/glebarez/sqlite v1.11.0
 	github.com/redis/go-redis/v9 v9.23.0
 	github.com/shibingli/ydx/afs v0.1.4
-	github.com/shibingli/ydx/config v0.1.5
+	github.com/shibingli/ydx/config v0.1.7
 	github.com/shibingli/ydx/errs v0.1.4
 	github.com/shibingli/ydx/json v0.1.12
 	github.com/shibingli/ydx/log v0.1.9
+	github.com/shibingli/ydx/nodeid v0.1.1
 	github.com/shibingli/ydx/sysinfo v0.1.4
 	github.com/spf13/afero v1.15.0
 	golang.org/x/sync v0.24.0
