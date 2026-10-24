@@ -30,6 +30,15 @@ func Defaults(c *Config) {
 	v.SetDefault("app.name", "yd")
 	v.SetDefault("app.env", "development")
 
+	// node: stable node identity. An explicit id wins; otherwise the identity file is
+	// read, and a missing file is seeded from the platform on first creation. | node：稳定节点
+	// 身份。显式 id 优先；否则读取身份文件，文件缺失时在首次创建时从平台种子推导。
+	v.SetDefault("node.id", "")
+	v.SetDefault("node.id_file", "")
+	v.SetDefault("node.require_persistent", false)
+	v.SetDefault("node.allow_shared_seed", false)
+	v.SetDefault("node.salt", "")
+
 	// db: SQLite by default; connection pool and slow query threshold; prepared statements on by default. | db：默认 SQLite，连接池与慢查询阈值，预编译语句默认开启。
 	v.SetDefault("db.driver", "sqlite")
 	v.SetDefault("db.maxconn", 100)
