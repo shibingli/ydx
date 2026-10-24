@@ -23,7 +23,10 @@ func platformSeed(env Environment, allowShared bool) (Source, string, bool) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	output, err := exec.CommandContext(ctx, "ioreg", "-rd1", "-c", "IOPlatformExpertDevice").Output()
+	// Use the absolute path: resolving ioreg through PATH would let a manipulated
+	// environment substitute a binary that returns a chosen UUID. | 使用绝对路径：经
+	// PATH 解析 ioreg 会让被操纵的环境替换成返回指定 UUID 的二进制。
+	output, err := exec.CommandContext(ctx, "/usr/sbin/ioreg", "-rd1", "-c", "IOPlatformExpertDevice").Output()
 	if err != nil {
 		return "", "", false
 	}
