@@ -57,6 +57,20 @@ var postgresPresetParams = []dsnParam{
 	{key: "client_encoding", value: "UTF8"}, // Client character set. | 客户端字符集。
 }
 
+// dmPresetParams lists the Dameng defaults in append order. | dmPresetParams 按追加顺序列出达梦的预置参数。
+//
+// timeZone is the driver-side offset in minutes east of UTC; 0 pins the session to UTC, matching the
+// framework's UTC-everywhere choice. DM has no per-connection database (a schema is only a
+// namespace), and nullability strictness and character set are fixed when the instance/database is
+// created, so there is no key to add for those dimensions. Property names are matched
+// case-insensitively by the driver (it lowercases every key), so the preset compares them folded. |
+// timeZone 是驱动侧相对 UTC 的分钟偏移，0 表示会话固定为 UTC，与框架一律使用 UTC 的选择一致。
+// DM 没有按连接切换的数据库（schema 只是命名空间），空值严格性与字符集在实例/库创建时就已确定，
+// 因此这两类维度没有可加的键。驱动对属性名不区分大小写（内部统一转小写），故预置按折叠比较键名。
+var dmPresetParams = []dsnParam{
+	{key: "timeZone", value: "0"},
+}
+
 // sqlitePresetParams lists the SQLite defaults in append order. | sqlitePresetParams 按追加顺序列出 SQLite 的预置参数。
 //
 // Each _pragma value runs one PRAGMA per connection: journal_mode(WAL) with synchronous(NORMAL) is
@@ -145,9 +159,27 @@ func PresetDSN(driver, dsn string) string {
 		return presetMySQLDSN(dsn)
 	case DriverPostgres:
 		return presetPostgresDSN(dsn)
+	case DriverDM, driverDMAlias:
+		return presetDMDSN(dsn)
 	default:
 		return dsn
 	}
+}
+
+// presetDMDSN appends the Dameng defaults to a dm:// URL DSN. | presetDMDSN 把达梦默认参数追加到
+// dm:// 形态的连接串上。
+//
+// The DM driver parses the DSN with net/url and lowercases every property name, so the existing keys
+// are compared folded and a caller who wrote TimeZone/timezone keeps their value. | DM 驱动用 net/url
+// 解析连接串并把属性名统一转小写，因此既有键按折叠比较：调用方写了 TimeZone/timezone 就保留其取值。
+func presetDMDSN(dsn string) string {
+	query := ""
+	hasQuery := false
+	if q := strings.IndexByte(dsn, '?'); q >= 0 {
+		query, hasQuery = dsn[q+1:], true
+	}
+	keys := queryKeys(query, true)
+	return appendQueryDSN(dsn, hasQuery, missingParams(dmPresetParams, keys, true))
 }
 
 // presetMySQLDSN appends the MySQL defaults to a go-sql-driver/mysql DSN. | presetMySQLDSN 把 MySQL

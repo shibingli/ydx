@@ -27,7 +27,7 @@
 | `github.com/shibingli/ydx/log` | `log` | 零拷贝结构化日志 |
 | `github.com/shibingli/ydx/regexpx` | `regexpx` | 自研正则引擎（线性 NFA + 回溯 + SIMD 预过滤） |
 | `github.com/shibingli/ydx/router` | `router` | 基数树路由 + 原生 http 适配 |
-| `github.com/shibingli/ydx/gorm` | `gorm` | GORM 装配、连接串预置与自动建库 |
+| `github.com/shibingli/ydx/gorm` | `gorm` | GORM 装配、连接串预置与自动建库（MySQL / PostgreSQL / SQLite / 达梦 DM8） |
 | `github.com/shibingli/ydx/redis` | `redis` | go-redis 通用客户端、探活与读透缓存 |
 | `github.com/shibingli/ydx/asynq` | `asynq` | 基于 asynq 的异步任务层（注册表、客户端、服务端） |
 | `github.com/shibingli/ydx/cache` | `cache` | 二级缓存（L1 环形缓存 + Redis） |
@@ -178,9 +178,9 @@ go work init
 go work use ../yd ../ydx/errs ../ydx/router # 按需添加
 ```
 
-基准模块按各组件**已发布的子目录标签**解析（例如 `json v0.1.10`、`middleware v0.1.10`）；
-组件源码与标签一致时无需工作区。发布本次修改前，最终主表用两个仓库之外的临时 `go.work`
-指向本地源码采集；该工作区只用于本地联调与基准，不得提交。
+基准模块按各组件**已发布的子目录标签**解析（例如 `json v0.1.12`、`middleware v0.1.11`）；
+本次发布后，最终主表可直接用 `GOWORK=off` 复现，无需工作区。开发期需要联调尚未发布的
+组件改动时，才在两个仓库之外创建临时 `go.work`；该工作区不得提交。
 
 ## 验证
 

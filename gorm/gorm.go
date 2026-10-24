@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/glebarez/sqlite"
+	dameng "github.com/godoes/gorm-dameng"
 	"gorm.io/driver/mysql"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
@@ -22,6 +23,11 @@ const (
 	DriverPostgres = "postgres"
 	// DriverSQLite is the SQLite driver name (pure Go, no cgo). | DriverSQLite 是 SQLite 驱动名（纯 Go，无 cgo）。
 	DriverSQLite = "sqlite"
+	// DriverDM is the Dameng (DM8) driver name. | DriverDM 是达梦（DM8）驱动名。
+	DriverDM = "dm"
+	// driverDMAlias is the long spelling of DriverDM; both select the DM dialect. | driverDMAlias 是
+	// DriverDM 的长拼写；两种写法都选择 DM 方言。
+	driverDMAlias = "dameng"
 )
 
 // Framework defaults, kept in step with the db.* default keys registered by config.Defaults. | 框架默认值，与 config.Defaults 注册的 db.* 默认键保持一致。
@@ -65,7 +71,7 @@ var (
 
 // Options describes the input of one Open call; the zero value is the framework default configuration. | Options 描述一次 Open 的输入参数，零值即框架默认配置。
 type Options struct {
-	// Driver is the driver name, one of mysql / postgres / sqlite; an empty value reads as the framework default sqlite. | Driver 是驱动名，支持 mysql / postgres / sqlite；空值按框架默认的 sqlite 处理。
+	// Driver is the driver name, one of mysql / postgres / sqlite / dm (dameng); an empty value reads as the framework default sqlite. | Driver 是驱动名，支持 mysql / postgres / sqlite / dm（dameng）；空值按框架默认的 sqlite 处理。
 	Driver string
 	// DSN is the data source string of the driver; SQLite can open an in-memory database with "file::memory:?cache=shared". | DSN 是驱动对应的数据源串；SQLite 可用 "file::memory:?cache=shared" 打开内存库。
 	DSN string
@@ -204,19 +210,22 @@ func dialectorFor(driver, dsn string) (gorm.Dialector, error) {
 		return mysql.Open(dsn), nil
 	case DriverPostgres:
 		return postgres.Open(dsn), nil
+	case DriverDM:
+		return dameng.Open(dsn), nil
 	default:
 		return nil, errs.Detail(ErrUnsupportedDriver,
-			"driver %q is not one of mysql/postgres/sqlite | 驱动 %q 不在 mysql/postgres/sqlite 之列",
+			"driver %q is not one of mysql/postgres/sqlite/dm | 驱动 %q 不在 mysql/postgres/sqlite/dm 之列",
 			driver, driver)
 	}
 }
 
-// driverKind returns the canonical name of the driver a configured name selects: mysql, postgres or
-// sqlite, with the empty name and both spellings of SQLite reading as sqlite, exactly as
-// dialectorFor reads them. It returns "" for a name this package does not support, which is the one
-// outcome callers must reject rather than act on. | driverKind 返回配置的驱动名所选择的规范驱动名：
-// mysql、postgres 或 sqlite，其中空名与 sqlite 的各种写法都读作 sqlite，与 dialectorFor 的口径一致。
-// 本包不支持的驱动名返回 ""，这是调用方必须拒绝、而不是据以行事的那一种结果。
+// driverKind returns the canonical name of the driver a configured name selects: mysql, postgres,
+// sqlite or dm, with the empty name and both spellings of SQLite reading as sqlite, and dameng
+// reading as dm, exactly as dialectorFor reads them. It returns "" for a name this package does not
+// support, which is the one outcome callers must reject rather than act on. | driverKind 返回配置的
+// 驱动名所选择的规范驱动名：mysql、postgres、sqlite 或 dm；空名与 sqlite 的各种写法都读作 sqlite，
+// dameng 读作 dm，与 dialectorFor 的口径一致。本包不支持的驱动名返回 ""，这是调用方必须拒绝、
+// 而不是据以行事的那一种结果。
 //
 // Every decision about a driver — building a dialect, classifying an error code, deciding whether
 // creation takes part at all — goes through this one function, so "which name means which driver"
@@ -230,6 +239,8 @@ func driverKind(driver string) string {
 		return DriverMySQL
 	case DriverPostgres:
 		return DriverPostgres
+	case DriverDM, driverDMAlias:
+		return DriverDM
 	default:
 		return ""
 	}

@@ -167,6 +167,23 @@ func TestPresetDSNAddsEveryDefaultParam(t *testing.T) {
 				{key: "_pragma", value: "journal_mode(WAL)"},
 			},
 		},
+		{
+			name:   "dm-url",
+			driver: gorm.DriverDM,
+			dsn:    "dm://SYSDBA:SYSDBA@127.0.0.1:5236",
+			want:   "dm://SYSDBA:SYSDBA@127.0.0.1:5236?timeZone=0",
+			query:  []presetWant{{key: "timeZone", value: "0"}},
+		},
+		{
+			name:   "dm-alias-with-schema",
+			driver: "Dameng",
+			dsn:    "dm://SYSDBA:p%3Fw@127.0.0.1:5236?schema=YD",
+			want:   "dm://SYSDBA:p%3Fw@127.0.0.1:5236?schema=YD&timeZone=0",
+			query: []presetWant{
+				{key: "schema", value: "YD"},
+				{key: "timeZone", value: "0"},
+			},
+		},
 	}
 
 	for _, tc := range cases {
@@ -334,6 +351,15 @@ func TestPresetDSNKeepsExplicitParameters(t *testing.T) {
 				"&_pragma=journal_mode%28WAL%29&_pragma=synchronous%28NORMAL%29&_pragma=busy_timeout%285000%29",
 			keyCounts: map[string]int{"_time_format=": 1},
 		},
+		{
+			// DM property names are case-insensitive (the driver lowercases them), so TimeZone counts as written. | DM 属性名不区分大小写（驱动统一转小写），TimeZone 算作已写出。
+			name:      "dm-explicit-timezone",
+			driver:    gorm.DriverDM,
+			dsn:       "dm://SYSDBA:pw@127.0.0.1:5236?TimeZone=480",
+			want:      "dm://SYSDBA:pw@127.0.0.1:5236?TimeZone=480",
+			absent:    []string{"timeZone=0"},
+			keyCounts: map[string]int{"TimeZone=": 1},
+		},
 	}
 
 	// Beyond the per-case assertion, every case must also prove the remaining presets are still filled in, otherwise "does not override" could be misimplemented as "skips the preset entirely". | 除逐例断言外，每例都要保证「其余预置仍然补齐」，否则「不覆盖」可能被误实现成「干脆不预置」。
@@ -356,6 +382,9 @@ func TestPresetDSNKeepsExplicitParameters(t *testing.T) {
 			{key: "synchronous", value: "synchronous%28NORMAL%29"},
 			{key: "busy_timeout", value: "busy_timeout%285000%29"},
 		},
+		gorm.DriverDM: {
+			{key: "timeZone", value: "timeZone=0"},
+		},
 	}
 	// 每个用例中被使用方显式覆盖掉的参数名：这些参数必须仍在串里（取的是使用方的值），
 	// 但不能再出现预置取值——absent 与 keyCounts 负责后半句。
@@ -369,6 +398,7 @@ func TestPresetDSNKeepsExplicitParameters(t *testing.T) {
 		"postgres-keyword-timezone":           {"TimeZone"},
 		"postgres-keyword-lowercase-timezone": {"TimeZone"},
 		"postgres-url-timezone":               {"TimeZone"},
+		"dm-explicit-timezone":                {"TimeZone"},
 		"sqlite-explicit-pragma":              {"journal_mode"},
 		"sqlite-explicit-pragma-equals-form":  {"journal_mode"},
 		"sqlite-explicit-loc":                 {"_loc"},
@@ -436,6 +466,9 @@ func TestPresetDSNIsIdempotent(t *testing.T) {
 		{gorm.DriverSQLite, "file::memory:?cache=shared"},
 		{gorm.DriverSQLite, "data/yd.db?_pragma=journal_mode(DELETE)"},
 		{gorm.DriverSQLite, "data/yd.db?_txlock=immediate&_pragma=journal_mode(DELETE)"},
+		{gorm.DriverDM, "dm://SYSDBA:pw@127.0.0.1:5236"},
+		{gorm.DriverDM, "dm://SYSDBA:pw@127.0.0.1:5236?schema=YD"},
+		{gorm.DriverDM, ""},
 		{"", "data/yd.db"},
 		{"oracle", "whatever-it-is"},
 	}
@@ -453,8 +486,8 @@ func TestPresetDSNIsIdempotent(t *testing.T) {
 				t.Fatalf("三次预置仍在变化\n  一次 %q\n  三次 %q", once, thrice)
 			}
 			for _, key := range []string{"loc=", "time_zone=", "parseTime=", "sql_mode=", "charset=", "collation=",
-				"TimeZone=", "client_encoding=", "_loc=", "_time_format=", "_pragma="} {
-				if c := strings.Count(twice, key); c > 1 && key != "_pragma=" {
+				"TimeZone=", "client_encoding=", "_loc=", "_time_format=", "_pragma=", "timeZone="} {
+				if c := strings.Count(strings.ToLower(twice), strings.ToLower(key)); c > 1 && key != "_pragma=" {
 					t.Fatalf("二次预置后 %q 出现 %d 次: %q", key, c, twice)
 				}
 			}

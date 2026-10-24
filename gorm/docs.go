@@ -5,9 +5,10 @@
 // Responsibilities: | 职责边界：
 //
 //   - choose a driver from Options (usually produced by OptionsFromConfig) and open
-//     a *gorm.DB; mysql / postgres / sqlite are supported, and sqlite is a pure-Go
-//     implementation with no cgo; | 依据 Options（通常来自 OptionsFromConfig）选择驱动
-//     并打开 *gorm.DB，支持 mysql / postgres / sqlite（sqlite 为纯 Go 实现，无 cgo）；
+//     a *gorm.DB; mysql / postgres / sqlite / dm are supported, sqlite is a pure-Go
+//     implementation with no cgo, and dm selects the Dameng DM8 dialect; | 依据 Options
+//     （通常来自 OptionsFromConfig）选择驱动并打开 *gorm.DB，支持 mysql / postgres /
+//     sqlite / dm（sqlite 为纯 Go 实现，无 cgo，dm 选择达梦 DM8 方言）；
 //   - apply the framework naming strategy: tables carry the yd_ prefix and derived
 //     index names use the yd_idx_ form (see naming.go); | 施加框架命名策略：表统一带
 //     yd_ 前缀，派生索引名统一取 yd_idx_ 形态（见 naming.go）；
