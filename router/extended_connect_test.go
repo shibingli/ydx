@@ -50,6 +50,37 @@ func TestRouterRoutesExtendedConnectToGET(t *testing.T) {
 	}
 }
 
+// TestRouterRoutesAnyTunnelToGET proves the fallback covers every extended
+// CONNECT protocol token, not only websocket: WebTransport registers its own GET
+// route and the transport layer upgrades it. | TestRouterRoutesAnyTunnelToGET 证明
+// 回退覆盖所有 extended CONNECT 协议 token 而不只是 websocket：WebTransport 注册自己的
+// GET 路由，由传输层完成升级。
+func TestRouterRoutesAnyTunnelToGET(t *testing.T) {
+	r := New()
+	r.GET("/wt", func(c *Ctx) { _ = c.String(http.StatusOK, "wt") })
+
+	cases := []struct {
+		name string
+		req  *http.Request
+	}{
+		{"h2 webtransport | HTTP/2 WebTransport", func() *http.Request {
+			req := extendedConnectRequest("/wt", 2, "HTTP/2.0", "")
+			req.Header.Set(":protocol", "webtransport")
+			return req
+		}()},
+		{"h3 webtransport | HTTP/3 WebTransport", extendedConnectRequest("/wt", 3, "webtransport", "")},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			r.ServeHTTP(rec, tc.req)
+			if rec.Code != http.StatusOK || rec.Body.String() != "wt" {
+				t.Fatalf("code=%d body=%q, want 200 wt | code=%d body=%q，期望 200 wt", rec.Code, rec.Body.String(), rec.Code, rec.Body.String())
+			}
+		})
+	}
+}
+
 // TestRouterDoesNotRedirectPlainConnectToGET proves the fallback is narrow. | TestRouterDoesNotRedirectPlainConnectToGET 证明回退范围是窄的。
 func TestRouterDoesNotRedirectPlainConnectToGET(t *testing.T) {
 	r := New()

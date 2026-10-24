@@ -42,6 +42,44 @@ func TestIsExtendedConnect(t *testing.T) {
 	}
 }
 
+// TestIsExtendedConnectProtocol pins the token-aware variants used by
+// WebTransport and by routers that route every tunnel to GET. |
+// TestIsExtendedConnectProtocol 固定按 token 判定的变体，供 WebTransport 与
+// 「把每种隧道都路由到 GET」的路由器使用。
+func TestIsExtendedConnectProtocol(t *testing.T) {
+	h2WebTransport := connectReq(map[string]string{":protocol": "webtransport"}, 2, "HTTP/2.0")
+	h3WebTransport := connectReq(nil, 3, "webtransport")
+	h2WebSocket := connectReq(map[string]string{":protocol": "websocket"}, 2, "HTTP/2.0")
+	plainH3 := connectReq(nil, 3, "HTTP/3.0")
+	plainConnect := connectReq(nil, 2, "HTTP/2.0")
+
+	cases := []struct {
+		name   string
+		req    *http.Request
+		proto  string
+		want   bool
+		tunnel bool
+	}{
+		{"h2 webtransport | HTTP/2 WebTransport", h2WebTransport, "webtransport", true, true},
+		{"h3 webtransport | HTTP/3 WebTransport", h3WebTransport, "webtransport", true, true},
+		{"h2 webtransport is not websocket | HTTP/2 WebTransport 不是 WebSocket", h2WebTransport, "websocket", false, true},
+		{"h2 websocket | HTTP/2 WebSocket", h2WebSocket, "websocket", true, true},
+		{"h2 websocket is not webtransport | HTTP/2 WebSocket 不是 WebTransport", h2WebSocket, "webtransport", false, true},
+		{"plain connect | 普通 CONNECT", plainConnect, "websocket", false, false},
+		{"normal h3 request | 普通 HTTP/3 请求", plainH3, "websocket", false, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := IsExtendedConnectProtocol(tc.req, tc.proto); got != tc.want {
+				t.Fatalf("IsExtendedConnectProtocol(%q) = %v, want %v", tc.proto, got, tc.want)
+			}
+			if got := IsTunnelConnect(tc.req); got != tc.tunnel {
+				t.Fatalf("IsTunnelConnect = %v, want %v", got, tc.tunnel)
+			}
+		})
+	}
+}
+
 // TestH2ExtendedConnectEnabled mirrors the standard library's init-time check. | TestH2ExtendedConnectEnabled 镜像标准库 init 时的判定。
 func TestH2ExtendedConnectEnabled(t *testing.T) {
 	cases := []struct {

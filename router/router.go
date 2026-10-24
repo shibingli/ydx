@@ -415,12 +415,14 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	// GET is by far the most common method; use the precomputed key and skip the method switch. | GET
 	// 是最常见的方法；直接使用预计算键，跳过方法分支。
 	key := getMethodKey
-	// RFC 8441/9220 extended CONNECT reuses the GET route: projects register one
-	// WebSocket handler and the transport layer decides how the connection starts.
-	// The fallback is deliberately narrow — plain CONNECT keeps its own method. | RFC 8441/9220
-	// extended CONNECT 复用 GET 路由：项目只注册一个 WebSocket 处理器，由传输层决定连接如何开始。
-	// 回退刻意保持狭窄——普通 CONNECT 仍使用自己的方法。
-	if req.Method != http.MethodGet && !protocol.IsExtendedConnect(req) {
+	// Every extended CONNECT reuses the GET route: projects register one handler and
+	// the transport layer decides how the connection starts (RFC 8441/9220 WebSocket,
+	// WebTransport over HTTP/3, or any future tunnel protocol). The fallback is
+	// deliberately narrow — plain CONNECT has no :path and keeps its own method. |
+	// 所有 extended CONNECT 都复用 GET 路由：项目只注册一个处理器，由传输层决定连接如何开始
+	// （RFC 8441/9220 WebSocket、HTTP/3 上的 WebTransport，或未来的隧道协议）。回退刻意保持
+	// 狭窄——普通 CONNECT 没有 :path，仍使用自己的方法。
+	if req.Method != http.MethodGet && !protocol.IsTunnelConnect(req) {
 		key = newMethodKey(req.Method)
 	}
 	// A raw static route needs no Ctx, pool, reset or middleware assembly. Global middleware and
