@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io/fs"
+	"os"
 	"strings"
 
 	"github.com/shibingli/ydx/errs"
@@ -12,6 +13,12 @@ import (
 // MaxIDLength bounds an explicit or generated identity in bytes. | MaxIDLength 限制显式或生成身份
 // 的字节长度。
 const MaxIDLength = 64
+
+// EnvID is the environment override for an explicit identity. It mirrors the
+// node.id config key so a library call without a Config still honours the
+// framework's standard precedence. | EnvID 是显式身份的环境变量覆盖项。它与 node.id
+// 配置键对应，使没有 Config 的库调用仍遵循框架的标准优先级。
+const EnvID = "YD_NODE_ID"
 
 // Declared sentinel errors, testable with errors.Is. | 已声明的哨兵错误，可用 errors.Is 判定。
 var (
@@ -159,7 +166,11 @@ func Resolve(ctx context.Context, o Options) (Identity, error) {
 		instance = InstanceID()
 	}
 
-	if id := strings.TrimSpace(o.ConfigID); id != "" {
+	configured := strings.TrimSpace(o.ConfigID)
+	if configured == "" {
+		configured = strings.TrimSpace(os.Getenv(EnvID))
+	}
+	if id := configured; id != "" {
 		if err := Validate(id); err != nil {
 			return Identity{}, err
 		}

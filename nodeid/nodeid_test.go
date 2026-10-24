@@ -85,6 +85,20 @@ func TestDeriveIsStableAndSeparated(t *testing.T) {
 	}
 }
 
+// TestResolveHonoursEnvID proves the environment override works without a
+// Config object. | TestResolveHonoursEnvID 证明没有 Config 时环境变量覆盖同样生效。
+func TestResolveHonoursEnvID(t *testing.T) {
+	fixedEnvironment(t, EnvironmentPhysical)
+	t.Setenv(EnvID, "env-node")
+	identity, err := Resolve(context.Background(), Options{})
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if identity.ID != "env-node" || identity.Source != SourceConfig || !identity.Stable {
+		t.Fatalf("identity = %+v", identity)
+	}
+}
+
 // TestResolveExplicitConfigWins proves configuration beats every other source. |
 // TestResolveExplicitConfigWins 证明配置优先于其它所有来源。
 func TestResolveExplicitConfigWins(t *testing.T) {
