@@ -3,14 +3,13 @@ package realtime
 import (
 	"context"
 	"errors"
-	"os"
 	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
-	"time"
 
 	"github.com/shibingli/ydx/errs"
+	"github.com/shibingli/ydx/nodeid"
 )
 
 // Errors returned by this package. | 本包返回的哨兵错误。
@@ -119,10 +118,12 @@ type Stats struct {
 
 // Options configures a Hub. | Options 配置 Hub。
 type Options struct {
-	// NodeID identifies this node in message ids; empty derives one from the
-	// hostname, the pid and a start timestamp, which is unique enough for one
-	// deployment. | NodeID 在消息 id 中标识本节点；为空时由主机名、进程号与启动时间戳
-	// 推导，对单个部署足够唯一。
+	// NodeID identifies this node in message ids. When empty, the hub reads the
+	// nodeid identity file (or YD_NODE_ID_FILE); without one it uses a random
+	// per-process id. Multi-node deployments should pass a stable identity
+	// resolved by nodeid.Resolve. | NodeID 在消息 id 中标识本节点。为空时 Hub 读取 nodeid
+	// 身份文件（或 YD_NODE_ID_FILE）；没有文件时使用随机每进程 id。多机部署应传入由
+	// nodeid.Resolve 解析出的稳定身份。
 	NodeID string
 	// QueueSize bounds each subscription queue; <=0 takes DefaultQueueSize. |
 	// QueueSize 限制每个订阅队列；<=0 取 DefaultQueueSize。
@@ -154,8 +155,11 @@ func (o Options) normalize() (Options, error) {
 		o.MaxMessageBytes = DefaultMaxMessageBytes
 	}
 	if o.NodeID == "" {
-		host, _ := os.Hostname()
-		o.NodeID = host + "-" + strconv.Itoa(os.Getpid()) + "-" + strconv.FormatInt(startNanos(), 36)
+		if identity, err := nodeid.Resolve(context.Background(), nodeid.Options{}); err == nil {
+			o.NodeID = identity.ID
+		} else {
+			o.NodeID = nodeid.Ephemeral().ID
+		}
 	}
 	if strings.ContainsAny(o.NodeID, ":|\x00") {
 		return o, errs.Detail(ErrInvalidOptions, "node id %q contains a reserved separator | 节点 id %q 含保留分隔符", o.NodeID, o.NodeID)
@@ -230,8 +234,7 @@ func NewHub(o Options) *Hub {
 		// rather than failing construction, and keep the reason observable through
 		// the first publish. | normalize 只拒绝格式错误的节点 id；回退到生成的 id 而不是
 		// 让构造失败，原因仍可通过首次发布观察到。
-		host, _ := os.Hostname()
-		o.NodeID = host + "-" + strconv.Itoa(os.Getpid())
+		o.NodeID = nodeid.Ephemeral().ID
 	}
 	return &Hub{opts: o, topics: make(map[string]*topicState, 8)}
 }
@@ -633,6 +636,3 @@ func (s *Subscription) Close() {
 		s.hub.remove(s)
 	})
 }
-
-// startNanos is a seam for tests. | startNanos 是测试注入口。
-var startNanos = func() int64 { return time.Now().UnixNano() }

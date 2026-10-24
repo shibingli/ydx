@@ -3,9 +3,16 @@ package realtime
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/shibingli/ydx/afs"
+	"github.com/shibingli/ydx/config"
+	"github.com/shibingli/ydx/nodeid"
+	"github.com/spf13/afero"
 )
 
 // recv waits for one message on ch. | recv 等待 ch 上的一条消息。
@@ -262,4 +269,37 @@ func TestSubscriptionCloseIsIdempotent(t *testing.T) {
 		go func() { defer wg.Done(); sub.Close() }()
 	}
 	wg.Wait()
+}
+
+// TestNodeIDUsesIdentityFile proves an empty NodeID reads the nodeid file. |
+// TestNodeIDUsesIdentityFile 证明空 NodeID 会读取 nodeid 文件。
+func TestNodeIDUsesIdentityFile(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "node-id")
+	if err := os.WriteFile(file, []byte("stable-node\n"), 0o600); err != nil {
+		t.Fatalf("write identity: %v", err)
+	}
+	t.Setenv(nodeid.FileEnv, file)
+
+	hub := NewHub(Options{})
+	defer func() { _ = hub.Close() }()
+	if got := hub.NodeID(); got != "stable-node" {
+		t.Fatalf("NodeID = %q, want stable-node", got)
+	}
+}
+
+// TestOptionsFromConfigFallsBackToNodeID proves realtime.node_id falls back to
+// node.id before nodeid resolution. | TestOptionsFromConfigFallsBackToNodeID 证明
+// realtime.node_id 在 nodeid 解析前回退到 node.id。
+func TestOptionsFromConfigFallsBackToNodeID(t *testing.T) {
+	mem := afs.NewMem()
+	if err := afero.WriteFile(mem, "config.yaml", []byte("node:\n  id: node-from-config\n"), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	cfg, err := config.Load(config.Options{FS: mem, ConfigDir: ".", ConfigName: "config"})
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if got := OptionsFromConfig(cfg).NodeID; got != "node-from-config" {
+		t.Fatalf("NodeID = %q, want node-from-config", got)
+	}
 }

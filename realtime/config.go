@@ -1,6 +1,8 @@
 package realtime
 
 import (
+	"strings"
+
 	"github.com/shibingli/ydx/config"
 )
 
@@ -9,13 +11,20 @@ import (
 //
 // Keys: | 配置键：
 //
-//	realtime.node_id            this node's id (empty derives one) | 本节点 id（空值自动推导）
+//	realtime.node_id            this node's id (empty falls back to node.id, then the
+//	                            nodeid identity file) | 本节点 id（空值回退到 node.id，
+//	                            再回退到 nodeid 身份文件）
 //	realtime.queue_size         per-subscription queue length (default 256) | 每个订阅的队列长度
 //	realtime.max_message_bytes  one message limit (default 1 MiB) | 单条消息上限
 //	realtime.slow_policy        drop | close (default drop) | 慢消费者策略
 //	realtime.authorize          reserved; authorization is wired in code | 保留；授权在代码中接线
 //
 // A nil Config yields default options. | Config 为 nil 时返回默认选项。
+//
+// The hub itself resolves an empty NodeID from nodeid when it is constructed,
+// so a caller that builds Options directly still gets a persistent identity when
+// the application has created the file. | Hub 在构造时会经 nodeid 解析空的 NodeID，因此
+// 直接构造 Options 的调用方在应用已创建身份文件时仍能拿到持久身份。
 func OptionsFromConfig(c *config.Config) Options {
 	if c == nil {
 		return Options{}
@@ -25,11 +34,21 @@ func OptionsFromConfig(c *config.Config) Options {
 		policy = SlowDrop
 	}
 	return Options{
-		NodeID:          c.GetString("realtime.node_id"),
+		NodeID:          firstNonEmpty(c.GetString("realtime.node_id"), c.GetString("node.id")),
 		QueueSize:       c.GetInt("realtime.queue_size"),
 		MaxMessageBytes: c.GetInt("realtime.max_message_bytes"),
 		SlowPolicy:      policy,
 	}
+}
+
+// firstNonEmpty returns the first non-blank value. | firstNonEmpty 返回第一个非空白值。
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if trimmed := strings.TrimSpace(value); trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
 }
 
 // RedisOptionsFromConfig reads the Redis channel settings. | RedisOptionsFromConfig 读取

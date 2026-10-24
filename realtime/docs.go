@@ -8,6 +8,9 @@
 //
 //   - Single node is the nil-backend case: Publish fans out in-process without
 //     any network hop. | 单机即后端为 nil 的形态：Publish 在进程内扇出，不经过网络。
+//   - An empty NodeID is resolved through nodeid: the persisted identity file is
+//     read first, and a random per-process id is used when no file exists. |
+//     空的 NodeID 经 nodeid 解析：先读持久身份文件；没有文件时使用随机每进程 id。
 //   - Multi-node adds a Backend. Every node publishes to the backend and
 //     subscribes to the topics that have local subscribers; messages carrying
 //     the local node id are dropped on arrival because they were already
