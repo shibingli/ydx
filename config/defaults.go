@@ -85,4 +85,7 @@ func Defaults(c *Config) {
 	v.SetDefault("cache.gorm.ttl", 30*time.Second)
 	v.SetDefault("cache.gorm.tables", []string(nil))
 	v.SetDefault("cache.gorm.ignore_tables", []string(nil))
+	v.SetDefault("cache.gorm.sensitive_tables", []string(nil))
+	v.SetDefault("cache.gorm.sensitive_namespace", "")
+	v.SetDefault("cache.gorm.sensitive_ttl", 10*time.Second)
 }
