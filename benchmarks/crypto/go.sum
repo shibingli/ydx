@@ -30,8 +30,8 @@ github.com/shibingli/ydx/errs v0.1.4 h1:/hexB5eDFA/wWhRof5yxWEVeVlHn1P7IZmys9U4h
 github.com/shibingli/ydx/errs v0.1.4/go.mod h1:N6GNQq5eustT11WTdXOip9bXcIwrFd4c9UWG0gIDuwU=
 github.com/shibingli/ydx/guomi v0.1.0 h1:qbxJNH88hver5R+VaA/ju+vctNFV9cS93KcDXsWwpp8=
 github.com/shibingli/ydx/guomi v0.1.0/go.mod h1:hI83nN+6ZMlPsKBPr+rCBJpJDyh6P2rNHtbL1Q8O1bg=
-github.com/shibingli/ydx/sysinfo v0.1.3 h1:y18JBQ3ei8LyiSHCiVbnm9PahicjwcGYU11feeZ1l2Y=
-github.com/shibingli/ydx/sysinfo v0.1.3/go.mod h1:dEfiIuKCfPVJKvJtd4wDwHAxJ3Bsl+zncnS3WZo4/rE=
+github.com/shibingli/ydx/sysinfo v0.1.4 h1:tskX01rpXsDkEmCCz+2s7FnSQqrQCY8SQUeWstPQhMk=
+github.com/shibingli/ydx/sysinfo v0.1.4/go.mod h1:31V/9KavYTLUNJwAsgCHuN6z2wvRpS20En5em99nmqE=
 github.com/tjfoc/gmsm v1.4.1 h1:aMe1GlZb+0bLjn+cKTPEvvn9oUEBlJitaZiiBwsbgho=
 github.com/tjfoc/gmsm v1.4.1/go.mod h1:j4INPkHWMrhJb38G+J6W4Tw0AbuN8Thu3PbdVYhVcTE=
 golang.org/x/crypto v0.0.0-20190308221718-c2843e01d9a2/go.mod h1:djNgcEr1/C05ACkg1iLfiJU5Ep61QUkGW8qpdssI0+w=

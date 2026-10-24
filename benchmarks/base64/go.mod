@@ -4,10 +4,10 @@ go 1.27.3
 
 require (
 	github.com/cristalhq/base64 v0.1.2
-	github.com/shibingli/ydx/base64 v0.1.9
+	github.com/shibingli/ydx/base64 v0.1.10
 )
 
 require (
-	github.com/shibingli/ydx/errs v0.1.3 // indirect
-	github.com/shibingli/ydx/sysinfo v0.1.3 // indirect
+	github.com/shibingli/ydx/errs v0.1.4 // indirect
+	github.com/shibingli/ydx/sysinfo v0.1.4 // indirect
 )

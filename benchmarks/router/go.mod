@@ -8,8 +8,8 @@ require (
 	github.com/gofiber/fiber/v3 v3.6.1
 	github.com/julienschmidt/httprouter v1.3.0
 	github.com/labstack/echo/v4 v4.16.0
-	github.com/shibingli/ydx/router v0.1.8
-	github.com/shibingli/ydx/websocket v0.1.10
+	github.com/shibingli/ydx/router v0.1.9
+	github.com/shibingli/ydx/websocket v0.1.11
 	github.com/valyala/fasthttp v1.75.0
 )
 
@@ -42,13 +42,14 @@ require (
 	github.com/philhofer/fwd v1.2.0 // indirect
 	github.com/quic-go/qpack v0.6.0 // indirect
 	github.com/quic-go/quic-go v0.64.1 // indirect
-	github.com/shibingli/ydx/afs v0.1.4 // indirect
-	github.com/shibingli/ydx/base64 v0.1.9 // indirect
-	github.com/shibingli/ydx/errs v0.1.3 // indirect
-	github.com/shibingli/ydx/json v0.1.10 // indirect
-	github.com/shibingli/ydx/log v0.1.8 // indirect
-	github.com/shibingli/ydx/protocol v0.1.3 // indirect
-	github.com/shibingli/ydx/sysinfo v0.1.3 // indirect
+	github.com/shibingli/ydx/afs v0.1.5 // indirect
+	github.com/shibingli/ydx/base64 v0.1.10 // indirect
+	github.com/shibingli/ydx/errs v0.1.4 // indirect
+	github.com/shibingli/ydx/json v0.1.12 // indirect
+	github.com/shibingli/ydx/log v0.1.9 // indirect
+	github.com/shibingli/ydx/protocol v0.1.4 // indirect
+	github.com/shibingli/ydx/regexpx v0.1.6 // indirect
+	github.com/shibingli/ydx/sysinfo v0.1.4 // indirect
 	github.com/spf13/afero v1.15.0 // indirect
 	github.com/tinylib/msgp v1.6.5 // indirect
 	github.com/twitchyliquid64/golang-asm v0.15.1 // indirect

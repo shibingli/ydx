@@ -12,6 +12,6 @@ require (
 require (
 	github.com/shibingli/ydx/base64 v0.1.10 // indirect
 	github.com/shibingli/ydx/errs v0.1.4 // indirect
-	github.com/shibingli/ydx/sysinfo v0.1.3 // indirect
+	github.com/shibingli/ydx/sysinfo v0.1.4 // indirect
 	golang.org/x/sys v0.49.0 // indirect
 )

@@ -2,10 +2,10 @@ github.com/dlclark/regexp2 v1.12.0 h1:0j4c5qQmnC6XOWNjP3PIXURXN2gWx76rd3KvgdPkCz
 github.com/dlclark/regexp2 v1.12.0/go.mod h1:DHkYz0B9wPfa6wondMfaivmHpzrQ3v9q8cnmRbL6yW8=
 github.com/grafana/regexp v0.0.0-20250905093917-f7b3be9d1853 h1:cLN4IBkmkYZNnk7EAJ0BHIethd+J6LqxFNw5mSiI2bM=
 github.com/grafana/regexp v0.0.0-20250905093917-f7b3be9d1853/go.mod h1:+JKpmjMGhpgPL+rXZ5nsZieVzvarn86asRlBg4uNGnk=
-github.com/shibingli/ydx/errs v0.1.3 h1:LkoQ8tRKo/7GqomJNOzOLYn7W/RLNquhRyz9STAtBNQ=
-github.com/shibingli/ydx/errs v0.1.3/go.mod h1:TxxdX2XnyvkyoEPtwKjxZFythqeJIYZabjw8S+Mllso=
-github.com/shibingli/ydx/regexpx v0.1.5 h1:LV4v5zgka2NoCYKKv7RoESBRJGTryZ6mJKLPKGlnO2Q=
-github.com/shibingli/ydx/regexpx v0.1.5/go.mod h1:CYkBoGeT/WUjHX95fSUY7s6BoHGd9Zgd87eCcZU3fBc=
+github.com/shibingli/ydx/errs v0.1.4 h1:/hexB5eDFA/wWhRof5yxWEVeVlHn1P7IZmys9U4h1iA=
+github.com/shibingli/ydx/errs v0.1.4/go.mod h1:N6GNQq5eustT11WTdXOip9bXcIwrFd4c9UWG0gIDuwU=
+github.com/shibingli/ydx/regexpx v0.1.6 h1:bGYpyeWl8UpSs/XN/zcAZat0DrZSrJj4ISPYNXbZdsA=
+github.com/shibingli/ydx/regexpx v0.1.6/go.mod h1:qi7KZnWzhyvJqjoF9e8pFS2S+iE+30LX1ttpDSkXbds=
 github.com/wasilibs/go-re2 v1.13.0 h1:FImemHDWIeNRuDq/o8Vvx0seJ2k7ofloHLt4z0V+eR0=
 github.com/wasilibs/go-re2 v1.13.0/go.mod h1:E/UzEXX4cjlurXHJwfzKh46OhfQMLmOM0oG0ljyDL/8=
 golang.org/x/sys v0.48.0 h1:bbX/i/6MgT9BVLM9RT1thmxL04yeTAhbEz4SyadbXoo=

@@ -1,6 +1,4 @@
-github.com/shibingli/ydx/buffpool v0.1.0 h1:qCPjJQL5eIxsAWSCN4Q0nizlvDlBxcrwLFR7FLdtHG4=
-github.com/shibingli/ydx/buffpool v0.1.0/go.mod h1:z/LMUc92Z9pZ0+3r/wyj4V7wTYfyPiHVpWUNICFcGSk=
-github.com/shibingli/ydx/buffpool v0.1.3 h1:VT9C1bLRAkJG3B4kpzizSK9/CcaT8VaSFEgS+vBsDC0=
-github.com/shibingli/ydx/buffpool v0.1.3/go.mod h1:z/LMUc92Z9pZ0+3r/wyj4V7wTYfyPiHVpWUNICFcGSk=
+github.com/shibingli/ydx/buffpool v0.1.4 h1:aQpZ8Rzs6Qt6/H/lW4st3I74mdAqJkzoyAVVBGgVj0k=
+github.com/shibingli/ydx/buffpool v0.1.4/go.mod h1:1PYC8bCUvgsvXzeFHDVo2wqy62bNYps+c1yZGCK4o/Y=
 github.com/valyala/bytebufferpool v1.0.0 h1:GqA5TC/0021Y/b9FG4Oi9Mr3q7XYx6KllzawFIhcdPw=
 github.com/valyala/bytebufferpool v1.0.0/go.mod h1:6bBcMArwyJ5K/AmCkWv1jt77kVWyCJ6HpOuEn7z0Csc=
