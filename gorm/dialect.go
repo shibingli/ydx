@@ -169,6 +169,12 @@ func (d Dialect) JSONExtract(column, path string) (clause.Expr, error) {
 	if d.Driver == DriverPostgres {
 		return clause.Expr{SQL: "? #>> ?", Vars: []any{col, postgresJSONPath(path)}}, nil
 	}
+	if d.Driver == DriverMySQL {
+		// JSON_EXTRACT returns a JSON value; JSON_UNQUOTE makes it the text the other dialects
+		// return, so comparisons and scans see the same type everywhere. | JSON_EXTRACT 返回 JSON 值；
+		// JSON_UNQUOTE 把它变为其它方言返回的文本，使各方的比较与扫描看到同一类型。
+		return clause.Expr{SQL: "JSON_UNQUOTE(JSON_EXTRACT(?, ?))", Vars: []any{col, path}}, nil
+	}
 	return clause.Expr{SQL: "JSON_EXTRACT(?, ?)", Vars: []any{col, path}}, nil
 }
 
@@ -237,12 +243,18 @@ const (
 )
 
 // LockClause returns the GORM locking clause for the dialect. SQLite has no row-level locking, so
-// it reports ErrDialectFeature instead of silently dropping the request. | LockClause 返回方言对应的
-// GORM 行锁子句。SQLite 没有行级锁，因此返回 ErrDialectFeature，而不是悄悄丢弃请求。
+// it reports ErrDialectFeature instead of silently dropping the request; Dameng follows the Oracle
+// model and supports FOR UPDATE only, so a shared lock is rejected there as well. | LockClause 返回
+// 方言对应的 GORM 行锁子句。SQLite 没有行级锁，因此返回 ErrDialectFeature，而不是悄悄丢弃请求；
+// 达梦沿用 Oracle 模型，只有 FOR UPDATE，因此共享锁在那里同样被拒绝。
 func (d Dialect) LockClause(strength LockStrength) (clause.Locking, error) {
 	if !d.Features.Has(FeatureRowLock) {
 		return clause.Locking{}, errs.Detail(ErrDialectFeature,
 			"%s has no row-level locking | %s 没有行级锁", d.DisplayName, d.DisplayName)
+	}
+	if strength == LockShare && d.Driver == DriverDM {
+		return clause.Locking{}, errs.Detail(ErrDialectFeature,
+			"%s supports FOR UPDATE only | %s 仅支持 FOR UPDATE", d.DisplayName, d.DisplayName)
 	}
 	locking := clause.Locking{Strength: "UPDATE"}
 	if strength == LockShare {

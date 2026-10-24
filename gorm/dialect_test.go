@@ -83,7 +83,7 @@ func TestDialectExpressions(t *testing.T) {
 	}
 	if expr, err := mysql.JSONExtract("payload", "$.user.name"); err != nil {
 		t.Fatalf("mysql JSONExtract failed | MySQL JSON 取值失败: %v", err)
-	} else if expr.SQL != "JSON_EXTRACT(?, ?)" || expr.Vars[1] != "$.user.name" {
+	} else if expr.SQL != "JSON_UNQUOTE(JSON_EXTRACT(?, ?))" || expr.Vars[1] != "$.user.name" {
 		t.Fatalf("mysql JSONExtract = %#v | MySQL JSON 取值不符", expr)
 	}
 	if _, err := dm.JSONExtract("payload", "$.user.name"); !errors.Is(err, frameworkgorm.ErrDialectFeature) {
@@ -121,6 +121,13 @@ func TestDialectLocking(t *testing.T) {
 	sqlite, _ := frameworkgorm.DialectFor("sqlite")
 	if _, err := sqlite.LockClause(frameworkgorm.LockUpdate); !errors.Is(err, frameworkgorm.ErrDialectFeature) {
 		t.Fatalf("sqlite LockClause error = %v, want ErrDialectFeature | SQLite 应拒绝行锁", err)
+	}
+	dm, _ := frameworkgorm.DialectFor("dm")
+	if _, err := dm.LockClause(frameworkgorm.LockShare); !errors.Is(err, frameworkgorm.ErrDialectFeature) {
+		t.Fatalf("dm LockShare error = %v, want ErrDialectFeature | 达梦应拒绝共享锁", err)
+	}
+	if locking, err := dm.LockClause(frameworkgorm.LockUpdate); err != nil || locking.Strength != "UPDATE" {
+		t.Fatalf("dm LockUpdate = %#v, %v | 达梦 FOR UPDATE 不符", locking, err)
 	}
 }
 
