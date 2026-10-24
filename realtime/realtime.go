@@ -183,8 +183,11 @@ type Backend interface {
 // local subscribers again. | 该队列用于投递恢复而非扇出：hub 已在本地投递，稍后调用
 // PublishRemote 的工作器不得再次触碰本地订阅者。
 type RetryQueue interface {
-	// Enqueue stores one message for a later PublishRemote. | Enqueue 保存一条消息供稍后
-	// PublishRemote 使用。
+	// Enqueue stores one message for a later PublishRemote. The context is
+	// detached from the request's cancellation, so a response that is already on
+	// the wire cannot abort the durable write; implementations should still apply
+	// their own short timeout. | Enqueue 保存一条消息供稍后 PublishRemote 使用。上下文已与
+	// 请求取消解绑，已写出的响应不会中止持久写入；实现仍应施加自己的短超时。
 	Enqueue(ctx context.Context, msg Message) error
 }
 
@@ -322,7 +325,7 @@ func (h *Hub) Publish(ctx context.Context, topic string, body []byte) error {
 	if err := backend.Publish(ctx, msg); err != nil {
 		h.errors.Add(1)
 		if h.opts.Retry != nil {
-			if qerr := h.opts.Retry.Enqueue(ctx, msg); qerr == nil {
+			if qerr := h.opts.Retry.Enqueue(context.WithoutCancel(ctx), msg); qerr == nil {
 				h.retried.Add(1)
 				return nil
 			} else {
