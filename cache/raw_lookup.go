@@ -14,6 +14,10 @@ import (
 
 // lookup applies L1 then L2, invoking fn with a zero-copy value view on a hit. | lookup 依次查询 L1 与 L2，命中时以零拷贝视图调用 fn。
 func (r *Raw) lookup(ctx context.Context, key string, fn func(data []byte, version uint64) error) (Status, uint64, error) {
+	// A bypass request must not see a cached value at all. | 旁路请求绝不能看到缓存值。
+	if Bypass(ctx) {
+		return StatusMiss, 0, nil
+	}
 	if err := r.check(); err != nil {
 		return StatusMiss, 0, err
 	}
@@ -98,6 +102,9 @@ func (r *Raw) lookup(ctx context.Context, key string, fn func(data []byte, versi
 //
 // It is the strict-read path behind GetFresh/ViewFresh; with no L2 it delegates to lookup. | 它是 GetFresh/ViewFresh 背后的严格读路径；没有 L2 时委托给 lookup。
 func (r *Raw) lookupFresh(ctx context.Context, key string, fn func(data []byte, version uint64) error) (Status, uint64, error) {
+	if Bypass(ctx) {
+		return StatusMiss, 0, nil
+	}
 	if err := r.check(); err != nil {
 		return StatusMiss, 0, err
 	}
@@ -162,6 +169,11 @@ func (r *Raw) fetch(ctx context.Context, key string) ([]byte, uint64, Status, er
 
 // loadShared collapses concurrent misses and performs the CAS write-back. | loadShared 收敛并发未命中并执行 CAS 回填。
 func (r *Raw) loadShared(ctx context.Context, key string, ttl time.Duration, loader func(context.Context) ([]byte, error)) ([]byte, error) {
+	// Bypass loads go straight to the loader and never populate L1/L2. | 旁路加载直接走 loader，
+	// 绝不回填 L1/L2。
+	if Bypass(ctx) {
+		return loader(ctx)
+	}
 	ch := r.group.DoChan(r.full(key), func() (any, error) {
 		loadCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), r.manager.opts.LoadTimeout)
 		defer cancel()
