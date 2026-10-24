@@ -34,7 +34,7 @@
 | `github.com/shibingli/ydx/sse` | `sse` | Server-Sent Events 写入器与广播器 |
 | `github.com/shibingli/ydx/websocket` | `websocket` | RFC 6455 / 7692 / 8441 / 9220 WebSocket |
 | `github.com/shibingli/ydx/webtransport` | `webtransport` | HTTP/3 WebTransport 服务端/客户端、带帧消息通道与会话追踪 |
-| `github.com/shibingli/ydx/realtime` | `realtime` | 传输无关的实时中枢：单机扇出、Redis 多机后端、慢消费者策略与 SSE/WS/WT 适配器 |
+| `github.com/shibingli/ydx/realtime` | `realtime` | 传输无关的实时中枢：单机扇出、Redis 多机后端、失败广播持久补发、慢消费者策略与 SSE/WS/WT 适配器 |
 | `github.com/shibingli/ydx/render` | `render` | 编译式 `html/template` 引擎 |
 | `github.com/shibingli/ydx/i18n` | `i18n` | 多语言目录加载、语言协商与路由中间件 |
 | `github.com/shibingli/ydx/openapi` | `openapi` | OpenAPI 3.0/3.1 文档构建、注解解析与自包含查看器（标准 `net/http`，不依赖路由） |
