@@ -148,6 +148,13 @@ func buildKindDecoder(t reflect.Type) decodeFunc {
 	}
 }
 
+// smallStructSliceBytes bounds the payload that is decoded straight into a compact destination
+// instead of the pooled scratch buffer. A small payload holds few elements, so the pooled path's
+// Get/decode/Copy/Clear round trip costs more than one exact allocation. | smallStructSliceBytes
+// 限制直接解码进紧凑目标的载荷大小。小载荷元素很少，池化路径的 Get/解码/Copy/Clear 往返比一次
+// 精确分配更贵。
+const smallStructSliceBytes = 512
+
 func buildSliceDecoder(t reflect.Type) decodeFunc {
 	elem := lazyDecoder(t.Elem())
 	if info := fastStructDecFor(t.Elem()); info != nil {
@@ -158,6 +165,9 @@ func buildSliceDecoder(t reflect.Type) decodeFunc {
 		return func(d *decoder, v reflect.Value) error {
 			if v.CanAddr() {
 				if v.IsNil() {
+					if len(d.data)-d.pos <= smallStructSliceBytes {
+						return decodeFastStructSliceCap(d, v, t, info, 1)
+					}
 					return decodeFastStructSlicePooled(d, v, t, info, &pool)
 				}
 				return decodeFastStructSlice(d, v, t, info)
@@ -443,6 +453,14 @@ type unsafeSliceHeader struct {
 // []struct：以带类型的分配按几何级数扩容，并直接推进切片头，因此每个元素只需一次解码器调用，
 // 而不必执行 reflect.Index、reflect.Grow、reflect.SetLen 与解码器查找。
 func decodeFastStructSlice(d *decoder, v reflect.Value, t reflect.Type, info *fastStructDecInfo) error {
+	return decodeFastStructSliceCap(d, v, t, info, 4)
+}
+
+// decodeFastStructSliceCap is decodeFastStructSlice with a caller-chosen initial capacity for a
+// nil destination. Small payloads start at one element so a single-record array never allocates
+// an unused tail. | decodeFastStructSliceCap 是 decodeFastStructSlice 的变体，由调用方决定 nil
+// 目标的初始容量；小载荷从 1 个元素起步，因此单记录数组不会分配未使用的尾部。
+func decodeFastStructSliceCap(d *decoder, v reflect.Value, t reflect.Type, info *fastStructDecInfo, initCap int) error {
 	if d.data[d.pos] == 'n' {
 		if err := d.literal("null"); err != nil {
 			return err
@@ -472,7 +490,14 @@ func decodeFastStructSlice(d *decoder, v reflect.Value, t reflect.Type, info *fa
 		return nil
 	}
 	if v.IsNil() {
-		v.Set(reflect.MakeSlice(t, 4, 4))
+		if initCap < 1 {
+			initCap = 1
+		}
+		// Grow instead of MakeSlice+Set: the latter boxes a slice header on the heap, which
+		// shows up as one extra allocation per call. | 用 Grow 取代 MakeSlice+Set：后者会把切片
+		// 头装箱到堆上，表现为每次调用多一次分配。
+		v.Grow(initCap)
+		v.SetLen(initCap)
 	}
 	sh := (*unsafeSliceHeader)(unsafe.Pointer(v.UnsafeAddr()))
 	sh.len = 0

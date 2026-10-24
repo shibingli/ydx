@@ -49,7 +49,7 @@ Ubuntu 26.04.1，Linux 7.0.0-38，Go 1.27.3 linux/amd64，CPU governor `performa
 | Buffpool 4 KiB Get/Put | 9.8 ns | **9.94 ns** | sync.Pool 7.23 ns；bytebufferpool 9.49 ns | 与 bytebufferpool 持平，见 §4 |
 | Cache Get（防御性副本） | 46.0 ns | 45.1 ns | ristretto 35.7 ns；sync.Map 13.4 ns | 副本语义，见 §4 |
 | Cache Set | 49.1 ns | 49.1 ns | freecache 78.2 ns；bigcache 96.4 ns | 领先 |
-| JSON 5 字段 Marshal/Unmarshal | — | 全部第一 | goccy/sonic 等 | 见 §3 |
+| JSON 5/7 字段 Marshal/Unmarshal | n=1 Unmarshal 250.9 ns | 全部第一（n=1 214.2 ns） | goccy/sonic 等 | 见 §3 |
 | JWT HS256/ES256 签发与验签 | — | 同形态全部第一 | golang-jwt/jwx/go-jose/cristal/kataras | 见 §3 |
 | WebSocket 回显与批量写 | — | 回显与 4×/16×/64× 批量第一 | gorilla/coder/gobwas/gws | 单条 1× 与 gorilla 持平，见 §3、§4 |
 | Regexpx 匹配/查找/批量扫描 | — | 全部第一 | stdlib/grafana/regexp2/go-re2 | 见 §4（编译期例外） |
@@ -126,8 +126,9 @@ Ubuntu 26.04.1，Linux 7.0.0-38，Go 1.27.3 linux/amd64，CPU governor `performa
   27.1 GB/s，全部领先 cristalhq 与标准库；cloudwego/base64x 的 JIT 在 Go 1.27.3
   上崩溃，已从默认套件移除。
 - **JSON**：5 字段载荷 Marshal/Unmarshal 全部领先 goccy/sonic/jsoniter/stdlib；
-  7 字段长小数与 `time.Time` 载荷的 n=1 Unmarshal 为 250.9 ns，与 go-json 的 247.5 ns
-  相差在噪声内，n=100/1000 的 Unmarshal 领先约 12.5%/10.7%。
+  7 字段长小数与 `time.Time` 载荷的 n=1 Unmarshal 经小载荷直解优化后为 214.2 ns，
+  领先 go-json（245.6 ns）约 12.8%（原先 250.9 对 247.5 ns 在噪声内），
+  n=100/1000 的 Unmarshal 领先约 12.5%/10.7%。
 - **JWT**：HS256/ES256 签发与验签、并发验签全部领先 golang-jwt/jwx/go-jose；
   类型化声明签发 535.3 ns，比 cristalhq 的同形态（1.061 µs）快约 2 倍；map 声明
   1.257 µs 仍快于 golang-jwt（2.544 µs）与 jwx（2.237 µs）。cristalhq/kataras 对比已并入。
