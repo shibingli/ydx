@@ -40,6 +40,32 @@ func compareClaims(now time.Time) map[string]any {
 	}
 }
 
+// compareClaimStruct is the typed form of compareClaims. Signing a struct skips the map
+// iteration and interface dispatch that a map[string]any payload pays, and is the recommended
+// hot-path shape. | compareClaimStruct 是 compareClaims 的类型化形式。结构体签发跳过
+// map[string]any 载荷的遍历与接口分派，是推荐的热路径形态。
+type compareClaimStruct struct {
+	Sub string   `json:"sub"`
+	Iss string   `json:"iss"`
+	Aud []string `json:"aud"`
+	Iat int64    `json:"iat"`
+	Exp int64    `json:"exp"`
+	Jti string   `json:"jti"`
+}
+
+// compareTypedClaims returns compareClaims in typed form. | compareTypedClaims 以类型化形式返回
+// compareClaims。
+func compareTypedClaims(now time.Time) compareClaimStruct {
+	return compareClaimStruct{
+		Sub: "user-42",
+		Iss: "yd-bench",
+		Aud: []string{"api"},
+		Iat: now.Unix(),
+		Exp: now.Add(time.Hour).Unix(),
+		Jti: "7f3c1a9e-42",
+	}
+}
+
 // newJwxToken builds a jwx token carrying compareClaims. | newJwxToken 构造携带 compareClaims 的 jwx token。
 func newJwxToken(now time.Time) (jwxjwt.Token, error) {
 	tok := jwxjwt.New()
@@ -105,6 +131,18 @@ func BenchmarkSignHS256Compare(b *testing.B) {
 		b.ResetTimer()
 		for i := 0; i < b.N; i++ {
 			tok, signErr := ydxjwt.Sign(claims, benchKey, ydxjwt.HS256, ydxjwt.SignOptions{Kid: "k1"})
+			if signErr != nil {
+				b.Fatalf("Sign failed | Sign 失败: %v", signErr)
+			}
+			benchCompareToken = tok
+		}
+	})
+	typedClaims := compareTypedClaims(now)
+	b.Run("ydx-struct", func(b *testing.B) {
+		b.ReportAllocs()
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			tok, signErr := ydxjwt.Sign(typedClaims, benchKey, ydxjwt.HS256, ydxjwt.SignOptions{Kid: "k1"})
 			if signErr != nil {
 				b.Fatalf("Sign failed | Sign 失败: %v", signErr)
 			}

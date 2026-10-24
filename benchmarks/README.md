@@ -1,19 +1,23 @@
 # ydx 基准与主流实现对比
 
-本目录是 ydx 的基准模块集合。每个带 `go.mod` 的子目录都是一个**独立的 Go 模块**，
-只依赖 ydx 的最新子目录标签（base64 v0.1.9、json v0.1.10、log v0.1.8；引用这些
-组件的产品模块按各自 go.mod 锁定）与对应的对比库；`cache/local` 是 `cache` 基准
-模块内的子包。产品模块本身不包含任何 `Benchmark*`，也不依赖基准专用库。
+本目录是 ydx 的基准模块集合，共 **15 个独立 Go 模块**。原 yd 仓 `benchmarks/` 的独有场景
+已全部并入本目录（json 的 7 字段载荷、base64 的 32 B/1 MiB、jwt 的 cristal/jwt 与
+kataras/jwt、log 的 prebound 场景、router 的 echo/fiber、websocket 的 gobwas/gws、
+cache 的 TTL/命中率轨迹，以及 compress/crypto/template 整模块），yd 仓不再保留基准目录。
+每个模块只依赖 ydx 的已发布子目录标签与对应的对比库；`cache/local` 与 `cache/compare`
+是 `cache` 模块内的子包。产品模块本身不包含任何 `Benchmark*`，也不依赖基准专用库。
 
-- 实测日期：2026-10-23
-- 运行环境：`base64`/`json` 的数字来自 Linux AMD Ryzen AI MAX+ 395（Zen 5，32 逻辑
-  CPU，AVX-512 VBMI/VBMI2）与 Linux Neoverse-N2（4 vCPU）两台主机，Go 1.27.2；
-  其余模块的数字来自较早一轮 Windows 11 / Intel Core i9-10980HK（16 逻辑 CPU），
-  `GOMAXPROCS=16`。各行来源不同，**不要跨行比较绝对值**。
-- 采样方式：每项 `-count=3` 或 `-count=5`、`-benchtime=500ms`、`-benchmem`，取中位数
-  或均值；同一轮内样本不足以给出 95% 置信区间，因此**同一轮内小于约 5% 的差异视为噪声**。
-- 跨轮漂移：CPU 的频率/温度与后台负载会让同一份代码在不同轮次的绝对 ns/op 相差数十个
-  百分点。只比较**同一轮表格内**的相对关系；不要把不同模块/不同时间的绝对值直接混比。
+- 实测日期：2026-10-24
+- 主表运行环境：Linux AMD Ryzen AI MAX+ 395（Zen 5，16 核 32 线程，AVX-512
+  VBMI/VBMI2），Ubuntu 26.04.1，Go **1.27.3** linux/amd64，`GOMAXPROCS=32`。
+- 架构补充：Linux Neoverse-N2（4 vCPU，arm64）与旧指令集 x86_64（4 vCPU）的冒烟结果见
+  [optimization-report.md](optimization-report.md)。
+- 采样方式：`-count=5`、`-benchtime=500ms`、`-benchmem`，取中位数；同一轮内小于约 5%
+  的差异视为噪声。网络类基准受回环栈与调度影响，单独注明。
+- 跨轮漂移：CPU 频率/温度与后台负载会让同一份代码在不同轮次的绝对 ns/op 相差数十个
+  百分点；只比较同一轮表格内的相对关系，不要把不同模块/不同时间的绝对值直接混比。
+- 低效点定位、优化前后对比与公平性说明见
+  [optimization-report.md](optimization-report.md)。
 
 ## 模块与对比对象
 
@@ -21,42 +25,63 @@
 |---|---|---|
 | `benchmarks/base64` | `encoding/base64`、`cristalhq/base64` | [base64/README.md](base64/README.md) |
 | `benchmarks/buffpool` | `sync.Pool`、`valyala/bytebufferpool` | [buffpool/README.md](buffpool/README.md) |
-| `benchmarks/cache` | `bigcache`、`freecache`、`ristretto`、`sync.Map`、`go-cache` | [cache/README.md](cache/README.md) |
+| `benchmarks/cache` | `bigcache`、`freecache`、`ristretto`、`sync.Map`、`go-cache`、`theine`、`ttlcache`、`golang-lru` | [cache/README.md](cache/README.md) |
+| `benchmarks/compress` | 标准库 gzip、klauspost gzip/zstd、brotli、snappy、lz4 | [compress/README.md](compress/README.md) |
+| `benchmarks/crypto` | 标准库 SHA-256/AES-GCM/ChaCha20-Poly1305/ECDSA/Ed25519、维护版与旧版 gmsm | [crypto/README.md](crypto/README.md) |
 | `benchmarks/json` | `encoding/json`、`goccy/go-json`、`json-iterator/go`、`bytedance/sonic`、`segmentio/encoding`、`go-json-experiment/json` | [json/README.md](json/README.md) |
-| `benchmarks/jwt` | `golang-jwt/jwt/v5`、`lestrrat-go/jwx/v4`、`go-jose/v4` | [jwt/README.md](jwt/README.md) |
+| `benchmarks/jwt` | `golang-jwt/jwt/v5`、`lestrrat-go/jwx/v4`、`go-jose/v4`、`cristalhq/jwt/v5`、`kataras/jwt` | [jwt/README.md](jwt/README.md) |
 | `benchmarks/log` | `zap`、`zerolog`、`slog`、`logrus` | [log/README.md](log/README.md) |
 | `benchmarks/middleware` | `rs/cors`、`chi`、`klauspost/compress/gzhttp`、`x/time/rate` | [middleware/README.md](middleware/README.md) |
+| `benchmarks/regexpx` | 标准库 `regexp`、`grafana/regexp`、`regexp2`、`go-re2` | [regexpx/README.md](regexpx/README.md) |
 | `benchmarks/render` | `html/template`、`text/template` | [render/README.md](render/README.md) |
-| `benchmarks/router` | `net/http.ServeMux`、`httprouter`、`chi`、`gin` | [router/README.md](router/README.md) |
+| `benchmarks/router` | `net/http.ServeMux`、`httprouter`、`chi`、`gin`、`echo`、`fiber` | [router/README.md](router/README.md) |
 | `benchmarks/sse` | `gin-contrib/sse`、手写 `fmt.Fprintf` 基线 | [sse/README.md](sse/README.md) |
-| `benchmarks/websocket` | `gorilla/websocket`、`coder/websocket` | [websocket/README.md](websocket/README.md) |
+| `benchmarks/template` | `html/template`、`text/template`、Jet、Pongo2、Liquid、Raymond、Mustache、quicktemplate、templ | [template/README.md](template/README.md) |
+| `benchmarks/websocket` | `gorilla/websocket`、`coder/websocket`、`gobwas/ws`、`lxzan/gws` | [websocket/README.md](websocket/README.md) |
 
 ## 关键结果速览
 
-下表只摘录每个模块最具代表性的同机实测数字；各行来自各自模块的一轮采样，不是同一
-进程/同一轮的同表对比，不宜跨行做严格比例推断。完整表格与口径说明见各模块文档。
+下表摘录每个模块最具代表性的同机实测数字；各行来自同一主机的同一轮采样，但不同模块
+不是同一进程，**不宜跨行做严格比例推断**。完整表格、全部对比实现与口径说明见各模块
+README 与 [optimization-report.md](optimization-report.md)。
 
 | 模块 | 场景 | ydx | 对比实现 |
 |---|---|---:|---:|
-| base64 | `Encode` 1 KiB | 24.7 ns | stdlib 437.9 ns / cristalhq 199.6 ns |
-| base64 | `Decode` 1 KiB | 44.2 ns | stdlib 458.5 ns / cristalhq 274.9 ns |
-| buffpool | 4 KiB `Get`/`Put` | 18.00 ns | `sync.Pool` 12.08 ns / bytebufferpool 20.78 ns |
-| cache/local | `Get` 命中 | 83.02 ns | bigcache 125.7 ns / freecache 106.9 ns / ristretto 98.97 ns / `sync.Map` 24.49 ns |
-| json | `Marshal` 64 对象 | 2.51 µs | stdlib 12.8 µs / goccy 4.19 µs / sonic 3.00 µs |
-| json | `Unmarshal` 64 对象 | 6.43 µs | stdlib 29.7 µs / goccy 6.90 µs / sonic 10.7 µs |
-| jwt | HS256 `Parse` | 2.819 µs | golang-jwt 7.676 µs / jwx 11.20 µs / go-jose 13.29 µs |
-| log | 5 字段 JSON Info | 136.3 ns | zap 441.8 ns / zerolog 157.5 ns / slog 562.4 ns / logrus 2.559 µs |
-| middleware | CORS GET | 374.5 ns | rs/cors 102.7 ns |
-| middleware | 16 KiB gzip | 9.151 µs | gzhttp 9.060 µs |
-| middleware | 限流放行 | 249.0 ns | `x/time/rate` 48.49 ns |
-| render | 带绑定渲染 | 635.3 ns | `html/template` 6.985 µs / `text/template` 4.437 µs |
-| router | 静态路由 | 27.29 ns | gin 49.54 ns / httprouter 53.14 ns / `ServeMux` 323.5 ns / chi 366.0 ns |
-| sse | 4 KiB `WriteData` | 2.558 µs | gin-contrib 3.387 µs / 手写 108.3 ns |
-| websocket | 32 B 回显往返 | 65.85 µs | gorilla 63.61 µs / coder 69.62 µs |
-| websocket | 64×1 KiB 批量写 | 305.6 µs | gorilla 1.699 ms / coder 1.780 ms |
+| base64 | `Encode` 32 B | 5.58 ns | cristalhq 9.57 ns / stdlib 14.38 ns |
+| base64 | `Decode` 32 B | 10.47 ns | cristalhq 12.93 ns / stdlib 19.92 ns |
+| base64 | `Encode` 1 MiB | 55.5 GB/s | cristalhq 5.05 GB/s / stdlib 2.39 GB/s |
+| buffpool | 4 KiB `Get`/`Put` | 9.94 ns | `sync.Pool` 7.23 ns / bytebufferpool 9.49 ns |
+| cache | L1 `Get` 命中（防御性副本） | 45.1 ns | ristretto 35.7 ns / `sync.Map` 13.4 ns |
+| cache | L1 `GetAppend` / `View`（零拷贝） | 38.3 / 36.6 ns | ristretto 35.7 ns |
+| cache | L1 `Set` | **49.07 ns** | freecache 75.5 ns / bigcache 95.8 ns |
+| compress | 16 KiB gzip 中间件 | 5.268 µs | gzhttp 5.213 µs |
+| crypto | SM3 4 KiB | 7.36 µs | SHA-256 约 23% 的吞吐（无 SHA-NI 对应指令） |
+| crypto | SM2 签名 / 验签 | **14.02 / 33.91 µs** | 旧版 tjfoc 130.5 / 686.5 µs；快于 ECDSA P-256（17.67 / 38.54 µs） |
+| json | `Marshal` 64 对象 | 2.59 µs | goccy 4.23 µs / sonic 2.99 µs / stdlib 12.8 µs |
+| json | `Unmarshal` 64 对象 | 6.51 µs | goccy 6.87 µs / sonic 10.9 µs / stdlib 28.7 µs |
+| json | 7 字段 `Marshal` n=1000 | **89.68 µs** | go-json 116.19 µs / stdlib 302.24 µs |
+| json | 7 字段 `Unmarshal` n=1000 | **174.3 µs** | go-json 195.2 µs / stdlib 708.0 µs |
+| jwt | HS256 `Sign` | 1.257 µs（类型化 535.3 ns） | cristalhq 1.061 µs（类型化）/ jwx 2.237 µs / golang-jwt 2.544 µs |
+| jwt | HS256 `Parse` | 782.6 ns | golang-jwt 3.170 µs / jwx 4.726 µs |
+| log | 5 字段 JSON Info | 134.1 ns | zerolog 168.6 ns / zap 395.2 ns / slog 529.9 ns |
+| log | 5 字段并发 Info | 8.08 ns | zerolog 10.53 ns / zap 140.9 ns |
+| middleware | CORS GET | **36.7 ns** | rs/cors 53.2 ns |
+| middleware | 恢复（无 panic） | **7.85 ns** | chi 8.62 ns |
+| middleware | 限流放行 | 136.5 ns | `x/time/rate` 59.92 ns（全局、不写头）；+headers 127.8 ns；按 IP + headers 139.0 ns |
+| regexpx | `FindAll/email` | **94.98 µs** | go-re2 732.3 µs / stdlib 5.679 ms |
+| render | 带绑定渲染 | **258.2 ns** | html/template 3.473 µs / text/template 2.208 µs |
+| router | 静态路由（`GETRaw`） | **8.40 ns** | httprouter 12.86 ns / stdlib 60.15 ns |
+| router | 参数 / 通配 / 未命中 | **18.9 / 18.9 / 25.8 ns** | httprouter 29.0 / 28.1 / 158.3 ns；gin 41.8 / 25.6 / 28.1 ns |
+| sse | 32 B / 4 KiB `WriteData` | 14.1 ns / 63.7 ns | gin-contrib 47.5 ns / 1.45 µs；手写 33.6 ns / 52.3 ns |
+| template | 100 行页面（物化） | **18.78 µs** | quicktemplate 21.46 µs / html/template 473.2 µs |
+| websocket | 32 B 回显往返 | **4.07 µs** | gorilla 4.26 µs / gobwas 4.34 µs / coder 5.59 µs |
+| websocket | 64×1 KiB 批量写 | **14.06 µs** | coder 73.7 µs / gorilla 124.3 µs |
 
-> 这些数字只回答“同一台机器、同一轮采样下的相对成本”，不是跨硬件的性能承诺。网络类
-> 基准（WebSocket）受回环栈、Windows 定时器与 GC 影响尤其明显。
+> 说明：`cache` 的 `sync.Map`/ristretto/go-cache/golang-lru 返回缓存内引用，`ydx` 的
+> `Get` 返回副本；带 TTL 的读写还要支付本机约 43 ns 的 `time.Now()`；`buffpool` 的
+> `sync.Pool` 基线为每个尺寸预建一个池，不含尺寸分级；`middleware` 的限流对比另给出
+> 补头（127.8 ns）与按 IP 分桶（139.0 ns）两个变体，全局 59.92 ns 不写头；`sse` 的手写
+> 基线不做 CR/LF 规整。语义差异与完整数字见 [optimization-report.md](optimization-report.md)。
 
 ## 指标口径
 
@@ -85,8 +110,9 @@
    - `chi.RequestID` 只写请求上下文，基准适配器把它写回响应头；
    - gorilla/coder 没有批量写 API，批量用例逐条调用 `WriteMessage`；
    - `gin`/`chi` 的路由基准包含各自的上下文/中间件基础开销。
-4. 对比库版本锁定在各模块 `go.mod`；ydx 组件按最新子目录标签解析（base64 v0.1.9、
-   json v0.1.10、log v0.1.8；各产品模块按自身 go.mod 解析其余组件）。
+4. 对比库版本锁定在各模块 `go.mod`；ydx 组件按已发布子目录标签解析。**最终主表使用本地
+   ydx 源码**（在两仓之外创建 `go.work` 指向本仓各组件模块），因此复现主表需要先发布
+   本次修改的组件新标签，或使用同样的临时 `go.work`；`go.work` 不得提交。
 
 ## 复现
 
@@ -95,6 +121,14 @@
 ```bash
 cd benchmarks/json
 GOWORK=off go test ./... -run '^$' -bench . -benchmem -count=5 -benchtime=500ms
+```
+
+使用本地源码（示例；`go.work` 位于两个仓库之外）：
+
+```bash
+workdir=$(mktemp -d)
+(cd "$workdir" && go work init $(find /path/to/ydx -name go.mod -printf '%h\n'))
+GOWORK="$workdir/go.work" go test ./... -run '^$' -bench . -benchmem -count=5 -benchtime=500ms
 ```
 
 全量（POSIX）：

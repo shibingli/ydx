@@ -13,24 +13,24 @@ cristalhq。
 | 实现 | 版本/构建 | 说明 |
 |---|---|---|
 | ydx/base64 | v0.1.9，默认构建 | 自研后端，运行时选择最宽可用内核 |
-| `encoding/base64` | Go 1.27.2 | 标准库对照 |
+| `encoding/base64` | Go 1.27.3 | 标准库对照 |
 | `github.com/cristalhq/base64` | v0.1.2 | 第三方实现（纯 Go SWAR） |
 
 > v0.1.8 把短输入 SIMD 阈值提高到 64；v0.1.9 为恰好 32 字节新增两个 12 字节 XMM
 > 头部加一个 8 字节向量尾部的全向量编码内核（一次写满 44 个字符、不调用标量尾部），
 > 并让 32–63 字符解码先走 128 位块内核。本表的 16 B、1 KiB 与 64 KiB 路径不变；
-> 32 B 的对比见下方「32 字节短内核」与 yd 仓的 `benchmarks/yd-vs-ydx-analysis.md`。
+> 32 B 的对比见下方「32 字节短内核」与 [`../yd-vs-ydx-analysis.md`](../yd-vs-ydx-analysis.md)。
 
 ## 运行环境
 
 - **amd64**：AMD Ryzen AI MAX+ 395（Zen 5，32 逻辑 CPU，AVX-512F/BW/VBMI/VBMI2），
-  Linux，Go 1.27.2，`GOMAXPROCS=32`。
-- **arm64**：Neoverse-N2，4 vCPU，3.0 GHz，Linux，Go 1.27.2。
-- 实测日期：2026-10-23。
+  Linux，Go 1.27.3，`GOMAXPROCS=32`。
+- **arm64**：Neoverse-N2，4 vCPU，3.0 GHz，Linux，Go 1.27.3。
+- 实测日期：2026-10-24。
 
 ## 场景
 
-- `Encode` / `Decode`：复用目标缓冲区，测纯编解码成本；覆盖 16 B、1 KiB、64 KiB。
+- `Encode` / `Decode`：复用目标缓冲区，测纯编解码成本；覆盖 16 B、32 B、1 KiB、64 KiB、1 MiB。
 - `EncodeToString` / `DecodeString`：分配式入口；覆盖 16 B 到 64 KiB。
 - `RawURLEncode`：JWT 使用的无填充 URL 安全变体。
 - `AppendEncodeDecode`：零拷贝 append 入口。
@@ -86,48 +86,27 @@ cristalhq。
 arm64 上 NEON 块内核与同一套标量快速路径在所有场景领先两个对照实现；短输入由标量
 SWAR 路径承担，未额外引入 NEON 短块开销。
 
-## 32 字节短内核
+## 32 字节与 1 MiB
 
-yd 仓 `benchmarks/base64` 在同一轮、同一台主机上对比 32 B 载荷（解码输入为 44 字符）：
+本目录的 `BenchmarkFrameworkEncode/Decode` 在同一轮、同一台主机上对比 32 B 载荷
+（解码输入为 44 字符）：
 
-| 操作 | ydx/base64 v0.1.9 | cloudwego/base64x | cristalhq/base64 | stdlib |
-|---|---:|---:|---:|---:|
-| `Encode` 32 B | **5.68 ns** | 7.59 ns | 9.77 ns | 14.48 ns |
-| `Decode` 32 B | **10.51 ns** | 11.87 ns | 12.63 ns | 20.35 ns |
+| 操作 | ydx/base64 | cristalhq/base64 | stdlib |
+|---|---:|---:|---:|
+| `Encode` 32 B | **5.58 ns** | 9.57 ns | 14.38 ns |
+| `Decode` 32 B | **10.47 ns** | 12.93 ns | 19.92 ns |
 
-编码比 cloudwego 快约 25%，解码快约 11%。此前的 v0.1.8 两者分别为 8.89 ns 与
-13.34 ns；提升来自全向量编码内核与 32–63 字符的解码块路径，而非继续调整标量循环。
+1 MiB 块：
 
-## 并行吞吐
+| 操作 | ydx/base64 | cristalhq/base64 | stdlib |
+|---|---:|---:|---:|
+| `Encode` 1 MiB | **55.5 GB/s** | 5.05 GB/s | 2.39 GB/s |
+| `Decode` 1 MiB | **27.1 GB/s** | 3.73 GB/s | 2.28 GB/s |
 
-`RunParallel` 聚合 ns/op，Ryzen 主机，同一二进制按 `-cpu 1,16,32` 运行：
-
-| 场景 | 1 P | 16 P | 32 P | 16 P 加速比 |
-|---|---:|---:|---:|---:|
-| `Encode` 16 B | 6.41 ns | 0.48 ns | 0.47 ns | 13.4× |
-| `Decode` 16 B | 8.18 ns | 0.59 ns | 0.585 ns | 13.9× |
-| `Encode` 64 KiB | 1.06 µs | 84.0 ns | 83.9 ns | 12.6× |
-| `Decode` 64 KiB | 2.37 µs | 171 ns | 160 ns | 13.8× |
-
-编解码在 `init` 之后完全无共享可变状态：常量表与内核指针只读，目标缓冲由调用方持有，
-因此扩展性只受内存带宽限制。16 B 在 16 线程仍有约 13–14 倍聚合吞吐；64 KiB 在 32 线程
-进入写带宽瓶颈，继续增加并发不再线性增长。没有需要额外优化的锁或全局池竞争。
-
-## 指令集内核
-
-| 级别 | amd64 内核 | 覆盖 |
-|---|---|---|
-| 4 | AVX-512 VBMI2 解码 | 64 字符 → 48 字节，`VPERMB` + `VPMADDUBSW` + `VPCOMPRESSB` |
-| 3 | AVX-512 VBMI 编码 | 48 字节 → 64 字符，`VPERMB` 查表 |
-| 2 | AVX-512BW 编码/解码 | 按 128 位通道局部 `VPSHUFB`，解码用于 ≥4 KiB 输入 |
-| 1 | AVX2 编码/解码 | 24 字节 ↔ 32 字符，全部输入的基线向量路径 |
-| 0 | 标量 | 8 字符 SWAR 解码（24 位预移位表 + 64 位存储）、32 位分组加载 + 64 位存储编码 |
-
-- 内核按指令集级别安装，与 `init` 顺序无关；同一级别内后安装者覆盖前者，高优先级内核
-  始终胜出。URL 变体在 VBMI2 解码上继续使用 AVX2（其融合内核在该场景更快）。
-- 标量路径不是兜底摆设：16 B 等短输入走 8 字符 SWAR 与宽加载/存储，避免 SIMD 分派和
-  常量装载成本；raw 尾部 2/3 字符与 padded 尾部在快路径内直接解码，不再进入逐字符状态机。
-- arm64 使用手写 NEON：48 字节 → 64 字符编码、64 字符 → 48 字节解码，标量路径负责尾部。
+32 B 的提升来自全向量编码内核（两个 12 字节 XMM 头部 + 8 字节向量尾部）与 32–63 字符
+的 128 位解码块路径。`cloudwego/base64x` 的 JIT 加载器在 Go 1.27.3 上触发
+`fatal error: invalid function symbol table`，会让整个基准进程中止，因此不进入默认
+套件；其历史数字不再作为对比依据。
 
 ## 完整数据
 

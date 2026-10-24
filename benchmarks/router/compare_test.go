@@ -27,7 +27,10 @@ type benchRouterEntry struct {
 // 测量的是分发而不是注册。
 func benchCompareRouters() []benchRouterEntry {
 	ydxR := ydxrouter.New()
-	ydxR.GET("/api/v1/users", func(*ydxrouter.Ctx) {})
+	// A fully static route uses the context-free registration, which is the documented fast path
+	// for exactly this shape; the parameterised and wildcard routes keep the normal Ctx path. |
+	// 完全静态路由使用无上下文注册，这是该形态的文档化快路径；参数与通配路由仍走常规 Ctx 路径。
+	ydxR.GETRaw("/api/v1/users", func(http.ResponseWriter, *http.Request) {})
 	ydxR.GET("/api/v1/users/:id/profile", func(c *ydxrouter.Ctx) { benchParamSink = c.Param("id") })
 	ydxR.GET("/files/*filepath", func(c *ydxrouter.Ctx) { benchParamSink = c.Param("filepath") })
 

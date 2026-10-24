@@ -14,13 +14,28 @@
 
 ## 环境与方法
 
-- 本机：Windows 11，Intel i9-10980HK，AVX2，Go 1.27.2。
-- AVX-512 主机：Ubuntu，x86_64，AVX-512F/BW/VL/VBMI，Go 1.27.2（本地交叉编译测试二进制）。
-- 旧指令集 AVX-512 主机：Skylake 代 Xeon，仅 AVX-512F/BW/CD/DQ/VL（无 VBMI/VBMI2），Go 1.27.2（同样使用交叉编译测试二进制）。
-- arm64 主机：aarch64 云主机，NEON，Go 1.27.2（本地交叉编译测试二进制）。
+- **主表（2026-10-24）**：AMD Ryzen AI MAX+ 395（Zen 5，32 线程，AVX-512F/BW/VBMI/VBMI2），Ubuntu 26.04，Go 1.27.3，`GOMAXPROCS=32`。
+- 本机：Windows 11，Intel i9-10980HK，AVX2，Go 1.27.3。
+- AVX-512 主机：Ubuntu，x86_64，AVX-512F/BW/VL/VBMI，Go 1.27.3（本地交叉编译测试二进制）。
+- 旧指令集 AVX-512 主机：Skylake 代 Xeon，仅 AVX-512F/BW/CD/DQ/VL（无 VBMI/VBMI2），Go 1.27.3（同样使用交叉编译测试二进制）。
+- arm64 主机：aarch64 云主机，NEON，Go 1.27.3（本地交叉编译测试二进制）。
 - 语料：256 KiB 的英文/数字/日期/邮箱/URL 混合文本；128 KiB 中英希混合文本；128 KiB 含 emoji（ZWJ、肤色、旗帜、变体选择符）、简繁中文与中英文混排的混合文本。
 - 所有模式在计时外编译；每项跑 3 次取中位数（本机 `-benchtime=300ms`，远端 80ms），`-benchmem`。
 - 绝对值受 CPU、负载与调度影响；跨实现比较请优先看同一行的相对值。
+
+## Zen 5 主表结果（2026-10-24）
+
+| 场景 | ydx | stdlib | grafana | regexp2 | go-re2 |
+|---|---:|---:|---:|---:|---:|
+| MatchString/literal | **10.70 ns** | 226.9 ns | 225.3 ns | 176.4 µs | 2.216 µs |
+| MatchString/email | **36.73 ns** | 527.1 ns | 535.0 ns | 170.1 µs | 2.001 µs |
+| MatchString/date | **38.53 ns** | 492.7 ns | 501.1 ns | 170.6 µs | 2.032 µs |
+| MatchString/anchored_id | **11.30 ns** | 120.3 ns | 122.5 ns | 113.4 ns | 89.67 ns |
+| FindAll/email | **94.98 µs** | 5.679 ms | 5.66 ms | 21.1 ms | 732.3 µs |
+| FindAll/date | **110.8 µs** | 3.872 ms | 4.01 ms | 3.54 ms | 705.5 µs |
+
+所有匹配/查找/批量扫描场景领先；简单模式（如 `\d+`）的 `BenchmarkCompile` 仍慢于
+标准库（约 780 vs 253 ns），属于启动期一次性解析/编译成本，不影响请求热路径。
 
 ## 本机 AVX2 结果
 

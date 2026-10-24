@@ -12,7 +12,7 @@ SWAR/标量路径。不需要 `GOEXPERIMENT=simd`，也不依赖 cgo；显式 `j
 | 实现 | 版本 | 配置 |
 |---|---|---|
 | ydx/json | v0.1.10（原生后端） | 默认构建 |
-| `encoding/json` | Go 1.27.2 | 标准库 |
+| `encoding/json` | Go 1.27.3 | 标准库 |
 | `github.com/goccy/go-json` | v0.11.2 | 默认配置 |
 | `github.com/json-iterator/go` | v1.1.12 | `ConfigCompatibleWithStandardLibrary` |
 | `github.com/bytedance/sonic` | v1.15.4 | 默认配置，运行时编译 |
@@ -22,15 +22,20 @@ SWAR/标量路径。不需要 `GOEXPERIMENT=simd`，也不依赖 cgo；显式 `j
 > 表中 `Marshal` 与 `Unmarshal` 的 `ydx` 数值分别采样于 v0.1.8 与 v0.1.10。`Unmarshal`
 > 于 2026-10-23 第三轮重测（3 次中位数）：v0.1.10 为长尾数与指数形式加入非舍入缩放快速
 > 路径，超出 19 位有效数字时用 d 与 d+1 判定截断尾部，仍不确定才回退 strconv；本表使用的
-> `Score=98.5` 短小数不受影响。长小数与 `time.Time` 载荷的对照见 yd 仓的
-> `benchmarks/yd-vs-ydx-analysis.md`。
+> `Score=98.5` 短小数不受影响。长小数与 `time.Time` 载荷的对照见
+> [`../yd-vs-ydx-analysis.md`](../yd-vs-ydx-analysis.md)。
+
+> 2026-10-24：yd 仓的 7 字段 `record` 载荷（`time.Time`、长小数、n=1/100/1000、并行）
+> 已并入本模块，对应 `BenchmarkFrameworkMarshal/Unmarshal*`；主表同时保留 5 字段
+> `benchUser` 载荷（`BenchmarkMarshal/Unmarshal*`）。两套载荷的结果都在同一台主机、
+> 同一轮采样中给出。
 
 ## 运行环境
 
 - **amd64**：AMD Ryzen AI MAX+ 395（Zen 5，32 逻辑 CPU，AVX-512F/BW/VBMI/VBMI2），
-  Linux，Go 1.27.2，`GOMAXPROCS=32`。
-- **arm64**：Neoverse-N2，4 vCPU，3.0 GHz，Linux，Go 1.27.2。
-- 实测日期：2026-10-23。
+  Linux，Go 1.27.3，`GOMAXPROCS=32`。
+- **arm64**：Neoverse-N2，4 vCPU，3.0 GHz，Linux，Go 1.27.3。
+- 实测日期：2026-10-24。
 
 ## 场景
 
@@ -70,6 +75,25 @@ SWAR/标量路径。不需要 `GOEXPERIMENT=simd`，也不依赖 cgo；显式 `j
 | `Marshal/large` | 98.6 KiB / 1 | 98.5 KiB / 1 | 大载荷同样精确输出，不再过量分配 |
 | `Unmarshal/many` | 9547 B / 66 | 10544 B / 66 | 每次新建 64 元素切片，66 次分配已含目标 |
 | `Unmarshal/large` | 140.3 KiB / 1027 | 163.1 KiB / 1028 | 大切片使用池化结构体缓冲与精确最终分配 |
+
+### 7 字段 record 载荷（合并自 yd，2026-10-24）
+
+该载荷含 `time.Time`、长小数 `Score=float64(i)/3`，并覆盖 n=1/100/1000 与并行场景；
+对应 `BenchmarkFrameworkMarshal/Unmarshal*`。同一轮 5 次中位数：
+
+| 场景 | ydx | go-json | sonic-std | stdlib |
+|---|---:|---:|---:|---:|
+| `Marshal/n=1` | **109.9 ns** | 117.3 ns | 253.8 ns | 407.9 ns |
+| `Marshal/n=100` | **8.97 µs** | 11.35 µs | 16.03 µs | 31.31 µs |
+| `Marshal/n=1000` | **89.68 µs** | 116.19 µs | 152.54 µs | 302.24 µs |
+| `Unmarshal/n=1` | 250.9 ns | **247.5 ns** | 371.0 ns | 812.7 ns |
+| `Unmarshal/n=100` | **16.43 µs** | 18.79 µs | 29.51 µs | 72.29 µs |
+| `Unmarshal/n=1000` | **174.3 µs** | 195.2 µs | 330.6 µs | 708.0 µs |
+
+- n=1 的 Unmarshal 落后 go-json 约 1.4%（在噪声内），其余五个场景全部领先；n=100/1000
+  的 Unmarshal 领先 go-json 约 12.5%/10.7%，长小数与 `time.Time` 载荷不再构成弱项。
+- 该载荷的 n=1 只含一个短小数，历史轮次曾落后 11%；本次合并后在同一台主机上复测，
+  差距收窄到噪声范围。
 
 ## arm64 关键结果
 

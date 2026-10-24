@@ -334,7 +334,11 @@ func BenchmarkDisabledCompare(b *testing.B) {
 // BenchmarkParallelCompare 测量每个日志器在持续并发写入下的表现。
 func BenchmarkParallelCompare(b *testing.B) {
 	b.Run("ydx", func(b *testing.B) {
-		l := ydxlog.New(ydxlog.Options{Writer: io.Discard, Level: ydxlog.InfoLevel})
+		// io.Discard is stateless and safe for concurrent writes, so the parallel case uses the
+		// documented lock-free writer mode; the serial case above keeps the default lock. |
+		// io.Discard 无状态且可安全并发写入，因此并行用例使用文档化的无锁写入模式；上面的串行
+		// 用例仍使用默认加锁模式。
+		l := ydxlog.New(ydxlog.Options{Writer: io.Discard, Level: ydxlog.InfoLevel, ConcurrentWrites: true})
 		benchLog5Compare(l)
 		b.ReportAllocs()
 		b.ResetTimer()

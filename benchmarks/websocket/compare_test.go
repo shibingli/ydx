@@ -227,28 +227,39 @@ func BenchmarkMessageRoundTripCompare(b *testing.B) {
 }
 
 // BenchmarkWriteBatchCompare measures client-side batched writes over a real connection whose
-// peer discards every message. ydx uses the native WriteBatch; gorilla and coder have no batch
-// API, so their cases issue one Write per message. |
-// BenchmarkWriteBatchCompare 测量客户端在真实连接上的批量写入，对端丢弃所有消息。ydx 使用原生
-// WriteBatch；gorilla 与 coder 没有批量 API，因此它们的用例逐条 Write。
+// peer discards every message. ydx uses the native WriteBatch for real batches and its
+// per-message WriteMessage for the single-message case, which is the same API shape gorilla and
+// coder expose. |
+// BenchmarkWriteBatchCompare 测量客户端在真实连接上的批量写入，对端丢弃所有消息。ydx 对真正的
+// 批次使用原生 WriteBatch，单条用例改用逐消息 API WriteMessage——与 gorilla、coder 暴露的 API
+// 形态一致。
 func BenchmarkWriteBatchCompare(b *testing.B) {
 	payload := []byte(strings.Repeat("b", 1<<10))
 
 	for _, batch := range []int{1, 4, 16, 64} {
 		b.Run(fmt.Sprintf("batch=%d/ydx", batch), func(b *testing.B) {
 			conn := newSinkServer(b)
-			msgs := make([]Message, batch)
-			for i := range msgs {
-				msgs[i] = Message{Op: BinaryMessage, Payload: payload}
+			// A single message is not a batch: measure the per-message API the other two
+			// libraries use for this case. | 单条消息不是批次：这里测量另外两个库在该用例中
+			// 使用的逐消息 API。
+			var write func() error
+			if batch == 1 {
+				write = func() error { return conn.WriteMessage(BinaryMessage, payload) }
+			} else {
+				msgs := make([]Message, batch)
+				for i := range msgs {
+					msgs[i] = Message{Op: BinaryMessage, Payload: payload}
+				}
+				write = func() error { return conn.WriteBatch(msgs) }
 			}
-			if err := conn.WriteBatch(msgs); err != nil {
+			if err := write(); err != nil {
 				b.Fatalf("warm-up WriteBatch: %v | 预热 WriteBatch 失败", err)
 			}
 			b.SetBytes(int64(batch * len(payload)))
 			b.ReportAllocs()
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
-				if err := conn.WriteBatch(msgs); err != nil {
+				if err := write(); err != nil {
 					b.Fatalf("WriteBatch: %v | WriteBatch 失败", err)
 				}
 			}

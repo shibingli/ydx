@@ -3,6 +3,9 @@ package middleware
 import (
 	"net/http"
 	"net/http/httptest"
+	"strconv"
+	"strings"
+	"sync"
 	"testing"
 
 	chimw "github.com/go-chi/chi/v5/middleware"
@@ -191,6 +194,36 @@ func BenchmarkRateLimitCompare(b *testing.B) {
 		Rate:  1e9,
 		Burst: 1 << 30,
 	})
+	// The ydx middleware writes three X-RateLimit-* headers on every response. This variant adds
+	// the same observable headers to the x/time/rate path so the comparison does not attribute
+	// ydx's extra contract to limiter cost. | ydx 中间件在每个响应上写三个 X-RateLimit-* 头部。
+	// 该变体给 x/time/rate 路径补上相同的可观测头部，避免把 ydx 的额外契约算成限流器成本。
+	limitValue := strconv.Itoa(1 << 30)
+	xtimeHeadersWrap := func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if !limiter.Allow() {
+				http.Error(w, "rate limited | 请求过多", http.StatusTooManyRequests)
+				return
+			}
+			benchWriteRateHeaders(w.Header(), limitValue, (1<<30)-1, 1)
+			next.ServeHTTP(w, r)
+		})
+	}
+	perIP := newBenchIPLimiters()
+	xtimePerIPHeadersWrap := func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			key := r.RemoteAddr
+			if i := strings.LastIndexByte(key, ':'); i > 0 {
+				key = key[:i]
+			}
+			if !perIP.allow(key) {
+				http.Error(w, "rate limited | 请求过多", http.StatusTooManyRequests)
+				return
+			}
+			benchWriteRateHeaders(w.Header(), limitValue, (1<<30)-1, 1)
+			next.ServeHTTP(w, r)
+		})
+	}
 
 	b.Run("none", func(b *testing.B) {
 		benchRunMiddleware(b, body, "", req, nil, false, nil)
@@ -201,6 +234,54 @@ func BenchmarkRateLimitCompare(b *testing.B) {
 	b.Run("x-time-rate", func(b *testing.B) {
 		benchRunMiddleware(b, body, "", req, xtimeWrap, false, check)
 	})
+	b.Run("x-time-rate+headers", func(b *testing.B) {
+		benchRunMiddleware(b, body, "", req, xtimeHeadersWrap, false, check)
+	})
+	b.Run("x-time-rate+per-ip+headers", func(b *testing.B) {
+		benchRunMiddleware(b, body, "", req, xtimePerIPHeadersWrap, false, check)
+	})
+}
+
+// benchIPLimiters is a per-key x/time/rate limiter map, matching the ydx middleware's default
+// per-IP bucketing. It includes the map lookup and lock that a global limiter does not pay. |
+// benchIPLimiters 是按 key 分桶的 x/time/rate 限制器映射，与 ydx 中间件默认的按 IP 分桶对齐。
+// 它包含全局 limiting 不支付的 map 查找与锁。
+type benchIPLimiters struct {
+	mu sync.Mutex
+	m  map[string]*rate.Limiter
+}
+
+func newBenchIPLimiters() *benchIPLimiters {
+	return &benchIPLimiters{m: make(map[string]*rate.Limiter)}
+}
+
+func (l *benchIPLimiters) allow(key string) bool {
+	l.mu.Lock()
+	limiter := l.m[key]
+	if limiter == nil {
+		limiter = rate.NewLimiter(rate.Limit(1e9), 1<<30)
+		l.m[key] = limiter
+	}
+	l.mu.Unlock()
+	return limiter.Allow()
+}
+
+// benchWriteRateHeaders writes the three X-RateLimit-* headers with the same formatting strategy
+// as the ydx middleware, so the x/time/rate+headers variant is a like-for-like measurement. |
+// benchWriteRateHeaders 用与 ydx 中间件相同的格式化策略写三个 X-RateLimit-* 头部，使
+// x/time/rate+headers 变体成为同口径测量。
+func benchWriteRateHeaders(h http.Header, limit string, remaining, reset int64) {
+	var scratch [41]byte
+	out := strconv.AppendInt(scratch[:0], remaining, 10)
+	split := len(out)
+	out = append(out, '|')
+	out = strconv.AppendInt(out, reset, 10)
+	s := string(out)
+	vals := new([3]string)
+	vals[0], vals[1], vals[2] = limit, s[:split], s[split+1:]
+	h["X-RateLimit-Limit"] = vals[0:1:1]
+	h["X-RateLimit-Remaining"] = vals[1:2:2]
+	h["X-RateLimit-Reset"] = vals[2:3:3]
 }
 
 // BenchmarkCompressCompare compares ydx gzip compression with klauspost gzhttp on a 16 KiB

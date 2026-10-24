@@ -10,8 +10,8 @@
 
 | 实现 | 版本 | 说明 |
 |---|---|---|
-| ydx/buffpool | v0.1.0 | 五个尺寸分级，`*byte` 存放 |
-| `sync.Pool` | Go 1.27.2 | 每个尺寸一个独立池，存放 `*[]byte` |
+| ydx/buffpool | 本仓源码（工作区） | 五个尺寸分级，`*byte` 存放 |
+| `sync.Pool` | Go 1.27.3 | 每个尺寸一个独立池，存放 `*[]byte` |
 | `github.com/valyala/bytebufferpool` | v1.0.0 | 单一全局池，存放 `*ByteBuffer` |
 
 ## 场景
@@ -19,50 +19,54 @@
 - `GetPut`：每个尺寸分级各做一次 Get/Put，计时前预热一个缓冲。
 - `GetPutParallel`：4 KiB 分级下多 goroutine 并发 Get/Put。
 
-## 关键结果
+## 关键结果（2026-10-24，Zen 5 + Go 1.27.3）
 
 | 场景 | ydx | `sync.Pool` | bytebufferpool |
 |---|---:|---:|---:|
-| 1 KiB Get/Put | 16.44 ns | 11.57 ns | 19.83 ns |
-| 4 KiB Get/Put | 18.00 ns | 12.08 ns | 20.78 ns |
-| 64 KiB Get/Put | 19.07 ns | 12.47 ns | 21.34 ns |
-| 256 KiB Get/Put | 21.05 ns | 13.12 ns | 21.48 ns |
-| 4 KiB 并发 Get/Put | 3.033 ns | 1.906 ns | 30.21 ns |
+| 1 KiB Get/Put | **9.27 ns** | 7.09 ns | 9.40 ns |
+| 4 KiB Get/Put | 9.94 ns | 7.23 ns | 9.49 ns |
+| 16 KiB Get/Put | 9.78 ns | 7.26 ns | 9.50 ns |
+| 64 KiB Get/Put | 9.79 ns | 7.24 ns | 9.53 ns |
+| 256 KiB Get/Put | 9.96 ns | 7.15 ns | 9.57 ns |
+| 4 KiB 并发 Get/Put | 0.58 ns | 0.42 ns | 30.36 ns |
 
-- 串行路径：ydx 比裸 `sync.Pool` 多约 5–8 ns，这部分是尺寸分级查找、边界检查与
-  `*byte` 到 `[]byte` 的转换成本；比 bytebufferpool 快约 0.4–3.4 ns（256 KiB 分级
-  已接近持平）。
-- 并发路径：ydx 的每分级独立 `sync.Pool` 把竞争分散到 5 个池；bytebufferpool 的
-  单一全局池在 16 个逻辑 CPU 下出现明显竞争（30.21 ns）。
+- 串行路径：ydx 比裸 `sync.Pool` 多约 2.2–2.7 ns，这部分是尺寸分级查找、边界检查与
+  `*byte` 到 `[]byte` 的转换成本；与 bytebufferpool 在 9.3–10.0 ns 区间互有胜负
+  （1 KiB 领先 1.4%，4–256 KiB 落后 2.7%–4.7%），全部落在同一轮 5% 噪声阈值内，
+  记为持平。
+- 并发路径：ydx 的每分级独立 `sync.Pool` 把竞争分散到 5 个池，0.58 ns；bytebufferpool
+  的单一全局池竞争明显（30.36 ns）。
 - 所有 Get/Put 路径均为 0 B/op、0 allocs/op（预热后）。
+- `Put` 用 `unsafe.SliceData` 取得块首指针、`Get` 用 `unsafe.Slice` 重建视图，两者都不
+  产生装箱或边界检查以外的额外工作。
 
 ## 完整数据
 
 <details>
-<summary>5 轮均值</summary>
+<summary>5 轮中位数（Zen 5 + Go 1.27.3）</summary>
 
 **github.com/shibingli/ydx/benchmarks/buffpool**
 
-| Benchmark | ns/op | B/op | allocs/op | MB/s |
-|---|---:|---:|---:|---:|
-| `GetPut/1KiB/ydx` | 16.44 ns | 0 | 0 |  |
-| `GetPut/1KiB/syncpool` | 11.57 ns | 0 | 0 |  |
-| `GetPut/1KiB/bytebufferpool` | 19.83 ns | 0 | 0 |  |
-| `GetPut/4KiB/ydx` | 18.00 ns | 0 | 0 |  |
-| `GetPut/4KiB/syncpool` | 12.08 ns | 0 | 0 |  |
-| `GetPut/4KiB/bytebufferpool` | 20.78 ns | 0 | 0 |  |
-| `GetPut/16KiB/ydx` | 18.22 ns | 0 | 0 |  |
-| `GetPut/16KiB/syncpool` | 11.76 ns | 0 | 0 |  |
-| `GetPut/16KiB/bytebufferpool` | 20.73 ns | 0 | 0 |  |
-| `GetPut/64KiB/ydx` | 19.07 ns | 0 | 0 |  |
-| `GetPut/64KiB/syncpool` | 12.47 ns | 0 | 0 |  |
-| `GetPut/64KiB/bytebufferpool` | 21.34 ns | 0 | 0 |  |
-| `GetPut/256KiB/ydx` | 21.05 ns | 0 | 0 |  |
-| `GetPut/256KiB/syncpool` | 13.12 ns | 0 | 0 |  |
-| `GetPut/256KiB/bytebufferpool` | 21.48 ns | 0 | 0 |  |
-| `GetPutParallel/ydx` | 3.033 ns | 0 | 0 |  |
-| `GetPutParallel/syncpool` | 1.906 ns | 0 | 0 |  |
-| `GetPutParallel/bytebufferpool` | 30.21 ns | 0 | 0 |  |
+| Benchmark | ns/op | B/op | allocs/op |
+|---|---:|---:|---:|
+| `GetPut/1KiB/ydx` | 9.27 ns | 0 | 0 |
+| `GetPut/1KiB/syncpool` | 7.09 ns | 0 | 0 |
+| `GetPut/1KiB/bytebufferpool` | 9.40 ns | 0 | 0 |
+| `GetPut/4KiB/ydx` | 9.94 ns | 0 | 0 |
+| `GetPut/4KiB/syncpool` | 7.23 ns | 0 | 0 |
+| `GetPut/4KiB/bytebufferpool` | 9.49 ns | 0 | 0 |
+| `GetPut/16KiB/ydx` | 9.78 ns | 0 | 0 |
+| `GetPut/16KiB/syncpool` | 7.26 ns | 0 | 0 |
+| `GetPut/16KiB/bytebufferpool` | 9.50 ns | 0 | 0 |
+| `GetPut/64KiB/ydx` | 9.79 ns | 0 | 0 |
+| `GetPut/64KiB/syncpool` | 7.24 ns | 0 | 0 |
+| `GetPut/64KiB/bytebufferpool` | 9.53 ns | 0 | 0 |
+| `GetPut/256KiB/ydx` | 9.96 ns | 0 | 0 |
+| `GetPut/256KiB/syncpool` | 7.15 ns | 0 | 0 |
+| `GetPut/256KiB/bytebufferpool` | 9.57 ns | 0 | 0 |
+| `GetPutParallel/ydx` | 0.58 ns | 0 | 0 |
+| `GetPutParallel/syncpool` | 0.42 ns | 0 | 0 |
+| `GetPutParallel/bytebufferpool` | 30.36 ns | 0 | 0 |
 </details>
 
 ## 复现
