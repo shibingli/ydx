@@ -127,13 +127,13 @@ var sqlitePresetParams = []dsnParam{
 //     that a result can be asserted and compared by eye; | 形态保真：路径、既有查询串、
 //     PostgreSQL 的 key=value 形态与 SQLite 的 file: URI 形态都原样保留，新增参数按固定顺序追加，
 //     结果可断言、可肉眼比对；
-//   - parameter names are compared the way each driver compares them: MySQL system variables and
-//     PostgreSQL GUC names are case-insensitive, so both drivers compare names case-insensitively,
-//     while SQLite's _pragma / _loc keys are matched exactly by the driver and only the PRAGMA name
-//     inside a _pragma value is compared case-insensitively. | 参数名按各驱动的真实语义比对：
-//     MySQL 的系统变量与 PostgreSQL 的 GUC 名都不区分大小写，这两个驱动整体按不区分大小写比对；
-//     SQLite 的 _pragma / _loc 键由驱动精确匹配，故按键精确比对，
-//     只有 _pragma 取值内部的 PRAGMA 名按不区分大小写比对。
+//   - parameter names are compared the way each driver compares them: MySQL system variables,
+//     PostgreSQL GUC names and Dameng connection properties are case-insensitive, so those drivers
+//     compare names case-insensitively, while SQLite's _pragma / _loc keys are matched exactly by
+//     the driver and only the PRAGMA name inside a _pragma value is compared case-insensitively. |
+//     参数名按各驱动的真实语义比对：MySQL 的系统变量、PostgreSQL 的 GUC 名与达梦的连接属性名都
+//     不区分大小写，这三个驱动整体按不区分大小写比对；SQLite 的 _pragma / _loc 键由驱动精确匹配，
+//     故按键精确比对，只有 _pragma 取值内部的 PRAGMA 名按不区分大小写比对。
 //
 // An empty DSN is returned unchanged because there is nothing to preset; an empty driver name means
 // the framework default SQLite, the same reading dialectorFor applies; any other driver name is
