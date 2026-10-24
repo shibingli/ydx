@@ -17,6 +17,9 @@ func OptionsFromConfig(c *config.Config, m *cache.Manager) Options {
 	o.TTL = c.GetDuration("cache.gorm.ttl")
 	o.Tables = c.GetStringSlice("cache.gorm.tables")
 	o.IgnoreTables = c.GetStringSlice("cache.gorm.ignore_tables")
+	o.SensitiveTables = c.GetStringSlice("cache.gorm.sensitive_tables")
+	o.SensitiveNamespace = c.GetString("cache.gorm.sensitive_namespace")
+	o.SensitiveTTL = c.GetDuration("cache.gorm.sensitive_ttl")
 	return o
 }
 

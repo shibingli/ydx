@@ -445,3 +445,126 @@ func TestJoinQueriesBypassCache(t *testing.T) {
 		t.Fatalf("join query hit the cache: %d | JOIN 查询命中了缓存", st.Hits)
 	}
 }
+
+// sensitiveRow is the sensitive test model. | sensitiveRow 是敏感测试模型。
+type sensitiveRow struct {
+	Name string `gorm:"column:name"`
+	ID   uint   `gorm:"primaryKey"`
+}
+
+// TableName pins the sensitive table. | TableName 固定敏感表名。
+func (sensitiveRow) TableName() string { return "cachex_gorm_sensitive" }
+
+// TestSensitiveTablesUseSeparateNamespace proves sensitive reads land in their own
+// namespace and normal reads do not. | TestSensitiveTablesUseSeparateNamespace 证明
+// 敏感读取进入独立命名空间，普通读取不会。
+func TestSensitiveTablesUseSeparateNamespace(t *testing.T) {
+	db := openTestDB(t, memoryDSN(t))
+	if err := db.AutoMigrate(&sensitiveRow{}); err != nil {
+		t.Fatalf("AutoMigrate: %v", err)
+	}
+	if err := db.Create(&sensitiveRow{Name: "secret"}).Error; err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	seed(t, db, "public")
+	m := newLocalManager(t)
+	p := install(t, db, m, func(o *Options) {
+		o.SensitiveTables = []string{"cachex_gorm_sensitive"}
+	})
+	for i := 0; i < 2; i++ {
+		var row sensitiveRow
+		if err := db.First(&row, 1).Error; err != nil {
+			t.Fatalf("sensitive First: %v", err)
+		}
+	}
+	for i := 0; i < 2; i++ {
+		var row cacheRow
+		if err := db.First(&row, 1).Error; err != nil {
+			t.Fatalf("normal First: %v", err)
+		}
+	}
+	stats := p.Stats()
+	if stats.SensitiveCache.Hits == 0 {
+		t.Fatalf("sensitive namespace has no hits: %+v", stats)
+	}
+	if stats.Cache.Hits == 0 {
+		t.Fatalf("normal namespace has no hits: %+v", stats)
+	}
+	if p.sensitive == nil || p.sensitive == p.raw {
+		t.Fatalf("sensitive namespace was not separate: %+v", stats)
+	}
+	if stats.SensitiveCache.Sets == 0 || stats.Cache.Sets == 0 {
+		t.Fatalf("namespaces did not both store entries: %+v", stats)
+	}
+}
+
+// TestBypassSkipsReads proves a bypass context reaches the database even when a
+// cached value exists. | TestBypassSkipsReads 证明即使存在缓存值，旁路上下文仍会读取数据库。
+func TestBypassSkipsReads(t *testing.T) {
+	db := openTestDB(t, memoryDSN(t))
+	seed(t, db, "before")
+	install(t, db, newLocalManager(t), nil)
+
+	var cached cacheRow
+	if err := db.First(&cached, 1).Error; err != nil {
+		t.Fatalf("First: %v", err)
+	}
+	directExec(t, db, "UPDATE cachex_gorm_rows SET name = ? WHERE id = ?", "after", 1)
+
+	var stale cacheRow
+	if err := db.First(&stale, 1).Error; err != nil {
+		t.Fatalf("cached First: %v", err)
+	}
+	if stale.Name != "before" {
+		t.Fatalf("cached value = %q, want before", stale.Name)
+	}
+
+	var fresh cacheRow
+	ctx := cache.WithBypass(context.Background())
+	if err := db.WithContext(ctx).First(&fresh, 1).Error; err != nil {
+		t.Fatalf("bypass First: %v", err)
+	}
+	if fresh.Name != "after" {
+		t.Fatalf("bypass value = %q, want after", fresh.Name)
+	}
+}
+
+// TestDeferredInvalidationLeavesBumpToCaller proves a deferred transaction does not
+// bump the generation until the caller invalidates after commit. |
+// TestDeferredInvalidationLeavesBumpToCaller 证明延迟事务不会在提交前推进代际，直到调用方在
+// 提交后主动失效。
+func TestDeferredInvalidationLeavesBumpToCaller(t *testing.T) {
+	db := openTestDB(t, memoryDSN(t))
+	seed(t, db, "before")
+	m := newLocalManager(t)
+	p := install(t, db, m, nil)
+
+	var first cacheRow
+	if err := db.First(&first, 1).Error; err != nil {
+		t.Fatalf("First: %v", err)
+	}
+	ctx := cache.WithDeferredInvalidation(context.Background())
+	if err := db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		return tx.Model(&cacheRow{}).Where("id = ?", 1).Update("name", "after").Error
+	}); err != nil {
+		t.Fatalf("Transaction: %v", err)
+	}
+
+	var stale cacheRow
+	if err := db.First(&stale, 1).Error; err != nil {
+		t.Fatalf("cached First: %v", err)
+	}
+	if stale.Name != "before" {
+		t.Fatalf("deferred transaction invalidated early: %q", stale.Name)
+	}
+	if err := p.Invalidate(context.Background(), "cachex_gorm_rows"); err != nil {
+		t.Fatalf("Invalidate: %v", err)
+	}
+	var fresh cacheRow
+	if err := db.First(&fresh, 1).Error; err != nil {
+		t.Fatalf("fresh First: %v", err)
+	}
+	if fresh.Name != "after" {
+		t.Fatalf("post-commit invalidation missed: %q", fresh.Name)
+	}
+}

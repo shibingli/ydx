@@ -43,6 +43,9 @@ cache:
     ttl: 45s
     tables: ["users", "roles"]
     ignore_tables: ["audit_logs"]
+    sensitive_tables: ["roles"]
+    sensitive_namespace: "db.sensitive"
+    sensitive_ttl: 5s
 `)
 	if !gormcache.EnabledFromConfig(c) {
 		t.Fatal("enabled = false, want true | 启用开关不符")
@@ -54,6 +57,10 @@ cache:
 	if len(o.Tables) != 2 || o.Tables[0] != "users" || len(o.IgnoreTables) != 1 || o.IgnoreTables[0] != "audit_logs" {
 		t.Fatalf("table filters = %+v | 表过滤不符", o)
 	}
+	if len(o.SensitiveTables) != 1 || o.SensitiveTables[0] != "roles" ||
+		o.SensitiveNamespace != "db.sensitive" || o.SensitiveTTL != 5*time.Second {
+		t.Fatalf("sensitive options = %+v | 敏感选项不符", o)
+	}
 }
 
 func TestOptionsFromConfigDefaults(t *testing.T) {
@@ -62,7 +69,7 @@ func TestOptionsFromConfigDefaults(t *testing.T) {
 		t.Fatal("GORM cache enabled by default | GORM 缓存默认被启用")
 	}
 	o := gormcache.OptionsFromConfig(c, nil)
-	if o.Namespace != "gorm" || o.TTL != 30*time.Second {
+	if o.Namespace != "gorm" || o.TTL != 30*time.Second || o.SensitiveTTL != 10*time.Second {
 		t.Fatalf("defaults = %+v | 默认值不符", o)
 	}
 	if gormcache.EnabledFromConfig(nil) {

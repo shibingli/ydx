@@ -15,6 +15,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/binary"
+	"errors"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -39,6 +40,9 @@ var (
 	ErrCallbackMissing = errs.New("gormcache: gorm:query callback missing | gormcache：缺少 gorm:query 回调")
 	// ErrAlreadyInitialized indicates the same plugin was installed twice. | ErrAlreadyInitialized 表示同一插件被安装两次。
 	ErrAlreadyInitialized = errs.New("gormcache: plugin already initialized | gormcache：插件已初始化")
+	// ErrInvalidOptions indicates a sensitive namespace equal to the normal one. |
+	// ErrInvalidOptions 表示敏感命名空间与普通命名空间相同。
+	ErrInvalidOptions = errs.New("gormcache: invalid options | gormcache：非法选项")
 	// ErrClosed indicates the plugin was closed. | ErrClosed 表示插件已关闭。
 	ErrClosed         = errs.New("gormcache: plugin closed | gormcache：插件已关闭")
 	errCorruptPayload = errs.New("gormcache: corrupt cached payload | gormcache：缓存的载荷损坏")
@@ -46,6 +50,11 @@ var (
 
 // defaultTTL is used when Options.TTL is not positive. | defaultTTL 在 Options.TTL 非正时使用。
 const defaultTTL = 30 * time.Second
+
+// defaultSensitiveTTL bounds staleness of auth roles and memberships even when an
+// invalidation event is lost. | defaultSensitiveTTL 在失效事件丢失时仍为鉴权角色与成员关系
+// 的新鲜度提供上界。
+const defaultSensitiveTTL = 10 * time.Second
 
 // Options configures the GORM plugin. | Options 配置 GORM 插件。
 type Options struct {
@@ -57,10 +66,24 @@ type Options struct {
 	Namespace string
 	// Tables is an allowlist; empty means every table. | Tables 是白名单；空表示所有表。
 	Tables []string
-	// IgnoreTables is a denylist applied before Tables. | IgnoreTables 是优先于 Tables 应用的黑名单。
+	// IgnoreTables is a denylist applied before Tables; ignored tables are never
+	// read from or written to the cache. | IgnoreTables 是优先于 Tables 应用的黑名单；被忽略的
+	// 表既不读缓存也不写缓存。
 	IgnoreTables []string
 	// TTL is the lifetime of a cached query result; <=0 means 30 seconds. | TTL 是查询结果的存活时间；<=0 表示 30 秒。
 	TTL time.Duration
+	// SensitiveTables are cached in a separate namespace with SensitiveTTL. Use it
+	// for auth roles, memberships and similar data that must not share keys with
+	// ordinary query results. | SensitiveTables 使用独立命名空间与 SensitiveTTL 缓存。用于
+	// 鉴权角色、成员关系等不得与普通查询结果共用键的数据。
+	SensitiveTables []string
+	// SensitiveNamespace is the namespace of SensitiveTables; empty derives
+	// Namespace+".sensitive". It must differ from Namespace. | SensitiveNamespace 是
+	// SensitiveTables 的命名空间；为空时取 Namespace+".sensitive"，且必须与 Namespace 不同。
+	SensitiveNamespace string
+	// SensitiveTTL is the lifetime of a sensitive entry; <=0 means 10 seconds. |
+	// SensitiveTTL 是敏感条目的存活时间；<=0 表示 10 秒。
+	SensitiveTTL time.Duration
 }
 
 // pluginStats holds plugin counters. | pluginStats 保存插件计数器。
@@ -81,13 +104,17 @@ type Stats struct {
 	Corrupt uint64
 	// Writes counts table invalidations. | Writes 统计表失效次数。
 	Writes uint64
-	// Cache is the namespace snapshot. | Cache 是命名空间快照。
+	// Cache is the ordinary namespace snapshot. | Cache 是普通命名空间快照。
 	Cache cache.Stats
+	// SensitiveCache is the sensitive namespace snapshot when configured. | SensitiveCache
+	// 是配置了敏感命名空间时的快照。
+	SensitiveCache cache.Stats
 }
 
 // Plugin implements gorm.Plugin. | Plugin 实现 gorm.Plugin。
 type Plugin struct {
 	raw         *cache.Raw
+	sensitive   *cache.Raw
 	original    func(*gorm.DB)
 	unsub       func()
 	gens        map[string]*atomic.Uint64
@@ -112,6 +139,17 @@ func New(o Options) (*Plugin, error) {
 	if o.TTL <= 0 {
 		o.TTL = defaultTTL
 	}
+	if o.SensitiveTTL <= 0 {
+		o.SensitiveTTL = defaultSensitiveTTL
+	}
+	if len(o.SensitiveTables) > 0 {
+		if o.SensitiveNamespace == "" {
+			o.SensitiveNamespace = o.Namespace + ".sensitive"
+		}
+		if o.SensitiveNamespace == o.Namespace {
+			return nil, errs.Detail(ErrInvalidOptions, "sensitive namespace must differ from %[1]q | 敏感命名空间不能与 %[1]q 相同", o.Namespace)
+		}
+	}
 	if o.Logger == nil {
 		o.Logger = log.Default()
 	}
@@ -119,7 +157,15 @@ func New(o Options) (*Plugin, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Plugin{opts: o, raw: raw, gens: make(map[string]*atomic.Uint64)}, nil
+	var sensitive *cache.Raw
+	if len(o.SensitiveTables) > 0 {
+		sensitive, err = o.Manager.Raw(o.SensitiveNamespace, cache.WithTTL(o.SensitiveTTL))
+		if err != nil {
+			_ = raw.Close()
+			return nil, err
+		}
+	}
+	return &Plugin{opts: o, raw: raw, sensitive: sensitive, gens: make(map[string]*atomic.Uint64)}, nil
 }
 
 // Name returns the GORM plugin name. | Name 返回 GORM 插件名。
@@ -187,8 +233,13 @@ func (p *Plugin) query(db *gorm.DB) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	raw := p.rawFor(p.tableOf(db))
+	if raw == nil {
+		p.original(db)
+		return
+	}
 	hit := false
-	found, verr := p.raw.View(ctx, key, func(data []byte) error {
+	found, verr := raw.View(ctx, key, func(data []byte) error {
 		rows, body, valid := splitPayload(data)
 		if !valid {
 			return errCorruptPayload
@@ -209,7 +260,7 @@ func (p *Plugin) query(db *gorm.DB) {
 	}
 	if verr != nil {
 		p.stats.corrupt.Add(1)
-		_ = p.raw.Delete(ctx, key)
+		_ = raw.Delete(ctx, key)
 	}
 	p.stats.misses.Add(1)
 	p.original(db)
@@ -223,7 +274,7 @@ func (p *Plugin) query(db *gorm.DB) {
 	payload := make([]byte, 8+len(body))
 	binary.BigEndian.PutUint64(payload[:8], uint64(db.RowsAffected))
 	copy(payload[8:], body)
-	if err := p.raw.SetTTL(ctx, key, payload, p.opts.TTL); err != nil {
+	if err := raw.SetTTL(ctx, key, payload, p.ttlFor(p.tableOf(db))); err != nil {
 		p.opts.Logger.Debug("cachex: gorm cache store failed | cachex：GORM 缓存写入失败", log.Err(err))
 	}
 }
@@ -231,6 +282,9 @@ func (p *Plugin) query(db *gorm.DB) {
 // cacheable rejects queries that must not be cached. | cacheable 拒绝不得缓存的查询。
 func (p *Plugin) cacheable(db *gorm.DB) bool {
 	if db == nil || db.Statement == nil || db.Error != nil || db.DryRun {
+		return false
+	}
+	if cache.Bypass(db.Statement.Context) {
 		return false
 	}
 	st := db.Statement
@@ -295,6 +349,12 @@ func (p *Plugin) invalidate(db *gorm.DB, always bool) {
 	if table == "" || !p.tableAllowed(table) {
 		return
 	}
+	// The caller owns invalidation when it marks the transaction deferred; it must
+	// call Invalidate after commit. | 调用方标记事务为延迟失效后由它自己负责失效，必须在提交后
+	// 调用 Invalidate。
+	if cache.DeferredInvalidation(db.Statement.Context) {
+		return
+	}
 	p.stats.writes.Add(1)
 	p.bump(db.Statement.Context, table)
 }
@@ -307,9 +367,13 @@ func (p *Plugin) bump(ctx context.Context, table string) {
 	}
 	pubCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer cancel()
+	namespace := p.opts.Namespace
+	if p.tableSensitive(table) && p.sensitive != nil {
+		namespace = p.opts.SensitiveNamespace
+	}
 	ev := cache.Event{
 		Op:        cache.OpInvalidate,
-		Namespace: p.opts.Namespace,
+		Namespace: namespace,
 		Tables:    []string{table},
 		Version:   version,
 		Source:    p.opts.Manager.NodeID(),
@@ -333,7 +397,7 @@ func (p *Plugin) onEvent(ev cache.Event) {
 		p.epoch.Add(1)
 		return
 	}
-	if ev.Namespace != p.opts.Namespace {
+	if ev.Namespace != p.opts.Namespace && (p.sensitive == nil || ev.Namespace != p.opts.SensitiveNamespace) {
 		return
 	}
 	if ev.Source == p.opts.Manager.NodeID() {
@@ -403,6 +467,42 @@ func (p *Plugin) tableOf(db *gorm.DB) string {
 	return ""
 }
 
+// tableSensitive reports whether table uses the sensitive namespace. | tableSensitive 报告
+// table 是否使用敏感命名空间。
+func (p *Plugin) tableSensitive(table string) bool {
+	for _, t := range p.opts.SensitiveTables {
+		if t == table {
+			return true
+		}
+	}
+	return false
+}
+
+// rawFor returns the namespace that owns table. | rawFor 返回负责 table 的命名空间。
+func (p *Plugin) rawFor(table string) *cache.Raw {
+	if table != "" && p.tableSensitive(table) && p.sensitive != nil {
+		return p.sensitive
+	}
+	return p.raw
+}
+
+// ttlFor returns the TTL that applies to table. | ttlFor 返回适用于 table 的 TTL。
+func (p *Plugin) ttlFor(table string) time.Duration {
+	if p.tableSensitive(table) {
+		return p.opts.SensitiveTTL
+	}
+	return p.opts.TTL
+}
+
+// sensitiveStats returns the sensitive namespace snapshot, or zero when unset. |
+// sensitiveStats 返回敏感命名空间快照；未配置时返回零值。
+func (p *Plugin) sensitiveStats() cache.Stats {
+	if p.sensitive == nil {
+		return cache.Stats{}
+	}
+	return p.sensitive.Stats()
+}
+
 // tableAllowed applies the denylist then the allowlist. | tableAllowed 先应用黑名单再应用白名单。
 func (p *Plugin) tableAllowed(table string) bool {
 	for _, t := range p.opts.IgnoreTables {
@@ -430,13 +530,23 @@ func (p *Plugin) Invalidate(ctx context.Context, tables ...string) error {
 	}
 	if len(tables) == 0 {
 		p.epoch.Add(1)
-		ev := cache.Event{
-			Op:        cache.OpClear,
-			Namespace: p.opts.Namespace,
-			Source:    p.opts.Manager.NodeID(),
-			At:        time.Now().UTC(),
+		namespaces := []string{p.opts.Namespace}
+		if p.sensitive != nil {
+			namespaces = append(namespaces, p.opts.SensitiveNamespace)
 		}
-		return p.opts.Manager.Publish(ctx, ev)
+		var errsOut []error
+		for _, namespace := range namespaces {
+			ev := cache.Event{
+				Op:        cache.OpClear,
+				Namespace: namespace,
+				Source:    p.opts.Manager.NodeID(),
+				At:        time.Now().UTC(),
+			}
+			if err := p.opts.Manager.Publish(ctx, ev); err != nil {
+				errsOut = append(errsOut, err)
+			}
+		}
+		return errors.Join(errsOut...)
 	}
 	for _, table := range tables {
 		p.bump(ctx, table)
@@ -447,11 +557,12 @@ func (p *Plugin) Invalidate(ctx context.Context, tables ...string) error {
 // Stats returns plugin counters and the namespace snapshot. | Stats 返回插件计数器与命名空间快照。
 func (p *Plugin) Stats() Stats {
 	return Stats{
-		Hits:    p.stats.hits.Load(),
-		Misses:  p.stats.misses.Load(),
-		Corrupt: p.stats.corrupt.Load(),
-		Writes:  p.stats.writes.Load(),
-		Cache:   p.raw.Stats(),
+		Hits:           p.stats.hits.Load(),
+		Misses:         p.stats.misses.Load(),
+		Corrupt:        p.stats.corrupt.Load(),
+		Writes:         p.stats.writes.Load(),
+		Cache:          p.raw.Stats(),
+		SensitiveCache: p.sensitiveStats(),
 	}
 }
 
@@ -464,6 +575,11 @@ func (p *Plugin) Close() error {
 		}
 		if err := p.raw.Close(); err != nil {
 			p.opts.Logger.Warn("cachex: gorm namespace close failed | cachex：GORM 命名空间关闭失败", log.Err(err))
+		}
+		if p.sensitive != nil {
+			if err := p.sensitive.Close(); err != nil {
+				p.opts.Logger.Warn("cachex: gorm sensitive namespace close failed | cachex：GORM 敏感命名空间关闭失败", log.Err(err))
+			}
 		}
 	})
 	return nil
