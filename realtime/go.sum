@@ -54,8 +54,8 @@ github.com/shibingli/ydx/json v0.1.12 h1:R3gry4+UXrKMmTNSkgvLiDgxRse9m4sX5d03eVN
 github.com/shibingli/ydx/json v0.1.12/go.mod h1:aAIQPJx/JqDHjNwgS8XEI5KxJ0QMJbkNGvr8IC2y6Ow=
 github.com/shibingli/ydx/log v0.1.9 h1:nlvRWNr20GrzvYgrwuW1bYNnzIl5a5Sp3q0Sm+5MDKQ=
 github.com/shibingli/ydx/log v0.1.9/go.mod h1:XufXjlTJigW0YKbZbdt2jXUFKh+rmoGBj8lm1YvyDA8=
-github.com/shibingli/ydx/nodeid v0.1.0 h1:mqcSdUCOLkMpZ6HGIifl4GWnUa+UHSVUNCOsg6OY758=
-github.com/shibingli/ydx/nodeid v0.1.0/go.mod h1:B6po4MAdrvcfKR7xJGf9lhvJaTykdjISGHHDnJ29YBo=
+github.com/shibingli/ydx/nodeid v0.1.2 h1:puXIOxf4eURGPY2AMa3Pjp18d/Jqu/UiMICtlchE1qU=
+github.com/shibingli/ydx/nodeid v0.1.2/go.mod h1:B6po4MAdrvcfKR7xJGf9lhvJaTykdjISGHHDnJ29YBo=
 github.com/shibingli/ydx/protocol v0.1.4 h1:b/JvytJSJYJ+3u37GMG0l91L2jEeRoOgH1yfaRZq+1k=
 github.com/shibingli/ydx/protocol v0.1.4/go.mod h1:eKLAtgDa8Cf4Sg0eMYzf4srW8SW7+T3ceTGV73E1nZ0=
 github.com/shibingli/ydx/regexpx v0.1.5 h1:LV4v5zgka2NoCYKKv7RoESBRJGTryZ6mJKLPKGlnO2Q=

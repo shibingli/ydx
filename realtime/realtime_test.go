@@ -303,3 +303,14 @@ func TestOptionsFromConfigFallsBackToNodeID(t *testing.T) {
 		t.Fatalf("NodeID = %q, want node-from-config", got)
 	}
 }
+
+// TestNodeIDUsesEnvOverride proves YD_NODE_ID wins even without a file. |
+// TestNodeIDUsesEnvOverride 证明没有文件时 YD_NODE_ID 仍然优先。
+func TestNodeIDUsesEnvOverride(t *testing.T) {
+	t.Setenv("YD_NODE_ID", "env-node")
+	hub := NewHub(Options{})
+	defer func() { _ = hub.Close() }()
+	if got := hub.NodeID(); got != "env-node" {
+		t.Fatalf("NodeID = %q, want env-node", got)
+	}
+}
