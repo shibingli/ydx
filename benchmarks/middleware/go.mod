@@ -6,31 +6,31 @@ require (
 	github.com/go-chi/chi/v5 v5.5.0
 	github.com/klauspost/compress v1.20.3
 	github.com/rs/cors v1.11.1
-	github.com/shibingli/ydx/log v0.1.9
-	github.com/shibingli/ydx/middleware v0.1.11
-	github.com/shibingli/ydx/middleware/compress v0.1.11
-	github.com/shibingli/ydx/middleware/cors v0.1.11
-	github.com/shibingli/ydx/middleware/ratelimit v0.1.11
-	github.com/shibingli/ydx/middleware/recovery v0.1.11
-	github.com/shibingli/ydx/middleware/requestid v0.1.11
-	github.com/shibingli/ydx/router v0.1.9
+	github.com/shibingli/ydx/log v0.1.10
+	github.com/shibingli/ydx/middleware v0.1.12
+	github.com/shibingli/ydx/middleware/compress v0.1.12
+	github.com/shibingli/ydx/middleware/cors v0.1.12
+	github.com/shibingli/ydx/middleware/ratelimit v0.1.12
+	github.com/shibingli/ydx/middleware/recovery v0.1.12
+	github.com/shibingli/ydx/middleware/requestid v0.1.12
+	github.com/shibingli/ydx/router v0.1.10
 	golang.org/x/time v0.16.0
 )
 
 require (
-	github.com/andybalholm/brotli v1.2.6 // indirect
+	github.com/andybalholm/brotli v1.2.7 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/redis/go-redis/v9 v9.23.0 // indirect
-	github.com/shibingli/ydx/afs v0.1.5 // indirect
-	github.com/shibingli/ydx/base64 v0.1.10 // indirect
+	github.com/shibingli/ydx/afs v0.1.6 // indirect
+	github.com/shibingli/ydx/base64 v0.1.11 // indirect
 	github.com/shibingli/ydx/buffpool v0.1.4 // indirect
 	github.com/shibingli/ydx/errs v0.1.4 // indirect
-	github.com/shibingli/ydx/json v0.1.12 // indirect
-	github.com/shibingli/ydx/middleware/accesslog v0.1.11 // indirect
-	github.com/shibingli/ydx/middleware/asyncafter v0.1.11 // indirect
-	github.com/shibingli/ydx/middleware/reqlog v0.1.11 // indirect
+	github.com/shibingli/ydx/json v0.1.13 // indirect
+	github.com/shibingli/ydx/middleware/accesslog v0.1.12 // indirect
+	github.com/shibingli/ydx/middleware/asyncafter v0.1.12 // indirect
+	github.com/shibingli/ydx/middleware/reqlog v0.1.12 // indirect
 	github.com/shibingli/ydx/protocol v0.1.4 // indirect
-	github.com/shibingli/ydx/regexpx v0.1.6 // indirect
+	github.com/shibingli/ydx/regexpx v0.1.7 // indirect
 	github.com/shibingli/ydx/sysinfo v0.1.4 // indirect
 	github.com/spf13/afero v1.15.0 // indirect
 	go.uber.org/atomic v1.12.0 // indirect

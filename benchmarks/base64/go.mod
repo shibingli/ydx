@@ -4,7 +4,7 @@ go 1.27.3
 
 require (
 	github.com/cristalhq/base64 v0.1.2
-	github.com/shibingli/ydx/base64 v0.1.10
+	github.com/shibingli/ydx/base64 v0.1.11
 )
 
 require (
