@@ -15,7 +15,7 @@
 
 - 产品模块目录：`errs/`、`sysinfo/`、`buffpool/`、`protocol/`、`base64/`、`json/`、`afs/`、
   `config/`、`log/`、`regexpx/`、`router/`、`gorm/`、`redis/`、`asynq/`、`cache/`、`sse/`、
-  `websocket/`、`render/`、`i18n/`、`openapi/`、`jwt/`、`middleware/` 及其插件子目录。
+  `websocket/`、`render/`、`i18n/`、`openapi/`、`jwt/`、`guomi/`、`middleware/` 及其插件子目录。
 - 基准模块：`benchmarks/**`。
 - 守卫：`repotest/**`。
 - 测试与文档：`*_test.go`、`testdata/**`、`README.md`、本文件、`CLAUDE.md`、`docs/**`。
