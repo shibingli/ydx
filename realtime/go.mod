@@ -8,7 +8,7 @@ require (
 	github.com/shibingli/ydx/afs v0.1.5
 	github.com/shibingli/ydx/config v0.1.7
 	github.com/shibingli/ydx/errs v0.1.4
-	github.com/shibingli/ydx/nodeid v0.1.3
+	github.com/shibingli/ydx/nodeid v0.1.4
 	github.com/shibingli/ydx/sse v0.1.10
 	github.com/shibingli/ydx/websocket v0.1.12
 	github.com/shibingli/ydx/webtransport v0.1.0
