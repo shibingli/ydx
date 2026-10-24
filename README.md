@@ -18,6 +18,7 @@
 |---|---|---|
 | `github.com/shibingli/ydx/errs` | `errs` | 声明式哨兵错误与上下文包装 |
 | `github.com/shibingli/ydx/sysinfo` | `sysinfo` | GOMAXPROCS / cgroup / 主机内存探测 |
+| `github.com/shibingli/ydx/gc` | `gc` | 空闲期 GC 调度：负载与空闲窗口门控、堆下限、内存压力强制执行、自适应退避 |
 | `github.com/shibingli/ydx/buffpool` | `buffpool` | 按尺寸分级的字节缓冲池 |
 | `github.com/shibingli/ydx/protocol` | `protocol` | HTTP 协议判定（extended CONNECT 等） |
 | `github.com/shibingli/ydx/nodeid` | `nodeid` | 稳定节点身份：显式配置、持久身份文件、平台种子、容器策略与唯一性 Claim |
