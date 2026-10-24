@@ -11,14 +11,14 @@
 // 请导入具体的组件模块。
 //
 // Product modules live directly under the repository root, for example errs, sysinfo, buffpool,
-// protocol, base64, json, afs, config, log, regexpx, router, gorm, redis, asynq, cache, sse,
-// websocket, render, i18n, openapi and jwt, plus the openapi/ydrouter adapter and the
-// middleware plugins under middleware/. Benchmarks are kept outside the product modules in
+// protocol, nodeid, base64, json, afs, config, log, regexpx, router, gorm, redis, asynq, cache,
+// sse, websocket, webtransport, realtime, render, i18n, openapi and jwt, plus the
+// openapi/ydrouter adapter and the middleware plugins under middleware/. Benchmarks are kept outside the product modules in
 // benchmarks/, one independent module per component, so product modules never depend on
 // benchmark-only libraries. The repository guard lives in repotest. |
-// 产品模块直接位于仓库根目录下，例如 errs、sysinfo、buffpool、protocol、base64、json、afs、
-// config、log、regexpx、router、gorm、redis、asynq、cache、sse、websocket、render、i18n、
-// openapi 与 jwt，以及 openapi/ydrouter 适配器与 middleware/ 下的中间件插件。基准统一放在产品模块
+// 产品模块直接位于仓库根目录下，例如 errs、sysinfo、buffpool、protocol、nodeid、base64、json、
+// afs、config、log、regexpx、router、gorm、redis、asynq、cache、sse、websocket、webtransport、
+// realtime、render、i18n、openapi 与 jwt，以及 openapi/ydrouter 适配器与 middleware/ 下的中间件插件。基准统一放在产品模块
 // 之外的 benchmarks/，每个组件一个独立模块，使产品模块永不依赖仅用于基准的库。仓库守卫位于 repotest。
 //
 // Each module is versioned by a subdirectory tag such as errs/v0.1.0 or middleware/cors/v0.1.0.
