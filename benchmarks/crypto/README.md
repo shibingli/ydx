@@ -1,9 +1,9 @@
 # 国密与常密性能基准
 
-本目录是一个**独立 Go 模块**，测量 yd 的 `security/guomi` 实际委托的维护版 `emmansun/gmsm` SM2/SM3/SM4 后端，并与旧版 `tjfoc/gmsm` 以及 Go 标准库的常密算法做同平台对比。封装层只做参数校验与格式转换，原语成本由这里测得；独立模块避免把对比依赖带进产品模块的 `go.mod`。
+本目录是一个**独立 Go 模块**，测量 `ydx/guomi` 实际委托的维护版 `emmansun/gmsm` SM2/SM3/SM4 后端，并与旧版 `tjfoc/gmsm` 以及 Go 标准库的常密算法做同平台对比。封装层只做参数校验与格式转换，原语成本由这里测得；独立模块避免把对比依赖带进产品模块的 `go.mod`。
 
-> **2026-10-24 更新**：本模块现在直接测量 `emmansun/gmsm` 后端（yd 的
-> `security/guomi` 委托给它，封装层只做参数校验与格式转换）。下方历史表格中的
+> **2026-10-24 更新**：本模块现在直接测量 `emmansun/gmsm` 后端（`ydx/guomi`
+> 委托给它，封装层只做参数校验与格式转换）。下方历史表格中的
 > `our` 列已不参与运行，保留作封装开销的历史参考；最新同机数字以 `emmansun` 列与
 > [../optimization-report.md](../optimization-report.md) 为准。
 
@@ -34,7 +34,7 @@ SHA-256/AES-GCM。下方各节保留更细的历史表格与封装开销分析�
 
 | 标签 | 实现 | 说明 |
 |---|---|---|
-| `emmansun` | `github.com/emmansun/gmsm v0.45.0` | ydx/guomi 的后端；纯 Go、无 cgo |
+| `emmansun` | `github.com/emmansun/gmsm v0.45.1` | ydx/guomi 的后端；纯 Go、无 cgo |
 | `tjfoc` | `github.com/tjfoc/gmsm v1.4.1` | 切换前的旧后端，保留为「改动前」基线 |
 | `stdlib` | Go 1.27.3 `crypto/*` | SHA-256、HMAC-SHA256、PBKDF2-SHA256、AES-GCM、ChaCha20-Poly1305、ECDSA P-256、Ed25519 |
 
