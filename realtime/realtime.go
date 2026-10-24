@@ -472,9 +472,10 @@ func (h *Hub) remove(sub *Subscription) {
 				stop()
 				h.mu.Lock()
 			}
-			if h.backend == nil {
-				delete(h.topics, sub.topic)
-			} else if st.stopped {
+			// Re-check identity: a Subscribe may have installed a fresh topic
+			// state while the remote subscription was being stopped. |
+			// 重新核对身份：停止远程订阅期间可能有新的 Subscribe 装入了新的主题状态。
+			if cur := h.topics[sub.topic]; cur == st && (h.backend == nil || st.stopped) {
 				delete(h.topics, sub.topic)
 			}
 		}
