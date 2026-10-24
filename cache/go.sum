@@ -64,8 +64,8 @@ github.com/shibingli/ydx/json v0.1.12 h1:R3gry4+UXrKMmTNSkgvLiDgxRse9m4sX5d03eVN
 github.com/shibingli/ydx/json v0.1.12/go.mod h1:aAIQPJx/JqDHjNwgS8XEI5KxJ0QMJbkNGvr8IC2y6Ow=
 github.com/shibingli/ydx/log v0.1.9 h1:nlvRWNr20GrzvYgrwuW1bYNnzIl5a5Sp3q0Sm+5MDKQ=
 github.com/shibingli/ydx/log v0.1.9/go.mod h1:XufXjlTJigW0YKbZbdt2jXUFKh+rmoGBj8lm1YvyDA8=
-github.com/shibingli/ydx/nodeid v0.1.1 h1:pcM5HFw/nsyACYl2JAZ/BNSo8awLpyVHtiU+w/CEoc4=
-github.com/shibingli/ydx/nodeid v0.1.1/go.mod h1:B6po4MAdrvcfKR7xJGf9lhvJaTykdjISGHHDnJ29YBo=
+github.com/shibingli/ydx/nodeid v0.1.2 h1:puXIOxf4eURGPY2AMa3Pjp18d/Jqu/UiMICtlchE1qU=
+github.com/shibingli/ydx/nodeid v0.1.2/go.mod h1:B6po4MAdrvcfKR7xJGf9lhvJaTykdjISGHHDnJ29YBo=
 github.com/shibingli/ydx/sysinfo v0.1.4 h1:tskX01rpXsDkEmCCz+2s7FnSQqrQCY8SQUeWstPQhMk=
 github.com/shibingli/ydx/sysinfo v0.1.4/go.mod h1:31V/9KavYTLUNJwAsgCHuN6z2wvRpS20En5em99nmqE=
 github.com/spf13/afero v1.15.0 h1:b/YBCLWAJdFWJTN9cLhiXXcD7mzKn9Dm86dNnfyQw1I=
