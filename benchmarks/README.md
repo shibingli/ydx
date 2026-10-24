@@ -158,11 +158,11 @@ GOWORK=off go test ./... -run '^$' -bench . -benchmem -count=5 -benchtime=500ms 
 benchstat result.txt
 ```
 
-## 发布前用本地源码跑基准
+## 复现最终主表
 
-基准模块的 `go.mod` 按已发布标签引用 ydx 组件。若刚修改了组件源码、尚未打新标签，
-可在**两个仓库之外**临时创建 `go.work` 指向本地模块；`go.work` 与本地 `replace` 都
-不得提交。组件源码与对应子目录标签一致时，直接运行即可复现本文数字。
+基准模块的 `go.mod` 已锁定到本次发布的 ydx 子目录标签，`GOWORK=off` 即可直接复现本文
+数字，无需任何工作区。若刚修改了组件源码、尚未打新标签，可在**两个仓库之外**临时创建
+`go.work` 指向本地模块；`go.work` 与本地 `replace` 都不得提交。
 
 ## 目录约定
 

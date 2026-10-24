@@ -10,7 +10,7 @@
 
 | 实现 | 版本 | 说明 |
 |---|---|---|
-| ydx/websocket | 本仓源码（工作区） | 原生批量写 `WriteBatch`，可选 permessage-deflate |
+| ydx/websocket | v0.1.11 | 原生批量写 `WriteBatch`，可选 permessage-deflate |
 | `github.com/gorilla/websocket` | v1.5.3 | 最广泛使用的 WebSocket 库 |
 | `github.com/coder/websocket` | v1.8.15 | 前 nhooyr.io/websocket，context 优先 API |
 | `github.com/gobwas/ws` | v1.4.0 | 零分配编解码原语 |

@@ -10,7 +10,7 @@
 
 | 实现 | 版本 | 说明 |
 |---|---|---|
-| ydx/router | 本仓源码（工作区） | 基数树 + `Ctx` 对象池；静态路由走 `GETRaw` 无上下文快路径 |
+| ydx/router | v0.1.9 | 基数树 + `Ctx` 对象池；静态路由走 `GETRaw` 无上下文快路径 |
 | `net/http.ServeMux` | Go 1.27.3 | Go 1.22+ 方法/参数模式 |
 | `github.com/julienschmidt/httprouter` | v1.3.0 | 经典基数树路由 |
 | `github.com/go-chi/chi/v5` | v5.5.0 | 轻量组合式路由 |

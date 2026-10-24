@@ -10,7 +10,7 @@
 
 | 实现 | 版本 | 说明 |
 |---|---|---|
-| ydx/buffpool | 本仓源码（工作区） | 五个尺寸分级，`*byte` 存放 |
+| ydx/buffpool | v0.1.4 | 五个尺寸分级，`*byte` 存放 |
 | `sync.Pool` | Go 1.27.3 | 每个尺寸一个独立池，存放 `*[]byte` |
 | `github.com/valyala/bytebufferpool` | v1.0.0 | 单一全局池，存放 `*ByteBuffer` |
 
