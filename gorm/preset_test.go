@@ -58,7 +58,7 @@ func hasValue(values url.Values, key, want string) bool {
 	return false
 }
 
-// TestPresetDSNAddsEveryDefaultParam 逐参数断言三种驱动生成的连接串都含设计要求的每一个键与值。
+// TestPresetDSNAddsEveryDefaultParam 逐参数断言各驱动生成的连接串都含设计要求的每一个键与值。
 //
 // 断言分两层：整串相等证明顺序与形态稳定，逐参数（解码后）证明每个键与取值都在，
 // 缺一即失败——只比整串会让「少了一个键」与「多了别的佐料」混在一起难以定位。

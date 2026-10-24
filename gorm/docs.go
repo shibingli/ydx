@@ -19,8 +19,14 @@
 //     sensitive arguments; | 用 log 承载 GORM 的日志：慢查询只经 log.SlowQuery 打点，
 //     并由 ParamsFilter 屏蔽口令、Token 等敏感实参；
 //   - provide AutoMigrate / Health / Close lifecycle helpers with package-level
-//     sentinel errors. | 提供 AutoMigrate / Health / Close 等生命周期辅助函数，失败路径
-//     统一返回包级哨兵错误。
+//     sentinel errors; | 提供 AutoMigrate / Health / Close 等生命周期辅助函数，失败路径
+//     统一返回包级哨兵错误；
+//   - expose the dialect capability layer (DialectFor / Upsert / JSONExtract / ILike /
+//     LockClause / Concat / Random) so callers do not switch on the driver name for
+//     features whose support or spelling differs between MySQL, PostgreSQL, SQLite and
+//     Dameng DM8. | 提供方言能力层（DialectFor / Upsert / JSONExtract / ILike /
+//     LockClause / Concat / Random），让调用方不必为 MySQL、PostgreSQL、SQLite 与
+//     达梦 DM8 之间支持情况或拼写不同的能力自行按驱动名分支。
 //
 // It does not define models or business queries, does not manage resources beyond the
 // connection (caches, migration version tables), and does not decide retry or fallback
