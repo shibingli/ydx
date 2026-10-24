@@ -1,6 +1,6 @@
 module github.com/shibingli/ydx/i18n
 
-go 1.27.2
+go 1.27.3
 
 require (
 	github.com/shibingli/ydx/afs v0.1.4

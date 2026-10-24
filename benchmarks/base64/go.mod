@@ -1,6 +1,6 @@
 module github.com/shibingli/ydx/benchmarks/base64
 
-go 1.27.2
+go 1.27.3
 
 require (
 	github.com/cristalhq/base64 v0.1.2

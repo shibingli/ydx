@@ -1,6 +1,6 @@
 module github.com/shibingli/ydx/middleware/cors
 
-go 1.27.2
+go 1.27.3
 
 require (
 	github.com/shibingli/ydx/middleware/reqlog v0.1.7

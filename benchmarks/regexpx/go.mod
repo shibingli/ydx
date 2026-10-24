@@ -1,6 +1,6 @@
 module github.com/shibingli/ydx/benchmarks/regexpx
 
-go 1.27.2
+go 1.27.3
 
 require (
 	github.com/dlclark/regexp2 v1.12.0

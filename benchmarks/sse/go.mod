@@ -1,6 +1,6 @@
 module github.com/shibingli/ydx/benchmarks/sse
 
-go 1.27.2
+go 1.27.3
 
 require (
 	github.com/gin-contrib/sse v1.1.2

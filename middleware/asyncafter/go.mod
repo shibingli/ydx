@@ -1,6 +1,6 @@
 module github.com/shibingli/ydx/middleware/asyncafter
 
-go 1.27.2
+go 1.27.3
 
 require (
 	github.com/shibingli/ydx/errs v0.1.3

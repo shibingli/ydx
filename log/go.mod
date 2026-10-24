@@ -1,6 +1,6 @@
 module github.com/shibingli/ydx/log
 
-go 1.27.2
+go 1.27.3
 
 require (
 	github.com/shibingli/ydx/base64 v0.1.7

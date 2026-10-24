@@ -1,10 +1,12 @@
 module github.com/shibingli/ydx/benchmarks/jwt
 
-go 1.27.2
+go 1.27.3
 
 require (
+	github.com/cristalhq/jwt/v5 v5.4.0
 	github.com/go-jose/go-jose/v4 v4.1.6
 	github.com/golang-jwt/jwt/v5 v5.3.1
+	github.com/kataras/jwt v0.3.0
 	github.com/lestrrat-go/jwx/v4 v4.5.0
 	github.com/shibingli/ydx/errs v0.1.3
 	github.com/shibingli/ydx/jwt v0.1.8

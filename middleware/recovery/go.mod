@@ -1,6 +1,6 @@
 module github.com/shibingli/ydx/middleware/recovery
 
-go 1.27.2
+go 1.27.3
 
 require (
 	github.com/shibingli/ydx/json v0.1.10

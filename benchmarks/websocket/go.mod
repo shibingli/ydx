@@ -1,14 +1,18 @@
 module github.com/shibingli/ydx/benchmarks/websocket
 
-go 1.27.2
+go 1.27.3
 
 require (
 	github.com/coder/websocket v1.8.15
+	github.com/gobwas/ws v1.4.0
 	github.com/gorilla/websocket v1.5.3
+	github.com/lxzan/gws v1.10.2
 	github.com/shibingli/ydx/websocket v0.1.10
 )
 
 require (
+	github.com/gobwas/httphead v0.1.0 // indirect
+	github.com/gobwas/pool v0.2.1 // indirect
 	github.com/klauspost/compress v1.20.3 // indirect
 	github.com/shibingli/ydx/afs v0.1.4 // indirect
 	github.com/shibingli/ydx/base64 v0.1.9 // indirect
