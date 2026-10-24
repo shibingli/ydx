@@ -12,7 +12,7 @@ ydx 是 yd 全栈框架的可复用组件仓库；组件源码以本仓库为唯
 | 源码仓库 | https://github.com/shibingli/ydx |
 | 开源协议 | Apache-2.0（见 `LICENSE`） |
 | 主仓 | https://github.com/shibingli/yd |
-| Go 版本 | 1.27.2（每个模块 `go 1.27.2`） |
+| Go 版本 | 1.27.3（每个模块 `go 1.27.3`） |
 
 ## 2. 仓库结构与命名（强制）
 
@@ -35,7 +35,8 @@ ydx 是 yd 全栈框架的可复用组件仓库；组件源码以本仓库为唯
   `middleware/{accesslog,asyncafter,compress,cors,ratelimit,recovery,requestid,reqlog}`。
 - `openapi` 是独立模块：核心只接受 `openapi.Route` 并提供标准 `net/http` 处理器，
   **不得** import `ydx/router`；路由适配（`FromRouter` / `Handler`）只在 `openapi/ydrouter`。
-- 基准模块（11 个）：`benchmarks/{base64,buffpool,cache,json,jwt,log,middleware,render,router,sse,websocket}`。
+- 基准模块（15 个）：`benchmarks/{base64,buffpool,cache,compress,crypto,json,jwt,log,middleware,regexpx,render,router,sse,template,websocket}`。
+  `benchmarks/cache/compare` 是 `cache` 模块内的对比子包。yd 仓库不再保留基准，所有最终结果以本仓为准。
 - 守卫模块：`repotest`。
 
 ## 3. 依赖与版本（强制）

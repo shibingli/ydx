@@ -7,7 +7,7 @@
 
 - 源码仓库：<https://github.com/shibingli/ydx>
 - 开源协议：Apache-2.0（见 `LICENSE`）
-- Go 版本：1.27.2
+- Go 版本：1.27.3
 - 仓库根目录**不是** Go 模块，也没有 `go.work`；组件按子目录标签单独发布，例如
   `errs/v0.1.0`、`middleware/cors/v0.1.0`。根目录的 `docs.go` 只是文档锚点，不是
   可导入模块。
@@ -57,15 +57,19 @@
 |---|---|---|
 | `benchmarks/base64` | `encoding/base64`、`cristalhq/base64` | [base64](benchmarks/base64/README.md) |
 | `benchmarks/buffpool` | `sync.Pool`、`bytebufferpool` | [buffpool](benchmarks/buffpool/README.md) |
-| `benchmarks/cache` | `bigcache`、`freecache`、`ristretto`、`sync.Map`、`go-cache` | [cache](benchmarks/cache/README.md) |
-| `benchmarks/json` | `encoding/json`、`goccy/go-json`、`json-iterator`、`sonic`、`segmentio/encoding` | [json](benchmarks/json/README.md) |
-| `benchmarks/jwt` | `golang-jwt/jwt`、`jwx`、`go-jose` | [jwt](benchmarks/jwt/README.md) |
+| `benchmarks/cache` | `bigcache`、`freecache`、`ristretto`、`sync.Map`、`go-cache`、`theine`、`ttlcache`、`golang-lru` | [cache](benchmarks/cache/README.md) |
+| `benchmarks/compress` | 标准库 gzip、klauspost gzip/zstd、brotli、snappy、lz4 | [compress](benchmarks/compress/README.md) |
+| `benchmarks/crypto` | 标准库 SHA-256/AES-GCM/ChaCha20-Poly1305/ECDSA/Ed25519、维护版与旧版 gmsm | [crypto](benchmarks/crypto/README.md) |
+| `benchmarks/json` | `encoding/json`、`goccy/go-json`、`json-iterator`、`sonic`、`segmentio/encoding`、`go-json-experiment` | [json](benchmarks/json/README.md) |
+| `benchmarks/jwt` | `golang-jwt/jwt`、`jwx`、`go-jose`、`cristalhq/jwt`、`kataras/jwt` | [jwt](benchmarks/jwt/README.md) |
 | `benchmarks/log` | `zap`、`zerolog`、`slog`、`logrus` | [log](benchmarks/log/README.md) |
 | `benchmarks/middleware` | `rs/cors`、`chi`、`gzhttp`、`x/time/rate` | [middleware](benchmarks/middleware/README.md) |
+| `benchmarks/regexpx` | 标准库 `regexp`、`grafana/regexp`、`regexp2`、`go-re2` | [regexpx](benchmarks/regexpx/README.md) |
 | `benchmarks/render` | `html/template`、`text/template` | [render](benchmarks/render/README.md) |
-| `benchmarks/router` | `net/http.ServeMux`、`httprouter`、`chi`、`gin` | [router](benchmarks/router/README.md) |
+| `benchmarks/router` | `net/http.ServeMux`、`httprouter`、`chi`、`gin`、`echo`、`fiber` | [router](benchmarks/router/README.md) |
 | `benchmarks/sse` | `gin-contrib/sse`、手写 `fmt.Fprintf` 基线 | [sse](benchmarks/sse/README.md) |
-| `benchmarks/websocket` | `gorilla/websocket`、`coder/websocket` | [websocket](benchmarks/websocket/README.md) |
+| `benchmarks/template` | `html/template`、`text/template`、Jet、Pongo2、Liquid、Raymond、Mustache、quicktemplate、templ | [template](benchmarks/template/README.md) |
+| `benchmarks/websocket` | `gorilla/websocket`、`coder/websocket`、`gobwas/ws`、`lxzan/gws` | [websocket](benchmarks/websocket/README.md) |
 
 > 目录名、模块名与包名三者一致；每个带实现代码的包还必须有一个与包同名的 `<package>.go`
 > 主文件（例如 `cache/cache.go`，而不是 `cache/cachex.go`）。从 yd 迁移时需要同时更新
@@ -145,18 +149,18 @@ for d in benchmarks/*/; do
 done
 ```
 
-本机（Windows 11 / i9-10980HK / Go 1.27.2）的几组代表结果（`log` 一组为 Linux 参考
-主机第三轮，对应 `ydx/log v0.1.8`）：
+参考主机（Linux Zen 5，Ryzen AI MAX+ 395，`GOMAXPROCS=32`，Go 1.27.3，`-count=5
+-benchtime=500ms`）的几组代表结果（完整表格见 [benchmarks/README.md](benchmarks/README.md)）：
 
-- `json`：`Marshal` 64 对象 10.84 µs，标准库 31.15 µs；goccy 9.973 µs、sonic 8.262 µs。
-- `jwt`：HS256 `Parse`（同一规范 token）2.819 µs，golang-jwt 7.676 µs、jwx 11.20 µs、
-  go-jose 13.29 µs。
-- `log`：5 字段 JSON 136.3 ns，zap 441.8 ns、zerolog 157.5 ns、slog 562.4 ns。
-- `router`：静态路由 27.29 ns，gin 49.54 ns、httprouter 53.14 ns、`ServeMux` 323.5 ns。
-- `render`：带绑定渲染 635.3 ns，`html/template` 6.985 µs、`text/template` 4.437 µs。
+- `json`：`Marshal` 64 对象 2.59 µs，标准库 12.8 µs；goccy 4.23 µs、sonic 2.99 µs。
+- `jwt`：HS256 `Parse`（同一规范 token）782.6 ns，golang-jwt 3.170 µs、jwx 4.726 µs、
+  go-jose 5.846 µs。
+- `log`：5 字段 JSON 134.1 ns，zap 395.2 ns、zerolog 168.6 ns、slog 529.9 ns。
+- `router`：静态路由 8.40 ns，httprouter 12.86 ns、gin 33.17 ns、`ServeMux` 60.15 ns。
+- `render`：带绑定渲染 258.2 ns，`html/template` 3.473 µs、`text/template` 2.208 µs。
 
-这些数字只用于同机相对比较，不是跨硬件或跨轮次承诺；笔记本 CPU 的频率/温度会让
-同一份代码在不同轮次的绝对 ns/op 漂移数十个百分点。每个模块的完整表格、语义差异与
+这些数字只用于同机相对比较，不是跨硬件或跨轮次承诺；CPU 频率/温度会让同一份代码在
+不同轮次的绝对 ns/op 漂移数十个百分点。每个模块的完整表格、语义差异与
 复现命令见 [benchmarks/README.md](benchmarks/README.md)。对比库只出现在
 `benchmarks/*/go.mod`，不会进入产品模块。
 
@@ -173,8 +177,9 @@ go work init
 go work use ../yd ../ydx/errs ../ydx/router # 按需添加
 ```
 
-基准模块默认按 `v0.1.0` 标签解析 ydx 组件；组件源码与标签一致时无需工作区。上述
-临时 `go.work` 只用于本地联调，不得提交。
+基准模块按各组件**已发布的子目录标签**解析（例如 `json v0.1.10`、`middleware v0.1.10`）；
+组件源码与标签一致时无需工作区。发布本次修改前，最终主表用两个仓库之外的临时 `go.work`
+指向本地源码采集；该工作区只用于本地联调与基准，不得提交。
 
 ## 验证
 
