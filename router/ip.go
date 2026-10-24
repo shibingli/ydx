@@ -36,7 +36,8 @@ const maxForwardedBytes = 8 << 10
 // unconditionally and must not be used to make a security decision. | trusted 为空时该方法退化为对端
 // 地址，这是安全默认值。RealIP 仍可供自己终结代理的部署使用，但它无条件信任头部，不得用于安全判定。
 func (c *Ctx) ClientIP(trusted []netip.Prefix) string {
-	peer := remoteHost(c.Request.RemoteAddr)
+	r := c.Request
+	peer := remoteHost(r.RemoteAddr)
 	if len(trusted) == 0 {
 		return peer
 	}
@@ -48,7 +49,7 @@ func (c *Ctx) ClientIP(trusted []netip.Prefix) string {
 	// first line win. Join every line in wire order before parsing. | X-Forwarded-For 可能以多行
 	// 头部到达（代理会追加自己的一行）。Header.Get 只返回第一行，按它遍历既会漏掉跳数，又会
 	// 让客户端控制的第一行胜出。解析前按线上顺序拼接所有行。
-	if lines := c.Request.Header.Values("X-Forwarded-For"); len(lines) > 0 {
+	if lines := r.Header.Values("X-Forwarded-For"); len(lines) > 0 {
 		raw := strings.Join(lines, ",")
 		if raw == "" {
 			return peer
@@ -64,7 +65,7 @@ func (c *Ctx) ClientIP(trusted []netip.Prefix) string {
 		}
 		return hops[0].String()
 	}
-	if raw := strings.TrimSpace(c.Request.Header.Get("X-Real-Ip")); raw != "" {
+	if raw := strings.TrimSpace(r.Header.Get("X-Real-Ip")); raw != "" {
 		if addr, err := netip.ParseAddr(raw); err == nil {
 			return addr.Unmap().String()
 		}
@@ -80,8 +81,20 @@ func remoteHost(remoteAddr string) string {
 		return ""
 	}
 	host := remoteAddr
-	if h, _, err := net.SplitHostPort(remoteAddr); err == nil {
-		host = h
+	// Fast path: a single colon is the ordinary "IPv4-or-host:port" form, and no colon at all is
+	// a bare address. Only bracketed IPv6 and malformed values need net.SplitHostPort, which
+	// allocates. | 快速路径：单个冒号就是常见的「IPv4 或主机名:端口」形态，没有冒号则是裸地址。
+	// 只有带方括号的 IPv6 与畸形取值才需要会分配的 net.SplitHostPort。
+	if i := strings.IndexByte(remoteAddr, ':'); i > 0 {
+		if strings.IndexByte(remoteAddr[i+1:], ':') < 0 {
+			host = remoteAddr[:i]
+		} else if h, _, err := net.SplitHostPort(remoteAddr); err == nil {
+			host = h
+		}
+	} else if i == 0 {
+		if h, _, err := net.SplitHostPort(remoteAddr); err == nil {
+			host = h
+		}
 	}
 	// Only the IPv4-mapped form needs canonicalization; parsing every peer would allocate on the
 	// default (no trusted proxies) path for no benefit. | 只有 IPv4 映射形式需要归一；对默认

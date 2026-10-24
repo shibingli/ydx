@@ -168,15 +168,41 @@ func (w *Writer) WriteEvent(e Event) error {
 // WriteData writes an event carrying only the data field, with the default event type (message). | WriteData 以默认事件类型（message）写出一条仅含 data 字段的事件。
 //
 // It is equivalent to WriteEvent(Event{Data: []byte(s)}), except that it emits one `data: ` line even when s is empty. | 等价于 WriteEvent(Event{Data: []byte(s)})，但即使 s 为空也会输出一行 `data: `。
-// The string is appended straight into the assembly buffer, so no []byte(s) conversion is made. | 字符串直接追加进组装缓冲，因此不会产生 []byte(s) 转换。
+// Single-line payloads are written straight to an io.StringWriter destination; other shapes are
+// appended into the assembly buffer, so no []byte(s) conversion is ever made. | 单行载荷直接写入
+// io.StringWriter 目标；其它形态追加进组装缓冲，因此始终不会产生 []byte(s) 转换。
 func (w *Writer) WriteData(s string) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	if w.closed {
 		return nil
 	}
+	ms := retryMillis(0, w.options.Retry)
+	// The overwhelmingly common frame is one line with no retry field. When the destination
+	// exposes WriteString (net/http's response writer does), emit the three constant pieces
+	// around the payload directly: a 4 KiB payload then costs one SIMD newline scan and no
+	// frame-buffer copy at all. Multi-line frames and configured retry values keep the
+	// assembly path, which preserves the exact wire format. | 最常见的帧是单行且无 retry 字段。
+	// 当目标暴露 WriteString（net/http 的响应写入器就实现了它）时，直接把三段常量与载荷写出：
+	// 4 KiB 载荷只需一次 SIMD 换行扫描，完全不复制帧缓冲。多行帧与配置了 retry 的帧仍走组装
+	// 路径，以保持精确的线上格式。
+	if ms == 0 && strings.IndexByte(s, '\n') < 0 && strings.IndexByte(s, '\r') < 0 {
+		if sw, ok := w.w.(io.StringWriter); ok {
+			if _, err := sw.WriteString("data: "); err != nil {
+				return errs.Wrap(err, ErrWriteStream)
+			}
+			if _, err := sw.WriteString(s); err != nil {
+				return errs.Wrap(err, ErrWriteStream)
+			}
+			if _, err := sw.WriteString("\n\n"); err != nil {
+				return errs.Wrap(err, ErrWriteStream)
+			}
+			w.flusher.Flush()
+			return nil
+		}
+	}
 	buf := w.buf[:0]
-	if ms := retryMillis(0, w.options.Retry); ms > 0 {
+	if ms > 0 {
 		buf = append(buf, "retry: "...)
 		buf = strconv.AppendUint(buf, ms, 10)
 		buf = append(buf, '\n')

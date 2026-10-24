@@ -57,10 +57,11 @@ type rateLimitShard struct {
 
 // tokenBucket is a single client's bucket state. | tokenBucket 是单个客户端的桶状态。
 type tokenBucket struct {
-	last   time.Time
-	tokens float64
-	burst  float64 // capacity captured at creation | 创建时捕获的容量
-	rate   float64 // refill rate captured at creation | 创建时捕获的补充速率
+	last       time.Time
+	tokens     float64
+	burst      float64 // capacity captured at creation | 创建时捕获的容量
+	ratePerNs  float64 // tokens replenished per nanosecond | 每纳秒补充的令牌数
+	nsPerToken float64 // nanoseconds per token, precomputed to avoid division per request | 每令牌纳秒数，预计算以避免每请求除法
 }
 
 // NewMemoryStore builds a single-process store. A non-positive cleanup interval uses one minute.
@@ -82,6 +83,14 @@ func (s *MemoryStore) Allow(ctx context.Context, key string, rate float64, burst
 		return Decision{}, err
 	}
 	rate, burst = normalizeLimit(rate, burst)
+	return s.allowNormalized(key, rate, burst)
+}
+
+// allowNormalized is the hot path used by the middleware, which has already normalized the
+// options and does not need a cancellation check: a memory bucket never blocks, so there is no
+// waiting operation to cancel. | allowNormalized 是中间件使用的热路径。中间件已经归一化选项，
+// 且不需要取消检查：内存桶从不阻塞，没有可取消的等待操作。
+func (s *MemoryStore) allowNormalized(key string, rate float64, burst int) (Decision, error) {
 	mask := s.mask
 	if mask == 0 {
 		mask = rateLimitShards - 1
@@ -105,11 +114,21 @@ func (s *MemoryStore) Allow(ctx context.Context, key string, rate float64, burst
 
 	b, ok := shard.buckets[key]
 	if !ok {
-		b = &tokenBucket{tokens: float64(burst), burst: float64(burst), rate: rate, last: now}
+		b = &tokenBucket{
+			tokens:     float64(burst),
+			burst:      float64(burst),
+			ratePerNs:  rate / float64(time.Second),
+			nsPerToken: float64(time.Second) / rate,
+			last:       now,
+		}
 		shard.buckets[key] = b
 	}
-	if elapsed := now.Sub(b.last).Seconds(); elapsed > 0 {
-		b.tokens = math.Min(b.burst, b.tokens+elapsed*b.rate)
+	if elapsed := now.Sub(b.last); elapsed > 0 {
+		tokens := b.tokens + float64(elapsed)*b.ratePerNs
+		if tokens > b.burst {
+			tokens = b.burst
+		}
+		b.tokens = tokens
 		b.last = now
 	}
 	if b.tokens >= 1 {
@@ -117,10 +136,10 @@ func (s *MemoryStore) Allow(ctx context.Context, key string, rate float64, burst
 		return Decision{
 			Allowed:    true,
 			Remaining:  int(b.tokens),
-			ResetAfter: refillDuration(b.tokens, b.burst, b.rate),
+			ResetAfter: refillDuration(b.tokens, b.burst, b.nsPerToken),
 		}, nil
 	}
-	wait := durationFromSeconds((1 - b.tokens) / b.rate)
+	wait := time.Duration((1 - b.tokens) * b.nsPerToken)
 	if wait < time.Millisecond {
 		wait = time.Millisecond
 	}
@@ -145,18 +164,22 @@ func (s *MemoryStore) sweepLocked(shard *rateLimitShard) {
 			delete(shard.buckets, key)
 			continue
 		}
-		if elapsed := now.Sub(b.last).Seconds(); elapsed > 0 && b.tokens+elapsed*b.rate >= b.burst {
+		if elapsed := now.Sub(b.last); elapsed > 0 && b.tokens+float64(elapsed)*b.ratePerNs >= b.burst {
 			delete(shard.buckets, key)
 		}
 	}
 }
 
 // refillDuration is the time until a bucket with tokens is full again. | refillDuration 是桶从当前令牌数重新装满所需的时间。
-func refillDuration(tokens, burst, rate float64) time.Duration {
+func refillDuration(tokens, burst, nsPerToken float64) time.Duration {
 	if tokens >= burst {
 		return 0
 	}
-	return durationFromSeconds((burst - tokens) / rate)
+	ns := (burst - tokens) * nsPerToken
+	if ns >= float64(math.MaxInt64) {
+		return time.Duration(math.MaxInt64)
+	}
+	return time.Duration(ns)
 }
 
 // maxDurationSeconds is the largest number of seconds a time.Duration can hold. | maxDurationSeconds 是 time.Duration 能容纳的最大秒数。

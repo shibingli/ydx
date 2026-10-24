@@ -1,6 +1,7 @@
 package buffpool
 
 import (
+	"math/bits"
 	"sync"
 	"unsafe"
 )
@@ -58,32 +59,37 @@ func Put(p []byte) {
 	}
 	// A one-word interior pointer keeps the block alive without boxing a slice header.
 	// | 单字内部指针即可保活内存块，且无需装箱切片头。
-	pools[i].Put(&p[:tierSizes[i]][0])
+	pools[i].Put(unsafe.SliceData(p))
 }
 
 // classForSize returns the index of the smallest class holding at least n bytes,
 // or -1 when n exceeds MaxSize. | classForSize 返回容量不小于 n 的最小分级下标；
 // n 超过 MaxSize 时返回 -1。
 func classForSize(n int) int {
-	if n <= 0 {
+	// The classes are powers of two at 2^10, 2^12, 2^14, 2^16 and 2^18. bits.Len gives the
+	// exponent of the next power of two in one instruction; the class index is then a shift. |
+	// 分级是 2^10、2^12、2^14、2^16、2^18 的幂次。bits.Len 用一条指令给出下一个 2 的幂指数，
+	// 分级下标只是一次移位。
+	if n <= tierSizes[0] {
 		return 0
 	}
-	for i, size := range tierSizes {
-		if n <= size {
-			return i
-		}
+	if n > tierSizes[len(tierSizes)-1] {
+		return -1
 	}
-	return -1
+	return (bits.Len(uint(n-1)) - 9) >> 1
 }
 
 // classForCapacity returns the index of the class whose size equals capacity,
 // or -1 when no class matches. | classForCapacity 返回尺寸恰好等于 capacity 的分级
 // 下标；没有匹配时返回 -1。
 func classForCapacity(capacity int) int {
-	for i, size := range tierSizes {
-		if capacity == size {
-			return i
-		}
+	if capacity < tierSizes[0] || capacity > tierSizes[len(tierSizes)-1] ||
+		capacity&(capacity-1) != 0 {
+		return -1
 	}
-	return -1
+	exponent := bits.TrailingZeros(uint(capacity))
+	if exponent&1 != 0 {
+		return -1
+	}
+	return (exponent - 10) >> 1
 }

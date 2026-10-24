@@ -47,6 +47,32 @@ func TestCORSWildcardSubdomain(t *testing.T) {
 	}
 }
 
+// TestCORSOriginParsingFastPath pins the observable parsing rules of the allocation-free
+// origin splitter used on the hot path. | TestCORSOriginParsingFastPath 固化热路径上零分配来源
+// 拆分器的可观察解析规则。
+func TestCORSOriginParsingFastPath(t *testing.T) {
+	r := corsRouter(CORSOptions{AllowOrigins: []string{"HTTPS://APP.EXAMPLE.COM"}})
+	cases := []struct {
+		name   string
+		origin string
+		want   string
+	}{
+		{"大小写不敏感", "https://app.example.com", "https://app.example.com"},
+		{"来源可带端口", "https://app.example.com:8443", ""},
+		{"来源可带路径但仍按主机匹配", "https://app.example.com/path?q=1", "https://app.example.com/path?q=1"},
+		{"IPv6 主机", "https://[::1]:8443", ""},
+		{"用户信息不属于主机", "https://user@app.example.com", "https://user@app.example.com"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := doReq(r, http.MethodGet, "/api", map[string]string{"Origin": tc.origin}, "")
+			if got := rec.Header().Get("Access-Control-Allow-Origin"); got != tc.want {
+				t.Fatalf("Allow-Origin = %q, 期望 %q", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestCORSCredentialsNeverStar(t *testing.T) {
 	t.Run("通配来源加凭证时回显具体来源", func(t *testing.T) {
 		r := corsRouter(CORSOptions{AllowOrigins: []string{"*"}, AllowCredentials: true})

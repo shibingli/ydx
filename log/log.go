@@ -213,16 +213,36 @@ func (l *Logger) SetLevel(lvl Level) {
 }
 
 // Debug logs at DebugLevel; it returns immediately when below the threshold. | Debug 以 DebugLevel 记录日志；低于阈值时立即返回。
-func (l *Logger) Debug(msg string, fields ...Field) { l.log(DebugLevel, msg, fields) }
+func (l *Logger) Debug(msg string, fields ...Field) {
+	if DebugLevel < Level(l.core.level.Load()) {
+		return
+	}
+	l.log(DebugLevel, msg, fields)
+}
 
 // Info logs at InfoLevel; it returns immediately when below the threshold. | Info 以 InfoLevel 记录日志；低于阈值时立即返回。
-func (l *Logger) Info(msg string, fields ...Field) { l.log(InfoLevel, msg, fields) }
+func (l *Logger) Info(msg string, fields ...Field) {
+	if InfoLevel < Level(l.core.level.Load()) {
+		return
+	}
+	l.log(InfoLevel, msg, fields)
+}
 
 // Warn logs at WarnLevel; it returns immediately when below the threshold. | Warn 以 WarnLevel 记录日志；低于阈值时立即返回。
-func (l *Logger) Warn(msg string, fields ...Field) { l.log(WarnLevel, msg, fields) }
+func (l *Logger) Warn(msg string, fields ...Field) {
+	if WarnLevel < Level(l.core.level.Load()) {
+		return
+	}
+	l.log(WarnLevel, msg, fields)
+}
 
 // Error logs at ErrorLevel; it returns immediately when below the threshold. | Error 以 ErrorLevel 记录日志；低于阈值时立即返回。
-func (l *Logger) Error(msg string, fields ...Field) { l.log(ErrorLevel, msg, fields) }
+func (l *Logger) Error(msg string, fields ...Field) {
+	if ErrorLevel < Level(l.core.level.Load()) {
+		return
+	}
+	l.log(ErrorLevel, msg, fields)
+}
 
 // Fatal logs at FatalLevel, flushes pending records and then calls Options.ExitFunc (os.Exit(1) by default). | Fatal 以 FatalLevel 记录日志，先冲刷待写记录，随后调用 Options.ExitFunc（默认 os.Exit(1)）。
 //

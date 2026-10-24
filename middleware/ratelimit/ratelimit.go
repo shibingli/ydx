@@ -1,6 +1,8 @@
 package ratelimit
 
 import (
+	"context"
+	"io"
 	"math"
 	"net/http"
 	"net/netip"
@@ -62,6 +64,7 @@ type RateLimitOptions struct {
 // rateLimiter holds the normalized options shared by every request. | rateLimiter 持有每个请求共享的归一化选项。
 type rateLimiter struct {
 	store      LimitStore
+	allow      func(context.Context, string, float64, int) (Decision, error)
 	keyFunc    KeyFunc
 	logger     *log.Logger
 	limitValue string
@@ -83,7 +86,7 @@ func newRateLimiter(o RateLimitOptions) *rateLimiter {
 	if keyFunc == nil {
 		keyFunc = KeyRemoteIP(o.TrustedProxies)
 	}
-	return &rateLimiter{
+	lim := &rateLimiter{
 		rate:       rate,
 		burst:      burst,
 		store:      store,
@@ -94,6 +97,16 @@ func newRateLimiter(o RateLimitOptions) *rateLimiter {
 		limitValue: strconv.Itoa(burst),
 		failClosed: o.FailClosed,
 	}
+	lim.allow = store.Allow
+	if ms, ok := store.(*MemoryStore); ok {
+		// The middleware normalized the options once at wiring time and a memory bucket never
+		// blocks, so the hot path skips per-request normalization and cancellation checks. |
+		// 中间件在装配期已归一化选项，且内存桶从不阻塞，因此热路径跳过每请求的归一化与取消检查。
+		lim.allow = func(_ context.Context, key string, rate float64, burst int) (Decision, error) {
+			return ms.allowNormalized(key, rate, burst)
+		}
+	}
+	return lim
 }
 
 // joinNumbers renders a and b into one string and returns the two halves. | joinNumbers 把 a 与 b
@@ -112,11 +125,19 @@ func joinNumbers(a, b int64) (string, string) {
 	return s[:split], s[split+1:]
 }
 
-// writeRateLimitHeaders writes the three X-RateLimit-* headers shared by every outcome. | writeRateLimitHeaders 写出所有结果共有的三个 X-RateLimit-* 头部。
-func writeRateLimitHeaders(h http.Header, limitValue string, dec Decision) {
-	remaining, reset := joinNumbers(int64(dec.Remaining), int64(math.Ceil(dec.ResetAfter.Seconds())))
+// writeHeaders writes the three X-RateLimit-* headers shared by every outcome. | writeHeaders
+// 写出所有结果共有的三个 X-RateLimit-* 头部。
+func (lim *rateLimiter) writeHeaders(h http.Header, dec Decision) {
+	remaining := int64(dec.Remaining)
+	reset := int64(0)
+	if d := dec.ResetAfter; d > 0 {
+		// Integer ceiling in seconds; math.Ceil(d.Seconds()) would go through float64 on every
+		// request. | 以整数秒向上取整；math.Ceil(d.Seconds()) 会在每个请求上走一遍 float64。
+		reset = int64((d + time.Second - 1) / time.Second)
+	}
+	remainingValue, resetValue := joinNumbers(remaining, reset)
 	vals := new([3]string)
-	vals[0], vals[1], vals[2] = limitValue, remaining, reset
+	vals[0], vals[1], vals[2] = lim.limitValue, remainingValue, resetValue
 	h[rateLimitHeaderKeys[0]] = vals[0:1:1]
 	h[rateLimitHeaderKeys[1]] = vals[1:2:2]
 	h[rateLimitHeaderKeys[2]] = vals[2:3:3]
@@ -137,7 +158,7 @@ func RateLimit(o RateLimitOptions) router.Middleware {
 		if lim.keyPrefix != "" {
 			key = lim.keyPrefix + key
 		}
-		dec, err := lim.store.Allow(c.Request.Context(), key, lim.rate, lim.burst)
+		dec, err := lim.allow(c.Request.Context(), key, lim.rate, lim.burst)
 		if err != nil {
 			lim.logStoreFailure(c, key, err)
 			if lim.failClosed {
@@ -149,7 +170,7 @@ func RateLimit(o RateLimitOptions) router.Middleware {
 			return
 		}
 
-		writeRateLimitHeaders(c.Writer.Header(), lim.limitValue, dec)
+		lim.writeHeaders(c.Writer.Header(), dec)
 		if dec.Allowed {
 			c.Next()
 			return
@@ -187,15 +208,95 @@ func (lim *rateLimiter) logStoreFailure(c *router.Ctx, key string, err error) {
 	)
 }
 
+// logStoreFailureHTTP is the native net/http form of logStoreFailure. | logStoreFailureHTTP 是
+// logStoreFailure 的原生 net/http 形态。
+func (lim *rateLimiter) logStoreFailureHTTP(r *http.Request, key string, err error) {
+	if lim.logger == nil {
+		return
+	}
+	lim.logger.Warn("rate limit store failed | 限流存储故障",
+		log.Str("key", key),
+		log.Str("path", r.URL.Path),
+		log.Str("remote_ip", clientIP(r, lim.trusted)),
+		log.Str("error", err.Error()),
+	)
+}
+
+// clientIP resolves the native request's client address through the router's trusted-proxy model.
+// | clientIP 通过路由的可信代理模型解析原生请求的客户端地址。
+//
+// ClientIP reads only Ctx.Request, so a request-only context on the caller's stack applies the
+// exact same trusted-proxy rules as the router path; escape analysis keeps it off the heap, which
+// is cheaper than a pooled context's Get/Put pair. | ClientIP 只读取 Ctx.Request，因此只携带请求
+// 的栈上上下文会应用与路由路径完全相同的可信代理规则；逃逸分析让它留在栈上，比池化上下文的
+// Get/Put 更便宜。
+func clientIP(r *http.Request, trusted []netip.Prefix) string {
+	var c router.Ctx
+	c.Request = r
+	return c.ClientIP(trusted)
+}
+
+// writePlain writes a plain-text status response on the native path. | writePlain 在原生路径上
+// 写出纯文本状态响应。
+func writePlain(w http.ResponseWriter, status int, msg string) {
+	w.Header()["Content-Type"] = []string{"text/plain; charset=utf-8"}
+	w.WriteHeader(status)
+	_, _ = io.WriteString(w, msg)
+}
+
 // Middleware returns the native net/http form of RateLimit. | Middleware 返回 RateLimit 的
 // 原生 net/http 形态。
 //
-// It wraps next with router.Adapt, so the native path shares the exact rate-limit
-// implementation and only pays the adapter cost once per request. | 它用 router.Adapt 包裹
-// next，因此原生路径共享同一份限流实现，每请求只支付一次适配开销。
+// With the default IP key the native path executes the limiter directly, avoiding the router
+// adapter on every request. A custom KeyFunc operates on *router.Ctx, so that configuration
+// keeps using the shared router adapter. | 使用默认 IP 键时，原生路径直接执行限流器，省去每请求的
+// 路由适配器；自定义 KeyFunc 依赖 *router.Ctx，因此该配置继续复用路由适配器。
 func Middleware(o RateLimitOptions) func(http.Handler) http.Handler {
-	mw := RateLimit(o)
+	if o.KeyFunc != nil {
+		mw := RateLimit(o)
+		return func(next http.Handler) http.Handler {
+			return router.Adapt(next, mw)
+		}
+	}
+	lim := newRateLimiter(o)
 	return func(next http.Handler) http.Handler {
-		return router.Adapt(next, mw)
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			key := clientIP(r, lim.trusted)
+			if lim.keyPrefix != "" {
+				key = lim.keyPrefix + key
+			}
+			dec, err := lim.allow(r.Context(), key, lim.rate, lim.burst)
+			if err != nil {
+				lim.logStoreFailureHTTP(r, key, err)
+				if lim.failClosed {
+					writePlain(w, http.StatusServiceUnavailable, "rate limit store unavailable | 限流存储不可用")
+					return
+				}
+				next.ServeHTTP(w, r)
+				return
+			}
+
+			lim.writeHeaders(w.Header(), dec)
+			if dec.Allowed {
+				next.ServeHTTP(w, r)
+				return
+			}
+
+			wait := int(math.Ceil(dec.RetryAfter.Seconds()))
+			if wait < 1 {
+				wait = 1
+			}
+			w.Header()[rateLimitRetryKey] = []string{strconv.Itoa(wait)}
+			if lim.logger != nil {
+				lim.logger.Warn("rate limit exceeded | 触发限流",
+					log.Str("key", key),
+					log.Int("limit", lim.burst),
+					log.Float64("rate", lim.rate),
+					log.Str("path", r.URL.Path),
+					log.Str("remote_ip", clientIP(r, lim.trusted)),
+				)
+			}
+			writePlain(w, http.StatusTooManyRequests, "too many requests | 请求过于频繁")
+		})
 	}
 }

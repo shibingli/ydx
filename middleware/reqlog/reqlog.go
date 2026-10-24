@@ -63,5 +63,5 @@ func AppendVary(h http.Header, value string) {
 			}
 		}
 	}
-	h.Add("Vary", value)
+	h["Vary"] = append(h["Vary"], value)
 }

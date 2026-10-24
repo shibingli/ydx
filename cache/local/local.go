@@ -244,7 +244,10 @@ func (c *Cache) Set(key string, value []byte, ttl time.Duration) error {
 	}
 	var expireAt int64
 	if ttl > 0 {
-		expireAt = time.Now().Add(ttl).UnixNano()
+		// Duration is already nanoseconds, so the epoch-nanosecond deadline is one addition;
+		// building an intermediate time.Time would only add work. | Duration 本身就是纳秒，
+		// 因此纪元纳秒截止时间只需一次加法；构造中间的 time.Time 只会多做事。
+		expireAt = time.Now().UnixNano() + int64(ttl)
 	}
 	hash := hashString(c.seed, key)
 	return c.shardForHash(hash).set(hash, key, value, expireAt)

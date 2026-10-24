@@ -5,7 +5,6 @@ import (
 	"errors"
 	"io"
 	"mime/multipart"
-	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -205,11 +204,7 @@ func (c *Ctx) RealIP() string {
 	if xri := c.Request.Header.Get("X-Real-Ip"); xri != "" {
 		return strings.TrimSpace(xri)
 	}
-	host, _, err := net.SplitHostPort(c.Request.RemoteAddr)
-	if err != nil {
-		return c.Request.RemoteAddr
-	}
-	return host
+	return remoteHost(c.Request.RemoteAddr)
 }
 
 // Param returns the path parameter with the given name, captured from the routing path. When the
