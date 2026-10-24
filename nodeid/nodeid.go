@@ -207,6 +207,12 @@ func Resolve(ctx context.Context, o Options) (Identity, error) {
 	if !o.Create {
 		return Identity{}, errs.Detail(ErrNoIdentity, "file %[1]q does not exist and Create is false | 文件 %[1]q 不存在且未允许创建", file)
 	}
+	// Refuse before writing: a durable identity must not leave a stray file on a
+	// temporary filesystem that will disappear with the container. | 在写入前拒绝：持久身份
+	// 不能把一个会随容器消失的临时文件留在临时文件系统上。
+	if o.RequirePersistent && !IsDurable(file) {
+		return Identity{}, errs.Detail(ErrNeedsProvisioning, "file %[1]q is not durable | 文件 %[1]q 不是持久存储", file)
+	}
 
 	source, seed, seeded := platformSeedFunc(env, o.AllowSharedSeed)
 	generated := newRandomID()

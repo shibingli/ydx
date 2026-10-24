@@ -209,6 +209,9 @@ func TestResolveRequiresDurableStorage(t *testing.T) {
 	if _, err := Resolve(context.Background(), Options{File: file, Create: true, RequirePersistent: true}); !errors.Is(err, ErrNeedsProvisioning) {
 		t.Fatalf("Resolve error = %v, want ErrNeedsProvisioning", err)
 	}
+	if _, err := os.Stat(file); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("rejected identity still wrote a file: %v", err)
+	}
 }
 
 // TestResolveUsesClaimer proves a claimer can reject a cloned identity. |
