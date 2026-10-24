@@ -27,7 +27,7 @@
 | `github.com/shibingli/ydx/log` | `log` | 零拷贝结构化日志 |
 | `github.com/shibingli/ydx/regexpx` | `regexpx` | 自研正则引擎（线性 NFA + 回溯 + SIMD 预过滤） |
 | `github.com/shibingli/ydx/router` | `router` | 基数树路由 + 原生 http 适配 |
-| `github.com/shibingli/ydx/gorm` | `gorm` | GORM 装配、连接串预置与自动建库（MySQL / PostgreSQL / SQLite / 达梦 DM8） |
+| `github.com/shibingli/ydx/gorm` | `gorm` | GORM 装配、连接串预置与自动建库（MySQL / PostgreSQL / SQLite / 达梦 DM8）；四方言用法见 [yd 的方言指南](https://github.com/shibingli/yd/blob/main/docs/gorm-dialects.md) |
 | `github.com/shibingli/ydx/redis` | `redis` | go-redis 通用客户端、探活与读透缓存 |
 | `github.com/shibingli/ydx/asynq` | `asynq` | 基于 asynq 的异步任务层（注册表、客户端、服务端） |
 | `github.com/shibingli/ydx/cache` | `cache` | 二级缓存（L1 环形缓存 + Redis） |

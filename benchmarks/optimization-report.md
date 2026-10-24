@@ -180,7 +180,9 @@ Ubuntu 26.04.1，Linux 7.0.0-38，Go 1.27.3 linux/amd64，CPU governor `performa
 6. **WebSocket 单条写**：批量 4×/16×/64× 分别比 coder 快 1.9×/3.8×/5.2×；单条
    （1×）用例 ydx 1.93 µs ≈ gorilla 1.91 µs，coder 为 1.11 µs。该用例的服务端只读不写，
    写入方会跟随对端读取节奏；coder 的公开写路径（bufio + 单次 flush）与 ydx 同构，
-   差距无法归因到批量 API，因此只把单条行作为参考，不作为批量能力结论。
+   差距无法归因到批量 API，因此只把单条行作为参考，不作为批量能力结论。并发回显的
+   普通变体 2.28 µs 略慢于 gws 2.02 µs，而文档推荐的 readahead 变体 1.43 µs 领先全部实现；
+   两者是显式选择的两种读模式，不是同一实现的两次读数。
 7. **加密**：SM3/SM4 没有 SHA-NI/AES-NI 对应指令，纯 Go 的 SM3/SM4 无法在绝对吞吐上
    超过硬件加速的 SHA-256/AES-GCM；同一算法族内（维护版 gmsm vs 旧版 tjfoc）ydx 使用的
    后端全面领先，SM2 签名/验签也快于 ECDSA P-256。
@@ -190,6 +192,11 @@ Ubuntu 26.04.1，Linux 7.0.0-38，Go 1.27.3 linux/amd64，CPU governor `performa
 9. **cloudwego/base64x**：其 JIT 加载器在 Go 1.27.3 上触发
    `fatal error: invalid function symbol table`，会让整个基准进程中止；默认套件已移除，
    只在历史口径中保留说明，不伪造其数字。
+10. **路由纯查找（并行聚合）**：`BenchmarkRouters/static` 在 32 并发下取聚合吞吐，
+    yd 1.09 ns/op 对 httprouter 0.92 ns/op（0.17 ns/op，约 18%）。这是亚纳秒量级：
+    每个 goroutine 的单次调用实际约 35 ns，差异来自树节点的缓存足迹而不是算法；
+    同一路由器的端到端静态路由（`RouterCompare/static`）yd 8.11 ns 对 httprouter 12.22 ns，
+    领先 34%。该行保留在原始数据里，但不作为可行动的低效点。
 
 ## 5. 架构补充（arm64 与旧指令集 x86_64）
 
@@ -245,3 +252,65 @@ Ubuntu 26.04.1，Linux 7.0.0-38，Go 1.27.3 linux/amd64，CPU governor `performa
   - 架构差异：arm64 的 32 B Base64 解码仍比 cristalhq 慢约 14%（31.93 vs 28.03 ns），
     amd64 与旧 x86_64 均领先。
   报告中均保留原始数字与解释，不以删除对比项或放宽语义的方式制造“全胜”。
+
+## 8. 发布标签复测（GOWORK=off）
+
+正文 §2–§5 的数字来自开发期的临时 `go.work`。发布之后，14 个基准模块的 `go.mod` 全部锁定到
+当时最新的子目录标签，并在参考主机上以 `GOWORK=off` 重跑一遍，确认报告引用的是**发布物**
+而不是工作区：
+
+```bash
+cd ydx/benchmarks/<模块>
+GOWORK=off go test ./... -run '^$' -bench . -benchmem -count=5 -benchtime=500ms
+```
+
+| 模块 | 锁定标签 |
+|---|---|
+| base64 | `base64/v0.1.10` |
+| buffpool | `buffpool/v0.1.4` |
+| cache | `cache/v0.1.9` |
+| compress | 无 ydx 依赖（对比库由基准模块自行锁定） |
+| crypto | `guomi/v0.1.0`（`emmansun/gmsm v0.45.1`） |
+| json | `json/v0.1.12` |
+| jwt | `jwt/v0.1.9` |
+| log | `log/v0.1.9` |
+| middleware | `middleware/v0.1.11` 及 8 个插件 |
+| regexpx | `regexpx/v0.1.6` |
+| router | `router/v0.1.9` |
+| sse | `sse/v0.1.9` |
+| template | `render/v0.1.9` |
+| websocket | `websocket/v0.1.11` |
+
+复测结论与正文一致：
+
+- 14 个模块没有出现新的同口径落后项；分析脚本标记的行全部落在 §4 已解释的语义、硬件或
+  时钟差异内（sync.Map/ristretto/go-cache/golang-lru 的引用语义、裸 `sync.Pool`、
+  SM3 对 SHA-256 硬件指令、带 TTL 的缓存写、限流的全局 limiter 变体、日志禁用路径、
+  路由的亚纳秒并行聚合差异，以及 WebSocket 的单条写与并发普通变体）。
+- 头部数字（发布标签，Zen 5，5 轮中位数）：
+  - CORS 36.8 ns（rs/cors 53.7）、恢复 7.86 ns（chi 8.42）、请求 ID 171.8 ns（chi 253.7）；
+    限流 135.1 ns 与按 IP 分桶并补头的同口径变体（138.7 ns）持平；16 KiB gzip 5.27 µs
+    对 gzhttp 5.20 µs（噪声内）。
+  - 日志 5 字段 135.7 ns（zerolog 166.3）、8 字段 204.7 ns（229.7）、并发 8.16 ns（10.59）。
+  - JSON n=1 Unmarshal 217.0 ns（go-json 241.6）、n=1000 158.3 µs（181.2）；
+    n=1 Marshal 98.8 ns（119.5）。
+  - JWT HS256 签发 1.28 µs（类型化结构体 0.58 µs，jwx 2.18）、验签 0.80 µs（golang-jwt 3.43）。
+  - Base64 32 B 编码 5.6 ns（cristalhq 9.6 / stdlib 14.4）、解码 10.4 ns（13.0 / 19.8）；
+    1 MiB 编码 54.3 GB/s、解码 27.1 GB/s。
+  - Cache Set 49.2 ns（freecache 78.3）；防御性副本 Get 45.2 ns（bigcache 43.4，噪声内）；
+    零拷贝 View 38.1 ns；带 TTL 的 Set 99.7 ns（freecache 82.4，见 §4.3）。
+  - Regexpx `FindAll/email` 95.9 µs（go-re2 737.8）、`FindAll/date` 112.5 µs（711.2）；
+    `MatchString` 与 `FindStringIndex` 的全部模式第一。
+  - Router 静态 8.11 ns（httprouter 12.22）、参数 19.62 ns（27.00）、通配 19.40 ns（24.59）、
+    未命中 26.12 ns（gin 29.07）；纯查找的并行聚合见 §4.10。
+  - SSE 32 B 14.06 ns（gin-contrib 47.59）、4 KiB 63.53 ns（gin 1440）；完整事件 151.3 ns（188.6）。
+  - Template 100 行物化 18.8 µs（quicktemplate 21.45）；绑定渲染微基准约 265 ns。
+  - WebSocket 32 B 回显与 4×/16×/64× 批量写全部第一（64×1 KiB 14.13 µs，coder 73.29）；
+    并发 readahead 回显 1.43 µs 领先全部实现。
+- 采样修正：首次发布标签采样期间，base64 的解码基准（所有实现，含 stdlib）整体慢约 2×，
+  而同一轮编码与其余模块正常；用同一命令单独复测后解码回到 10.4 ns。据此判断首次采样
+  受到了上一轮被中止运行残留负载的干扰，本节与 README 采用复测值；编码基准在两次采样中
+  一致（32 B 5.6 ns）。
+- 依赖同步：复测之后对全部 ydx 模块执行了一次依赖声明刷新（只有 `go.mod`/`go.sum`，
+  源码未变），并发布为下一个补丁标签（如 `json/v0.1.13`、`router/v0.1.10`、
+  `websocket/v0.1.12` 等）；基准测得的源码与这些标签逐字节一致。
