@@ -358,12 +358,10 @@ func validAlphabetText(n int) []byte {
 }
 
 // TestRawRejectsPaddingOver16Chars covers raw decoding of padded input with 16 or more
-// characters. On AVX-512 VBMI2 hosts the standard alphabet takes the 16..64-character tail
-// loop of decodeSIMD512VBMI2, which must hand any '=' to the scalar path instead of decoding
-// it as a data character; raw alphabets must reject it outright.
-// | TestRawRejectsPaddingOver16Chars 覆盖 16 字符及以上带填充输入的 raw 解码。在支持
-// AVX-512 VBMI2 的主机上，标准字母表会进入 decodeSIMD512VBMI2 的 16..64 字符尾部循环，
-// 该循环必须把 '=' 交给标量路径，而不是当成数据字符解码；raw 字母表必须直接拒绝。
+// characters. Every block SIMD decoder must hand any '=' to the scalar path instead of
+// decoding it as a data character; raw alphabets must reject it outright.
+// | TestRawRejectsPaddingOver16Chars 覆盖 16 字符及以上带填充输入的 raw 解码。所有块 SIMD
+// 解码器都必须把 '=' 交给标量路径，而不是当成数据字符解码；raw 字母表必须直接拒绝。
 func TestRawRejectsPaddingOver16Chars(t *testing.T) {
 	variants := []struct {
 		name string

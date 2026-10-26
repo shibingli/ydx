@@ -3,12 +3,15 @@
 // Backend routing (determined by build tags, fully transparent to callers): | 后端分流（由构建标签决定，对调用方完全透明）：
 //
 //   - without the b64x_std tag: the self-developed codec on every architecture. amd64
-//     selects hand-written AVX2, AVX-512BW, AVX-512 VBMI/VBMI2 kernels at runtime by
-//     instruction-set level (VBMI2 > VBMI > AVX-512BW > AVX2 > scalar); arm64 uses
-//     hand-written NEON; other architectures use the pure-Go scalar kernel. No GOEXPERIMENT
-//     is required. Backend() returns "yd-native"; |
-//     未指定 b64x_std 标签：所有架构使用自研编解码器。amd64 按指令集级别（VBMI2 > VBMI >
-//     AVX-512BW > AVX2 > 标量）在运行时选择手写 AVX2、AVX-512BW、AVX-512 VBMI/VBMI2 内核；
+//     selects hand-written AVX2, AVX-512BW and AVX-512 VBMI kernels at runtime by
+//     instruction-set level: encoding uses VBMI > AVX-512BW > AVX2 > scalar, decoding uses
+//     AVX-512BW > AVX2 > scalar (the VBMI2 decode kernel was retired because its VPCOMPRESSB
+//     pack is slower than the AVX-512BW pack on current hardware); arm64 uses hand-written
+//     NEON; other architectures use the pure-Go scalar kernel. No GOEXPERIMENT is required.
+//     Backend() returns "yd-native"; |
+//     未指定 b64x_std 标签：所有架构使用自研编解码器。amd64 按指令集级别在运行时选择手写
+//     AVX2、AVX-512BW、AVX-512 VBMI 内核：编码按 VBMI > AVX-512BW > AVX2 > 标量，解码按
+//     AVX-512BW > AVX2 > 标量（VBMI2 解码内核的 VPCOMPRESSB 打包在当前硬件上更慢，已退役）；
 //     arm64 使用手写 NEON；其他架构使用纯 Go 标量内核。不需要 GOEXPERIMENT。Backend() 返回
 //     "yd-native"；
 //   - with the b64x_std tag: the standard library encoding/base64, Backend() returns

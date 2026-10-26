@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"unsafe"
 
 	cwb64 "github.com/cloudwego/base64x"
 	crb64 "github.com/cristalhq/base64"
@@ -257,6 +258,51 @@ func TestCodecFixtures(t *testing.T) {
 						peer.name, size, c.name, n, err)
 				}
 			}
+		}
+	}
+}
+
+// unalignedSource returns a slice of size bytes whose address is 4 mod 64.
+// Four-byte shifts keep the Base64 group boundary intact, which is exactly the
+// case the aligned decode prologue can repair; 1-3 byte shifts cannot. |
+// unalignedSource 返回地址为 4 mod 64 的 size 字节切片。4 字节偏移保持 Base64
+// 分组边界，正是对齐解码前导可以修复的情形；1–3 字节偏移无法修复。
+func unalignedSource(size int) []byte {
+	buf := make([]byte, size+64)
+	base := uintptr(unsafe.Pointer(&buf[0]))
+	off := (4 - int(base&63) + 64) & 63
+	return buf[off : off+size]
+}
+
+// BenchmarkFrameworkDecodeUnaligned measures the same decode with the encoded
+// source starting four bytes into its allocation. | BenchmarkFrameworkDecodeUnaligned
+// 测量编码源从分配内第 4 个字节开始时的同一解码。
+func BenchmarkFrameworkDecodeUnaligned(b *testing.B) {
+	for _, size := range []int{1 << 20} {
+		src := payload(size)
+		for _, c := range codecs {
+			c := c
+			if !benchSelected(c.name) {
+				continue
+			}
+			b.Run(fmt.Sprintf("%d/%s", size, c.name), func(b *testing.B) {
+				encoded := unalignedSource(c.encLen(len(src)))
+				c.encode(encoded, src)
+				dst := make([]byte, c.decLen(len(encoded)))
+				if n, err := c.decode(dst, encoded); err != nil || n != len(src) {
+					b.Fatalf("%s decode fixture: n=%d err=%v", c.name, n, err)
+				}
+				b.SetBytes(int64(len(src)))
+				b.ReportAllocs()
+				b.ResetTimer()
+				for i := 0; i < b.N; i++ {
+					n, err := c.decode(dst, encoded)
+					if err != nil {
+						b.Fatalf("%s decode: %v", c.name, err)
+					}
+					benchSink += n
+				}
+			})
 		}
 	}
 }

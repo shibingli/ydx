@@ -107,12 +107,26 @@ type decodeChunk struct {
 // destination window. It reports ok=false when the backend's DecodedLen
 // reserves a per-call margin, so the per-chunk upper bounds do not fit the
 // total destination; the caller must then decode serially instead of slicing
-// past dst. | planDecodeChunks 把 src 分给多个协程并计算每个分块的目标窗口。
+// past dst. The returned slice is freshly allocated, which keeps the exported
+// helper convenient for tests; the hot path uses planDecodeChunksInto with a
+// stack array. | planDecodeChunks 把 src 分给多个协程并计算每个分块的目标窗口。
 // 后端 DecodedLen 每次调用都预留余量、使各分块上界之和超出总目标时返回 ok=false，
-// 调用方必须改走串行解码，避免越过 dst 切片。
+// 调用方必须改走串行解码，避免越过 dst 切片。返回的切片为新分配，便于测试使用；
+// 热路径使用 planDecodeChunksInto 配合栈上数组。
 func planDecodeChunks(src, dst []byte, workers int, decodedLen func(int) int) ([]decodeChunk, bool) {
 	if len(src) == 0 {
 		return nil, true
+	}
+	return planDecodeChunksInto(make([]decodeChunk, 0, workers), src, dst, workers, decodedLen)
+}
+
+// planDecodeChunksInto is planDecodeChunks with caller-provided storage. It
+// never grows chunks beyond its capacity in the production path (workers is at
+// most maxParallelWorkers). | planDecodeChunksInto 是带调用方存储的
+// planDecodeChunks。生产路径中 workers 不超过 maxParallelWorkers，因此不会超出容量。
+func planDecodeChunksInto(chunks []decodeChunk, src, dst []byte, workers int, decodedLen func(int) int) ([]decodeChunk, bool) {
+	if len(src) == 0 {
+		return chunks[:0], true
 	}
 	groups := (len(src) + 3) / 4
 	if workers < 1 {
@@ -122,7 +136,7 @@ func planDecodeChunks(src, dst []byte, workers int, decodedLen func(int) int) ([
 		workers = groups
 	}
 	per := (groups + workers - 1) / workers
-	chunks := make([]decodeChunk, 0, workers)
+	chunks = chunks[:0]
 	out := 0
 	for off := 0; off < len(src); {
 		n := per * 4
@@ -160,7 +174,14 @@ func (e *Encoding) decodeParallel(dst, src []byte, workers int) (int, error) {
 	if workers <= 1 {
 		return e.Decode(dst, src)
 	}
-	chunks, ok := planDecodeChunks(src, dst, workers, e.DecodedLen)
+	var chunkBuf [maxParallelWorkers]decodeChunk
+	var chunks []decodeChunk
+	var ok bool
+	if workers <= maxParallelWorkers {
+		chunks, ok = planDecodeChunksInto(chunkBuf[:0], src, dst, workers, e.DecodedLen)
+	} else {
+		chunks, ok = planDecodeChunks(src, dst, workers, e.DecodedLen)
+	}
 	if !ok {
 		// A backend whose DecodedLen adds a per-call margin cannot be split
 		// without overrunning dst; serial decoding keeps the exact semantics.
@@ -172,11 +193,24 @@ func (e *Encoding) decodeParallel(dst, src []byte, workers int) (int, error) {
 		n        int
 		fallback bool
 	}
-	results := make(chan result, workers+1)
+	// The production path caps workers at maxParallelWorkers, so both the chunk
+	// plan and the result slots stay in fixed-size arrays and the per-call
+	// allocation count stays flat. Explicit larger worker counts (tests) fall
+	// back to heap slices. | 生产路径把 workers 限制在 maxParallelWorkers，
+	// 分块计划与结果槽都放在固定数组中，单次调用的分配次数保持稳定；测试显式传入
+	// 更大 workers 时退回堆切片。
+	var resultBuf [maxParallelWorkers]result
+	var results []result
+	if len(chunks) <= maxParallelWorkers {
+		results = resultBuf[:len(chunks)]
+	} else {
+		results = make([]result, len(chunks))
+	}
 	var wg sync.WaitGroup
-	for _, c := range chunks {
+	for i := range chunks {
+		c := chunks[i]
 		wg.Add(1)
-		go func(src, dst []byte) {
+		go func(i int, src, dst []byte) {
 			defer wg.Done()
 			// CR/LF is checked inside the worker so the scan runs in parallel with
 			// the other chunks; line-wrapped input must be decoded serially because
@@ -184,19 +218,20 @@ func (e *Encoding) decodeParallel(dst, src []byte, workers int) (int, error) {
 			// 检查，使扫描与其它分块并行；含换行的输入必须串行解码，因为换行不与
 			// 4 字符组对齐。
 			if bytes.IndexByte(src, '\r') >= 0 || bytes.IndexByte(src, '\n') >= 0 {
-				results <- result{fallback: true}
+				results[i].fallback = true
 				return
 			}
 			got, err := e.Decode(dst, src)
-			results <- result{n: got, err: err}
-		}(c.src, c.dst)
+			results[i].n = got
+			results[i].err = err
+		}(i, c.src, c.dst)
 	}
 	wg.Wait()
-	close(results)
 	total := 0
 	var firstErr error
 	fallback := false
-	for r := range results {
+	for i := range results {
+		r := results[i]
 		if r.fallback {
 			fallback = true
 			continue

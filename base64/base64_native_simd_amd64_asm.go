@@ -39,7 +39,7 @@ type avx2DecConsts struct {
 	loMask, hiMask        [32]byte
 	mul, pack             [32]byte
 	dwordIdx              [32]byte
-	eqChar, eqVal        [32]byte
+	eqChar, eqVal         [32]byte
 }
 
 var (

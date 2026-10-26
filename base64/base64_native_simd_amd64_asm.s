@@ -55,15 +55,14 @@ noHead:
 	VMOVDQU 256(SI), Y7
 	VMOVDQU 0(SI), Y8
 
-loop:
 	MOVQ DI, R9
-	SUBQ R8, R9
-	CMPQ R9, $28
-	JL done
-	MOVQ BX, R9
-	SUBQ R11, R9
-	CMPQ R9, $32
-	JL done
+	SUBQ $28, R9
+	CMPQ R8, R9
+	JG done
+loop:
+	// Encode has already checked len(dst) >= EncodedLen(len(src)); the loop
+	// therefore never runs past the destination. | Encode 已检查
+	// len(dst) >= EncodedLen(len(src))，循环不会写越目标。
 
 	LEAQ -4(CX)(R8*1), R10
 	VMOVDQU (R10), Y9
@@ -83,7 +82,8 @@ loop:
 
 	ADDQ $24, R8
 	ADDQ $32, R11
-	JMP loop
+	CMPQ R8, R9
+	JLE loop
 done:
 	MOVQ R8, ret+56(FP)
 	RET
@@ -211,15 +211,14 @@ TEXT ·decodeAVX2Asm(SB), NOSPLIT, $0-64
 	VMOVDQU 288(SI), Y1
 	VPXOR Y2, Y2, Y2
 
-decLoop:
 	MOVQ DI, R9
-	SUBQ R8, R9
-	CMPQ R9, $32
-	JL decDone
-	MOVQ BX, R9
-	SUBQ R11, R9
-	CMPQ R9, $24
-	JL decDone
+	SUBQ $32, R9
+	CMPQ R8, R9
+	JG decDone
+decLoop:
+	// Decode has already checked len(dst) >= DecodedLen(len(src)); the loop
+	// therefore never runs past the destination. | Decode 已检查
+	// len(dst) >= DecodedLen(len(src))，循环不会写越目标。
 
 	LEAQ (CX)(R8*1), R10
 	VMOVDQU (R10), Y11
@@ -250,7 +249,8 @@ decLoop:
 
 	ADDQ $32, R8
 	ADDQ $24, R11
-	JMP decLoop
+	CMPQ R8, R9
+	JLE decLoop
 decDone:
 	MOVQ R8, ret+56(FP)
 	RET

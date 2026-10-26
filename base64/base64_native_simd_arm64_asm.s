@@ -20,13 +20,13 @@ lutReady:
 	VLD1 (R8), [V0.B16, V1.B16, V2.B16, V3.B16]
 	VMOVI $63, V4.B16
 
-loop:
 	SUB $48, R3, R9
 	CMP $0, R9
 	BLT done
-	SUB $64, R1, R9
-	CMP $0, R9
-	BLT done
+loop:
+	// Encode has already checked len(dst) >= EncodedLen(len(src)); the loop
+	// therefore never runs past the destination. | Encode 已检查
+	// len(dst) >= EncodedLen(len(src))，循环不会写越目标。
 
 	VLD3 (R2), [V5.B16, V6.B16, V7.B16]
 	VUSHR $2, V5.B16, V8.B16
@@ -46,9 +46,9 @@ loop:
 	ADD $48, R2, R2
 	ADD $64, R0, R0
 	SUB $48, R3, R3
-	SUB $64, R1, R1
 	ADD $48, R5, R5
-	B loop
+	CMP $48, R3
+	BGE loop
 done:
 	MOVD R5, ret+56(FP)
 	RET
@@ -68,13 +68,13 @@ TEXT ·decodeNEONAsm(SB), NOSPLIT, $0-72
 	VLD1 (R7), [V12.B16, V13.B16, V14.B16, V15.B16]
 	VMOVI $63, V7.B16
 
-decLoop:
 	SUB $64, R3, R9
 	CMP $0, R9
 	BLT decDone
-	SUB $48, R1, R9
-	CMP $0, R9
-	BLT decDone
+decLoop:
+	// Decode has already checked len(dst) >= DecodedLen(len(src)); the loop
+	// therefore never runs past the destination. | Decode 已检查
+	// len(dst) >= DecodedLen(len(src))，循环不会写越目标。
 
 	VLD4 (R2), [V0.B16, V1.B16, V2.B16, V3.B16]
 	VUQSUB V7.B16, V0.B16, V4.B16
@@ -120,9 +120,9 @@ decLoop:
 	ADD $64, R2, R2
 	ADD $48, R0, R0
 	SUB $64, R3, R3
-	SUB $48, R1, R1
 	ADD $64, R5, R5
-	B decLoop
+	CMP $64, R3
+	BGE decLoop
 decDone:
 	MOVD R5, ret+64(FP)
 	RET

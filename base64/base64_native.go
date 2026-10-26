@@ -95,8 +95,8 @@ var (
 	// 需要标量路径校验输入时返回 (0, 0)。
 	simdDecode32 func(dst, src []byte, mode uint64) (int, int)
 	// Instruction-set levels select the widest available kernel independently of init order:
-	// 1 = AVX2/NEON, 3 = AVX-512 VBMI, 4 = AVX-512 VBMI2. | 指令集级别与 init 顺序无关地选择最宽
-	// 可用内核：1 = AVX2/NEON，3 = AVX-512 VBMI，4 = AVX-512 VBMI2。
+	// 1 = AVX2/NEON, 2 = AVX-512BW, 3 = AVX-512 VBMI (encoding only). | 指令集级别与 init
+	// 顺序无关地选择最宽可用内核：1 = AVX2/NEON，2 = AVX-512BW，3 = AVX-512 VBMI（仅编码）。
 	simdEncodeLevel int
 	simdDecodeLevel int
 )
@@ -249,6 +249,50 @@ const simdEncodeMin = 64
 // 44–60 字符标量更快，64 字符起 SIMD 领先。
 const simdDecodeMin = 64
 
+// decodeAlignedMin is the smallest input for which the scalar prologue that
+// aligns the source pointer is worth its cost. | decodeAlignedMin 是源地址对齐
+// 前导值得付出其成本的最小输入。
+const decodeAlignedMin = 4096
+
+// decodeAlignedPrefix decodes complete 4-character groups until src is 64-byte
+// aligned. A 4-character group is indivisible, so alignment is possible only
+// when the source pointer is itself 4-byte aligned; other offsets fall back to
+// the ordinary SIMD path. The prefix is validated with the same quad LUT as
+// the scalar loop, so padding, CR/LF and invalid bytes also fall back. On
+// success it returns the consumed input and produced output. | decodeAlignedPrefix
+// 解码完整的 4 字符组，直到 src 达到 64 字节对齐。4 字符组不可拆分，因此只有源指针
+// 本身按 4 字节对齐时才能对齐；其它偏移回退普通 SIMD 路径。前导沿用标量循环的
+// quad LUT 校验，填充、CR/LF 与非法字节都会回退。成功时返回消耗的输入与产生的输出。
+func (e *Encoding) decodeAlignedPrefix(dst, src []byte) (i, out int, ok bool) {
+	if len(src) < decodeAlignedMin {
+		return 0, 0, false
+	}
+	addr := uintptr(unsafe.Pointer(&src[0]))
+	off := int(addr & 63)
+	if off == 0 || off&3 != 0 {
+		// Already aligned, or a 4-byte group cannot reach a 64-byte boundary.
+		// | 已经对齐，或 4 字符组无法到达 64 字节边界。
+		return 0, 0, false
+	}
+	n := 64 - off
+	if n+simdDecodeMin > len(src) {
+		return 0, 0, false
+	}
+	quad := e.quad
+	for j := 0; j < n; j += 4 {
+		s := src[j : j+4]
+		r := quad[0][s[0]] | quad[1][s[1]] | quad[2][s[2]] | quad[3][s[3]]
+		if r&decodeInvalidBit != 0 {
+			return 0, 0, false
+		}
+		dst[out] = byte(r >> 16)
+		dst[out+1] = byte(r >> 8)
+		dst[out+2] = byte(r)
+		out += 3
+	}
+	return n, out, true
+}
+
 // Encode writes the encoding of src into dst. It writes nothing when dst is too short. | Encode 把 src 编码写入 dst；dst 过短时不写入任何内容。
 func (e *Encoding) Encode(dst, src []byte) {
 	if len(dst) < e.EncodedLen(len(src)) {
@@ -257,7 +301,7 @@ func (e *Encoding) Encode(dst, src []byte) {
 	// Short inputs stay scalar: the SIMD dispatch and per-group vector setup cost more
 	// than the table lookups they replace. | 短输入保持标量：SIMD 分派与每组向量初始化的
 	// 成本高于它们替代的查表。
-	if simdEncode32 != nil && e.simd != 0 && len(src) == 32 {
+	if len(src) == 32 && simdEncode32 != nil && e.simd != 0 {
 		var mode uint64
 		if e.simd == 2 {
 			mode |= 1
@@ -270,15 +314,15 @@ func (e *Encoding) Encode(dst, src []byte) {
 			return
 		}
 	}
-	if simdEncode != nil && e.simd != 0 && len(src) >= simdEncodeMin {
+	if len(src) >= simdEncodeMin && simdEncode != nil && e.simd != 0 {
 		n, out := simdEncode(dst, src, e.simd == 2, !e.raw, e.pad)
-		src = src[n:]
-		dst = dst[out:]
-		// A kernel that consumed the whole input must not pay for a no-op scalar call. |
-		// 已消费全部输入的内核不应再为标量空调用付出开销。
-		if len(src) == 0 {
+		// A kernel that consumed the whole input must not pay for its scalar tail. |
+		// 已消费全部输入的内核不应再为标量尾部付出开销。
+		if n == len(src) {
 			return
 		}
+		src = src[n:]
+		dst = dst[out:]
 	}
 	e.encodeScalar(dst, src)
 }
@@ -332,7 +376,7 @@ func (e *Encoding) Decode(dst, src []byte) (int, error) {
 		return 0, ErrShortBuffer
 	}
 	out, i := 0, 0
-	if simdDecode32 != nil && e.simd != 0 && len(src) >= 32 && len(src) < simdDecodeMin {
+	if len(src) >= 32 && len(src) < simdDecodeMin && simdDecode32 != nil && e.simd != 0 {
 		var mode uint64
 		if e.simd == 2 {
 			mode = 1
@@ -348,8 +392,23 @@ func (e *Encoding) Decode(dst, src []byte) (int, error) {
 	// Every block SIMD decoder handles at least 64 characters; shorter inputs skip the indirect
 	// call and its immediate no-op return. | 所有块 SIMD 解码器至少处理 64 个字符，更短的输入跳过
 	// 间接调用及其立即空返回。
-	if simdDecode != nil && e.simd != 0 && len(src) >= simdDecodeMin {
-		i, out = simdDecode(dst, src, e.simd == 2, e.raw)
+	if len(src) >= simdDecodeMin && simdDecode != nil && e.simd != 0 {
+		// Align the source before the block kernel: unaligned 32/64-byte loads
+		// cross cache lines on every iteration, while a short scalar prologue
+		// costs almost nothing on a large input. | 在块内核之前对齐源地址：
+		// 未对齐的 32/64 字节加载会在每轮跨缓存行，而大输入上的短标量前导几乎无成本。
+		if ai, ao, ok := e.decodeAlignedPrefix(dst, src); ok {
+			i, out = ai, ao
+		}
+		n, produced := simdDecode(dst[out:], src[i:], e.simd == 2, e.raw)
+		i += n
+		out += produced
+		// A kernel that consumed the whole input has already validated it, so
+		// the scalar tail loop would only repeat empty work. | 已消费全部输入的
+		// 内核已完成校验，标量尾部循环只会重复空工作。
+		if i == len(src) {
+			return out, nil
+		}
 	}
 	quad := e.quad
 	for i+16 <= len(src) {

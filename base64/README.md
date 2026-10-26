@@ -23,8 +23,9 @@
 
 ## 特性
 
-- **运行时指令集分流**：amd64 按 `VBMI2 > VBMI > AVX-512BW > AVX2 > 标量` 选择手写内核；
-  arm64 使用手写 NEON；其它架构使用纯 Go 标量内核。不需要 `GOEXPERIMENT=simd`。
+- **运行时指令集分流**：amd64 编码按 `VBMI > AVX-512BW > AVX2 > 标量`、解码按
+  `AVX-512BW > AVX2 > 标量` 选择手写内核；arm64 使用手写 NEON；其它架构使用纯 Go
+  标量内核。不需要 `GOEXPERIMENT=simd`。
 - **零拷贝 append**：`AppendEncode` / `AppendDecode` 在目标缓冲容量充足时复用底层数组，
   不产生新的分配；`DecodeString` 只分配结果本身。
 - **错误可判定**：目标缓冲过短返回 `ErrShortBuffer` 而不是越界 panic；非法数据可用
@@ -69,28 +70,31 @@ func main() {
 ## 性能指标
 
 基准模块：[`benchmarks/base64`](../benchmarks/base64/README.md)。参考环境为 AMD Ryzen
-AI MAX+ 395（Zen 5，AVX-512 VBMI/VBMI2，`GOMAXPROCS=32`）、Go 1.27.3、Linux，
-`-count=3~5`、`-benchtime=500ms` 中位数。上方 Linux 主表采集于 v0.1.9；cloudwego
-同机对照见本节末尾，使用当前 go.mod 固定的 v0.1.11，来自另一台 Windows 开发机，
-不能与上表跨机比较。
+AI MAX+ 395（Zen 5，AVX-512 VBMI，`GOMAXPROCS=32`）、Go 1.27.3、Linux；1 KiB/64 KiB 行取
+同进程 `BenchmarkEncode`/`BenchmarkDecode`（`-count=10`、`-benchtime=500ms`），32 B/1 MiB
+行取按实现独立进程的 `BenchmarkFrameworkEncode`/`BenchmarkFrameworkDecode`（`-count=10`、
+`-benchtime=500ms`），均为中位数。
 
-| 场景 | ydx/base64 | cristalhq/base64 | `encoding/base64` |
-|---|---:|---:|---:|
-| `Encode` 32 B | **5.58 ns** | 9.57 ns | 14.38 ns |
-| `Decode` 32 B | **10.47 ns** | 12.93 ns | 19.92 ns |
-| `Encode` 1 KiB | **23.4 ns** | 200 ns | 470 ns |
-| `Decode` 1 KiB | **42.1 ns** | 274 ns | 455 ns |
-| `Encode` 64 KiB | **1.03 µs** | 12.8 µs | 29.9 µs |
-| `Decode` 64 KiB | **2.34 µs** | 17.4 µs | 28.6 µs |
-| `Encode` 1 MiB | **55.5 GB/s** | 5.05 GB/s | 2.39 GB/s |
-| `Decode` 1 MiB | **27.1 GB/s** | 3.73 GB/s | 2.28 GB/s |
+| 场景 | ydx/base64 | cloudwego/base64x | cristalhq/base64 | `encoding/base64` |
+|---|---:|---:|---:|---:|
+| `Encode` 32 B | **5.83 ns** | 7.51 ns | 9.59 ns | 15.04 ns |
+| `Decode` 32 B | **10.40 ns** | 11.58 ns | 12.77 ns | 19.35 ns |
+| `Encode` 1 KiB | **19.94 ns** | 42.40 ns | 200.10 ns | 472.15 ns |
+| `Decode` 1 KiB | **30.52 ns** | 59.00 ns | 274.90 ns | 453.95 ns |
+| `Encode` 64 KiB | **1.027 µs** | 2.536 µs | 12.917 µs | 29.879 µs |
+| `Decode` 64 KiB | **1.590 µs** | 3.178 µs | 17.459 µs | 28.317 µs |
+| `Encode` 1 MiB | **56.3 GB/s** | 25.6 GB/s | 5.04 GB/s | 2.19 GB/s |
+| `Decode` 1 MiB | **41.4 GB/s** | 20.4 GB/s | 3.73 GB/s | 2.30 GB/s |
 
-- 块路径（1 KiB / 64 KiB）领先 cristalhq 约 6.5–12.5 倍，领先标准库约 11–29 倍。
-- 16 B 短路径领先 cristalhq 约 1%–14%，其中 `EncodeToString` 16 B 的 1% 已在噪声边界。
+- 对 cloudwego/base64x：1 KiB 编码/解码领先约 2.1×/1.9×，64 KiB 约 2.5×/2.0×，
+  1 MiB 约 2.2×/2.0×。
+- 对 cristalhq/base64：1 KiB/64 KiB 块路径领先约 9.0–12.6×；对 `encoding/base64`
+  领先约 14.9–29.1×。
+- 32 B 短路径领先 cloudwego 约 29%/11%，领先 cristalhq 约 64%/23%。
 - `DecodeString` / `EncodeToString` 均只有结果分配；`AppendEncode` / `AppendDecode`
   在容量充足时零分配。
-- arm64 上 NEON 块内核同样领先两个对照实现；短输入走标量 SWAR 路径，不额外引入
-  NEON 短块开销。
+- arm64 Neoverse-N2 上 1 KiB 编码/解码为 134.5 ns/281.3 ns，领先 cloudwego 约
+  5.9×/2.9×；1 MiB 解码 269.7 µs，领先约 3.0×。完整数据见基准 README。
 
 ### cloudwego/base64x 同机对照（Windows 开发机）
 
@@ -99,17 +103,20 @@ AI MAX+ 395（Zen 5，AVX-512 VBMI/VBMI2，`GOMAXPROCS=32`）、Go 1.27.3、Linu
 主机，不能跨表比较绝对 ns/op。完整表（含字符串入口与并行场景）见
 [`benchmarks/base64`](../benchmarks/base64/README.md)。
 
-| 场景 | ydx/base64 | cloudwego/base64x |
-|---|---:|---:|
-| `Encode` 32 B | **17.29 ns** | 19.21 ns |
-| `Encode` 1 KiB | 114.7 ns | 110.7 ns |
-| `Encode` 1 MiB | 110.24 µs | **103.91 µs** |
-| `Decode` 32 B | **27.95 ns** | 35.34 ns |
-| `Decode` 1 KiB | 167.9 ns | 169.7 ns |
-| `Decode` 1 MiB | 161.09 µs | **151.58 µs** |
+| 场景 | ydx/base64 | cloudwego/base64x | cristalhq/base64 | `encoding/base64` |
+|---|---:|---:|---:|---:|
+| `Encode` 32 B | **14.78 ns** | 16.96 ns | 22.35 ns | 32.46 ns |
+| `Encode` 1 KiB | **93.56 ns** | 111.00 ns | 419.10 ns | 874.30 ns |
+| `Encode` 64 KiB | **5.167 µs** | 5.364 µs | 26.672 µs | 56.104 µs |
+| `Encode` 1 MiB | **88.07 µs** | 89.22 µs | 511.93 µs | 899.25 µs |
+| `Decode` 32 B | **22.46 ns** | 28.27 ns | 27.29 ns | 43.80 ns |
+| `Decode` 1 KiB | **142.90 ns** | 151.60 ns | 576.00 ns | 981.90 ns |
+| `Decode` 64 KiB | 7.671 µs | **7.579 µs** | 40.841 µs | 61.998 µs |
+| `Decode` 1 MiB | **123.77 µs** | 125.87 µs | 585.85 µs | 986.37 µs |
 
-- 短输入（32 B）ydx 领先；1 KiB 基本持平；1 MiB 块路径 cloudwego 领先约 6%，差距处于
-  同一量级。
+- 短输入（32 B）ydx 领先约 15%（编码）与 26%（解码）。
+- 1 KiB/64 KiB/1 MiB：除 64 KiB 解码 cloudwego 领先约 1.2%（噪声边界）外，ydx 在其余
+  项略优或持平，差距均在 5% 以内。
 - cloudwego v0.1.7 的 JIT 加载器依赖 `sonic/loader`；上游请求的 v0.5.1 在 Go 1.27.3 上
   会中止进程，基准模块显式固定为 v0.5.2。
 - 正确性由 `TestCodecFixtures` / `TestCodecsAgree` 覆盖：四种实现输出逐字节一致，

@@ -47,9 +47,10 @@ README 与 [optimization-report.md](optimization-report.md)。
 
 | 模块 | 场景 | ydx | 对比实现 |
 |---|---|---:|---:|
-| base64 | `Encode` 32 B | 5.58 ns | cristalhq 9.57 ns / stdlib 14.38 ns |
-| base64 | `Decode` 32 B | 10.47 ns | cristalhq 12.93 ns / stdlib 19.92 ns |
-| base64 | `Encode` 1 MiB | 55.5 GB/s | cristalhq 5.05 GB/s / stdlib 2.39 GB/s |
+| base64 | `Encode` 32 B | 5.83 ns | cloudwego 7.51 ns / cristalhq 9.59 ns / stdlib 15.04 ns |
+| base64 | `Decode` 32 B | 10.40 ns | cloudwego 11.58 ns / cristalhq 12.77 ns / stdlib 19.35 ns |
+| base64 | `Encode` 1 MiB | 56.3 GB/s | cloudwego 25.6 GB/s / cristalhq 5.04 GB/s / stdlib 2.19 GB/s |
+| base64 | `Decode` 1 MiB | 41.4 GB/s | cloudwego 20.4 GB/s / cristalhq 3.73 GB/s / stdlib 2.30 GB/s |
 | buffpool | 4 KiB `Get`/`Put` | 9.94 ns | `sync.Pool` 7.23 ns / bytebufferpool 9.49 ns |
 | cache | L1 `Get` 命中（防御性副本） | 45.1 ns | ristretto 35.7 ns / `sync.Map` 13.4 ns |
 | cache | L1 `GetAppend` / `View`（零拷贝） | 38.3 / 36.6 ns | ristretto 35.7 ns |
@@ -77,8 +78,9 @@ README 与 [optimization-report.md](optimization-report.md)。
 | websocket | 32 B 回显往返 | **4.07 µs** | gorilla 4.26 µs / gobwas 4.34 µs / coder 5.59 µs |
 | websocket | 64×1 KiB 批量写 | **14.06 µs** | coder 73.7 µs / gorilla 124.3 µs |
 
-> 说明：`base64` 的 cloudwego/base64x 对照在 Windows 开发机上单独采集（见
-> [base64/README.md](base64/README.md)），未并入本表；其绝对数字不与 Linux 主表混比。
+> 说明：`base64` 的 cloudwego/base64x 对照已并入上表（Linux Zen 5，与 ydx 同一轮采集）；
+> [base64/README.md](base64/README.md) 另给出 Windows AVX2 的 cloudwego 同机对照，两台
+> 主机的绝对数字不可跨机比较。
 > `cache` 的 `sync.Map`/ristretto/go-cache/golang-lru 返回缓存内引用，`ydx` 的
 > `Get` 返回副本；带 TTL 的读写还要支付本机约 43 ns 的 `time.Now()`；`buffpool` 的
 > `sync.Pool` 基线为每个尺寸预建一个池，不含尺寸分级；`middleware` 的限流对比另给出
