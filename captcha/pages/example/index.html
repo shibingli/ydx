@@ -1,0 +1,165 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="auto">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>ydx captcha example | 验证码示例</title>
+  <link rel="stylesheet" href="../assets/yd-captcha.css">
+  <style>
+    :root {
+      color-scheme: light;
+      --page-bg: #eef3fb;
+      --page-ink: #172033;
+      --page-surface: #ffffff;
+      --page-border: #d8dee9;
+      --page-muted: #5f6b7f;
+    }
+    :root[data-theme="dark"] {
+      color-scheme: dark;
+      --page-bg: #0d1118;
+      --page-ink: #eef3fb;
+      --page-surface: #161b24;
+      --page-border: #354153;
+      --page-muted: #a7b2c5;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root[data-theme="auto"] {
+        color-scheme: dark;
+        --page-bg: #0d1118;
+        --page-ink: #eef3fb;
+        --page-surface: #161b24;
+        --page-border: #354153;
+        --page-muted: #a7b2c5;
+      }
+    }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      background: var(--page-bg);
+      color: var(--page-ink);
+      transition: background-color 160ms ease, color 160ms ease;
+    }
+    main { width: min(460px, 92vw); }
+    .bar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+    h1 { margin: 0; font: 600 18px/1.3 system-ui, sans-serif; }
+    .controls { display: flex; flex-wrap: wrap; gap: 8px; }
+    select, button {
+      min-height: 34px;
+      padding: 6px 10px;
+      border: 1px solid var(--page-border);
+      border-radius: 8px;
+      background: var(--page-surface);
+      color: var(--page-ink);
+      font: inherit;
+    }
+    button { cursor: pointer; }
+    .sr-only {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      padding: 0;
+      margin: -1px;
+      overflow: hidden;
+      clip: rect(0, 0, 0, 0);
+      white-space: nowrap;
+      border: 0;
+    }
+    pre {
+      overflow: auto;
+      margin: 14px 0 0;
+      padding: 12px;
+      border-radius: 10px;
+      background: var(--page-surface);
+      border: 1px solid var(--page-border);
+      color: var(--page-muted);
+      font-size: 12px;
+      white-space: pre-wrap;
+      word-break: break-all;
+    }
+  </style>
+</head>
+<body>
+<main>
+  <div class="bar">
+    <h1>ydx captcha</h1>
+    <div class="controls">
+      <label><span class="sr-only">Locale</span>
+        <select id="locale" aria-label="Language | 语言"></select>
+      </label>
+      <label><span class="sr-only">Theme</span>
+        <select id="theme" aria-label="Theme | 主题">
+          <option value="auto">跟随系统 | Auto</option>
+          <option value="light">明亮 | Light</option>
+          <option value="dark">暗色 | Dark</option>
+        </select>
+      </label>
+    </div>
+  </div>
+  <div id="captcha"></div>
+  <pre id="result">等待验证… | Waiting…</pre>
+</main>
+<script src="../assets/yd-captcha.js"></script>
+<script>
+  (function () {
+    var result = document.getElementById('result');
+    var localeSelect = document.getElementById('locale');
+    var themeSelect = document.getElementById('theme');
+    var params = new URLSearchParams(location.search);
+    var endpoint = params.get('endpoint') || '/captcha';
+    var savedTheme = YdCaptcha._normalizeTheme(localStorage.getItem('yd-captcha-theme') || 'auto');
+    var savedLocale = YdCaptcha._normalizeLocale(localStorage.getItem('yd-captcha-locale') || navigator.language || 'zh-CN');
+    themeSelect.value = savedTheme;
+    document.documentElement.lang = savedLocale;
+
+    for (var i = 0; i < YdCaptcha.locales.length; i++) {
+      var option = document.createElement('option');
+      option.value = YdCaptcha.locales[i];
+      option.textContent = YdCaptcha.locales[i];
+      localeSelect.appendChild(option);
+    }
+
+    function applyTheme(theme) {
+      theme = YdCaptcha._normalizeTheme(theme);
+      document.documentElement.setAttribute('data-theme', theme);
+      themeSelect.value = theme;
+      localStorage.setItem('yd-captcha-theme', theme);
+      widget.setTheme(theme);
+    }
+
+    function applyLocale(locale) {
+      locale = YdCaptcha._normalizeLocale(locale);
+      document.documentElement.lang = locale;
+      localeSelect.value = locale;
+      localStorage.setItem('yd-captcha-locale', locale);
+      widget.setLocale(locale);
+    }
+
+    var widget = YdCaptcha.mount('#captcha', {
+      endpoint: endpoint,
+      action: 'example',
+      type: params.get('type') || undefined,
+      fallback: params.get('fallback') || undefined,
+      locale: savedLocale,
+      theme: savedTheme,
+      onSuccess: function (token) {
+        result.textContent = 'token: ' + token;
+      },
+      onError: function (error) {
+        result.textContent = error.code + ': ' + error.message;
+      },
+      onThemeChange: function (theme) {
+        document.documentElement.setAttribute('data-resolved-theme', theme);
+      }
+    });
+    localeSelect.value = savedLocale;
+    window.ydCaptchaWidget = widget;
+    themeSelect.addEventListener('change', function () { applyTheme(themeSelect.value); });
+    localeSelect.addEventListener('change', function () { applyLocale(localeSelect.value); });
+    document.documentElement.setAttribute('data-resolved-theme', widget.resolvedTheme());
+  })();
+</script>
+</body>
+</html>

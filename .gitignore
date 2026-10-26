@@ -1,5 +1,7 @@
 bin/
 dist/
+!captcha/sdk/browser/dist/
+!captcha/sdk/browser/dist/**
 *.exe
 *.exe~
 *.dll

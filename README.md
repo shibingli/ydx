@@ -42,6 +42,7 @@
 | `github.com/shibingli/ydx/openapi` | `openapi` | OpenAPI 3.0/3.1 文档构建、注解解析与自包含查看器（标准 `net/http`，不依赖路由） |
 | `github.com/shibingli/ydx/openapi/ydrouter` | `ydrouter` | `ydx/router` 适配：路由树转 OpenAPI 文档与路由处理器 |
 | `github.com/shibingli/ydx/jwt` | `jwt` | 免反射 JWT 签发、验签与中间件 |
+| `github.com/shibingli/ydx/captcha` | `captcha` | 多类型验证码、风险控制、防录屏/截屏、行为审计、短信/邮件插件与浏览器/Node SDK；内置 8 语言 i18n、明暗主题、内存与 Redis 多机状态 |
 | `github.com/shibingli/ydx/guomi` | `guomi` | 纯 Go 国密套件（SM2/SM3/SM4） |
 | `github.com/shibingli/ydx/middleware` | `middleware` | 中间件聚合门面（保持旧 API） |
 | `github.com/shibingli/ydx/middleware/accesslog` | `accesslog` | 访问日志 |
@@ -53,6 +54,9 @@
 | `github.com/shibingli/ydx/middleware/requestid` | `requestid` | 请求 ID |
 | `github.com/shibingli/ydx/middleware/reqlog` | `reqlog` | 中间件共享的计数写入器与头处理（公开路径，无稳定性承诺） |
 | `github.com/shibingli/ydx/repotest` | `repotest` | 仓库级守卫（模块文件、命名、依赖与架构约束） |
+
+`captcha` 的浏览器 SDK 源码在 `captcha/sdk/browser`，构建产物同步到 `captcha/transport/assets` 与 `captcha/pages/assets`
+并随 Go 模块 `go:embed` 发布；Node 客户端在 `captcha/sdk/node`。
 
 基准模块统一放在 `benchmarks/` 下，每个基准模块也拥有独立的 `go.mod`、`go.sum` 与
 `docs.go`；组件模块本身不包含基准，也不依赖基准专用库。完整的方法、指标口径与本机实测

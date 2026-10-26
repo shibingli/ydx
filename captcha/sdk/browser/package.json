@@ -1,0 +1,20 @@
+{
+  "name": "@ydx/captcha",
+  "version": "0.1.0",
+  "description": "ydx captcha browser SDK | ydx 验证码浏览器 SDK",
+  "license": "Apache-2.0",
+  "main": "dist/yd-captcha.js",
+  "browser": "dist/yd-captcha.js",
+  "files": [
+    "dist",
+    "src",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "test": "node scripts/build.mjs && node --test test/sdk.test.mjs"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
