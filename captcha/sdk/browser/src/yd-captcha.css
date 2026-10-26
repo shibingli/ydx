@@ -215,6 +215,13 @@
   -webkit-user-select: text;
 }
 
+/* Separate a text answer from the challenge image above it. |
+   文本答案与上方验证码图像之间保留空隙。 */
+.yd-captcha__image + .yd-captcha__input,
+.yd-captcha__scratchstage + .yd-captcha__input {
+  margin-top: 10px;
+}
+
 .yd-captcha__input:focus {
   border-color: var(--yd-accent);
   box-shadow: 0 0 0 3px rgba(47, 111, 237, 0.16);
