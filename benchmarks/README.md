@@ -24,7 +24,7 @@ template 模块，避免同一引擎在两处重复对比），yd 仓不再保�
 
 | 基准模块 | 对比的主流实现 | 指标文档 |
 |---|---|---|
-| `benchmarks/base64` | `encoding/base64`、`cristalhq/base64` | [base64/README.md](base64/README.md) |
+| `benchmarks/base64` | `encoding/base64`、`cristalhq/base64`、`cloudwego/base64x` | [base64/README.md](base64/README.md) |
 | `benchmarks/buffpool` | `sync.Pool`、`valyala/bytebufferpool` | [buffpool/README.md](buffpool/README.md) |
 | `benchmarks/cache` | `bigcache`、`freecache`、`ristretto`、`sync.Map`、`go-cache`、`theine`、`ttlcache`、`golang-lru` | [cache/README.md](cache/README.md) |
 | `benchmarks/compress` | 标准库 gzip、klauspost gzip/zstd、brotli、snappy、lz4 | [compress/README.md](compress/README.md) |
@@ -77,7 +77,9 @@ README 与 [optimization-report.md](optimization-report.md)。
 | websocket | 32 B 回显往返 | **4.07 µs** | gorilla 4.26 µs / gobwas 4.34 µs / coder 5.59 µs |
 | websocket | 64×1 KiB 批量写 | **14.06 µs** | coder 73.7 µs / gorilla 124.3 µs |
 
-> 说明：`cache` 的 `sync.Map`/ristretto/go-cache/golang-lru 返回缓存内引用，`ydx` 的
+> 说明：`base64` 的 cloudwego/base64x 对照在 Windows 开发机上单独采集（见
+> [base64/README.md](base64/README.md)），未并入本表；其绝对数字不与 Linux 主表混比。
+> `cache` 的 `sync.Map`/ristretto/go-cache/golang-lru 返回缓存内引用，`ydx` 的
 > `Get` 返回副本；带 TTL 的读写还要支付本机约 43 ns 的 `time.Now()`；`buffpool` 的
 > `sync.Pool` 基线为每个尺寸预建一个池，不含尺寸分级；`middleware` 的限流对比另给出
 > 补头（127.8 ns）与按 IP 分桶（139.0 ns）两个变体，全局 59.92 ns 不写头；`sse` 的手写

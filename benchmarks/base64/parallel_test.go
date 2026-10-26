@@ -6,6 +6,7 @@ import (
 	"runtime"
 	"testing"
 
+	cwb64 "github.com/cloudwego/base64x"
 	cmpb64 "github.com/cristalhq/base64"
 
 	b64x "github.com/shibingli/ydx/base64"
@@ -31,6 +32,7 @@ func BenchmarkParallelEncode(b *testing.B) {
 		{name: "b64x", fn: b64x.StdEncoding.Encode},
 		{name: "stdlib", fn: stdEncode},
 		{name: "cristalhq", fn: cmpEncode},
+		{name: "cloudwego", fn: cwEncode},
 	}
 	for _, size := range []int{16, 1 << 10, 64 << 10} {
 		src := benchBuf(size)
@@ -60,6 +62,7 @@ func BenchmarkParallelDecode(b *testing.B) {
 		{name: "b64x", fn: b64x.StdEncoding.Decode},
 		{name: "stdlib", fn: stdDecode},
 		{name: "cristalhq", fn: cmpDecode},
+		{name: "cloudwego", fn: cwDecode},
 	}
 	for _, size := range []int{16, 1 << 10, 64 << 10} {
 		src := benchBuf(size)
@@ -94,3 +97,7 @@ func stdDecode(dst, src []byte) (int, error) { return stdb64.StdEncoding.Decode(
 func cmpEncode(dst, src []byte) { cmpb64.StdEncoding.Encode(dst, src) }
 
 func cmpDecode(dst, src []byte) (int, error) { return cmpb64.StdEncoding.Decode(dst, src) }
+
+func cwEncode(dst, src []byte) { cwb64.StdEncoding.Encode(dst, src) }
+
+func cwDecode(dst, src []byte) (int, error) { return cwb64.StdEncoding.Decode(dst, src) }

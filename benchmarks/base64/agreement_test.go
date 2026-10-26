@@ -5,6 +5,7 @@ import (
 	stdbase64 "encoding/base64"
 	"testing"
 
+	cwb64 "github.com/cloudwego/base64x"
 	cmpb64 "github.com/cristalhq/base64"
 
 	b64x "github.com/shibingli/ydx/base64"
@@ -23,9 +24,10 @@ func TestCodecsAgree(t *testing.T) {
 				ydx  *b64x.Encoding
 				std  *stdbase64.Encoding
 				cmp  *cmpb64.Encoding
+				cw   cwb64.Encoding
 			}{
-				{name: "std", ydx: b64x.StdEncoding, std: stdbase64.StdEncoding, cmp: cmpb64.StdEncoding},
-				{name: "raw_url", ydx: b64x.RawURLEncoding, std: stdbase64.RawURLEncoding, cmp: cmpb64.RawURLEncoding},
+				{name: "std", ydx: b64x.StdEncoding, std: stdbase64.StdEncoding, cmp: cmpb64.StdEncoding, cw: cwb64.StdEncoding},
+				{name: "raw_url", ydx: b64x.RawURLEncoding, std: stdbase64.RawURLEncoding, cmp: cmpb64.RawURLEncoding, cw: cwb64.RawURLEncoding},
 			} {
 				t.Run(tc.name, func(t *testing.T) {
 					ydxOut := make([]byte, tc.ydx.EncodedLen(size))
@@ -34,7 +36,9 @@ func TestCodecsAgree(t *testing.T) {
 					tc.std.Encode(stdOut, src)
 					cmpOut := make([]byte, tc.cmp.EncodedLen(size))
 					tc.cmp.Encode(cmpOut, src)
-					if !bytes.Equal(ydxOut, stdOut) || !bytes.Equal(ydxOut, cmpOut) {
+					cwOut := make([]byte, tc.cw.EncodedLen(size))
+					tc.cw.Encode(cwOut, src)
+					if !bytes.Equal(ydxOut, stdOut) || !bytes.Equal(ydxOut, cmpOut) || !bytes.Equal(ydxOut, cwOut) {
 						t.Fatalf("encoded bytes differ | 编码结果不一致")
 					}
 
@@ -52,6 +56,13 @@ func TestCodecsAgree(t *testing.T) {
 					}
 					if !bytes.Equal(dst[:n], src) {
 						t.Fatalf("cristalhq decoded bytes differ | cristalhq 解码结果不一致")
+					}
+					n, err = tc.cw.Decode(dst, cwOut)
+					if err != nil {
+						t.Fatalf("cloudwego Decode: %v", err)
+					}
+					if !bytes.Equal(dst[:n], src) {
+						t.Fatalf("cloudwego decoded bytes differ | cloudwego 解码结果不一致")
 					}
 				})
 			}

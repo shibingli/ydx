@@ -9,6 +9,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	cwb64 "github.com/cloudwego/base64x"
 	crb64 "github.com/cristalhq/base64"
 
 	ydbase64 "github.com/shibingli/ydx/base64"
@@ -49,10 +50,11 @@ type codec struct {
 	name   string
 }
 
-// codecs is the comparison set. cloudwego/base64x is intentionally absent: its JIT loader
-// rejects the Go 1.27.3 runtime symbol table, so including it aborts the whole benchmark
-// process. | codecs 是参与对比的集合。cloudwego/base64x 被有意排除：它的 JIT 加载器不接受
-// Go 1.27.3 的运行时符号表，包含它会让整个基准进程中止。
+// codecs is the comparison set. cloudwego/base64x uses a JIT loader. Its module requests
+// github.com/bytedance/sonic/loader v0.5.1, which aborts on the Go 1.27.3 runtime symbol
+// table; go.mod pins v0.5.2 instead so the JIT path loads normally. | codecs 是参与对比的
+// 集合。cloudwego/base64x 使用 JIT 加载器；它请求的 sonic/loader v0.5.1 在 Go 1.27.3 的
+// 运行时符号表上会直接中止进程，因此 go.mod 把它固定为 v0.5.2，使 JIT 路径正常加载。
 var codecs = []codec{
 	{
 		name:   "stdlib",
@@ -67,6 +69,13 @@ var codecs = []codec{
 		decode: crb64.StdEncoding.Decode,
 		encLen: crb64.StdEncoding.EncodedLen,
 		decLen: crb64.StdEncoding.DecodedLen,
+	},
+	{
+		name:   "cloudwego/base64x",
+		encode: cwb64.StdEncoding.Encode,
+		decode: cwb64.StdEncoding.Decode,
+		encLen: cwb64.StdEncoding.EncodedLen,
+		decLen: cwb64.StdEncoding.DecodedLen,
 	},
 	{
 		name:   "yd-b64x",
