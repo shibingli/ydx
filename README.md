@@ -205,7 +205,22 @@ pwsh ./scripts/test-all.ps1
 
 脚本对每个模块执行 `go build ./... && go vet ./... && go test ./... -race`。Windows
 下脚本在未指定 `CC` 时会优先使用 `clang` 并设置 `CGO_ENABLED=1`，以支持 race
-检测器。基准不在 `test-all` 中运行，避免拖慢流水线；按需运行方式见
+检测器。
+
+项目同时支持 Linux、Windows 与 macOS（amd64/arm64，`CGO_ENABLED=0`）。交叉编译全部
+模块：
+
+```bash
+./scripts/cross-build.sh
+pwsh ./scripts/cross-build.ps1
+```
+
+`.github/workflows/ci.yml` 在 ubuntu、windows、macos 上运行模块的 `go build`、
+`go vet` 与 `go test`，并额外执行六目标交叉编译。平台相关实现集中在 `nodeid`、
+`sysinfo` 与 `websocket`；macOS 上无法获取的内存/CPU 指标返回 0 或 `false`，调用方
+按保守默认回退。
+
+基准不在 `test-all` 中运行，避免拖慢流水线；按需运行方式见
 [benchmarks/README.md](benchmarks/README.md)：
 
 ```bash

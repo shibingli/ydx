@@ -1,0 +1,58 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.27.3'
+          cache: true
+          cache-dependency-path: '**/go.sum'
+      - name: Build, vet and test modules
+        shell: bash
+        env:
+          GOWORK: 'off'
+          CGO_ENABLED: '0'
+        run: |
+          set -euo pipefail
+          while IFS= read -r gomod; do
+            dir=$(dirname "$gomod")
+            echo "==> $dir"
+            (cd "$dir" && go build ./... && go vet ./...)
+            if [ "$RUNNER_OS" != "Linux" ] && [[ "$dir" == ./benchmarks/* ]]; then
+              echo "skip benchmark tests on $RUNNER_OS (third-party codecs)"
+              continue
+            fi
+            (cd "$dir" && go test ./...)
+          done < <(find . -name go.mod -not -path './.git/*' | sort)
+
+  cross-build:
+    name: cross-build
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.27.3'
+          cache: true
+          cache-dependency-path: '**/go.sum'
+      - name: Cross-build linux/windows/darwin amd64+arm64
+        run: bash scripts/cross-build.sh
