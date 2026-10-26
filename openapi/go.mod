@@ -13,6 +13,6 @@ require (
 )
 
 require (
-	github.com/shibingli/ydx/base64 v0.1.10 // indirect
+	github.com/shibingli/ydx/base64 v0.1.12 // indirect
 	golang.org/x/text v0.43.0 // indirect
 )

@@ -16,7 +16,7 @@ require (
 	github.com/go-viper/mapstructure/v2 v2.5.0 // indirect
 	github.com/pelletier/go-toml/v2 v2.4.3 // indirect
 	github.com/sagikazarmark/locafero v0.12.0 // indirect
-	github.com/shibingli/ydx/base64 v0.1.10 // indirect
+	github.com/shibingli/ydx/base64 v0.1.12 // indirect
 	github.com/shibingli/ydx/log v0.1.9 // indirect
 	github.com/shibingli/ydx/protocol v0.1.4 // indirect
 	github.com/shibingli/ydx/sysinfo v0.1.4 // indirect

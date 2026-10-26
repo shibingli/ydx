@@ -12,7 +12,7 @@ require (
 require (
 	github.com/mattn/go-colorable v0.1.14 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect
-	github.com/shibingli/ydx/base64 v0.1.11 // indirect
+	github.com/shibingli/ydx/base64 v0.1.12 // indirect
 	github.com/shibingli/ydx/errs v0.1.4 // indirect
 	github.com/shibingli/ydx/json v0.1.13 // indirect
 	github.com/shibingli/ydx/sysinfo v0.1.4 // indirect

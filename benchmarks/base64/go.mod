@@ -5,7 +5,7 @@ go 1.27.3
 require (
 	github.com/cloudwego/base64x v0.1.7
 	github.com/cristalhq/base64 v0.1.2
-	github.com/shibingli/ydx/base64 v0.1.11
+	github.com/shibingli/ydx/base64 v0.1.12
 )
 
 // cloudwego/base64x v0.1.7 requests sonic/loader v0.5.1, which aborts on Go 1.27.3.

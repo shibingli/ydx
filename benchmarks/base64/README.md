@@ -12,7 +12,7 @@ cloudwego/base64x 的 Windows AVX2 对照单独列出。
 
 | 实现 | 版本/构建 | 说明 |
 |---|---|---|
-| ydx/base64 | 本地构建；上一发布版 v0.1.11 | 自研后端，运行时选择最宽可用内核 |
+| ydx/base64 | v0.1.12（当前） | 自研后端，运行时选择最宽可用内核 |
 | `encoding/base64` | Go 1.27.3 | 标准库对照 |
 | `github.com/cristalhq/base64` | v0.1.2 | 第三方实现（纯 Go SWAR） |
 | `github.com/cloudwego/base64x` | v0.1.7 + sonic/loader v0.5.2 | 自研 JIT/汇编实现；loader 版本覆盖见下 |
@@ -289,8 +289,8 @@ YD_BENCH_ONLY=cloudwego/base64x GOWORK=off go test -run '^$' \
   -bench 'BenchmarkFramework(Encode|Decode)$' -benchmem -count=5 -benchtime=500ms
 ```
 
-> 直接 `GOWORK=off` 会使用 `benchmarks/base64/go.mod` 固定的 v0.1.11；若要复现本地
-> 构建的数字，需在两个仓库之外创建临时 `go.work` 指向本地 `base64` 模块。示例：
+> `GOWORK=off` 直接使用 `benchmarks/base64/go.mod` 固定的 v0.1.12；临时 `go.work` 仅用于
+> 在发布前联调本地改动。示例：
 >
 > ```text
 > go 1.27.3
@@ -321,8 +321,7 @@ YD_BENCH_ONLY=cloudwego/base64x GOWORK=off go test -run '^$' \
   基准模块把 loader 固定为 v0.5.2，这是包含 cloudwego 的必要条件。
 - cloudwego 的 JIT 在 amd64 上按 CPU 特性选择内核；已在 Zen 5（AVX-512）与
   i9-10980HK（AVX2）两台主机上分别测量，两台主机的数字不可跨机比较。
-- `benchmarks/base64/go.mod` 当前固定 `github.com/shibingli/ydx/base64 v0.1.11`；
-  发布新版本后应同步提升该依赖版本。
+- `benchmarks/base64/go.mod` 固定 `github.com/shibingli/ydx/base64 v0.1.12`。
 - cloudwego/base64x 没有 append API，因此 `AppendEncodeDecode` 仍只覆盖 ydx。
 - 字符串/并行场景在同进程运行全部实现，可能受运行顺序影响；framework 场景使用
   `YD_BENCH_ONLY` 独立进程，跨实现比较优先使用该表。

@@ -26,7 +26,7 @@ require (
 	github.com/quic-go/quic-go v0.64.1 // indirect
 	github.com/quic-go/webtransport-go v0.13.0 // indirect
 	github.com/sagikazarmark/locafero v0.12.0 // indirect
-	github.com/shibingli/ydx/base64 v0.1.10 // indirect
+	github.com/shibingli/ydx/base64 v0.1.12 // indirect
 	github.com/shibingli/ydx/json v0.1.12 // indirect
 	github.com/shibingli/ydx/log v0.1.9 // indirect
 	github.com/shibingli/ydx/protocol v0.1.4 // indirect

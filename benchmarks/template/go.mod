@@ -18,7 +18,7 @@ require (
 	github.com/CloudyKit/fastprinter v0.0.0-20200109182630-33d98a066a53 // indirect
 	github.com/osteele/tuesday v1.1.1 // indirect
 	github.com/shibingli/ydx/afs v0.1.6 // indirect
-	github.com/shibingli/ydx/base64 v0.1.11 // indirect
+	github.com/shibingli/ydx/base64 v0.1.12 // indirect
 	github.com/shibingli/ydx/errs v0.1.4 // indirect
 	github.com/shibingli/ydx/json v0.1.13 // indirect
 	github.com/shibingli/ydx/log v0.1.10 // indirect

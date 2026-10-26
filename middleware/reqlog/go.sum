@@ -2,6 +2,8 @@ github.com/shibingli/ydx/afs v0.1.5 h1:y1RHXGKWcrxKnV7IGDhCbrepae7hqWn5pi9uLdhVv
 github.com/shibingli/ydx/afs v0.1.5/go.mod h1:NTyA2McUo1Qze38hf6+Md0zPjOosBbZBL3vm3zBppmY=
 github.com/shibingli/ydx/base64 v0.1.10 h1:TxKeQU9xT5B4NXDOuQoMOaPxjxTRjhTOZtsavSh5XyM=
 github.com/shibingli/ydx/base64 v0.1.10/go.mod h1:TOBPttuv2YaleE1tTsfd5gPsuvpKhClQDbqt5Sov1m8=
+github.com/shibingli/ydx/base64 v0.1.12 h1:xUjtX6yZ/UMDb5DBwvE1a70FVZnX9gQVBgdlEzQ45KY=
+github.com/shibingli/ydx/base64 v0.1.12/go.mod h1:PaROcW7ashuUWtpu30D3TfA28lDCBop8D39ZrHuK/eE=
 github.com/shibingli/ydx/buffpool v0.1.4 h1:aQpZ8Rzs6Qt6/H/lW4st3I74mdAqJkzoyAVVBGgVj0k=
 github.com/shibingli/ydx/buffpool v0.1.4/go.mod h1:1PYC8bCUvgsvXzeFHDVo2wqy62bNYps+c1yZGCK4o/Y=
 github.com/shibingli/ydx/errs v0.1.4 h1:/hexB5eDFA/wWhRof5yxWEVeVlHn1P7IZmys9U4h1iA=

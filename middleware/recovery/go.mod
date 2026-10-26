@@ -11,7 +11,7 @@ require (
 
 require (
 	github.com/shibingli/ydx/afs v0.1.5 // indirect
-	github.com/shibingli/ydx/base64 v0.1.10 // indirect
+	github.com/shibingli/ydx/base64 v0.1.12 // indirect
 	github.com/shibingli/ydx/errs v0.1.4 // indirect
 	github.com/shibingli/ydx/protocol v0.1.4 // indirect
 	github.com/shibingli/ydx/sysinfo v0.1.4 // indirect

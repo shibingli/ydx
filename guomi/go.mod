@@ -4,7 +4,7 @@ go 1.27.3
 
 require (
 	github.com/emmansun/gmsm v0.45.1
-	github.com/shibingli/ydx/base64 v0.1.10
+	github.com/shibingli/ydx/base64 v0.1.12
 	github.com/shibingli/ydx/errs v0.1.4
 )
 
