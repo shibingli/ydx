@@ -55,6 +55,9 @@
 | `github.com/shibingli/ydx/middleware/reqlog` | `reqlog` | 中间件共享的计数写入器与头处理（公开路径，无稳定性承诺） |
 | `github.com/shibingli/ydx/repotest` | `repotest` | 仓库级守卫（模块文件、命名、依赖与架构约束） |
 
+每个组件模块目录下的 `README.md` 提供该模块的功能、特性、快速开始、应用场景、性能指标与
+第三方依赖鸣谢；基准模块的 README 说明对比对象、场景与实测结果。新增模块时请同步补齐。
+
 `captcha` 的浏览器 SDK 源码在 `captcha/sdk/browser`，构建产物同步到 `captcha/transport/assets` 与 `captcha/pages/assets`
 并随 Go 模块 `go:embed` 发布；Node 客户端在 `captcha/sdk/node`。
 
@@ -64,7 +67,7 @@
 
 | 基准模块 | 对比的主流实现 | 指标文档 |
 |---|---|---|
-| `benchmarks/base64` | `encoding/base64`、`cristalhq/base64` | [base64](benchmarks/base64/README.md) |
+| `benchmarks/base64` | `encoding/base64`、`cristalhq/base64`、`cloudwego/base64x` | [base64](benchmarks/base64/README.md) |
 | `benchmarks/buffpool` | `sync.Pool`、`bytebufferpool` | [buffpool](benchmarks/buffpool/README.md) |
 | `benchmarks/cache` | `bigcache`、`freecache`、`ristretto`、`sync.Map`、`go-cache`、`theine`、`ttlcache`、`golang-lru` | [cache](benchmarks/cache/README.md) |
 | `benchmarks/compress` | 标准库 gzip、klauspost gzip/zstd、brotli、snappy、lz4 | [compress](benchmarks/compress/README.md) |
