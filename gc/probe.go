@@ -1,6 +1,7 @@
 package gc
 
 import (
+	"math"
 	"runtime/debug"
 	"runtime/metrics"
 	"sync"
@@ -223,14 +224,23 @@ func (r *heapReader) read() heapReading {
 // cgroup ceiling, or zero when neither is known. | effectiveMemoryLimit 返回 Go 软内存上限与
 // 宿主/cgroup 上限中的较小者；两者都未知时返回零。
 func effectiveMemoryLimit() uint64 {
-	var limit uint64
 	// A negative input only reads the current soft limit and never changes it. | 负数输入只读取
 	// 当前软上限，绝不修改它。
-	if n := debug.SetMemoryLimit(-1); n > 0 {
-		limit = uint64(n)
-	}
+	limit := goSoftMemoryLimit(debug.SetMemoryLimit(-1))
 	if host := sysinfo.MemoryLimit(); host > 0 && (limit == 0 || host < limit) {
 		limit = host
 	}
 	return limit
+}
+
+// goSoftMemoryLimit converts the runtime soft memory limit to a byte ceiling. The runtime
+// uses MaxInt64 as its default "no limit" sentinel, so it must be treated as unknown rather
+// than an 8 EiB ceiling; this also keeps macOS, where sysinfo reports no host limit, at zero.
+// | goSoftMemoryLimit 把运行时软内存上限转换为字节上限。运行时用 MaxInt64 表示“未设置”，
+// 必须按未知处理，而不是 8 EiB 上限；这也让 sysinfo 不提供宿主上限的 macOS 保持为零。
+func goSoftMemoryLimit(n int64) uint64 {
+	if n <= 0 || n == math.MaxInt64 {
+		return 0
+	}
+	return uint64(n)
 }

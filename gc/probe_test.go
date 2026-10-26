@@ -1,6 +1,7 @@
 package gc
 
 import (
+	"math"
 	"testing"
 	"time"
 )
@@ -96,6 +97,30 @@ func TestHeapReaderUnavailable(t *testing.T) {
 	}
 	if reading := (&heapReader{}).read(); reading.ok {
 		t.Fatal("a reader without metrics must report unavailable | 无指标的读取器应报告不可用")
+	}
+}
+
+// TestGoSoftMemoryLimit treats the runtime's MaxInt64 default as "no limit"; otherwise
+// platforms without a host memory ceiling would expose an implausible 8 EiB limit.
+// | TestGoSoftMemoryLimit 把运行时的 MaxInt64 默认值视为“未设置”；否则没有宿主内存上限的
+// 平台会暴露不合理的 8 EiB 上限。
+func TestGoSoftMemoryLimit(t *testing.T) {
+	tests := []struct {
+		name string
+		in   int64
+		want uint64
+	}{
+		{"unset default", math.MaxInt64, 0},
+		{"zero", 0, 0},
+		{"negative", -1, 0},
+		{"real limit", 1 << 30, 1 << 30},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := goSoftMemoryLimit(tc.in); got != tc.want {
+				t.Fatalf("goSoftMemoryLimit(%d) = %d, want %d | 转换结果不符", tc.in, got, tc.want)
+			}
+		})
 	}
 }
 
