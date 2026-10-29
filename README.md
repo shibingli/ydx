@@ -43,6 +43,7 @@
 | `github.com/shibingli/ydx/openapi/ydrouter` | `ydrouter` | `ydx/router` 适配：路由树转 OpenAPI 文档与路由处理器 |
 | `github.com/shibingli/ydx/jwt` | `jwt` | 免反射 JWT 签发、验签与中间件 |
 | `github.com/shibingli/ydx/captcha` | `captcha` | 多类型验证码、风险控制、防录屏/截屏、行为审计、短信/邮件插件与浏览器/Node SDK；内置 8 语言 i18n、明暗主题、内存与 Redis 多机状态 |
+| `github.com/shibingli/ydx/workflow` | `workflow` | BPMN 2.0 可执行子集、中国式审批（或签/会签/票签/加签/转办/委派/退回/撤回）、多版本、自动审批、通知 outbox、AI 决策（OpenAI / Anthropic）与 [GORM 存储](workflow/gormstore) |
 | `github.com/shibingli/ydx/guomi` | `guomi` | 纯 Go 国密套件（SM2/SM3/SM4） |
 | `github.com/shibingli/ydx/middleware` | `middleware` | 中间件聚合门面（保持旧 API） |
 | `github.com/shibingli/ydx/middleware/accesslog` | `accesslog` | 访问日志 |
