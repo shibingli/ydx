@@ -133,7 +133,7 @@ type Task struct {
 	// NodeNameEN is the English node name at creation. | NodeNameEN 是创建时的英文节点名。
 	NodeNameEN string `json:"node_name_en,omitempty" gorm:"column:node_name_en;type:varchar(120)"`
 	// AssigneeID is the current assignee; empty for an unclaimed pool task. | AssigneeID 是当前指派人；候选池任务为空。
-	AssigneeID string `json:"assignee_id,omitempty" gorm:"column:assignee_id;type:varchar(64);index:idx_wf_task_tenant_assignee_status_created,priority:2;index:idx_wf_task_tenant_assignee_status_created,priority:3"`
+	AssigneeID string `json:"assignee_id,omitempty" gorm:"column:assignee_id;type:varchar(64);index:idx_wf_task_tenant_assignee_status_created,priority:2"`
 	// AssigneeName is the display name at assignment time. | AssigneeName 是指派时的展示名。
 	AssigneeName string `json:"assignee_name,omitempty" gorm:"column:assignee_name;type:varchar(120)"`
 	// AssigneeType is user, role or initiator as configured. | AssigneeType 是配置的 user、role 或 initiator。
