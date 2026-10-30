@@ -234,6 +234,47 @@ func TestDescriptorMacros(t *testing.T) {
 	}
 }
 
+// TestEveryParsing pins the simple-duration fast path and the fallback forms. |
+// TestEveryParsing 固定简单时长快路径与回落形式。
+func TestEveryParsing(t *testing.T) {
+	valid := []struct {
+		expr string
+		want time.Duration
+	}{
+		{"@every 90s", 90 * time.Second},
+		{"@every 5m", 5 * time.Minute},
+		{"@every 2h", 2 * time.Hour},
+		{"@every 1h30m", 90 * time.Minute},
+		{"@every 1500ms", 1500 * time.Millisecond},
+		{"@every 1.5s", 1500 * time.Millisecond},
+		{"@every +5s", 5 * time.Second},
+	}
+	for _, tt := range valid {
+		schedule, err := ParseIn(tt.expr, time.UTC)
+		if err != nil {
+			t.Fatalf("ParseIn(%q): %v | 解析失败", tt.expr, err)
+		}
+		interval, ok := schedule.(Interval)
+		if !ok {
+			t.Fatalf("ParseIn(%q) = %T, want Interval | 返回类型不符", tt.expr, schedule)
+		}
+		if got := time.Duration(interval); got != tt.want {
+			t.Fatalf("ParseIn(%q) = %s, want %s | 时长不符", tt.expr, got, tt.want)
+		}
+	}
+	for _, expr := range []string{
+		"@every 0s",
+		"@every -5s",
+		"@every 1d",
+		"@every s",
+		"@every 999999999999999999999s",
+	} {
+		if _, err := ParseIn(expr, time.UTC); !errors.Is(err, ErrInvalidValue) {
+			t.Fatalf("ParseIn(%q) = %v, want ErrInvalidValue | 非法时长错误不符", expr, err)
+		}
+	}
+}
+
 // TestParseIn verifies a schedule inherits the supplied location and keeps the
 // wall-clock fields of the expression. | TestParseIn 验证调度继承传入时区并保持表达式的墙上时间字段。
 func TestParseIn(t *testing.T) {
@@ -361,6 +402,22 @@ func TestIntervalAndOnce(t *testing.T) {
 	if got := Once(after).Next(after); !got.IsZero() {
 		t.Fatalf("Once(past).Next = %s, want zero | 过去时刻应返回零值", got)
 	}
+
+	// Whole-second intervals keep epoch-aligned boundaries with and without
+	// sub-second noise. | 整秒间隔在带与不带亚秒噪声时都保持纪元对齐边界。
+	if got, want := Interval(90*time.Second).Next(after.Add(30*time.Second+500*time.Millisecond)), utc(2026, time.January, 1, 0, 1, 30); !got.Equal(want) {
+		t.Fatalf("90s after 00:00:30.5 = %s, want %s | 整秒间隔边界不符", got, want)
+	}
+	if got, want := Interval(90*time.Second).Next(utc(2026, time.January, 1, 0, 1, 30)), utc(2026, time.January, 1, 0, 3, 0); !got.Equal(want) {
+		t.Fatalf("90s at boundary = %s, want %s | 边界后应严格前进", got, want)
+	}
+	// Sub-second intervals use nanosecond alignment. | 亚秒间隔使用纳秒对齐。
+	if got, want := Interval(1500*time.Millisecond).Next(after), utc(2026, time.January, 1, 0, 0, 1).Add(500*time.Millisecond); !got.Equal(want) {
+		t.Fatalf("1500ms from epoch = %s, want %s | 亚秒间隔边界不符", got, want)
+	}
+	if got, want := Interval(1500*time.Millisecond).Next(after.Add(1600*time.Millisecond)), utc(2026, time.January, 1, 0, 0, 3); !got.Equal(want) {
+		t.Fatalf("1500ms after 1.6s = %s, want %s | 亚秒间隔边界不符", got, want)
+	}
 }
 
 // TestMustParse covers the package-declaration convenience. | TestMustParse 覆盖包级声明用的便捷构造器。
@@ -379,6 +436,52 @@ func TestMustParse(t *testing.T) {
 	}()
 	if !panicked {
 		t.Fatal("MustParse did not panic on a bad expression | 非法表达式未 panic")
+	}
+}
+
+// referenceIntervalNext is the direct epoch-alignment formula used to validate
+// the whole-second fast path. | referenceIntervalNext 是用于校验整秒快路径的直接
+// 纪元对齐公式。
+func referenceIntervalNext(d time.Duration, after time.Time) time.Time {
+	n := after.UnixNano()
+	rem := n % int64(d)
+	if rem < 0 {
+		rem += int64(d)
+	}
+	return after.Add(time.Duration(int64(d) - rem))
+}
+
+// TestIntervalNextMatchesReference covers boundaries, sub-second noise, negative
+// Unix seconds and non-whole-second intervals. | TestIntervalNextMatchesReference
+// 覆盖边界、亚秒噪声、负 Unix 秒与非整秒间隔。
+func TestIntervalNextMatchesReference(t *testing.T) {
+	durations := []time.Duration{
+		time.Second,
+		5 * time.Second,
+		90 * time.Second,
+		time.Minute,
+		90 * time.Minute,
+		24 * time.Hour,
+		1500 * time.Millisecond,
+		1501 * time.Millisecond,
+	}
+	bases := []time.Time{
+		utc(1970, time.January, 1, 0, 0, 0),
+		utc(1970, time.January, 1, 0, 0, 0).Add(time.Nanosecond),
+		utc(2026, time.January, 1, 0, 0, 0),
+		utc(2026, time.January, 1, 0, 0, 0).Add(30*time.Second + 500*time.Millisecond),
+		utc(2200, time.January, 1, 0, 0, 0),
+		time.Unix(-123456789, 123456789).UTC(),
+	}
+	for _, duration := range durations {
+		for _, base := range bases {
+			got := Interval(duration).Next(base)
+			want := referenceIntervalNext(duration, base)
+			if !got.Equal(want) {
+				t.Fatalf("Interval(%s).Next(%s) = %s, want %s | 整秒快路径与参考实现不一致",
+					duration, base.Format(time.RFC3339Nano), got.Format(time.RFC3339Nano), want.Format(time.RFC3339Nano))
+			}
+		}
 	}
 }
 

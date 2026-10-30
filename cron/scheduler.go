@@ -79,6 +79,10 @@ type Scheduler struct {
 	started bool
 	// closed reports whether Stop ran. | closed 表示 Stop 是否已执行。
 	closed bool
+	// heapReady reports whether entries are maintained in the timer heap; before
+	// Start they live only in the map and Start builds the heap in one pass. |
+	// heapReady 表示元素是否已维护在定时器堆中；Start 之前只存于映射，Start 一次性建堆。
+	heapReady bool
 }
 
 // New builds a scheduler; it performs no I/O and starts no goroutine. |
@@ -206,6 +210,10 @@ func (s *Scheduler) Start(ctx context.Context) error {
 		}
 		s.mu.Unlock()
 	}
+	s.mu.Lock()
+	s.buildHeapLocked()
+	s.heapReady = true
+	s.mu.Unlock()
 	s.opMu.Unlock()
 
 	runCtx, cancel := context.WithCancel(ctx)
@@ -301,6 +309,9 @@ func (s *Scheduler) armLocked(item *entry, next time.Time, strict bool) error {
 		return nil
 	}
 	item.next = next
+	if !s.heapReady {
+		return nil
+	}
 	if item.index >= 0 {
 		heap.Fix(&s.heap, item.index)
 	} else {
@@ -312,10 +323,26 @@ func (s *Scheduler) armLocked(item *entry, next time.Time, strict bool) error {
 // unarmLocked removes an entry from the heap; the caller holds s.mu. |
 // unarmLocked 从堆中移除元素；调用方持有 s.mu。
 func (s *Scheduler) unarmLocked(item *entry) {
-	if item.index >= 0 {
+	if s.heapReady && item.index >= 0 {
 		heap.Remove(&s.heap, item.index)
 	}
 	item.next = time.Time{}
+}
+
+// buildHeapLocked turns the map into a timer heap in one O(n) pass; the caller
+// holds the write lock and sets heapReady afterwards. | buildHeapLocked 用一次
+// O(n) 遍历把映射构建为定时器堆；调用方持有写锁，并在之后设置 heapReady。
+func (s *Scheduler) buildHeapLocked() {
+	s.heap = s.heap[:0]
+	for _, item := range s.entries {
+		if item.job.Disabled || item.next.IsZero() {
+			item.index = -1
+			continue
+		}
+		item.index = len(s.heap)
+		s.heap = append(s.heap, item)
+	}
+	heap.Init(&s.heap)
 }
 
 // signal wakes the event loop without blocking; before Start there is no loop
@@ -379,7 +406,21 @@ func (s *Scheduler) popDueLocked(now time.Time) []dueFire {
 		at := item.next
 		item.next = time.Time{}
 		if !item.job.Disabled {
-			if next := item.job.Schedule.Next(now); !next.IsZero() {
+			next := time.Time{}
+			// An interval fire re-arms at the next epoch-aligned boundary by a
+			// plain add; this avoids the alignment division on the common on-time
+			// path. A delayed fire falls back to Next(now), which skips missed runs. |
+			// 间隔任务在下一个纪元对齐边界直接相加，避免准点路径上的对齐除法；
+			// 延迟触发回落到 Next(now)，跳过已错过的运行。
+			if interval, ok := item.job.Schedule.(Interval); ok {
+				if candidate := at.Add(time.Duration(interval)); candidate.After(now) {
+					next = candidate
+				}
+			}
+			if next.IsZero() {
+				next = item.job.Schedule.Next(now)
+			}
+			if !next.IsZero() {
 				item.next = next
 				heap.Push(&s.heap, item)
 			}

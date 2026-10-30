@@ -44,14 +44,23 @@ func ParseIn(expr string, loc *time.Location) (Schedule, error) {
 	if loc == nil {
 		loc = time.Local
 	}
+	// Exact, unspaced macros need no trimming, prefix scan or field split. |
+	// 精确且无空白的宏不需要去空白、前缀扫描或字段切分。
+	if schedule, ok := fixedDescriptor(expr, loc); ok {
+		return schedule, nil
+	}
 	raw := strings.TrimSpace(expr)
 	if raw == "" {
 		return nil, ErrEmptySpec
 	}
 
-	// A plain descriptor needs neither a time-zone scan nor a field split. |
-	// 普通描述符既不需要扫描时区，也不需要切分字段。
+	// A plain descriptor needs neither a time-zone scan nor a field split; the
+	// parameterised @every form takes its own fast path before the macro switch. |
+	// 普通描述符既不需要扫描时区，也不需要切分字段；带参数的 @every 在宏分支之前走快路径。
 	if raw[0] == '@' {
+		if arg, ok := strings.CutPrefix(raw, "@every "); ok {
+			return parseEvery(arg)
+		}
 		return parseDescriptor(raw, loc)
 	}
 
@@ -124,20 +133,10 @@ func ParseIn(expr string, loc *time.Location) (Schedule, error) {
 // parseDescriptor expands a macro or parses a parameterised descriptor. |
 // parseDescriptor 展开宏或解析带参数的描述符。
 func parseDescriptor(raw string, loc *time.Location) (Schedule, error) {
-	// Exact no-argument macros avoid name extraction and case folding. |
-	// 无参数宏的精确匹配避免名称提取与大小写折叠。
-	switch raw {
-	case "@yearly", "@annually":
-		return fixedSpec("0 0 0 1 1 *", 1, 1<<1, 1<<1, allWeekdays, loc), nil
-	case "@monthly":
-		return fixedSpec("0 0 0 1 * *", 1, 1<<1, allMonths, allWeekdays, loc), nil
-	case "@weekly":
-		return fixedSpec("0 0 0 * * 0", 1, allDays, allMonths, 1<<0, loc), nil
-	case "@daily", "@midnight":
-		return fixedSpec("0 0 0 * * *", 1, allDays, allMonths, allWeekdays, loc), nil
-	case "@hourly":
-		return fixedSpec("0 0 * * * *", allHours, allDays, allMonths, allWeekdays, loc), nil
-	case "@reboot":
+	if schedule, ok := fixedDescriptor(raw, loc); ok {
+		return schedule, nil
+	}
+	if raw == "@reboot" {
 		return nil, errs.Detail(ErrUnsupportedSpec, "%q", raw)
 	}
 	if arg, ok := strings.CutPrefix(raw, "@every "); ok {
@@ -161,17 +160,10 @@ func parseDescriptor(raw string, loc *time.Location) (Schedule, error) {
 			return nil, errs.Detail(ErrInvalidValue, "%q", raw)
 		}
 	}
+	if schedule, ok := fixedDescriptor(lower, loc); ok {
+		return schedule, nil
+	}
 	switch lower {
-	case "@yearly", "@annually":
-		return fixedSpec("0 0 0 1 1 *", 1, 1<<1, 1<<1, allWeekdays, loc), nil
-	case "@monthly":
-		return fixedSpec("0 0 0 1 * *", 1, 1<<1, allMonths, allWeekdays, loc), nil
-	case "@weekly":
-		return fixedSpec("0 0 0 * * 0", 1, allDays, allMonths, 1<<0, loc), nil
-	case "@daily", "@midnight":
-		return fixedSpec("0 0 0 * * *", 1, allDays, allMonths, allWeekdays, loc), nil
-	case "@hourly":
-		return fixedSpec("0 0 * * * *", allHours, allDays, allMonths, allWeekdays, loc), nil
 	case "@every":
 		return parseEvery(arg)
 	case "@once":
@@ -183,16 +175,99 @@ func parseDescriptor(raw string, loc *time.Location) (Schedule, error) {
 	}
 }
 
-// parseEvery parses the @every duration argument. | parseEvery 解析 @every 的时长参数。
+// fixedDescriptor builds a no-argument macro directly; it reports false for
+// everything else so the caller keeps the general descriptor grammar. |
+// fixedDescriptor 直接构建无参数宏；其它形式返回 false，由调用方保留通用描述符语法。
+func fixedDescriptor(raw string, loc *time.Location) (Schedule, bool) {
+	if len(raw) < 2 || raw[0] != '@' {
+		return nil, false
+	}
+	switch raw {
+	case "@yearly", "@annually":
+		return fixedSpec("0 0 0 1 1 *", 1, 1<<1, 1<<1, allWeekdays, loc), true
+	case "@monthly":
+		return fixedSpec("0 0 0 1 * *", 1, 1<<1, allMonths, allWeekdays, loc), true
+	case "@weekly":
+		return fixedSpec("0 0 0 * * 0", 1, allDays, allMonths, 1<<0, loc), true
+	case "@daily", "@midnight":
+		return fixedSpec("0 0 0 * * *", 1, allDays, allMonths, allWeekdays, loc), true
+	case "@hourly":
+		return fixedSpec("0 0 * * * *", allHours, allDays, allMonths, allWeekdays, loc), true
+	default:
+		return nil, false
+	}
+}
+
+// parseEvery parses the @every duration argument. Simple integer seconds,
+// minutes and hours avoid time.ParseDuration; everything else falls back to it. |
+// parseEvery 解析 @every 的时长参数：简单整数秒/分/时走快路径，其余回落到
+// time.ParseDuration。
 func parseEvery(arg string) (Schedule, error) {
-	if strings.ContainsAny(arg, " \t") {
+	if hasSpaceOrTab(arg) {
 		arg = strings.ReplaceAll(strings.ReplaceAll(arg, " ", ""), "\t", "")
+	}
+	if duration, ok := parseSimpleDuration(arg); ok {
+		return Interval(duration), nil
 	}
 	duration, err := time.ParseDuration(arg)
 	if err != nil || duration <= 0 {
 		return nil, errs.Detail(ErrInvalidValue, "%q", arg)
 	}
 	return Interval(duration), nil
+}
+
+// hasSpaceOrTab reports whether s contains an ASCII space or tab. |
+// hasSpaceOrTab 报告 s 是否包含 ASCII 空格或制表符。
+func hasSpaceOrTab(s string) bool {
+	for index := 0; index < len(s); index++ {
+		if s[index] == ' ' || s[index] == '\t' {
+			return true
+		}
+	}
+	return false
+}
+
+// parseSimpleDuration parses a positive integer followed by s, m or h without
+// calling time.ParseDuration. It reports false for every other form so the
+// caller keeps the full parser semantics. | parseSimpleDuration 解析“正整数 + s/m/h”，
+// 不调用 time.ParseDuration；其它形式返回 false，由调用方回落到完整解析器。
+func parseSimpleDuration(s string) (time.Duration, bool) {
+	if len(s) < 2 {
+		return 0, false
+	}
+	const maxInt64 = int64(1<<63 - 1)
+	var (
+		mult  time.Duration
+		limit int64
+	)
+	switch s[len(s)-1] {
+	case 's':
+		mult = time.Second
+		limit = maxInt64 / int64(time.Second)
+	case 'm':
+		mult = time.Minute
+		limit = maxInt64 / int64(time.Minute)
+	case 'h':
+		mult = time.Hour
+		limit = maxInt64 / int64(time.Hour)
+	default:
+		return 0, false
+	}
+	var value int64
+	for index := 0; index < len(s)-1; index++ {
+		digit := s[index]
+		if digit < '0' || digit > '9' {
+			return 0, false
+		}
+		if value > (maxInt64-9)/10 {
+			return 0, false
+		}
+		value = value*10 + int64(digit-'0')
+	}
+	if value <= 0 || value > limit {
+		return 0, false
+	}
+	return time.Duration(value) * mult, true
 }
 
 // parseOnce parses the @once RFC3339 argument. | parseOnce 解析 @once 的 RFC3339 参数。

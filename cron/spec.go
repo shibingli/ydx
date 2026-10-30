@@ -98,14 +98,19 @@ func (s *Spec) Next(after time.Time) time.Time {
 	if loc == nil {
 		loc = time.Local
 	}
-	t := after.In(loc).Truncate(time.Second).Add(time.Second)
+	t := after.In(loc)
+	// Move to the next whole second with one Add instead of Truncate+Add. |
+	// 用一次 Add 移到下一个整秒，避免 Truncate+Add。
+	t = t.Add(time.Second - time.Duration(t.Nanosecond()))
 
-	limit := t.AddDate(5, 0, 0)
+	// A year bound is enough for the search horizon and avoids AddDate on every
+	// call. | 用年份上限即可界定搜索范围，避免每次调用都做 AddDate。
+	limitYear := t.Year() + 5
 	if s.yearSet {
-		limit = time.Date(maxScheduleYear+1, time.January, 1, 0, 0, 0, 0, loc)
+		limitYear = maxScheduleYear
 	}
 
-	for !t.After(limit) {
+	for t.Year() <= limitYear {
 		if s.yearSet && !s.yearAllowed(t.Year()) {
 			year, ok := s.nextYear(t.Year() + 1)
 			if !ok {
@@ -415,6 +420,38 @@ func (i Interval) Next(after time.Time) time.Time {
 	d := time.Duration(i)
 	if d <= 0 {
 		return time.Time{}
+	}
+	// Whole-second intervals use the Unix second counter and a float64 quotient.
+	// Every Unix second up to 2^53 is exact in float64, and one correction step
+	// absorbs the rounding of the division; the result is still strictly
+	// epoch-aligned but avoids a 64-bit integer division. Beyond 2^53 seconds
+	// the code falls back to the exact integer remainder. |
+	// 整秒间隔使用 Unix 秒计数与 float64 商。2^53 以内的 Unix 秒在 float64 中精确，
+	// 一步校正吸收除法舍入；结果仍是严格的纪元对齐，但避免 64 位整数除法。超过 2^53 秒时
+	// 回落到精确的整数取余。
+	if d%time.Second == 0 {
+		secs := int64(d / time.Second)
+		sec := after.Unix()
+		var rem int64
+		if sec > (1<<53) || sec < -(1<<53) {
+			rem = sec % secs
+		} else {
+			quotient := int64(float64(sec) / float64(secs))
+			rem = sec - quotient*secs
+			if rem >= secs {
+				rem -= secs
+			} else if rem < 0 {
+				rem += secs
+			}
+		}
+		if rem < 0 {
+			rem += secs
+		}
+		delta := time.Duration(secs-rem)*time.Second - time.Duration(after.Nanosecond())
+		if delta <= 0 {
+			delta += d
+		}
+		return after.Add(delta)
 	}
 	n := after.UnixNano()
 	rem := n % int64(d)
