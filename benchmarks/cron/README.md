@@ -89,7 +89,7 @@
 
 | 路由 | ns/op | B/op | allocs/op |
 |---|---:|---:|---:|
-| `GET /cron/jobs` | 645 µs | ~659 KiB | 6 |
+| `GET /cron/jobs` | 645 µs | ~642 KiB | 6 |
 | `GET /cron/jobs/{id}` | 1.69 µs | 627 B | 5 |
 | `GET /cron/stats` | 21.3 µs | 196 B | 3 |
 
