@@ -84,6 +84,7 @@
 | `benchmarks/sse` | `gin-contrib/sse`、手写 `fmt.Fprintf` 基线 | [sse](benchmarks/sse/README.md) |
 | `benchmarks/template` | `html/template`、`text/template`、Jet、Pongo2、Liquid、Raymond、Mustache、quicktemplate、templ | [template](benchmarks/template/README.md) |
 | `benchmarks/websocket` | `gorilla/websocket`、`coder/websocket`、`gobwas/ws`、`lxzan/gws` | [websocket](benchmarks/websocket/README.md) |
+| `benchmarks/workflow` | 无同类可比实现（BPMN 引擎语义差异过大），给出 SQLite 回归基线 | [workflow](benchmarks/workflow/README.md) |
 
 > 目录名、模块名与包名三者一致；每个带实现代码的包还必须有一个与包同名的 `<package>.go`
 > 主文件（例如 `cache/cache.go`，而不是 `cache/cachex.go`）。从 yd 迁移时需要同时更新

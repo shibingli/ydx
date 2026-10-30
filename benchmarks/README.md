@@ -1,6 +1,6 @@
 # ydx 基准与主流实现对比
 
-本目录是 ydx 的基准模块集合，共 **15 个独立 Go 模块**。原 yd 仓 `benchmarks/` 的独有场景
+本目录是 ydx 的基准模块集合，共 **16 个独立 Go 模块**。原 yd 仓 `benchmarks/` 的独有场景
 已全部并入本目录（json 的 7 字段载荷、base64 的 32 B/1 MiB、jwt 的 cristal/jwt 与
 kataras/jwt、log 的 prebound 场景、router 的 echo/fiber、websocket 的 gobwas/gws、
 cache 的 TTL/命中率轨迹，以及 compress/crypto/template 整模块；render 的微基准已并入
@@ -39,6 +39,7 @@ template 模块，避免同一引擎在两处重复对比），yd 仓不再保�
 | `benchmarks/sse` | `gin-contrib/sse`、手写 `fmt.Fprintf` 基线 | [sse/README.md](sse/README.md) |
 | `benchmarks/template` | `html/template`、`text/template`、Jet、Pongo2、Liquid、Raymond、Mustache、quicktemplate、templ | [template/README.md](template/README.md) |
 | `benchmarks/websocket` | `gorilla/websocket`、`coder/websocket`、`gobwas/ws`、`lxzan/gws` | [websocket/README.md](websocket/README.md) |
+| `benchmarks/workflow` | 无同类可比实现（BPMN 引擎语义差异过大），给出 SQLite 回归基线 | [workflow/README.md](workflow/README.md) |
 
 ## 关键结果速览
 
@@ -81,6 +82,7 @@ README 与 [optimization-report.md](optimization-report.md)。
 | template | 绑定渲染微基准（`BenchmarkRender`） | **253.7 ns** | html/template 3.43 µs / text/template 2.12 µs |
 | websocket | 32 B 回显往返 | **4.07 µs** | gorilla 4.26 µs / gobwas 4.34 µs / coder 5.59 µs |
 | websocket | 64×1 KiB 批量写 | **14.06 µs** | coder 73.7 µs / gorilla 124.3 µs |
+| workflow | 空扫描 / 发起最小实例 | 516 µs / 6.66 ms | 无同类可比实现（SQLite 基线） |
 
 > 说明：`base64` 的 cloudwego/base64x 对照已并入上表（Linux Zen 5，与 ydx 同一轮采集）；
 > [base64/README.md](base64/README.md) 另给出 Windows AVX2 的 cloudwego 同机对照，两台
