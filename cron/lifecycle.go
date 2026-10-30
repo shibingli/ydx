@@ -16,29 +16,46 @@ func (s *Scheduler) Add(ctx context.Context, job *Job) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	s.opMu.Lock()
-	defer s.opMu.Unlock()
+	store := s.options.Store
+	// Without a Store the operation is a pure in-memory mutation, so s.mu alone
+	// serializes it; opMu is only needed to order Store writes with the table. |
+	// 没有 Store 时操作是纯内存变更，s.mu 已足够串行化；只有需要让存储写入与任务表
+	// 保持顺序时才使用 opMu。
+	if store != nil {
+		s.opMu.Lock()
+		defer s.opMu.Unlock()
 
-	s.mu.Lock()
-	if s.closed {
-		s.mu.Unlock()
-		return ErrSchedulerClosed
-	}
-	if job != nil && job.ID != "" {
-		if _, exists := s.entries[job.ID]; exists {
+		s.mu.Lock()
+		if s.closed {
 			s.mu.Unlock()
-			return errs.Detail(ErrJobExists, "%q", job.ID)
+			return ErrSchedulerClosed
 		}
+		if job != nil && job.ID != "" {
+			if _, exists := s.entries[job.ID]; exists {
+				s.mu.Unlock()
+				return errs.Detail(ErrJobExists, "%q", job.ID)
+			}
+		}
+		s.mu.Unlock()
 	}
-	s.mu.Unlock()
 
-	prepared, definition, next, err := s.prepareJob(job)
+	// Validate cheaply before allocating the box so a nil job or schedule does not
+	// pay for 448 bytes that are immediately discarded. | 先做廉价校验再分配元素块，
+	// 避免 nil 任务或调度白付 448 字节。
+	if job == nil {
+		return ErrNilJob
+	}
+	if job.Schedule == nil {
+		return ErrNilSchedule
+	}
+	box := new(entryBox)
+	definition, next, err := s.prepareJobInto(job, &box.job)
 	if err != nil {
 		return err
 	}
-	if s.options.Store != nil {
-		if saveErr := s.options.Store.Save(ctx, definition); saveErr != nil {
-			return errs.WrapDetail(saveErr, ErrStoreFailed, "%q", prepared.ID)
+	if store != nil {
+		if saveErr := store.Save(ctx, definition); saveErr != nil {
+			return errs.WrapDetail(saveErr, ErrStoreFailed, "%q", box.job.ID)
 		}
 	}
 
@@ -47,14 +64,17 @@ func (s *Scheduler) Add(ctx context.Context, job *Job) error {
 		s.mu.Unlock()
 		return ErrSchedulerClosed
 	}
-	if _, exists := s.entries[prepared.ID]; exists {
+	if _, exists := s.entries[box.job.ID]; exists {
 		s.mu.Unlock()
-		return errs.Detail(ErrJobExists, "%q", prepared.ID)
+		return errs.Detail(ErrJobExists, "%q", box.job.ID)
 	}
-	item := newEntry(prepared, definition)
-	s.entries[prepared.ID] = item
+	box.item.job = &box.job
+	box.item.definition = definition
+	box.item.index = -1
+	item := &box.item
+	s.entries[box.job.ID] = item
 	if armErr := s.armLocked(item, next, false); armErr != nil {
-		delete(s.entries, prepared.ID)
+		delete(s.entries, box.job.ID)
 		s.mu.Unlock()
 		return armErr
 	}
@@ -62,7 +82,7 @@ func (s *Scheduler) Add(ctx context.Context, job *Job) error {
 	s.mu.Unlock()
 
 	s.signal()
-	job.ID = prepared.ID
+	job.ID = box.job.ID
 	return nil
 }
 
@@ -93,7 +113,8 @@ func (s *Scheduler) Update(ctx context.Context, job *Job) error {
 	}
 	s.mu.Unlock()
 
-	prepared, definition, next, err := s.prepareJob(job)
+	var prepared Job
+	definition, next, err := s.prepareJobInto(job, &prepared)
 	if err != nil {
 		return err
 	}
@@ -109,7 +130,7 @@ func (s *Scheduler) Update(ctx context.Context, job *Job) error {
 		s.mu.Unlock()
 		return errs.Detail(ErrJobNotFound, "%q", prepared.ID)
 	}
-	item.job = prepared
+	item.job = &prepared
 	item.definition = definition
 	if prepared.Disabled {
 		s.unarmLocked(item)
@@ -128,6 +149,27 @@ func (s *Scheduler) Remove(ctx context.Context, id string) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	store := s.options.Store
+	if store == nil {
+		s.mu.Lock()
+		if s.closed {
+			s.mu.Unlock()
+			return ErrSchedulerClosed
+		}
+		item, exists := s.entries[id]
+		if !exists {
+			s.mu.Unlock()
+			return errs.Detail(ErrJobNotFound, "%q", id)
+		}
+		delete(s.entries, id)
+		s.unarmLocked(item)
+		item.removed.Store(true)
+		s.version++
+		s.mu.Unlock()
+		s.signal()
+		return nil
+	}
+
 	s.opMu.Lock()
 	defer s.opMu.Unlock()
 
@@ -143,10 +185,8 @@ func (s *Scheduler) Remove(ctx context.Context, id string) error {
 	}
 	s.mu.Unlock()
 
-	if s.options.Store != nil {
-		if err := s.options.Store.Delete(ctx, id); err != nil {
-			return errs.WrapDetail(err, ErrStoreFailed, "%q", id)
-		}
+	if err := store.Delete(ctx, id); err != nil {
+		return errs.WrapDetail(err, ErrStoreFailed, "%q", id)
 	}
 
 	s.mu.Lock()

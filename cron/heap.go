@@ -36,6 +36,16 @@ func newEntry(job *Job, definition Definition) *entry {
 	return &entry{job: job, definition: definition, index: -1}
 }
 
+// entryBox co-allocates an entry with the job it owns, so Add pays one heap
+// allocation instead of two. | entryBox 把元素与其拥有的任务放在同一次分配中，
+// 使 Add 只付一次堆分配而不是两次。
+type entryBox struct {
+	// job is the job owned by item. | job 是 item 拥有的任务。
+	job Job
+	// item is the scheduler entry. | item 是调度器元素。
+	item entry
+}
+
 // dueFire is one activation removed from the heap before dispatch. |
 // dueFire 是派发前从堆中取出的一次触发。
 type dueFire struct {

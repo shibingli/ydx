@@ -14,7 +14,8 @@ func (s *Scheduler) Get(id string) (Snapshot, bool) {
 		s.mu.RUnlock()
 		return Snapshot{}, false
 	}
-	snapshot := s.snapshotLocked(item)
+	var snapshot Snapshot
+	s.fillSnapshot(item, &snapshot)
 	s.mu.RUnlock()
 	return snapshot, true
 }
@@ -41,7 +42,7 @@ func (s *Scheduler) List() []Snapshot {
 	}
 	snapshots := make([]Snapshot, len(s.sorted))
 	for index, item := range s.sorted {
-		snapshots[index] = s.snapshotLocked(item)
+		s.fillSnapshot(item, &snapshots[index])
 	}
 	s.mu.RUnlock()
 	return snapshots
@@ -81,14 +82,19 @@ func (s *Scheduler) Stats() Stats {
 	return stats
 }
 
-// snapshotLocked builds one Snapshot; the caller holds s.mu for reading or
-// writing. | snapshotLocked 构建单个快照；调用方持有 s.mu 的读锁或写锁。
-func (s *Scheduler) snapshotLocked(item *entry) Snapshot {
+// fillSnapshot writes one Snapshot in place; the caller holds s.mu for reading
+// or writing. Filling the destination directly avoids copying the whole struct
+// once more per job. | fillSnapshot 就地写入单个快照；调用方持有 s.mu 的读锁或写锁。
+// 直接写入目标可避免每个任务再多复制一次整个结构体。
+func (s *Scheduler) fillSnapshot(item *entry, snapshot *Snapshot) {
 	definition := item.definition
 	if len(definition.Metadata) > 0 {
 		definition.Metadata = copyMetadata(definition.Metadata)
 	}
-	snapshot := Snapshot{
+	// Assign the aggregate once so the compiler can copy it with a bulk write
+	// barrier instead of one barrier per pointer field. | 一次性赋值整个结构，
+	// 让编译器用批量写屏障代替逐指针字段的写屏障。
+	*snapshot = Snapshot{
 		Definition:   definition,
 		Next:         item.next,
 		LastDuration: time.Duration(item.stats.lastDuration.Load()),
@@ -102,5 +108,4 @@ func (s *Scheduler) snapshotLocked(item *entry) Snapshot {
 		snapshot.LastRun = time.Unix(0, nanos).UTC()
 	}
 	snapshot.LastError = item.stats.lastError()
-	return snapshot
 }

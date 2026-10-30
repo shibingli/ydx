@@ -103,6 +103,24 @@ func (s *Spec) Next(after time.Time) time.Time {
 	// 用一次 Add 移到下一个整秒，避免 Truncate+Add。
 	t = t.Add(time.Second - time.Duration(t.Nanosecond()))
 
+	// A fixed wall-clock time on every day is the common case for descriptors and
+	// for schedules like "0 0 12 * * *": resolve it with one time.Date instead of
+	// walking the field loop. | 每天固定的墙上时间是指南符与 "0 0 12 * * *" 这类
+	// 调度的常见形态：用一次 time.Date 直接求出，避免逐字段循环。
+	if s.domStar && s.dowStar && s.month == allMonths && !s.yearSet &&
+		s.sec != 0 && s.sec&(s.sec-1) == 0 &&
+		s.min != 0 && s.min&(s.min-1) == 0 &&
+		s.hour != 0 && s.hour&(s.hour-1) == 0 {
+		second := bits.TrailingZeros64(s.sec)
+		minute := bits.TrailingZeros64(s.min)
+		hour := bits.TrailingZeros64(s.hour)
+		day := t.Day()
+		if hour*3600+minute*60+second <= t.Hour()*3600+t.Minute()*60+t.Second() {
+			day++
+		}
+		return time.Date(t.Year(), t.Month(), day, hour, minute, second, 0, loc)
+	}
+
 	// A year bound is enough for the search horizon and avoids AddDate on every
 	// call. | 用年份上限即可界定搜索范围，避免每次调用都做 AddDate。
 	limitYear := t.Year() + 5

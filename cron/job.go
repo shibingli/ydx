@@ -98,56 +98,58 @@ func (d Definition) Schedule() (Schedule, error) {
 	return schedule, nil
 }
 
-// prepareJob validates a job, fills its ID, resolves its handler and normalizes
-// its policy fields. It returns a private copy so later mutation of the caller's
-// Job cannot race with the scheduler. | prepareJob 校验任务、补齐 ID、解析处理器并规范化
-// 策略字段；返回私有副本，避免调用方之后修改 Job 与调度器产生竞态。
-func (s *Scheduler) prepareJob(job *Job) (*Job, Definition, time.Time, error) {
+// prepareJobInto validates a job, fills its ID, resolves its handler and
+// normalizes its policy fields, writing the private copy into dst. Add passes
+// the Job embedded in its entry box, so the caller's Job is copied once instead
+// of once into a temporary and again into the box. | prepareJobInto 校验任务、
+// 补齐 ID、解析处理器并规范化策略字段，把私有副本写入 dst。Add 传入元素块内嵌的 Job，
+// 使调用方的 Job 只复制一次，而不是先复制到临时值、再复制进元素块。
+func (s *Scheduler) prepareJobInto(job *Job, dst *Job) (Definition, time.Time, error) {
 	if job == nil {
-		return nil, Definition{}, time.Time{}, ErrNilJob
+		return Definition{}, time.Time{}, ErrNilJob
 	}
 	if job.Schedule == nil {
-		return nil, Definition{}, time.Time{}, ErrNilSchedule
+		return Definition{}, time.Time{}, ErrNilSchedule
 	}
 
-	prepared := *job
-	prepared.Metadata = copyMetadata(job.Metadata)
-	if prepared.ID == "" {
-		prepared.ID = newJobID()
+	*dst = *job
+	dst.Metadata = copyMetadata(job.Metadata)
+	if dst.ID == "" {
+		dst.ID = newJobID()
 	}
-	if prepared.Retries < 0 {
-		prepared.Retries = 0
+	if dst.Retries < 0 {
+		dst.Retries = 0
 	}
-	if prepared.RetryBackoff <= 1 {
-		prepared.RetryBackoff = 1
+	if dst.RetryBackoff <= 1 {
+		dst.RetryBackoff = 1
 	}
-	prepared.Overlap = prepared.Overlap.normalize()
+	dst.Overlap = dst.Overlap.normalize()
 
-	if prepared.Handler == nil {
-		if prepared.Task == "" {
-			return nil, Definition{}, time.Time{}, ErrNilHandler
+	if dst.Handler == nil {
+		if dst.Task == "" {
+			return Definition{}, time.Time{}, ErrNilHandler
 		}
-		handler, ok := s.handler(prepared.Task)
+		handler, ok := s.handler(dst.Task)
 		if !ok {
-			return nil, Definition{}, time.Time{}, errs.Detail(ErrHandlerNotFound, "%q", prepared.Task)
+			return Definition{}, time.Time{}, errs.Detail(ErrHandlerNotFound, "%q", dst.Task)
 		}
-		prepared.Handler = handler
+		dst.Handler = handler
 	}
-	if s.options.Store != nil && prepared.Task == "" {
-		return nil, Definition{}, time.Time{}, ErrEmptyTask
+	if s.options.Store != nil && dst.Task == "" {
+		return Definition{}, time.Time{}, ErrEmptyTask
 	}
 
-	definition := prepared.Definition()
+	definition := dst.Definition()
 	if s.options.Store != nil {
 		if _, err := definition.Schedule(); err != nil {
-			return nil, Definition{}, time.Time{}, err
+			return Definition{}, time.Time{}, err
 		}
 	}
-	next := prepared.Schedule.Next(s.now())
-	if next.IsZero() && !prepared.Disabled {
-		return nil, Definition{}, time.Time{}, ErrNoFutureRun
+	next := dst.Schedule.Next(s.now())
+	if next.IsZero() && !dst.Disabled {
+		return Definition{}, time.Time{}, ErrNoFutureRun
 	}
-	return &prepared, definition, next, nil
+	return definition, next, nil
 }
 
 // handler resolves a registered task handler. | handler 解析已注册的任务处理器。
