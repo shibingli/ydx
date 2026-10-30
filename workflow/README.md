@@ -134,8 +134,32 @@ if err := scheduler.Start(ctx); err != nil { ... }
 defer scheduler.Stop(10 * time.Second)
 ```
 
-调度器负责：到期催办、通知 outbox 投递、定时捕获事件与超时处理。多副本同时运行是安全的，
+调度器负责：到期催办、通知 outbox 投递、定时捕获事件与超时处理。它由 `ydx/cron` 的调度器驱动：
+工作流侧只注册一个固定间隔任务调用 `Service.RunDue`，不自带定时循环。多副本同时运行是安全的，
 每条记录通过条件更新领取；`Stop` 幂等并带有界等待。
+
+默认情况下工作流创建一个私有 cron 调度器。若应用已有自己的 cron 调度器，可把扫描任务挂上去，
+避免同一进程出现两个调度循环：
+
+```go
+shared := cron.New(cron.Options{Concurrency: 1, QueueSize: 1, HistoryLimit: -1})
+scheduler := workflow.NewScheduler(svc, 30*time.Second, logger, workflow.WithCronScheduler(shared))
+
+_ = shared.Start(ctx)          // 共享调度器的生命周期由应用负责
+if err := scheduler.Start(ctx); err != nil { ... } // 只添加扫描任务
+defer scheduler.Stop(10 * time.Second)             // 只移除扫描任务
+_ = shared.Stop(ctx)
+```
+
+实例与多节点语义：
+
+- 私有实例与应用的其它 cron 实例互不干扰：堆、工作池、`Store`/`Locker` 都是独立的，
+  `workflow-scan` 只存在于该私有实例中；应用即使同时直接使用 `ydx/cron`，也是各用各的。
+- 共享实例上不要配置 `Store`：`Reload` 会按 Store 内容重建任务表，并丢弃内存中的扫描任务。
+  多个流程服务共享同一实例时，用 `workflow.WithScanJobID` 指定不同的任务 ID。
+- 每个节点都可以运行扫描器：到期项通过数据库条件更新领取，不会重复处理；共享实例且配置了
+  `Locker` 时，扫描任务还带 `Singleton`，每个周期只有一个节点扫描。
+- 取消传给 `Start` 的上下文不会停止共享实例；调用 `Stop` 卸载任务即可。
 
 ## 通知
 
