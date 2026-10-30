@@ -32,8 +32,8 @@ github.com/shibingli/ydx/base64 v0.1.12 h1:xUjtX6yZ/UMDb5DBwvE1a70FVZnX9gQVBgdlE
 github.com/shibingli/ydx/base64 v0.1.12/go.mod h1:PaROcW7ashuUWtpu30D3TfA28lDCBop8D39ZrHuK/eE=
 github.com/shibingli/ydx/config v0.1.8 h1:vGgqju8UqN3Fq/mIwbN0JYCQJnMz8JrxTF2TJC8oZAQ=
 github.com/shibingli/ydx/config v0.1.8/go.mod h1:FCQCjq65sOQA7UBTuZTvv20GWDUwEJXtLB7oRpTXiTE=
-github.com/shibingli/ydx/cron v0.1.0 h1:/RkwZRGwFAJXxq7piWJGBuqX7srvh9Q/4BvW/XWNMs8=
-github.com/shibingli/ydx/cron v0.1.0/go.mod h1:KIGtVaIGv08m7KdpO7K2tUVZuOK3GdA5vGNWoj7qZDI=
+github.com/shibingli/ydx/cron v0.1.1 h1:y+bu66DlvWGDhOaZSrfMIHlnHXPAvqS2qs0XU+f261k=
+github.com/shibingli/ydx/cron v0.1.1/go.mod h1:KIGtVaIGv08m7KdpO7K2tUVZuOK3GdA5vGNWoj7qZDI=
 github.com/shibingli/ydx/errs v0.1.4 h1:/hexB5eDFA/wWhRof5yxWEVeVlHn1P7IZmys9U4h1iA=
 github.com/shibingli/ydx/errs v0.1.4/go.mod h1:N6GNQq5eustT11WTdXOip9bXcIwrFd4c9UWG0gIDuwU=
 github.com/shibingli/ydx/json v0.1.14 h1:0K/hlI3/XpEboOB0xK1VBFQnRlbKiookuynNWqBcPxI=

@@ -16,7 +16,7 @@
 //	cd benchmarks/cron
 //	GOWORK=off go test -run '^$' -bench . -benchmem -count=5 -benchtime=500ms
 //
-// The module requires the published cron/v0.1.0 tag; until that tag is pushed,
-// use a temporary go.work outside the repository. | 模块需要已发布的 cron/v0.1.0
+// The module requires the published cron/v0.1.1 tag; until that tag is pushed,
+// use a temporary go.work outside the repository. | 模块需要已发布的 cron/v0.1.1
 // 标签；标签推送前请在仓库外使用临时 go.work。
 package cron

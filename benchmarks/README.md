@@ -57,9 +57,9 @@ README 与 [optimization-report.md](optimization-report.md)。
 | cache | L1 `GetAppend` / `View`（零拷贝） | 38.3 / 36.6 ns | ristretto 35.7 ns |
 | cache | L1 `Set` | **49.07 ns** | freecache 75.5 ns / bigcache 95.8 ns |
 | compress | 16 KiB gzip 中间件 | 5.268 µs | gzhttp 5.213 µs |
-| cron | `Next` `*/5 * * * *` | **228 ns** | robfig 920 ns / gronx 9.84 µs（含重新解析） |
-| cron | 手动触发到完成 | **988 ns / 0 allocs** | gocron 21.9 µs / 30 allocs |
-| cron | 单点读取（1000 任务） | **186 ns** | robfig 26.6 µs（线性扫描） |
+| cron | `Next` `*/5 * * * *` | **189 ns** | robfig 905 ns / gronx 9.76 µs（含重新解析） |
+| cron | 手动触发到完成 | **983 ns / 0 allocs** | gocron 21.2 µs / 30 allocs |
+| cron | 单点读取（1000 任务） | **186 ns** | robfig 26.2 µs（线性扫描） |
 | crypto | SM3 4 KiB | 7.36 µs | SHA-256 约 23% 的吞吐（无 SHA-NI 对应指令） |
 | crypto | SM2 签名 / 验签 | **14.02 / 33.91 µs** | 旧版 tjfoc 130.5 / 686.5 µs；快于 ECDSA P-256（17.67 / 38.54 µs） |
 | json | `Marshal` 64 对象 | 2.59 µs | goccy 4.23 µs / sonic 2.99 µs / stdlib 12.8 µs |
