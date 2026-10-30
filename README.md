@@ -57,6 +57,36 @@
 | `github.com/shibingli/ydx/middleware/reqlog` | `reqlog` | 中间件共享的计数写入器与头处理（公开路径，无稳定性承诺） |
 | `github.com/shibingli/ydx/repotest` | `repotest` | 仓库级守卫（模块文件、命名、依赖与架构约束） |
 
+## 多实例与命名空间（重要）
+
+ydx 的组件实例默认**不共享 Go 内存状态**：同一个进程里创建两个 `cache.Manager`、两个
+`cron.Scheduler` 或两个 `realtime.Hub`，各自拥有独立的堆、工作池、连接与缓存。真正需要
+协调的是**外部资源**：Redis 键、队列、数据库与路由表。未隔离时通常不会报错，而是静默串
+数据、互相消费或互相覆盖。
+
+| 组件 | 需要区分的资源 | 默认值 | 隔离方式 |
+|---|---|---|---|
+| `cron` | 锁键 Namespace、Store 的命名空间、任务 ID | 锁键 `cron`；Store 默认 `cron` | `Options.Namespace` + `NewStore(client, namespace)`；同一集群保持一致，不同集群必须不同 |
+| `cron` 管理 API | 路由前缀 | 由调用方传入 | `Mount(r, prefix)` / `HTTPHandler(prefix)` |
+| `workflow` 调度器 | 共享 cron 实例、扫描任务 ID | 私有实例；`workflow-scan` | `WithCronScheduler`、`WithScanJobID`；共享实例勿配 `Store` |
+| `cache` | Redis 键前缀、Manager 内 namespace、事件 NodeID | `yd:cache:`；namespace 必填；NodeID 随机 | `cache.redis.prefix`、`Raw`/`New`、`WithNodeID` |
+| `captcha` | Redis KeyPrefix、store Prefix、策略键、HTTP 路由前缀 | `yd:captcha:` / 空 / `yd:captcha:policy` / `/captcha` | `Options.KeyPrefix`、各 redisstore `Prefix`、`NewPolicyProvider` 的 key、`HandlerOptions.Prefix` |
+| `realtime` | Redis ChannelPrefix、NodeID | `yd:rt:`；NodeID 由 nodeid 解析 | `RedisOptions.ChannelPrefix`、`Options.NodeID` |
+| `middleware/ratelimit` | RedisStore Prefix、规则 KeyPrefix | `yd:rl:`；规则前缀为空 | `RedisStoreOptions.Prefix`、`RateLimitOptions.KeyPrefix` |
+| `redis` | Cache 键前缀 | 由调用方传入 | `Options.KeyPrefix` / `CacheOptions.Prefix` |
+| `asynq` | 队列名、Redis DB/实例 | `default` 队列；DB 0 | 不同应用使用不同队列名或独立 Redis DB；asynq 没有键前缀 |
+| `openapi` | 文档/查看器/资源路径 | `/openapi.json`、`/docs`、`/openapi/assets/` | `Options.Path` / `DocsPath` / `AssetsPath` |
+| `log` | 进程级默认 logger | `Default()` | 多套隔离服务应显式传入 logger，不要依赖 `SetDefault` |
+
+原则：
+
+- **同一逻辑集群**的所有节点使用相同的 Namespace/Prefix/队列名；**不同应用或不同环境**必须
+  使用不同的值。前者决定协作，后者决定隔离。
+- 多机场景下，数据库条件更新或 Redis 锁只负责**正确性**；命名空间负责**隔离**。两者不能互相
+  替代。
+- Namespace/Prefix 不是安全边界；多租户或不可信负载请使用独立 Redis DB、ACL 或独立实例。
+- 同一个 `ydx/router` 上挂载多个带路由的组件时，前缀必须唯一；重复注册会在启动阶段冲突。
+
 每个组件模块目录下的 `README.md` 提供该模块的功能、特性、快速开始、应用场景、性能指标与
 第三方依赖鸣谢；基准模块的 README 说明对比对象、场景与实测结果。新增模块时请同步补齐。
 

@@ -95,6 +95,17 @@ hub := realtime.NewHub(realtime.Options{
 _ = hub.PublishRemote(ctx, msg)
 ```
 
+## 多实例与命名空间
+
+- 每个 `Hub` 独立维护订阅表、消息 ID 与本地扇出；同进程创建多个 Hub 时默认互不影响。
+- `Options.NodeID` 标识本节点，多机部署应传入由 `nodeid.Resolve` 得到的稳定身份，同一集群内
+  不得重复。
+- `RedisOptions.ChannelPrefix` 前缀化所有主题频道，默认 `yd:rt:`。同一前缀的 Hub 会互相收到
+  发布，这是集群语义；不同应用必须使用不同前缀或不同 Redis DB。
+- 同进程内多个 Hub 若都使用默认前缀，也会互相投递；需要隔离时必须显式设置不同前缀。
+  `NodeID` 只标识消息来源，不能阻止投递。
+- 前缀与 NodeID 不是安全边界。
+
 ## 应用场景
 
 - **聊天室/协作**：按主题扇出到 SSE/WS/WT 连接。

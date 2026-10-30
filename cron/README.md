@@ -154,6 +154,19 @@ go func() {
 - `cron/redis` 同时提供 `Locker` 与 `Store`，两者都接受 `go-redis` 的
   `UniversalClient`；也可以用其它实现替换 `cron.Locker` / `cron.Store`。
 
+### 命名空间与多实例
+
+- `Options.Namespace` 前缀化 Redis 锁键，默认 `cron`；`cronredis.NewStore(client, namespace)`
+  的 namespace 则决定定义哈希键（默认也是 `cron`）。同一 Redis 上运行多套互不相关的调度
+  集群时，两者都必须取不同的值，并保持同一集群内一致；否则会出现锁争用或 Store 定义互相
+  覆盖。
+- 同一进程内多个 `cron.Scheduler` 默认互不干扰：各自持有堆、工作池与内存定义；只有共享
+  Store/Locker 且锁键与 Store 命名空间都相同时才会耦合。项目同时直接使用 cron 与 workflow
+  的私有调度器时，两者就是这样各用各的。
+- 管理 API 的挂载前缀（`Mount(r, "/billing/cron")` 或 `HTTPHandler("/billing/cron")`）在同一
+  路由器上必须唯一。
+- Namespace 不是安全边界；多租户请使用独立 Redis DB 或 ACL。
+
 ## 管理 API
 
 | 方法 | 路径 | 作用 |

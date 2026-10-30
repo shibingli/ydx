@@ -104,6 +104,15 @@ _ = os.WriteFile("public/docs/index.css", openapi.ViewerCSS(), 0o644)
 _ = os.WriteFile("public/docs/icons.svg", openapi.ViewerIcons(), 0o644)
 ```
 
+## 多实例与路由路径
+
+- `Options.Path`、`DocsPath`、`AssetsPath` 默认分别为 `/openapi.json`、`/docs`、
+  `/openapi/assets/`。同一个路由器或 `ServeMux` 上挂多份文档时，这三组路径必须彼此不冲突；
+  建议为每份文档使用独立前缀，例如 `/billing/openapi.json`、`/billing/docs`。
+- `ViewerScript`、`ViewerCSS`、`ViewerIcons` 必须与 `AssetsPath` 同源；自定义路径时一并调整，
+  否则查看器会请求到错误的资源。
+- 文档对象本身不共享状态；路径冲突是同一路由器上的唯一隔离问题。
+
 ## 应用场景
 
 - **API 文档站**：内部或对外 API 的交互式文档。

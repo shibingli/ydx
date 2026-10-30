@@ -99,6 +99,15 @@ defer srv.Shutdown()
 > `Payload` 是已解码的 JSON 对象（`map[string]any`）；需要强类型时先用 `ydx/json`
 > 重新编码/解码到目标结构体。数字按 JSON 数据模型解码为 `float64`。
 
+## 多实例与命名空间
+
+- 队列名是隔离单位：多个 `Server` 消费同一 Redis DB 中同名队列时会竞争同一批任务，这是扩容
+  语义；不同应用应使用不同队列名或不同 Redis DB。
+- asynq 没有全局键前缀；需要硬隔离时使用不同 Redis DB 或独立 Redis 实例
+  （`Options.RedisDB` / `RedisClientOpt.DB`）。
+- `Client` 只负责入队，`Server` 只负责消费；多个客户端/服务端实例本身不共享 Go 状态。
+- 队列名与 Redis DB 不是安全边界；不可信负载请使用独立实例。
+
 ## 应用场景
 
 - **邮件/短信发送**：请求路径只入队，投递失败自动重试。

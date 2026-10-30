@@ -77,6 +77,16 @@ r.Use(ratelimit.RateLimit(ratelimit.RateLimitOptions{
 handler := ratelimit.Middleware(o)(mux)
 ```
 
+## 多实例与命名空间
+
+- `Store` 为 nil 时每个中间件持有私有 `MemoryStore`，同进程多实例互不影响。
+- 共享 Redis 时，`RedisStoreOptions.Prefix` 前缀化存储键，默认 `yd:rl:`；不同应用必须使用
+  不同前缀或不同 Redis DB。
+- 同一个 Store 上挂多条限流规则时，必须给每条规则不同的 `RateLimitOptions.KeyPrefix`；
+  否则不同规则的桶会互相覆盖。
+- 多机要共享同一限额，所有节点必须使用相同的 Store Prefix + 规则 KeyPrefix；要隔离环境则
+  相反。前缀不是安全边界。
+
 ## 应用场景
 
 - **API 配额**：按 API Key、用户或 IP 限流。

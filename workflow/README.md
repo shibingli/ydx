@@ -161,6 +161,18 @@ _ = shared.Stop(ctx)
   `Locker` 时，扫描任务还带 `Singleton`，每个周期只有一个节点扫描。
 - 取消传给 `Start` 的上下文不会停止共享实例；调用 `Stop` 卸载任务即可。
 
+## 多实例与命名空间
+
+- 多个 `Service` 可以共享同一个 `Store`：隔离单位是 `tenant_id`，互不相关的应用应使用不同
+  租户；不要让不同应用写入同一租户。
+- 每个 `Service` 的调度器默认私有；共享应用已有的 cron 实例时用 `WithCronScheduler`，多个
+  流程服务共享同一实例时再用 `WithScanJobID` 分配不同任务 ID。共享实例不要配置 `Store`
+  （`Reload` 会移除内存扫描任务）。
+- `Directory`、通知 `Dispatcher`、AI `Decider` 都由调用方注入；无状态实现可以共享，有状态
+  实现应按 `Service` 实例隔离。
+- 多节点扫描的正确性来自数据库条件更新，不来自 cron 命名空间；cron 命名空间只负责把不同
+  应用隔开，租户隔离由 `tenant_id` 负责。
+
 ## 通知
 
 ```go
