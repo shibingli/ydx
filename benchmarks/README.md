@@ -1,6 +1,6 @@
 # ydx 基准与主流实现对比
 
-本目录是 ydx 的基准模块集合，共 **14 个独立 Go 模块**。原 yd 仓 `benchmarks/` 的独有场景
+本目录是 ydx 的基准模块集合，共 **15 个独立 Go 模块**。原 yd 仓 `benchmarks/` 的独有场景
 已全部并入本目录（json 的 7 字段载荷、base64 的 32 B/1 MiB、jwt 的 cristal/jwt 与
 kataras/jwt、log 的 prebound 场景、router 的 echo/fiber、websocket 的 gobwas/gws、
 cache 的 TTL/命中率轨迹，以及 compress/crypto/template 整模块；render 的微基准已并入
@@ -28,6 +28,7 @@ template 模块，避免同一引擎在两处重复对比），yd 仓不再保�
 | `benchmarks/buffpool` | `sync.Pool`、`valyala/bytebufferpool` | [buffpool/README.md](buffpool/README.md) |
 | `benchmarks/cache` | `bigcache`、`freecache`、`ristretto`、`sync.Map`、`go-cache`、`theine`、`ttlcache`、`golang-lru` | [cache/README.md](cache/README.md) |
 | `benchmarks/compress` | 标准库 gzip、klauspost gzip/zstd、brotli、snappy、lz4 | [compress/README.md](compress/README.md) |
+| `benchmarks/cron` | `robfig/cron/v3`、`go-co-op/gocron/v2`、`adhocore/gronx` | [cron/README.md](cron/README.md) |
 | `benchmarks/crypto` | 标准库 SHA-256/AES-GCM/ChaCha20-Poly1305/ECDSA/Ed25519、维护版与旧版 gmsm | [crypto/README.md](crypto/README.md) |
 | `benchmarks/json` | `encoding/json`、`goccy/go-json`、`json-iterator/go`、`bytedance/sonic`、`segmentio/encoding`、`go-json-experiment/json` | [json/README.md](json/README.md) |
 | `benchmarks/jwt` | `golang-jwt/jwt/v5`、`lestrrat-go/jwx/v4`、`go-jose/v4`、`cristalhq/jwt/v5`、`kataras/jwt` | [jwt/README.md](jwt/README.md) |
@@ -56,6 +57,9 @@ README 与 [optimization-report.md](optimization-report.md)。
 | cache | L1 `GetAppend` / `View`（零拷贝） | 38.3 / 36.6 ns | ristretto 35.7 ns |
 | cache | L1 `Set` | **49.07 ns** | freecache 75.5 ns / bigcache 95.8 ns |
 | compress | 16 KiB gzip 中间件 | 5.268 µs | gzhttp 5.213 µs |
+| cron | `Next` `*/5 * * * *` | **228 ns** | robfig 920 ns / gronx 9.84 µs（含重新解析） |
+| cron | 手动触发到完成 | **988 ns / 0 allocs** | gocron 21.9 µs / 30 allocs |
+| cron | 单点读取（1000 任务） | **186 ns** | robfig 26.6 µs（线性扫描） |
 | crypto | SM3 4 KiB | 7.36 µs | SHA-256 约 23% 的吞吐（无 SHA-NI 对应指令） |
 | crypto | SM2 签名 / 验签 | **14.02 / 33.91 µs** | 旧版 tjfoc 130.5 / 686.5 µs；快于 ECDSA P-256（17.67 / 38.54 µs） |
 | json | `Marshal` 64 对象 | 2.59 µs | goccy 4.23 µs / sonic 2.99 µs / stdlib 12.8 µs |

@@ -73,6 +73,7 @@
 | `benchmarks/buffpool` | `sync.Pool`、`bytebufferpool` | [buffpool](benchmarks/buffpool/README.md) |
 | `benchmarks/cache` | `bigcache`、`freecache`、`ristretto`、`sync.Map`、`go-cache`、`theine`、`ttlcache`、`golang-lru` | [cache](benchmarks/cache/README.md) |
 | `benchmarks/compress` | 标准库 gzip、klauspost gzip/zstd、brotli、snappy、lz4 | [compress](benchmarks/compress/README.md) |
+| `benchmarks/cron` | `robfig/cron/v3`、`go-co-op/gocron/v2`、`adhocore/gronx` | [cron](benchmarks/cron/README.md) |
 | `benchmarks/crypto` | 标准库 SHA-256/AES-GCM/ChaCha20-Poly1305/ECDSA/Ed25519、维护版与旧版 gmsm | [crypto](benchmarks/crypto/README.md) |
 | `benchmarks/json` | `encoding/json`、`goccy/go-json`、`json-iterator`、`sonic`、`segmentio/encoding`、`go-json-experiment` | [json](benchmarks/json/README.md) |
 | `benchmarks/jwt` | `golang-jwt/jwt`、`jwx`、`go-jose`、`cristalhq/jwt`、`kataras/jwt` | [jwt](benchmarks/jwt/README.md) |
