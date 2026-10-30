@@ -55,7 +55,12 @@
 | `github.com/shibingli/ydx/middleware/recovery` | `recovery` | panic 恢复 |
 | `github.com/shibingli/ydx/middleware/requestid` | `requestid` | 请求 ID |
 | `github.com/shibingli/ydx/middleware/reqlog` | `reqlog` | 中间件共享的计数写入器与头处理（公开路径，无稳定性承诺） |
+| `github.com/shibingli/ydx/middleware/waf` | `waf` | 基于 OWASP Coraza 的 WAF：请求/响应全生命周期、热重载、优雅关闭；完整使用手册见模块 README |
 | `github.com/shibingli/ydx/repotest` | `repotest` | 仓库级守卫（模块文件、命名、依赖与架构约束） |
+
+> `middleware/waf` 依赖 Coraza 及其 OCSF 审计日志传递依赖，体积明显大于其它插件，因此
+> **不并入** `middleware` 聚合门面；需要 WAF 的服务直接依赖该模块，不需要的服务不付出任何
+> 依赖与编译成本。
 
 ## 多实例与命名空间（重要）
 
