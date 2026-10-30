@@ -90,6 +90,14 @@ if logger.Enabled(log.DebugLevel) {
 }
 ```
 
+## 多实例与命名空间
+
+- `log.Default()` / `log.SetDefault()` 是**进程级**全局状态；组件在构造时传入 nil 会捕获当时
+  的默认 logger，之后调用 `SetDefault` 不会切换已经构造好的实例。
+- 同一个进程内运行多套隔离服务时，应显式传入各自的 `*log.Logger`，不要依赖 `SetDefault`。
+- `With` 与 `Named` 返回共享输出端的新 logger，字段与名称互不影响；它们不是安全边界，敏感
+  字段仍需调用方自行脱敏。
+
 ## 应用场景
 
 - **高吞吐 API**：逐请求结构化日志，稳态零分配。

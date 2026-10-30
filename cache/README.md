@@ -110,6 +110,20 @@ ctx = cache.WithBypass(ctx) // 本次请求跳过缓存读写
 
 子包 `cache/gormcache` 提供 GORM 查询结果缓存；`cache/local` 可单独作为进程内缓存使用。
 
+## 多实例与命名空间
+
+- 每个 `Manager` 拥有独立的 L1 缓存、事件总线和命名空间表；`Raw`/`New` 的 namespace 在同一个
+  Manager 内必须唯一。同进程创建多个 Manager 时，它们默认互不影响。
+- 多机共享 Redis 时，所有键以 `cache.redis.prefix`（或 `redis.key_prefix + cache.prefix`）
+  开头，默认 `yd:cache:`。不同应用/环境必须使用不同前缀，否则会读到彼此的数据并互相失效。
+- `NodeID` 是失效事件的来源，默认每个 Manager 随机生成；只有需要固定来源时才用
+  `cache.WithNodeID`，且同一进程内并存的 Manager 不得重复，否则会把对方的失效事件当成自己
+  的回声而忽略。
+- `cache/gormcache` 使用 `Options.Namespace`（默认 `gorm`）与 `SensitiveNamespace`；多个应用
+  共享同一个 Manager/Redis 时必须使用不同命名空间。
+- 同一前缀下不同 namespace 仍写在同一 Redis DB，只是键后缀不同；需要硬隔离请用不同前缀
+  或不同 Redis DB。前缀与 namespace 都不是安全边界。
+
 ## 应用场景
 
 - **读多写少的 API**：用户资料、商品详情、配置。

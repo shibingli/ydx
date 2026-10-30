@@ -100,6 +100,8 @@ func (Version) TableName() string { return "yd_workflow_versions" }
 // VersionSummary 是一个版本的轻量标识与生命周期投影。列表与选择器只需要版本号与草稿/已发布状态，
 // 不需要设计或 BPMN 文档。
 type VersionSummary struct {
+	// PublishedAt is the publication instant; zero while draft. | PublishedAt 是发布时刻；草稿时为零值。
+	PublishedAt time.Time `json:"published_at,omitempty"`
 	// ID is the version primary key. | ID 是版本主键。
 	ID string `json:"id"`
 	// DefinitionID is the owning definition. | DefinitionID 是所属定义。
@@ -108,8 +110,6 @@ type VersionSummary struct {
 	Status string `json:"status"`
 	// Note is the publication note shown in version drawers. | Note 是版本抽屉展示的说明。
 	Note string `json:"note,omitempty"`
-	// PublishedAt is the publication instant; zero while draft. | PublishedAt 是发布时刻；草稿时为零值。
-	PublishedAt time.Time `json:"published_at,omitempty"`
 	// Version is the monotonically increasing version number. | Version 是单调递增的版本号。
 	Version int `json:"version"`
 }

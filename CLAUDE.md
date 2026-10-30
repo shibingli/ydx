@@ -30,13 +30,13 @@ ydx 是 yd 全栈框架的可复用组件仓库；组件源码以本仓库为唯
 - **组件模块不得包含基准**：所有 `Benchmark*` 放 `benchmarks/*` 独立模块；组件模块也不得
   依赖基准专用库。基准模块的包名同样等于目录名。
 - 产品模块：`errs`、`sysinfo`、`gc`、`buffpool`、`protocol`、`nodeid`、`base64`、`json`、`afs`、
-  `config`、`log`、`regexpx`、`router`、`gorm`、`redis`、`asynq`、`cache`、`sse`、`websocket`、
+  `config`、`log`、`regexpx`、`router`、`gorm`、`redis`、`asynq`、`cron`、`cache`、`sse`、`websocket`、
   `webtransport`、`realtime`、`render`、`i18n`、`openapi`、`openapi/ydrouter`、`jwt`、`captcha`、`guomi`、
-  `middleware` 及
+  `workflow`、`middleware` 及
   `middleware/{accesslog,asyncafter,compress,cors,ratelimit,recovery,requestid,reqlog}`。
 - `openapi` 是独立模块：核心只接受 `openapi.Route` 并提供标准 `net/http` 处理器，
   **不得** import `ydx/router`；路由适配（`FromRouter` / `Handler`）只在 `openapi/ydrouter`。
-- 基准模块（14 个）：`benchmarks/{base64,buffpool,cache,compress,crypto,json,jwt,log,middleware,regexpx,router,sse,template,websocket}`。
+- 基准模块（16 个）：`benchmarks/{base64,buffpool,cache,compress,cron,crypto,json,jwt,log,middleware,regexpx,router,sse,template,websocket,workflow}`。
   `benchmarks/cache/compare` 是 `cache` 模块内的对比子包。yd 仓库不再保留基准，所有最终结果以本仓为准。
 - 守卫模块：`repotest`。
 

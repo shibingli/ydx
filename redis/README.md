@@ -88,6 +88,15 @@ func main() {
 cli, err := redis.Open(redis.OptionsFromConfig(cfg))
 ```
 
+## 多实例与命名空间
+
+- `Options.KeyPrefix` 是框架写入的所有键共享的命名空间；构造 `redis.Cache` 时传给
+  `CacheOptions.Prefix`。装饰器实际写入的键是 `Prefix + key`。
+- 同一个 Redis 上运行多个应用时，每个应用必须使用不同前缀或不同 Redis DB；否则缓存键会
+  互相覆盖。
+- 客户端由调用方所有，多个 `Cache`/实例可以共享同一个 `UniversalClient`；`Close` 由调用方
+  统一负责。前缀不是安全边界。
+
 ## 应用场景
 
 - **读多写少的 API**：用户资料、配置、权限等读透缓存。

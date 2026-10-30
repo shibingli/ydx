@@ -321,6 +321,20 @@ _ = bus.Publish(ctx, &captcha.Policy{Deny: []captcha.Rule{{IP: "203.0.113.0/24"}
   首次部署先用 `PolicyBus.Publish` 或 `StorePolicy` 写入 `{}`；运行期刷新失败保留上一版策略并记录告警。
 - `PolicyBus.Publish` 先持久化再广播；只广播不落盘的旧行为已移除。
 
+### 命名空间与多实例
+
+- 同一 Redis 上多套验证码应用必须同时区分以下键空间：`Options.KeyPrefix`（默认 `yd:captcha:`，
+  用于挑战/图片/冷却等逻辑键）、`redisstore.StoreOptions.Prefix` 与
+  `redisstore.ImageStoreOptions.Prefix`（物理键前缀，默认空）、`PolicyProvider` 的策略键
+  （默认 `yd:captcha:policy`）与 `PolicyBus` 频道（默认 `yd:captcha:policy:events`）；
+  限流器还有 `NewRateLimitStore` 的 prefix（默认 `yd:captcha:rl:`）。只有这些值都一致才
+  共享挑战、一次性 Token 与策略。
+- 同一进程内多个 `captcha.Manager` 各自持有存储与限流器；HTTP 路由通过
+  `HandlerOptions{Prefix}` 区分，默认 `/captcha`，同一路由器上必须唯一。
+- `PolicyBus` 与 `PolicyProvider` 必须使用同一个策略键；自定义键时用
+  `NewPolicyBusWithKey` 显式传入。
+- KeyPrefix 与路由前缀都不是安全边界；多租户请使用独立 Redis DB 或 ACL。
+
 ## 6. 短信与邮件插件
 
 统一接口：

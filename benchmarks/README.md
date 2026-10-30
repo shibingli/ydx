@@ -1,6 +1,6 @@
 # ydx 基准与主流实现对比
 
-本目录是 ydx 的基准模块集合，共 **14 个独立 Go 模块**。原 yd 仓 `benchmarks/` 的独有场景
+本目录是 ydx 的基准模块集合，共 **16 个独立 Go 模块**。原 yd 仓 `benchmarks/` 的独有场景
 已全部并入本目录（json 的 7 字段载荷、base64 的 32 B/1 MiB、jwt 的 cristal/jwt 与
 kataras/jwt、log 的 prebound 场景、router 的 echo/fiber、websocket 的 gobwas/gws、
 cache 的 TTL/命中率轨迹，以及 compress/crypto/template 整模块；render 的微基准已并入
@@ -28,6 +28,7 @@ template 模块，避免同一引擎在两处重复对比），yd 仓不再保�
 | `benchmarks/buffpool` | `sync.Pool`、`valyala/bytebufferpool` | [buffpool/README.md](buffpool/README.md) |
 | `benchmarks/cache` | `bigcache`、`freecache`、`ristretto`、`sync.Map`、`go-cache`、`theine`、`ttlcache`、`golang-lru` | [cache/README.md](cache/README.md) |
 | `benchmarks/compress` | 标准库 gzip、klauspost gzip/zstd、brotli、snappy、lz4 | [compress/README.md](compress/README.md) |
+| `benchmarks/cron` | `robfig/cron/v3`、`go-co-op/gocron/v2`、`adhocore/gronx` | [cron/README.md](cron/README.md) |
 | `benchmarks/crypto` | 标准库 SHA-256/AES-GCM/ChaCha20-Poly1305/ECDSA/Ed25519、维护版与旧版 gmsm | [crypto/README.md](crypto/README.md) |
 | `benchmarks/json` | `encoding/json`、`goccy/go-json`、`json-iterator/go`、`bytedance/sonic`、`segmentio/encoding`、`go-json-experiment/json` | [json/README.md](json/README.md) |
 | `benchmarks/jwt` | `golang-jwt/jwt/v5`、`lestrrat-go/jwx/v4`、`go-jose/v4`、`cristalhq/jwt/v5`、`kataras/jwt` | [jwt/README.md](jwt/README.md) |
@@ -38,6 +39,7 @@ template 模块，避免同一引擎在两处重复对比），yd 仓不再保�
 | `benchmarks/sse` | `gin-contrib/sse`、手写 `fmt.Fprintf` 基线 | [sse/README.md](sse/README.md) |
 | `benchmarks/template` | `html/template`、`text/template`、Jet、Pongo2、Liquid、Raymond、Mustache、quicktemplate、templ | [template/README.md](template/README.md) |
 | `benchmarks/websocket` | `gorilla/websocket`、`coder/websocket`、`gobwas/ws`、`lxzan/gws` | [websocket/README.md](websocket/README.md) |
+| `benchmarks/workflow` | 无同类可比实现（BPMN 引擎语义差异过大），给出 SQLite 回归基线 | [workflow/README.md](workflow/README.md) |
 
 ## 关键结果速览
 
@@ -56,6 +58,9 @@ README 与 [optimization-report.md](optimization-report.md)。
 | cache | L1 `GetAppend` / `View`（零拷贝） | 38.3 / 36.6 ns | ristretto 35.7 ns |
 | cache | L1 `Set` | **49.07 ns** | freecache 75.5 ns / bigcache 95.8 ns |
 | compress | 16 KiB gzip 中间件 | 5.268 µs | gzhttp 5.213 µs |
+| cron | `Next` `*/5 * * * *` | **178 ns** | robfig 848 ns / gronx 8.86 µs（含重新解析） |
+| cron | 手动触发到完成 | **878 ns / 0 allocs** | gocron 18.8 µs / 30 allocs |
+| cron | 单点读取（1000 任务） | **173 ns** | robfig 75.1 µs（线性扫描） |
 | crypto | SM3 4 KiB | 7.36 µs | SHA-256 约 23% 的吞吐（无 SHA-NI 对应指令） |
 | crypto | SM2 签名 / 验签 | **14.02 / 33.91 µs** | 旧版 tjfoc 130.5 / 686.5 µs；快于 ECDSA P-256（17.67 / 38.54 µs） |
 | json | `Marshal` 64 对象 | 2.59 µs | goccy 4.23 µs / sonic 2.99 µs / stdlib 12.8 µs |
@@ -77,6 +82,7 @@ README 与 [optimization-report.md](optimization-report.md)。
 | template | 绑定渲染微基准（`BenchmarkRender`） | **253.7 ns** | html/template 3.43 µs / text/template 2.12 µs |
 | websocket | 32 B 回显往返 | **4.07 µs** | gorilla 4.26 µs / gobwas 4.34 µs / coder 5.59 µs |
 | websocket | 64×1 KiB 批量写 | **14.06 µs** | coder 73.7 µs / gorilla 124.3 µs |
+| workflow | 空扫描 / 发起最小实例 | 516 µs / 6.66 ms | 无同类可比实现（SQLite 基线） |
 
 > 说明：`base64` 的 cloudwego/base64x 对照已并入上表（Linux Zen 5，与 ydx 同一轮采集）；
 > [base64/README.md](base64/README.md) 另给出 Windows AVX2 的 cloudwego 同机对照，两台

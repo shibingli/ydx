@@ -91,6 +91,16 @@ handler := router.Adapt(mux, func(c *router.Ctx) {
 _ = http.ListenAndServe(":8080", handler)
 ```
 
+## 多实例与路由前缀
+
+- `Router` 实例彼此独立，不共享路由表；同一个 Router 内的 method + pattern 必须唯一，
+  冲突由 `Validate()` 以 `ErrConflict` 报告。
+- 挂载带路由的组件（cron、captcha、openapi、sse、websocket 等）时，每个组件应使用不同的
+  前缀；同一 Router 上重复注册同一路径会在校验阶段失败。
+- 多个 Router 可以同时存在于一个进程，适合隔离不同应用或不同 API 版本；跨 Router 的路径
+  不会互相匹配。
+- 路由前缀不是安全边界，鉴权仍需中间件完成。
+
 ## 应用场景
 
 - **REST API**：路径参数、通配、路由组与统一中间件。

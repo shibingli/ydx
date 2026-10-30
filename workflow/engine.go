@@ -1052,7 +1052,7 @@ func (s *Service) flushNotifications(ctx context.Context, notes []Notification) 
 				ydlog.Int("attempts", note.Attempts),
 			)
 		}
-		if updateErr := s.store.UpdateNotification(ctx, *note); updateErr != nil {
+		if updateErr := s.store.UpdateNotification(ctx, *note); updateErr != nil && ctx.Err() == nil {
 			s.log.Warn("workflow notification state could not be stored | 流程通知状态写入失败", ydlog.Err(updateErr))
 		}
 	}
