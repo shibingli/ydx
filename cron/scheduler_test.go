@@ -477,6 +477,47 @@ func TestHistory(t *testing.T) {
 	stopScheduler(t, sch)
 }
 
+// TestSnapshotRunning verifies the Running flag and Stats.Running track an
+// in-flight handler. | TestSnapshotRunning 验证 Running 标志与 Stats.Running
+// 跟踪在途处理器。
+func TestSnapshotRunning(t *testing.T) {
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	sch := New(Options{Concurrency: 1, HistoryLimit: -1})
+	job := &Job{
+		Schedule: Interval(time.Hour),
+		Handler: func(context.Context, *Job) error {
+			close(entered)
+			<-release
+			return nil
+		},
+	}
+	ctx := context.Background()
+	if err := sch.Add(ctx, job); err != nil {
+		t.Fatalf("Add: %v | 新增失败", err)
+	}
+	if err := sch.Start(ctx); err != nil {
+		t.Fatalf("Start: %v | 启动失败", err)
+	}
+	if err := sch.Trigger(job.ID); err != nil {
+		t.Fatalf("Trigger: %v | 手动触发失败", err)
+	}
+	<-entered
+	waitFor(t, 2*time.Second, func() bool {
+		snapshot, _ := sch.Get(job.ID)
+		return snapshot.Running
+	}, "snapshot Running was not set | 快照未标记运行中")
+	if stats := sch.Stats(); stats.Running != 1 {
+		t.Fatalf("Stats.Running = %d, want 1 | 全局运行中计数不符", stats.Running)
+	}
+	close(release)
+	waitFor(t, 2*time.Second, func() bool {
+		snapshot, _ := sch.Get(job.ID)
+		return !snapshot.Running && sch.Stats().Running == 0
+	}, "snapshot Running was not cleared | 快照未清除运行中标记")
+	stopScheduler(t, sch)
+}
+
 // TestSnapshotLastError verifies the last error is visible after a failure and
 // cleared by the next successful run. | TestSnapshotLastError 验证失败后可见最后错误，
 // 并在下一次成功运行后清空。

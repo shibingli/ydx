@@ -25,7 +25,6 @@ type jobStats struct {
 	lastRun      atomic.Int64
 	lastDuration atomic.Int64
 	mu           sync.Mutex
-	running      atomic.Int32
 }
 
 // addRecord stores the last error and appends to the history ring. A negative

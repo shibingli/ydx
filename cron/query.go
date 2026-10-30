@@ -69,7 +69,7 @@ func (s *Scheduler) Stats() Stats {
 		if !item.job.Disabled {
 			stats.Enabled++
 		}
-		if item.stats.running.Load() > 0 {
+		if item.running.Load() > 0 {
 			stats.Running++
 		}
 		stats.Runs += item.stats.runs.Load()
@@ -92,7 +92,7 @@ func (s *Scheduler) snapshotLocked(item *entry) Snapshot {
 		Definition:   definition,
 		Next:         item.next,
 		LastDuration: time.Duration(item.stats.lastDuration.Load()),
-		Running:      item.stats.running.Load() > 0,
+		Running:      item.running.Load() > 0,
 		Runs:         item.stats.runs.Load(),
 		Failures:     item.stats.failures.Load(),
 		Skipped:      item.stats.skipped.Load(),
