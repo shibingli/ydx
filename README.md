@@ -27,7 +27,7 @@
 | `github.com/shibingli/ydx/afs` | `afs` | afero 之上的文件系统门面（OS / 内存 / embed） |
 | `github.com/shibingli/ydx/config` | `config` | 多源分层配置（flags > env > file > defaults） |
 | `github.com/shibingli/ydx/log` | `log` | 零拷贝结构化日志 |
-| `github.com/shibingli/ydx/regexpx` | `regexpx` | 自研正则引擎（线性 NFA + 回溯 + SIMD 预过滤） |
+| `github.com/shibingli/ydx/regexpx` | `regexpx` | 自研正则引擎（线性 NFA + 惰性 DFA + 回溯 + SIMD 预过滤 + 调用方缓冲区 API） |
 | `github.com/shibingli/ydx/router` | `router` | 基数树路由 + 原生 http 适配 |
 | `github.com/shibingli/ydx/gorm` | `gorm` | GORM 装配、连接串预置与自动建库（MySQL / PostgreSQL / SQLite / 达梦 DM8）；四方言用法见 [yd 的方言指南](https://github.com/shibingli/yd/blob/main/docs/gorm-dialects.md) |
 | `github.com/shibingli/ydx/redis` | `redis` | go-redis 通用客户端、探活与读透缓存 |
@@ -55,12 +55,12 @@
 | `github.com/shibingli/ydx/middleware/recovery` | `recovery` | panic 恢复 |
 | `github.com/shibingli/ydx/middleware/requestid` | `requestid` | 请求 ID |
 | `github.com/shibingli/ydx/middleware/reqlog` | `reqlog` | 中间件共享的计数写入器与头处理（公开路径，无稳定性承诺） |
-| `github.com/shibingli/ydx/middleware/waf` | `waf` | 基于 OWASP Coraza 的 WAF：请求/响应全生命周期、热重载、优雅关闭；完整使用手册见模块 README |
 | `github.com/shibingli/ydx/repotest` | `repotest` | 仓库级守卫（模块文件、命名、依赖与架构约束） |
+| `github.com/shibingli/ydx/waf` | `waf` | 自研 SecLang WAF：兼容 ModSecurity/Coraza/OWASP CRS 规则，热更新、自动并行纯求值、钩子、原生/WASM 插件、报警；原生支持 `ydx/router` 与 `net/http` |
 
-> `middleware/waf` 依赖 Coraza 及其 OCSF 审计日志传递依赖，体积明显大于其它插件，因此
-> **不并入** `middleware` 聚合门面；需要 WAF 的服务直接依赖该模块，不需要的服务不付出任何
-> 依赖与编译成本。
+> WAF 使用自研 SecLang 引擎，不依赖 Coraza；仅引入 libinjection-go 与 wazero（纯 Go、无 cgo）。
+> 它**不并入** `middleware` 聚合门面；需要 WAF 的服务直接依赖 `ydx/waf`，不需要的服务不付出
+> 其依赖与编译成本。
 
 ## 多实例与命名空间（重要）
 

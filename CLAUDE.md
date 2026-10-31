@@ -32,8 +32,12 @@ ydx 是 yd 全栈框架的可复用组件仓库；组件源码以本仓库为唯
 - 产品模块：`errs`、`sysinfo`、`gc`、`buffpool`、`protocol`、`nodeid`、`base64`、`json`、`afs`、
   `config`、`log`、`regexpx`、`router`、`gorm`、`redis`、`asynq`、`cron`、`cache`、`sse`、`websocket`、
   `webtransport`、`realtime`、`render`、`i18n`、`openapi`、`openapi/ydrouter`、`jwt`、`captcha`、`guomi`、
-  `workflow`、`middleware` 及
-  `middleware/{accesslog,asyncafter,compress,cors,ratelimit,recovery,requestid,reqlog,waf}`。
+  `workflow`、`waf`、`middleware` 及
+  `middleware/{accesslog,asyncafter,compress,cors,ratelimit,recovery,requestid,reqlog}`。
+- `waf`（根目录）是唯一的 WAF 实现：自研 SecLang 引擎，原生支持 `router` 与 `net/http`，
+  带热更新、钩子、原生/WASM 插件与报警；热路径使用必需字面量/字节集/最小长度预过滤与
+  独立规则并发纯求值，动作仍按源码顺序提交。原 `middleware/waf`（Coraza 封装的 v1）已移除；
+  依赖方向仍为 yd → ydx，不得让 `waf` 反向依赖 `yd` 或重新引入 Coraza 引擎。
 - `openapi` 是独立模块：核心只接受 `openapi.Route` 并提供标准 `net/http` 处理器，
   **不得** import `ydx/router`；路由适配（`FromRouter` / `Handler`）只在 `openapi/ydrouter`。
 - 基准模块（16 个）：`benchmarks/{base64,buffpool,cache,compress,cron,crypto,json,jwt,log,middleware,regexpx,router,sse,template,websocket,workflow}`。
@@ -49,9 +53,10 @@ ydx 是 yd 全栈框架的可复用组件仓库；组件源码以本仓库为唯
   已发布标签不可移动：组件变更时先提升版本（本次由 `v0.1.0` 提升到 `v0.1.1`），
   再让 yd 同步新版本，禁止用 `-f` 改写已推送的标签。
 - 外部依赖版本以 yd 根 `go.mod` 为准，不得在迁移或常规修改中擅自升级。
-- `middleware/waf` 依赖 `github.com/corazawaf/coraza/v3`（Apache-2.0），版本由该模块的
-  `go.mod` 锁定；升级需单独评审并同步 README 的体积说明。该模块**不并入** `middleware`
-  聚合门面，保持 Coraza 对不使用 WAF 的服务完全可选。
+- `waf` 不依赖 Coraza 引擎；仅使用 `github.com/corazawaf/libinjection-go`（Apache-2.0，
+  SQLi/XSS 检测）与 `github.com/tetratelabs/wazero`（Apache-2.0，纯 Go WASM 运行时，无 cgo）。
+  两者版本由 `waf/go.mod` 锁定；升级需同步 `waf/README.md` 与 `waf/WASM.md`。`waf` 不并入
+  `middleware` 聚合门面，未使用 WAF 的服务不承担其依赖与编译成本。
 - `repotest` 会扫描本地 `replace`、旧包前缀、yd 依赖、标准库编解码直引、`fmt.Errorf`、
   直接 `panic`、外键、cgo SQLite 与基准位置。
 

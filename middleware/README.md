@@ -5,8 +5,9 @@
 本包以原有的 `middleware.*` 名称重新导出它们的公开 API，并额外提供 `Chain`、`Adapt` 与
 `CacheBypass`。
 
-> `middleware/waf` 基于 Coraza，传递依赖与构建体积远大于其它插件，因此刻意**不在**本门面
-> 重新导出；需要 WAF 的服务请直接导入 `github.com/shibingli/ydx/middleware/waf`。
+> WAF 已迁移到独立模块 `github.com/shibingli/ydx/waf`（自研 SecLang 引擎），不在
+> `middleware/` 目录下，也**不在**本门面重新导出；原 `middleware/waf`（Coraza 封装 v1）
+> 已移除。需要 WAF 的服务请直接导入 `github.com/shibingli/ydx/waf`。
 
 | 项 | 值 |
 |---|---|
@@ -128,7 +129,7 @@ r.Use(middleware.CacheBypass(func(req *http.Request) bool {
 - [`middleware/recovery`](recovery/README.md)
 - [`middleware/requestid`](requestid/README.md)
 - [`middleware/reqlog`](reqlog/README.md)
-- [`middleware/waf`](waf/README.md)（独立模块，不在本门面重导出）
+- [`waf`](../waf/README.md)（独立模块，不在本门面重导出）
 - [`router`](../router/README.md)、[`cache`](../cache/README.md)
 
 ## 许可证
