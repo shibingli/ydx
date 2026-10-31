@@ -305,15 +305,15 @@ func TestDetectionParity(t *testing.T) {
 	setup := setupFor(t)
 	ydx := ydxHandler(t, setup)
 	corazaH := corazaHandler(t, setup)
-	var allowed, blocked, mismatch int
+	var sameAllowed, sameBlocked, expectedDiff, mismatch int
 	for _, p := range payloads() {
 		gotYdx := status(ydx, p)
 		gotCoraza := status(corazaH, p)
 		if gotYdx == gotCoraza {
 			if gotYdx == http.StatusForbidden {
-				blocked++
+				sameBlocked++
 			} else {
-				allowed++
+				sameAllowed++
 			}
 			continue
 		}
@@ -321,14 +321,15 @@ func TestDetectionParity(t *testing.T) {
 			windowsCorazaPathMiss[p.name] && gotYdx == http.StatusForbidden && gotCoraza == http.StatusOK {
 			t.Logf("known Coraza Windows normalizePath miss: %-18s ydx=%d coraza=%d",
 				p.name, gotYdx, gotCoraza)
-			blocked++
+			expectedDiff++
 			continue
 		}
 		mismatch++
 		t.Errorf("mismatch %-18s ydx=%d coraza=%d", p.name, gotYdx, gotCoraza)
 	}
-	t.Logf("%s: agreement=%d/%d blocked=%d allowed=%d mismatch=%d",
-		setup.name, len(payloads())-mismatch, len(payloads()), blocked, allowed, mismatch)
+	agreement := sameAllowed + sameBlocked
+	t.Logf("%s: agreement=%d/%d sameBlocked=%d sameAllowed=%d expectedPlatformDiff=%d mismatch=%d",
+		setup.name, agreement, len(payloads()), sameBlocked, sameAllowed, expectedDiff, mismatch)
 }
 
 type discardWriter struct {

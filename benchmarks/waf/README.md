@@ -87,10 +87,10 @@ Windows PowerShell 设置环境变量：`$env:YDX_WAF_CRS_DIR='E:\coreruleset'`�
 共享载荷集共 59 个：9 个善意请求，50 个攻击请求，覆盖 SQLi、XSS、LFI、RCE、PHP 注入、
 RFI、CRLF、Scanner UA、Shellshock、Log4Shell、Java 类加载、XXE、SSTI、表单/JSON/multipart。
 
-| 平台 | 状态码完全一致 | 双方拦截 | 双方放行 |
-|---|---:|---:|---:|
-| Linux | **59/59** | 47 | 12 |
-| Windows | 56/59 | 47 | 12 |
+| 平台 | 状态码完全一致 | 双方拦截 | 双方放行 | ydx 单独拦截 |
+|---|---:|---:|---:|---:|
+| Linux | **59/59** | 47 | 12 | 0 |
+| Windows | 56/59 | 44 | 12 | 3 |
 
 Windows 的 3 个差异全部是 **ydx 拦截、Coraza 放行**：`lfi-var-log`、`rce-cat`、`rce-bash`。
 原因是 Coraza 的 `normalizePath` / `normalizePathWin` 在 Windows 上通过 `filepath.Clean`
