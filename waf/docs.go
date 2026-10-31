@@ -87,10 +87,10 @@
 //		ParallelWorkers: 4,
 //	})
 //
-// regexpx v0.1.12 adds AST-level required-byte/literal prefilters, minimum-length short circuits
+// regexpx v0.1.13 adds AST-level required-byte/literal prefilters, minimum-length short circuits
 // and a lazy ASCII search DFA. The WAF module requires that release, calls Regexp.Warm when the
 // engine is built, and uses the caller-provided capture buffers, so these optimizations apply
-// automatically. | regexpx v0.1.12 新增 AST 必需字节/字面量预过滤、最小长度短路与惰性 ASCII 搜索
+// automatically. | regexpx v0.1.13 新增 AST 必需字节/字面量预过滤、最小长度短路与惰性 ASCII 搜索
 // DFA。WAF 模块依赖该版本，在引擎构建时调用 Regexp.Warm，并使用调用方捕获缓冲区，因此这些优化
 // 自动生效。
 //
