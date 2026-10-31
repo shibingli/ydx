@@ -10,7 +10,7 @@ require (
 	github.com/shibingli/ydx/gorm v0.1.13
 	github.com/shibingli/ydx/json v0.1.14
 	github.com/shibingli/ydx/log v0.1.11
-	github.com/shibingli/ydx/regexpx v0.1.11
+	github.com/shibingli/ydx/regexpx v0.1.12
 	gorm.io/gorm v1.31.2
 )
 

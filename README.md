@@ -27,7 +27,7 @@
 | `github.com/shibingli/ydx/afs` | `afs` | afero 之上的文件系统门面（OS / 内存 / embed） |
 | `github.com/shibingli/ydx/config` | `config` | 多源分层配置（flags > env > file > defaults） |
 | `github.com/shibingli/ydx/log` | `log` | 零拷贝结构化日志 |
-| `github.com/shibingli/ydx/regexpx` | `regexpx` | 自研正则引擎（线性 NFA + 惰性 DFA + 回溯 + SIMD 预过滤 + 调用方缓冲区 API） |
+| `github.com/shibingli/ydx/regexpx` | `regexpx` | 自研正则引擎（线性 NFA + 惰性 DFA + 回溯 + SIMD 预过滤 + 启动预热 + 调用方缓冲区 API） |
 | `github.com/shibingli/ydx/router` | `router` | 基数树路由 + 原生 http 适配 |
 | `github.com/shibingli/ydx/gorm` | `gorm` | GORM 装配、连接串预置与自动建库（MySQL / PostgreSQL / SQLite / 达梦 DM8）；四方言用法见 [yd 的方言指南](https://github.com/shibingli/yd/blob/main/docs/gorm-dialects.md) |
 | `github.com/shibingli/ydx/redis` | `redis` | go-redis 通用客户端、探活与读透缓存 |

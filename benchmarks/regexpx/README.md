@@ -194,8 +194,8 @@ GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go test -c -o /tmp/regexbench_arm64.test .
 
 `required_bench_test.go` 固定了 CRS 4.29 的 942420（标点重复 8 次）与 932240（宽首字节
 字符类分支）形态、最小长度短路，以及一个可触发惰性 ASCII 搜索 DFA 的大型命令名交替模式。
-它们使用公开 API；基准模块已引用 `regexpx v0.1.11`，可直接复现 AST 必需字节/字面量预过滤、
-最小长度短路与搜索 DFA 相对旧版本的差异：
+它们使用公开 API；基准模块已引用 `regexpx v0.1.12`，可直接复现 AST 必需字节/字面量预过滤、
+最小长度短路、搜索 DFA 与 `Warm()` 启动预热相对旧版本的差异：
 
 ```bash
 cd benchmarks/regexpx
@@ -204,5 +204,5 @@ GOWORK=off go test -run '^$' \
   -benchmem -count=5
 ```
 
-缓冲区 API 的零分配验证位于 `regexpx/find_buffer_test.go`；基准模块升级到 v0.1.11 后也可直接
-引用这些符号。
+缓冲区 API 的零分配验证位于 `regexpx/find_buffer_test.go`；`Warm()` 的行为验证位于
+`regexpx/dfa_search_test.go`，基准模块可直接引用这些符号。

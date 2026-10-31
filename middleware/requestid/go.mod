@@ -3,7 +3,7 @@ module github.com/shibingli/ydx/middleware/requestid
 go 1.27.3
 
 require (
-	github.com/shibingli/ydx/regexpx v0.1.11
+	github.com/shibingli/ydx/regexpx v0.1.12
 	github.com/shibingli/ydx/router v0.1.12
 )
 
