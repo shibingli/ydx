@@ -1,0 +1,56 @@
+regexpx v0.1.9 vs Go stdlib regexp
+Note: "vs base" is stdlib relative to regexpx; a positive value means the standard library is slower.
+Generated from benchmarks/regexpx on Windows 11 / Intel i9-10980HK / Go 1.27.3
+Copy and LiteralPrefix here are the raw count=6 run; PERFORMANCE.md reports separate count=10/benchtime=2s medians because of load noise.
+
+                           │ regexpx (ydx) │        stdlib        │
+                           │            sec/op            │     sec/op       vs base                   │
+Copy-16                                     74.18n ±  13%      89.53n ± 13%      +20.68% (p=0.009 n=6)
+ExpandString-16                             133.2n ±  58%      132.3n ± 26%            ~ (p=0.699 n=6)
+ReplaceAllString-16                         320.5µ ±   3%      892.1µ ±  1%     +178.33% (p=0.002 n=6)
+ReplaceAllLiteralString-16                  224.5µ ±   3%     1307.2µ ± 51%     +482.38% (p=0.002 n=6)
+LongestExact-16                             157.3n ± 163%      208.8n ± 13%            ~ (p=0.065 n=6)
+LongestRun-16                               38.60n ±   8%     214.85n ±  6%     +456.53% (p=0.002 n=6)
+LongestWild-16                              158.8n ±  15%   160766.5n ±  9%  +101138.35% (p=0.002 n=6)
+LongestLinear-16                            234.5n ±   6%    63793.0n ±  8%   +27103.84% (p=0.002 n=6)
+LongestDFA-16                               19.56µ ±   7%      54.20µ ±  5%     +177.03% (p=0.002 n=6)
+MatchReaderEarly-16                         65.66n ±  14%     109.05n ±  8%      +66.08% (p=0.002 n=6)
+FindReaderIndexEarly-16                     111.3n ±  12%      162.6n ±  5%      +45.98% (p=0.002 n=6)
+LiteralPrefix-16                           2.2130n ±   4%     0.8217n ±  2%      -62.87% (p=0.002 n=6)
+geomean                                     438.7n             2.034µ           +363.63%
+
+                           │ regexpx (ydx) │       stdlib       │
+                           │             B/op             │      B/op       vs base                  │
+Copy-16                                      160.0 ± 0%        160.0 ±  0%         ~ (p=1.000 n=6) ¹
+ExpandString-16                              8.000 ± 0%        8.000 ±  0%         ~ (p=1.000 n=6) ¹
+ReplaceAllString-16                        28.02Ki ± 0%      58.21Ki ±  0%  +107.79% (p=0.002 n=6)
+ReplaceAllLiteralString-16                 89.27Ki ± 0%     135.91Ki ±  0%   +52.25% (p=0.002 n=6)
+LongestExact-16                              0.000 ± 0%        0.000 ±  0%         ~ (p=1.000 n=6) ¹
+LongestRun-16                                0.000 ± 0%        0.000 ±  0%         ~ (p=1.000 n=6) ¹
+LongestWild-16                                0.00 ± 0%        67.50 ± 19%         ? (p=0.002 n=6)
+LongestLinear-16                             0.000 ± 0%        2.000 ±   ?         ? (p=0.015 n=6)
+LongestDFA-16                                0.000 ± 0%        0.000 ±  0%         ~ (p=1.000 n=6) ¹
+MatchReaderEarly-16                          32.00 ± 0%        24.00 ±  0%   -25.00% (p=0.002 n=6)
+FindReaderIndexEarly-16                      44.00 ± 0%        40.00 ±  0%    -9.09% (p=0.002 n=6)
+LiteralPrefix-16                             0.000 ± 0%        0.000 ±  0%         ~ (p=1.000 n=6) ¹
+geomean                                                 ²                   ?                      ²
+¹ all samples are equal
+² summaries must be >0 to compute geomean
+
+                           │ regexpx (ydx) │     stdlib      │
+                           │          allocs/op           │  allocs/op   vs base                  │
+Copy-16                                      1.000 ± 0%      1.000 ± 0%         ~ (p=1.000 n=6) ¹
+ExpandString-16                              1.000 ± 0%      1.000 ± 0%         ~ (p=1.000 n=6) ¹
+ReplaceAllString-16                          3.000 ± 0%     18.000 ± 0%  +500.00% (p=0.002 n=6)
+ReplaceAllLiteralString-16                   5.000 ± 0%     21.000 ± 0%  +320.00% (p=0.002 n=6)
+LongestExact-16                              0.000 ± 0%      0.000 ± 0%         ~ (p=1.000 n=6) ¹
+LongestRun-16                                0.000 ± 0%      0.000 ± 0%         ~ (p=1.000 n=6) ¹
+LongestWild-16                               0.000 ± 0%      0.000 ± 0%         ~ (p=1.000 n=6) ¹
+LongestLinear-16                             0.000 ± 0%      0.000 ± 0%         ~ (p=1.000 n=6) ¹
+LongestDFA-16                                0.000 ± 0%      0.000 ± 0%         ~ (p=1.000 n=6) ¹
+MatchReaderEarly-16                          2.000 ± 0%      1.000 ± 0%   -50.00% (p=0.002 n=6)
+FindReaderIndexEarly-16                      3.000 ± 0%      2.000 ± 0%   -33.33% (p=0.002 n=6)
+LiteralPrefix-16                             0.000 ± 0%      0.000 ± 0%         ~ (p=1.000 n=6) ¹
+geomean                                                 ²                 +19.41%               ²
+¹ all samples are equal
+² summaries must be >0 to compute geomean

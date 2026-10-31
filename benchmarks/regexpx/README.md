@@ -23,6 +23,27 @@
 - 所有模式在计时外编译；每项跑 3 次取中位数（本机 `-benchtime=300ms`，远端 80ms），`-benchmem`。
 - 绝对值受 CPU、负载与调度影响；跨实现比较请优先看同一行的相对值。
 
+## 新增兼容 API 指标（regexpx v0.1.9）
+
+`api_bench_test.go` 覆盖 `Copy`、`Expand`、流式替换、`Longest` 快路径、Reader 提前返回与
+回溯最长匹配，与标准库同场对比。完整表格、内存/分配、分析、复现命令与原始样本见
+[`../../regexpx/PERFORMANCE.md`](../../regexpx/PERFORMANCE.md)。
+
+摘录（Windows 11 / i9-10980HK / Go 1.27.3）：
+
+| 项目 | regexpx | 标准库 | 结论 |
+|---|---:|---:|---|
+| `Copy` | ~70 ns，160 B，1 alloc | ~67 ns，160 B，1 alloc | 结构对齐，基本持平 |
+| `ReplaceAllString` | ~321 µs，3 allocs | ~892 µs，18 allocs | 约 2.8x 快 |
+| `ReplaceAllLiteralString` | ~225 µs，5 allocs | ~0.73–1.31 ms，21 allocs | 约 3–6x 快 |
+| `Longest` 通配字面量 | ~159 ns，0 alloc | ~161 µs，0 alloc | 约 1000x 快 |
+| `Longest` 定长线性 | ~235 ns，0 alloc | ~64 µs，0 alloc | 约 270x 快 |
+| `MatchReader` 早期匹配 | ~66 ns | ~109 ns | 约 1.7x 快 |
+| `FindReaderIndex` 早期匹配 | ~111 ns | ~163 ns | 约 1.5x 快 |
+| `LiteralPrefix` | ~2.2 ns | ~0.83 ns | 绝对值纳秒级，非热路径 |
+
+原始样本与 `benchstat` 输出保存在 `results/`。
+
 ## Zen 5 主表结果（2026-10-24）
 
 | 场景 | ydx | stdlib | grafana | regexp2 | go-re2 |
@@ -155,6 +176,9 @@ GOWORK=off go test -run '^$' -bench . -benchmem
 # 开发期：把本模块与 ../../regexpx 加入临时 go.work 后
 cd benchmarks/regexpx
 go test -run '^$' -bench . -benchmem
+
+# 新增兼容 API / Longest / Reader 基准（v0.1.9+）
+GOWORK=off go test -run '^$' -bench 'Benchmark(Copy|StdCopy|ExpandString|StdExpandString|ReplaceAllString|StdReplaceAllString|ReplaceAllLiteralString|StdReplaceAllLiteralString|LongestExact|StdLongestExact|LongestRun|StdLongestRun|LongestWild|StdLongestWild|LongestLinear|StdLongestLinear|LongestDFA|StdLongestDFA|MatchReaderEarly|StdMatchReaderEarly|FindReaderIndexEarly|StdFindReaderIndexEarly|LongestLookahead|LiteralPrefix|StdLiteralPrefix)$' -benchmem -count=6 -benchtime=1s
 
 # 并行基准使用 regexpx_dev 构建标签（并行 API 尚未包含在已发布版本中）
 go test -run '^$' -bench BenchmarkParallelFindAll -tags regexpx_dev
