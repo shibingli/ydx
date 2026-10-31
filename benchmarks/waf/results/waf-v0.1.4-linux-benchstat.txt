@@ -1,0 +1,60 @@
+goos: linux
+goarch: amd64
+pkg: github.com/shibingli/ydx/benchmarks/waf
+cpu: Intel(R) Core(TM) i9-10980HK CPU @ 2.40GHz
+                              │ results/waf-v0.1.4-linux-i9-10980hk.txt │
+                              │                 sec/op                  │
+BenignGET/ydx-16                                           193.9µ ± ∞ ¹
+BenignGET/coraza-16                                        985.9µ ± ∞ ¹
+AttackGET/ydx-16                                           142.2µ ± ∞ ¹
+AttackGET/coraza-16                                        917.5µ ± ∞ ¹
+BenignPOST/ydx-16                                          271.7µ ± ∞ ¹
+BenignPOST/coraza-16                                       1.367m ± ∞ ¹
+AttackPOST/ydx-16                                          184.4µ ± ∞ ¹
+AttackPOST/coraza-16                                       1.121m ± ∞ ¹
+ParallelBenignGET/ydx-16                                   35.17µ ± ∞ ¹
+ParallelBenignGET/coraza-16                                179.7µ ± ∞ ¹
+SequentialBenignGET/ydx-16                                 197.3µ ± ∞ ¹
+SequentialBenignGET/coraza-16                              902.4µ ± ∞ ¹
+Build/ydx-16                                               371.5m ± ∞ ¹
+Build/coraza-16                                            529.3m ± ∞ ¹
+geomean                                                    940.5µ
+¹ need >= 6 samples for confidence interval at level 0.95
+
+                              │ results/waf-v0.1.4-linux-i9-10980hk.txt │
+                              │                  B/op                   │
+BenignGET/ydx-16                                          5.831Ki ± ∞ ¹
+BenignGET/coraza-16                                       174.6Ki ± ∞ ¹
+AttackGET/ydx-16                                          7.077Ki ± ∞ ¹
+AttackGET/coraza-16                                       120.8Ki ± ∞ ¹
+BenignPOST/ydx-16                                         7.403Ki ± ∞ ¹
+BenignPOST/coraza-16                                      260.3Ki ± ∞ ¹
+AttackPOST/ydx-16                                         8.343Ki ± ∞ ¹
+AttackPOST/coraza-16                                      197.0Ki ± ∞ ¹
+ParallelBenignGET/ydx-16                                  5.832Ki ± ∞ ¹
+ParallelBenignGET/coraza-16                               175.6Ki ± ∞ ¹
+SequentialBenignGET/ydx-16                                5.823Ki ± ∞ ¹
+SequentialBenignGET/coraza-16                             174.5Ki ± ∞ ¹
+Build/ydx-16                                              100.8Mi ± ∞ ¹
+Build/coraza-16                                           78.82Mi ± ∞ ¹
+geomean                                                   106.4Ki
+¹ need >= 6 samples for confidence interval at level 0.95
+
+                              │ results/waf-v0.1.4-linux-i9-10980hk.txt │
+                              │                allocs/op                │
+BenignGET/ydx-16                                            187.0 ± ∞ ¹
+BenignGET/coraza-16                                        2.931k ± ∞ ¹
+AttackGET/ydx-16                                            140.0 ± ∞ ¹
+AttackGET/coraza-16                                        2.709k ± ∞ ¹
+BenignPOST/ydx-16                                           228.0 ± ∞ ¹
+BenignPOST/coraza-16                                       3.285k ± ∞ ¹
+AttackPOST/ydx-16                                           162.0 ± ∞ ¹
+AttackPOST/coraza-16                                       2.914k ± ∞ ¹
+ParallelBenignGET/ydx-16                                    187.0 ± ∞ ¹
+ParallelBenignGET/coraza-16                                2.932k ± ∞ ¹
+SequentialBenignGET/ydx-16                                  187.0 ± ∞ ¹
+SequentialBenignGET/coraza-16                              2.932k ± ∞ ¹
+Build/ydx-16                                               1.006M ± ∞ ¹
+Build/coraza-16                                            721.9k ± ∞ ¹
+geomean                                                    1.997k
+¹ need >= 6 samples for confidence interval at level 0.95

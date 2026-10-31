@@ -1,7 +1,7 @@
 # ydx/waf vs Coraza 性能与兼容性基准
 
 [`github.com/shibingli/ydx/waf`](../../waf) 是基于自研 SecLang 引擎的 WAF。本模块在同一
-`net/http` 请求路径上对比 `ydx/waf v0.1.2` 与 Coraza `v3.8.1`，并验证 OWASP CRS 4.29.0
+`net/http` 请求路径上对比 `ydx/waf v0.1.4` 与 Coraza `v3.8.1`，并验证 OWASP CRS 4.29.0
 全量规则下的检测一致性。组件模块本身不依赖 Coraza 或任何基准专用库。
 
 ## 环境与方法
@@ -35,7 +35,7 @@ YDX_WAF_CRS_DIR=/path/to/coreruleset GOWORK=off go test \
   -benchmem -count=5 -benchtime=1s
 
 # 汇总
-benchstat results/waf-v0.1.2-linux-i9-10980hk.txt
+benchstat results/waf-v0.1.4-linux-i9-10980hk.txt
 ```
 
 Windows PowerShell 设置环境变量：`$env:YDX_WAF_CRS_DIR='E:\coreruleset'`。
@@ -44,33 +44,33 @@ Windows PowerShell 设置环境变量：`$env:YDX_WAF_CRS_DIR='E:\coreruleset'`�
 
 `ydx` 列为默认自动并行；`ydx 顺序` 为 `ParallelWorkers: 1`，用于与 Coraza 的单事务执行路径
 做同条件对比。绝对值受 CPU 频率、后台负载与 WSL 调度影响，同一机器多次运行有 ±10–20% 波动；
-相对倍数稳定在 3–5 倍。
+同一轮内相对倍数约 3.7–6.5 倍；WSL 的 Coraza 绝对值受调度影响较大，Windows 数据更稳定。
 
 | 场景 | ydx (Windows) | Coraza (Windows) | 倍数 | ydx (Linux) | Coraza (Linux) | 倍数 |
 |---|---:|---:|---:|---:|---:|---:|
-| 善意 GET | 180.3 µs | 698.9 µs | 3.9× | 222.2 µs | 671.6 µs | 3.0× |
-| 善意 GET（顺序） | 216.7 µs | 761.6 µs | 3.5× | 152.1 µs | 613.5 µs | 4.0× |
-| SQLi GET | 121.1 µs | 594.8 µs | 4.9× | 113.3 µs | 561.2 µs | 5.0× |
-| 善意表单 POST | 205.4 µs | 907.7 µs | 4.4× | 182.9 µs | 840.0 µs | 4.6× |
-| SQLi 表单 POST | 137.5 µs | 691.9 µs | 5.0× | 123.3 µs | 666.9 µs | 5.4× |
-| 并发善意 GET | 36.16 µs | 150.1 µs | 4.2× | 29.35 µs | 138.1 µs | 4.7× |
+| 善意 GET | 169.8 µs | 633.4 µs | 3.7× | 193.9 µs | 985.9 µs | 5.1× |
+| 善意 GET（顺序） | 164.9 µs | 629.6 µs | 3.8× | 197.3 µs | 902.4 µs | 4.6× |
+| SQLi GET | 122.9 µs | 576.5 µs | 4.7× | 142.2 µs | 917.5 µs | 6.5× |
+| 善意表单 POST | 197.5 µs | 867.4 µs | 4.4× | 271.7 µs | 1.367 ms | 5.0× |
+| SQLi 表单 POST | 132.7 µs | 657.7 µs | 5.0× | 184.4 µs | 1.121 ms | 6.1× |
+| 并发善意 GET | 27.77 µs | 134.0 µs | 4.8× | 35.17 µs | 179.7 µs | 5.1× |
 
 ### 每请求内存分配
 
 | 场景 | ydx | Coraza | 差异 |
 |---|---:|---:|---:|
-| 善意 GET | 5.82 KiB / 187 allocs | 174.1 KiB / 2932 allocs | 字节约 30×，分配次数约 15.7× |
-| SQLi GET | 7.07 KiB / 140 allocs | 119.3 KiB / 2709 allocs | 字节约 17×，分配次数约 19× |
-| 善意 POST | 7.36 KiB / 228 allocs | 255.6 KiB / 3286 allocs | 字节约 35×，分配次数约 14× |
-| SQLi POST | 8.33 KiB / 162 allocs | 197.3 KiB / 2915 allocs | 字节约 24×，分配次数约 18× |
-| 并发 GET | 5.82 KiB / 187 allocs | 177.0 KiB / 2932 allocs | 字节约 30×，分配次数约 15.7× |
+| 善意 GET | 5.83–5.84 KiB / 187 allocs | 174.6–177.4 KiB / 2929–2931 allocs | 字节约 30×，分配次数约 15.7× |
+| SQLi GET | 7.08 KiB / 140 allocs | 120.8–121.8 KiB / 2707–2709 allocs | 字节约 17×，分配次数约 19× |
+| 善意 POST | 7.38–7.40 KiB / 228 allocs | 260.2–260.3 KiB / 3285–3286 allocs | 字节约 35×，分配次数约 14× |
+| SQLi POST | 8.34–8.36 KiB / 162 allocs | 197.0–201.6 KiB / 2914 allocs | 字节约 24×，分配次数约 18× |
+| 并发 GET | 5.81–5.83 KiB / 187 allocs | 173.1–175.6 KiB / 2930–2932 allocs | 字节约 30×，分配次数约 15.7× |
 
 ### 规则构建
 
 | 平台 | ydx | Coraza |
 |---|---:|---:|
-| Windows | 175.0 ms / 100.9 MiB / 1.006M allocs | 138.4 ms / 78.62 MiB / 719.6k allocs |
-| Linux | 287.2 ms / 100.8 MiB / 1.006M allocs | 379.6 ms / 78.86 MiB / 721.9k allocs |
+| Windows | 175.3 ms / 100.9 MiB / 1.006M allocs | 147.9 ms / 78.60 MiB / 719.6k allocs |
+| Linux | 371.5 ms / 100.8 MiB / 1.006M allocs | 529.3 ms / 78.82 MiB / 721.9k allocs |
 
 构建耗时受文件系统、CPU 频率与后台负载影响较大，两种平台上的排序会反转。`ydx` 的构建分配
 约多 28%，主要来自 `regexpx.Warm()` 启动预热；这是启动期一次性成本，用于消除首个请求的 DFA
@@ -97,7 +97,7 @@ Windows 的 3 个差异全部是 **ydx 拦截、Coraza 放行**：`lfi-var-log`�
 把 `/` 转成 `\`，导致 CRS 数据文件中的 `var/log`、`etc/passwd`、`dev/tcp` 特征无法命中；
 Linux 上同一批请求完全一致。测试对这三个已知差异显式记录并继续，其他任何差异都会失败。
 
-在集成测试过程中，对比还发现并修复了两个 CRS 兼容问题，已包含在 `waf v0.1.2`：
+在集成测试过程中，对比还发现并修复了两个 CRS 兼容问题，从 `waf v0.1.2` 起提供，并包含在 `v0.1.4` 中：
 
 - 跨阶段 `SecMarker`/`skipAfter` 会错误跳过后续文件的 phase 1 规则，导致 Scanner UA 与
   Shellshock 漏报；
@@ -105,7 +105,9 @@ Linux 上同一批请求完全一致。测试对这三个已知差异显式记�
 
 ## 结果文件
 
-- [`results/waf-v0.1.2-windows-i9-10980hk.txt`](results/waf-v0.1.2-windows-i9-10980hk.txt)
-- [`results/waf-v0.1.2-windows-benchstat.txt`](results/waf-v0.1.2-windows-benchstat.txt)
-- [`results/waf-v0.1.2-linux-i9-10980hk.txt`](results/waf-v0.1.2-linux-i9-10980hk.txt)
-- [`results/waf-v0.1.2-linux-benchstat.txt`](results/waf-v0.1.2-linux-benchstat.txt)
+- [`results/waf-v0.1.4-windows-i9-10980hk.txt`](results/waf-v0.1.4-windows-i9-10980hk.txt)
+- [`results/waf-v0.1.4-windows-benchstat.txt`](results/waf-v0.1.4-windows-benchstat.txt)
+- [`results/waf-v0.1.4-linux-i9-10980hk.txt`](results/waf-v0.1.4-linux-i9-10980hk.txt)
+- [`results/waf-v0.1.4-linux-benchstat.txt`](results/waf-v0.1.4-linux-benchstat.txt)
+
+历史 `v0.1.2` 样本保留在 `results/waf-v0.1.2-*`。

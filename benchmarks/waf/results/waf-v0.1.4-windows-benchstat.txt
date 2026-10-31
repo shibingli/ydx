@@ -1,0 +1,60 @@
+goos: windows
+goarch: amd64
+pkg: github.com/shibingli/ydx/benchmarks/waf
+cpu: Intel(R) Core(TM) i9-10980HK CPU @ 2.40GHz
+                              │ results/waf-v0.1.4-windows-i9-10980hk.txt │
+                              │                  sec/op                   │
+BenignGET/ydx-16                                             169.8µ ± ∞ ¹
+BenignGET/coraza-16                                          633.4µ ± ∞ ¹
+AttackGET/ydx-16                                             122.9µ ± ∞ ¹
+AttackGET/coraza-16                                          576.5µ ± ∞ ¹
+BenignPOST/ydx-16                                            197.5µ ± ∞ ¹
+BenignPOST/coraza-16                                         867.4µ ± ∞ ¹
+AttackPOST/ydx-16                                            132.7µ ± ∞ ¹
+AttackPOST/coraza-16                                         657.7µ ± ∞ ¹
+ParallelBenignGET/ydx-16                                     27.77µ ± ∞ ¹
+ParallelBenignGET/coraza-16                                  134.0µ ± ∞ ¹
+SequentialBenignGET/ydx-16                                   164.9µ ± ∞ ¹
+SequentialBenignGET/coraza-16                                629.6µ ± ∞ ¹
+Build/ydx-16                                                 175.3m ± ∞ ¹
+Build/coraza-16                                              147.9m ± ∞ ¹
+geomean                                                      616.3µ
+¹ need >= 6 samples for confidence interval at level 0.95
+
+                              │ results/waf-v0.1.4-windows-i9-10980hk.txt │
+                              │                   B/op                    │
+BenignGET/ydx-16                                            5.840Ki ± ∞ ¹
+BenignGET/coraza-16                                         177.4Ki ± ∞ ¹
+AttackGET/ydx-16                                            7.084Ki ± ∞ ¹
+AttackGET/coraza-16                                         121.8Ki ± ∞ ¹
+BenignPOST/ydx-16                                           7.384Ki ± ∞ ¹
+BenignPOST/coraza-16                                        260.2Ki ± ∞ ¹
+AttackPOST/ydx-16                                           8.356Ki ± ∞ ¹
+AttackPOST/coraza-16                                        201.6Ki ± ∞ ¹
+ParallelBenignGET/ydx-16                                    5.812Ki ± ∞ ¹
+ParallelBenignGET/coraza-16                                 173.1Ki ± ∞ ¹
+SequentialBenignGET/ydx-16                                  5.837Ki ± ∞ ¹
+SequentialBenignGET/coraza-16                               177.3Ki ± ∞ ¹
+Build/ydx-16                                                100.9Mi ± ∞ ¹
+Build/coraza-16                                             78.60Mi ± ∞ ¹
+geomean                                                     106.8Ki
+¹ need >= 6 samples for confidence interval at level 0.95
+
+                              │ results/waf-v0.1.4-windows-i9-10980hk.txt │
+                              │                 allocs/op                 │
+BenignGET/ydx-16                                              187.0 ± ∞ ¹
+BenignGET/coraza-16                                          2.929k ± ∞ ¹
+AttackGET/ydx-16                                              140.0 ± ∞ ¹
+AttackGET/coraza-16                                          2.707k ± ∞ ¹
+BenignPOST/ydx-16                                             228.0 ± ∞ ¹
+BenignPOST/coraza-16                                         3.286k ± ∞ ¹
+AttackPOST/ydx-16                                             162.0 ± ∞ ¹
+AttackPOST/coraza-16                                         2.914k ± ∞ ¹
+ParallelBenignGET/ydx-16                                      187.0 ± ∞ ¹
+ParallelBenignGET/coraza-16                                  2.930k ± ∞ ¹
+SequentialBenignGET/ydx-16                                    187.0 ± ∞ ¹
+SequentialBenignGET/coraza-16                                2.929k ± ∞ ¹
+Build/ydx-16                                                 1.006M ± ∞ ¹
+Build/coraza-16                                              719.6k ± ∞ ¹
+geomean                                                      1.996k
+¹ need >= 6 samples for confidence interval at level 0.95
