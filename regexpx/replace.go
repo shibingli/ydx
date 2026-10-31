@@ -121,7 +121,7 @@ func (r *Regexp) Split(s string, n int) []string {
 	if n == 0 {
 		return nil
 	}
-	if len(r.src) > 0 && len(s) == 0 {
+	if len(r.prog.src) > 0 && len(s) == 0 {
 		return []string{""}
 	}
 	matches, _ := r.findAll(s, n, 2)

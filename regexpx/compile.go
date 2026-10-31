@@ -68,12 +68,14 @@ type inst struct {
 // 编译后的模式。start 指向可选的未锚定搜索前缀，patternStart 指向模式本身；锚定匹配从 patternStart
 // 开始。
 type program struct {
+	src          string
 	insts        []inst
 	classes      []*charClass
 	numCap       int
 	start        uint32
 	patternStart uint32
 	info         progInfo
+	dfaAST       node
 }
 
 // progInfo holds the metadata shared by the execution engines and the prefilter. | progInfo 保存执行

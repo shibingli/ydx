@@ -47,31 +47,42 @@ func (r *Regexp) LiteralPrefix() (prefix string, complete bool) {
 	if r.compat == nil {
 		return "", false
 	}
+	if cached := r.compat.literalResult.Load(); cached != nil {
+		return cached.prefix, cached.complete
+	}
+	return r.literalPrefixSlow()
+}
+
+// literalPrefixSlow fills the lazy LiteralPrefix cache. It is separate from the hot path so the
+// fast-path method stays small enough to inline. | literalPrefixSlow 填充惰性的 LiteralPrefix 缓存。
+// 它与热路径分离，使快路径方法足够小并可内联。
+func (r *Regexp) literalPrefixSlow() (prefix string, complete bool) {
 	// Use the standard library as the compatibility oracle for patterns it accepts. The AST
 	// fallback covers regexpx-only .NET constructs that regexp rejects. | 对标准库接受的模式，用
 	// 标准库作为兼容性 oracle；regexpx 独有、regexp 拒绝的 .NET 构造使用 AST 回退。
 	r.compat.literalOnce.Do(func() {
+		prefix, complete := r.compat.literalPrefix, r.compat.literalComplete
 		if r.posix {
-			if std, err := stdregexp.CompilePOSIX(r.src); err == nil {
-				r.compat.literalPrefix, r.compat.literalComplete = std.LiteralPrefix()
+			if std, err := stdregexp.CompilePOSIX(r.prog.src); err == nil {
+				prefix, complete = std.LiteralPrefix()
 			}
-			return
+		} else if std, err := stdregexp.Compile(r.prog.src); err == nil {
+			prefix, complete = std.LiteralPrefix()
 		}
-		if std, err := stdregexp.Compile(r.src); err == nil {
-			r.compat.literalPrefix, r.compat.literalComplete = std.LiteralPrefix()
-		}
+		r.compat.literalResult.Store(&literalPrefixValue{prefix: prefix, complete: complete})
 	})
-	return r.compat.literalPrefix, r.compat.literalComplete
+	cached := r.compat.literalResult.Load()
+	return cached.prefix, cached.complete
 }
 
 // AppendText appends the textual form of the pattern to b. | AppendText 把模式的文本形式追加到 b。
 func (r *Regexp) AppendText(b []byte) ([]byte, error) {
-	return append(b, r.src...), nil
+	return append(b, r.prog.src...), nil
 }
 
 // MarshalText returns the textual form of the pattern. | MarshalText 返回模式的文本形式。
 func (r *Regexp) MarshalText() ([]byte, error) {
-	return []byte(r.src), nil
+	return []byte(r.prog.src), nil
 }
 
 // UnmarshalText compiles text and replaces the receiver. On failure the receiver is unchanged. |

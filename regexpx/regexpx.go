@@ -26,12 +26,20 @@ var (
 	ErrCompile = errs.New("compile regular expression failed | 编译正则表达式失败")
 )
 
+// literalPrefixValue is the cached LiteralPrefix result. | literalPrefixValue 是缓存的
+// LiteralPrefix 结果。
+type literalPrefixValue struct {
+	prefix   string
+	complete bool
+}
+
 // compatCache holds lazily computed standard-library compatibility data shared by Regexp
 // copies. | compatCache 保存 Regexp 副本共享的惰性标准库兼容数据。
 type compatCache struct {
 	literalOnce     sync.Once
 	stdOnce         sync.Once
 	dfaOnce         sync.Once
+	literalResult   atomic.Pointer[literalPrefixValue]
 	literalPrefix   string
 	std             *stdregexp.Regexp
 	dfa             *asciiDFA
@@ -42,7 +50,6 @@ type compatCache struct {
 // Configuration methods such as Longest must not run concurrently with matching. | Regexp 是已编译的
 // 模式。它可安全并发使用，首次使用后不得复制。Longest 等配置方法不得与匹配并发执行。
 type Regexp struct {
-	src     string
 	prog    *program
 	exact   *exactInfo
 	run     *runInfo
@@ -70,7 +77,6 @@ type Regexp struct {
 	// The full-match DFA is built lazily on first use so package-level Compile stays cheap. |
 	// 全匹配 DFA 在首次使用时惰性构建，使包级 Compile 保持廉价。
 	dfaEligible bool
-	dfaAST      node
 
 	pikePool *sync.Pool
 	btPool   *sync.Pool
@@ -126,8 +132,8 @@ func compile(expr string, posix bool) (*Regexp, error) {
 	if err != nil {
 		return nil, errs.WrapDetail(err, ErrCompile, "pattern %[1]q | 模式 %[1]q", expr)
 	}
+	prog.src = expr
 	r := &Regexp{
-		src:              expr,
 		prog:             prog,
 		names:            make([]string, numCap+1),
 		nameMap:          names,
@@ -154,7 +160,7 @@ func compile(expr string, posix bool) (*Regexp, error) {
 	}
 	if body, ok := fullMatchBody(ast); ok && asciiBodyOnly(body) && len(prog.insts) <= dfaInstrCap {
 		r.dfaEligible = true
-		r.dfaAST = ast
+		prog.dfaAST = ast
 	}
 	r.exact = analyzeExact(ast, numCap)
 	r.run = analyzeRun(ast, numCap)
@@ -213,7 +219,7 @@ func isMetaByte(b byte) bool {
 }
 
 // String returns the source pattern. | String 返回模式原文。
-func (r *Regexp) String() string { return r.src }
+func (r *Regexp) String() string { return r.prog.src }
 
 // NumSubexp returns the number of capturing groups, excluding the whole match. | NumSubexp 返回捕获分组
 // 数量，不含整个匹配。
@@ -405,7 +411,7 @@ func (r *Regexp) executeInto(s string, start, maxSlot, startLimit int, preferSea
 			// 遍历：使用通用引擎。
 		}
 		if r.dfaEligible && maxSlot <= 2 {
-			r.compat.dfaOnce.Do(func() { r.compat.dfa = buildASCIIFullMatch(r.dfaAST, r.prog) })
+			r.compat.dfaOnce.Do(func() { r.compat.dfa = buildASCIIFullMatch(r.prog.dfaAST, r.prog) })
 			// A ^body$ pattern can only match the whole input, so the DFA answers both the boolean and
 			// the index question in one linear pass. | ^body$ 模式只能匹配整个输入，因此 DFA 一次线性扫描
 			// 即可回答布尔与下标问题。
@@ -569,9 +575,9 @@ func (r *Regexp) stdRegexp() *stdregexp.Regexp {
 		var re *stdregexp.Regexp
 		var err error
 		if r.posix {
-			re, err = stdregexp.CompilePOSIX(r.src)
+			re, err = stdregexp.CompilePOSIX(r.prog.src)
 		} else {
-			re, err = stdregexp.Compile(r.src)
+			re, err = stdregexp.Compile(r.prog.src)
 		}
 		if err == nil {
 			re.Longest()
