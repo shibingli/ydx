@@ -88,6 +88,13 @@ func analyze(ast node) progInfo {
 		info.requiredConditions.add(info.required)
 	}
 	info.literals = buildRequiredLiteralFilter(analyzeRequiredLiterals(ast))
+	// When the required literal is exactly the literal prefix, nextPrefix already performs the same
+	// scan; keeping both would scan the input twice for a negative answer. | 当必需字面量与字面量
+	// 前缀完全相同时，nextPrefix 已执行同样的扫描；保留两者会在否定结果上重复扫描输入。
+	if info.prefixOK && info.literals.ok && info.literals.single != "" &&
+		info.literals.single == string(info.prefix) && info.literals.fold == info.prefixFold {
+		info.literals = requiredLiteralFilter{}
+	}
 	if !info.canEmpty && !info.anchored {
 		set, ok := firstByteSet(ast)
 		if ok && set != allBytes() {

@@ -347,17 +347,29 @@ func containsLiteral(value, literal string, fold bool) bool {
 	if len(value) < len(literal) {
 		return false
 	}
-	for i := 0; i+len(literal) <= len(value); i++ {
-		matched := true
-		for j := 0; j < len(literal); j++ {
-			b := value[i+j]
-			if b >= 0x80 || lowerASCIIByte(b) != lowerASCIIByte(literal[j]) {
-				matched = false
+	// A folded ASCII literal that starts with two letters can reuse the SIMD fold-pair scan. This
+	// keeps negative required-literal checks at memory bandwidth instead of the quadratic scalar
+	// fallback, which matters for large request values. | 以两个字母开头的折叠 ASCII 字面量可复用
+	// SIMD 折叠字节对扫描，使否定必需字面量检查保持在内存带宽附近，而不是退化为二次标量扫描；
+	// 这对较大的请求值很重要。
+	if indexFoldPairBlock > 1 && isASCIILetter(literal[0]) && isASCIILetter(literal[1]) {
+		c0 := lowerASCIIByte(literal[0])
+		c1 := lowerASCIIByte(literal[1])
+		for from := 0; ; {
+			index := indexFoldPair(value, c0, c1, from)
+			if index < 0 {
 				break
 			}
+			if foldedLiteralAt(value, index, literal) {
+				return true
+			}
+			from = index + 1
 		}
-		if matched {
-			return true
+	} else {
+		for i := 0; i+len(literal) <= len(value); i++ {
+			if foldedLiteralAt(value, i, literal) {
+				return true
+			}
 		}
 	}
 	// Non-ASCII input may match through Unicode folding; never reject it. | 非 ASCII 输入可能通过
@@ -368,6 +380,21 @@ func containsLiteral(value, literal string, fold bool) bool {
 		}
 	}
 	return false
+}
+
+// foldedLiteralAt reports whether value contains literal at pos under ASCII folding. |
+// foldedLiteralAt 报告 value 在 pos 处是否按 ASCII 折叠包含 literal。
+func foldedLiteralAt(value string, pos int, literal string) bool {
+	if pos < 0 || pos+len(literal) > len(value) {
+		return false
+	}
+	for i := 0; i < len(literal); i++ {
+		b := value[pos+i]
+		if b >= 0x80 || lowerASCIIByte(b) != lowerASCIIByte(literal[i]) {
+			return false
+		}
+	}
+	return true
 }
 
 // addLiteralByte adds one ASCII byte to a set. | addLiteralByte 把一个 ASCII 字节加入集合。

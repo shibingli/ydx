@@ -77,6 +77,30 @@ func TestRequiredLiteralsSoundness(t *testing.T) {
 
 // TestRequiredLiteralFilterQuality pins filter construction and rejection. |
 // TestRequiredLiteralFilterQuality 固定过滤器构建与拒绝行为。
+// TestContainsLiteralFolded verifies the SIMD fold-pair path, including negative values with many
+// first-pair candidates and the conservative non-ASCII fallback. | TestContainsLiteralFolded 验证
+// SIMD 折叠字节对路径，包括含大量首字节对候选的否定值与非 ASCII 保守回退。
+func TestContainsLiteralFolded(t *testing.T) {
+	tests := []struct {
+		value string
+		want  bool
+	}{
+		{"xxERRORyy", true},
+		{"error", true},
+		{"prefix-error", true},
+		{"user123 user456 user789", false},
+		{"ERR", false},
+		{"erroré", true},
+		{"éuser", true},
+		{"", false},
+	}
+	for _, test := range tests {
+		if got := containsLiteral(test.value, "error", true); got != test.want {
+			t.Fatalf("containsLiteral(%q) = %v, want %v", test.value, got, test.want)
+		}
+	}
+}
+
 func TestRequiredLiteralFilterQuality(t *testing.T) {
 	re := MustCompile(`[a-z]+-attack`)
 	if !re.prog.info.literals.ok {
@@ -93,7 +117,10 @@ func TestRequiredLiteralFilterQuality(t *testing.T) {
 		t.Fatal("single-letter filter should be rejected")
 	}
 	fold := MustCompile(`(?i)ABC`)
-	if !fold.prog.info.literals.ok || !fold.prog.info.literals.matches("xxabc") {
-		t.Fatal("folded filter failed")
+	if fold.prog.info.literals.ok {
+		t.Fatal("literal filter duplicating the prefix should be dropped")
+	}
+	if !fold.MatchString("xxabc") {
+		t.Fatal("folded prefix search failed")
 	}
 }
