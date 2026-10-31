@@ -1,0 +1,77 @@
+go: downloading github.com/shibingli/ydx/waf v0.1.2
+goos: linux
+goarch: amd64
+pkg: github.com/shibingli/ydx/benchmarks/waf
+cpu: Intel(R) Core(TM) i9-10980HK CPU @ 2.40GHz
+BenchmarkBenignGET/ydx-16          	    5794	    222197 ns/op	    5994 B/op	     187 allocs/op
+BenchmarkBenignGET/ydx-16          	    6640	    177140 ns/op	    5958 B/op	     187 allocs/op
+BenchmarkBenignGET/ydx-16          	    6212	    174557 ns/op	    5949 B/op	     187 allocs/op
+BenchmarkBenignGET/ydx-16          	    6189	    225546 ns/op	    5992 B/op	     187 allocs/op
+BenchmarkBenignGET/ydx-16          	    5079	    256058 ns/op	    5957 B/op	     187 allocs/op
+BenchmarkBenignGET/coraza-16       	    1243	    942858 ns/op	  182120 B/op	    2932 allocs/op
+BenchmarkBenignGET/coraza-16       	    1436	    737910 ns/op	  176852 B/op	    2931 allocs/op
+BenchmarkBenignGET/coraza-16       	    1684	    644961 ns/op	  179471 B/op	    2932 allocs/op
+BenchmarkBenignGET/coraza-16       	    1862	    639045 ns/op	  177595 B/op	    2931 allocs/op
+BenchmarkBenignGET/coraza-16       	    1773	    671572 ns/op	  178315 B/op	    2932 allocs/op
+BenchmarkAttackGET/ydx-16          	    9814	    114245 ns/op	    7243 B/op	     140 allocs/op
+BenchmarkAttackGET/ydx-16          	    9662	    110662 ns/op	    7231 B/op	     140 allocs/op
+BenchmarkAttackGET/ydx-16          	   10659	    113691 ns/op	    7242 B/op	     140 allocs/op
+BenchmarkAttackGET/ydx-16          	    9988	    113301 ns/op	    7235 B/op	     140 allocs/op
+BenchmarkAttackGET/ydx-16          	   10000	    112782 ns/op	    7241 B/op	     140 allocs/op
+BenchmarkAttackGET/coraza-16       	    2095	    558739 ns/op	  125701 B/op	    2710 allocs/op
+BenchmarkAttackGET/coraza-16       	    2184	    561228 ns/op	  123117 B/op	    2709 allocs/op
+BenchmarkAttackGET/coraza-16       	    2196	    565148 ns/op	  122123 B/op	    2709 allocs/op
+BenchmarkAttackGET/coraza-16       	    1922	    561165 ns/op	  121809 B/op	    2708 allocs/op
+BenchmarkAttackGET/coraza-16       	    2071	    566095 ns/op	  120455 B/op	    2708 allocs/op
+BenchmarkBenignPOST/ydx-16         	    5944	    184315 ns/op	    7536 B/op	     228 allocs/op
+BenchmarkBenignPOST/ydx-16         	    6237	    182947 ns/op	    7541 B/op	     228 allocs/op
+BenchmarkBenignPOST/ydx-16         	    6474	    182348 ns/op	    7532 B/op	     228 allocs/op
+BenchmarkBenignPOST/ydx-16         	    6247	    182160 ns/op	    7517 B/op	     228 allocs/op
+BenchmarkBenignPOST/ydx-16         	    6590	    183959 ns/op	    7542 B/op	     228 allocs/op
+BenchmarkBenignPOST/coraza-16      	    1376	    852168 ns/op	  268814 B/op	    3288 allocs/op
+BenchmarkBenignPOST/coraza-16      	    1486	    834613 ns/op	  261687 B/op	    3287 allocs/op
+BenchmarkBenignPOST/coraza-16      	    1357	    838206 ns/op	  262285 B/op	    3285 allocs/op
+BenchmarkBenignPOST/coraza-16      	    1357	    839960 ns/op	  260543 B/op	    3286 allocs/op
+BenchmarkBenignPOST/coraza-16      	    1232	    846037 ns/op	  261386 B/op	    3285 allocs/op
+BenchmarkAttackPOST/ydx-16         	    8792	    123040 ns/op	    8533 B/op	     162 allocs/op
+BenchmarkAttackPOST/ydx-16         	    9331	    123330 ns/op	    8532 B/op	     162 allocs/op
+BenchmarkAttackPOST/ydx-16         	    9672	    122482 ns/op	    8520 B/op	     162 allocs/op
+BenchmarkAttackPOST/ydx-16         	    9370	    138126 ns/op	    8514 B/op	     162 allocs/op
+BenchmarkAttackPOST/ydx-16         	    8638	    134284 ns/op	    8526 B/op	     162 allocs/op
+BenchmarkAttackPOST/coraza-16      	    1782	    678664 ns/op	  206728 B/op	    2916 allocs/op
+BenchmarkAttackPOST/coraza-16      	    1740	    663864 ns/op	  199433 B/op	    2914 allocs/op
+BenchmarkAttackPOST/coraza-16      	    1645	    685201 ns/op	  201882 B/op	    2914 allocs/op
+BenchmarkAttackPOST/coraza-16      	    1688	    661997 ns/op	  202003 B/op	    2915 allocs/op
+BenchmarkAttackPOST/coraza-16      	    1734	    666872 ns/op	  202687 B/op	    2915 allocs/op
+BenchmarkParallelBenignGET/ydx-16  	   37323	     34622 ns/op	    5969 B/op	     187 allocs/op
+BenchmarkParallelBenignGET/ydx-16  	   39832	     29583 ns/op	    5958 B/op	     187 allocs/op
+BenchmarkParallelBenignGET/ydx-16  	   39546	     29351 ns/op	    5962 B/op	     187 allocs/op
+BenchmarkParallelBenignGET/ydx-16  	   40575	     28272 ns/op	    5954 B/op	     187 allocs/op
+BenchmarkParallelBenignGET/ydx-16  	   40074	     28106 ns/op	    5953 B/op	     187 allocs/op
+BenchmarkParallelBenignGET/coraza-16         	    8475	    141841 ns/op	  184179 B/op	    2933 allocs/op
+BenchmarkParallelBenignGET/coraza-16         	    9196	    136424 ns/op	  181475 B/op	    2932 allocs/op
+BenchmarkParallelBenignGET/coraza-16         	    8662	    140916 ns/op	  178737 B/op	    2932 allocs/op
+BenchmarkParallelBenignGET/coraza-16         	    8954	    136258 ns/op	  178462 B/op	    2932 allocs/op
+BenchmarkParallelBenignGET/coraza-16         	    8719	    138136 ns/op	  181282 B/op	    2932 allocs/op
+BenchmarkSequentialBenignGET/ydx-16          	    7090	    153697 ns/op	    5951 B/op	     187 allocs/op
+BenchmarkSequentialBenignGET/ydx-16          	    7563	    153289 ns/op	    5949 B/op	     187 allocs/op
+BenchmarkSequentialBenignGET/ydx-16          	    7131	    151711 ns/op	    5946 B/op	     187 allocs/op
+BenchmarkSequentialBenignGET/ydx-16          	    7663	    152145 ns/op	    5952 B/op	     187 allocs/op
+BenchmarkSequentialBenignGET/ydx-16          	    7693	    151480 ns/op	    5962 B/op	     187 allocs/op
+BenchmarkSequentialBenignGET/coraza-16       	    1988	    609177 ns/op	  183552 B/op	    2932 allocs/op
+BenchmarkSequentialBenignGET/coraza-16       	    1728	    619108 ns/op	  177667 B/op	    2931 allocs/op
+BenchmarkSequentialBenignGET/coraza-16       	    1741	    607328 ns/op	  176957 B/op	    2931 allocs/op
+BenchmarkSequentialBenignGET/coraza-16       	    1724	    613499 ns/op	  178079 B/op	    2931 allocs/op
+BenchmarkSequentialBenignGET/coraza-16       	    1726	    629851 ns/op	  178635 B/op	    2931 allocs/op
+BenchmarkBuild/ydx-16                        	       4	 289833746 ns/op	105716112 B/op	 1006353 allocs/op
+BenchmarkBuild/ydx-16                        	       4	 287171464 ns/op	105716116 B/op	 1006352 allocs/op
+BenchmarkBuild/ydx-16                        	       4	 284935714 ns/op	105725568 B/op	 1006355 allocs/op
+BenchmarkBuild/ydx-16                        	       4	 283781634 ns/op	105734508 B/op	 1006354 allocs/op
+BenchmarkBuild/ydx-16                        	       4	 289973520 ns/op	105688288 B/op	 1006348 allocs/op
+BenchmarkBuild/coraza-16                     	       3	 378574124 ns/op	82689690 B/op	  721910 allocs/op
+BenchmarkBuild/coraza-16                     	       3	 379562078 ns/op	82728066 B/op	  721922 allocs/op
+BenchmarkBuild/coraza-16                     	       3	 381138920 ns/op	82597493 B/op	  721894 allocs/op
+BenchmarkBuild/coraza-16                     	       3	 378122675 ns/op	82653477 B/op	  721904 allocs/op
+BenchmarkBuild/coraza-16                     	       3	 385851573 ns/op	82692085 B/op	  721914 allocs/op
+PASS
+ok  	github.com/shibingli/ydx/benchmarks/waf	174.012s
