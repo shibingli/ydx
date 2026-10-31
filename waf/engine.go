@@ -10,6 +10,7 @@ import (
 
 	"github.com/shibingli/ydx/errs"
 	"github.com/shibingli/ydx/log"
+	"github.com/shibingli/ydx/regexpx"
 )
 
 // engineSeq makes transaction identifiers unique across concurrently built engines.
@@ -72,9 +73,10 @@ func buildEngine(opts Options, bundle *Bundle, logger *log.Logger, hooks *hookRe
 		return nil, errs.Wrap(err, ErrBuild)
 	}
 	cc := compileContext{
-		fsys:   opts.RootFS,
-		strict: !opts.Lenient,
-		warn:   parseWarn,
+		fsys:       opts.RootFS,
+		strict:     !opts.Lenient,
+		warn:       parseWarn,
+		regexCache: make(map[string]*regexpx.Regexp, 64),
 	}
 	rules, compileWarnings, err := compileRuleSet(directives, opts, cc)
 	if err != nil {
@@ -88,6 +90,7 @@ func buildEngine(opts Options, bundle *Bundle, logger *log.Logger, hooks *hookRe
 	if err != nil {
 		return nil, err
 	}
+	warmRuleRegexps(rules)
 	e := &engine{
 		rules:           rules,
 		cfg:             opts,
@@ -106,12 +109,38 @@ func buildEngine(opts Options, bundle *Bundle, logger *log.Logger, hooks *hookRe
 	e.off = rules.engineMode == ModeOff
 	e.pool.New = func() any {
 		return &transaction{
-			tx:             make(map[string]txValue, 8),
+			tx:             make(map[uint64]txEntry, 8),
 			removedRules:   make(map[int]struct{}, 2),
 			removedTargets: make(map[int][]varSelector, 2),
 		}
 	}
 	return e, nil
+}
+
+// warmRuleRegexps initializes regexpx lazy DFA fast paths before the engine is published. It does
+// not execute a match and therefore cannot change rule semantics or trigger backtracking. |
+// warmRuleRegexps 在引擎发布前初始化 regexpx 惰性 DFA 快路径。它不执行匹配，因此不会改变规则语义
+// 或触发回溯。
+func warmRuleRegexps(rules *ruleSet) {
+	seen := make(map[*compiledRule]bool, len(rules.rules))
+	var warm func(*compiledRule)
+	warm = func(rule *compiledRule) {
+		if rule == nil || seen[rule] {
+			return
+		}
+		seen[rule] = true
+		if rule.op != nil && rule.op.re != nil {
+			rule.op.re.Warm()
+		}
+		for _, child := range rule.chain {
+			warm(child)
+		}
+	}
+	for phase := PhaseRequestHeaders; phase <= PhaseLogging; phase++ {
+		for _, entry := range rules.phases[phase] {
+			warm(entry.rule)
+		}
+	}
 }
 
 // acquire reserves the engine for one request. | acquire 为单个请求预留引擎。

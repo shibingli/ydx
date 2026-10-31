@@ -309,6 +309,7 @@ func compileSetVar(value string) (setVarAction, error) {
 			return setVarAction{}, err
 		}
 		action.name = name
+		action.hash = txNameHash(name)
 		action.op = '!'
 		return action, nil
 	}
@@ -321,6 +322,7 @@ func compileSetVar(value string) (setVarAction, error) {
 		return setVarAction{}, err
 	}
 	action.name = key
+	action.hash = txNameHash(key)
 	if strings.HasPrefix(raw, "+") {
 		action.op = '+'
 		raw = raw[1:]
@@ -361,7 +363,7 @@ func compileExpireVar(value string) (expireVarAction, error) {
 	if err != nil {
 		return expireVarAction{}, err
 	}
-	return expireVarAction{name: key, ttl: compiled}, nil
+	return expireVarAction{name: key, ttl: compiled, hash: txNameHash(key)}, nil
 }
 
 // compileCtl compiles one ctl action. Some ctl forms expand into multiple actions.

@@ -62,12 +62,16 @@
 // Rules are parsed, compiled, chained and bucketed by phase at load time; request handling only
 // reads immutable snapshots. The request line is cached per transaction, r.RequestURI is reused when
 // present, and ARGS_COMBINED_SIZE is cached until query or body reading/parsing changes the argument set.
-// @pm uses Aho-Corasick, @ipMatch uses net/netip, and regex operators receive conservative literal,
-// byte-set and minimum-length prefilters before the regex engine runs. Transform results are cached
-// per transaction for expensive chains. | 规则在加载期完成解析、编译、链展开与阶段分桶；请求处理
-// 只读不可变快照。请求行按事务缓存；r.RequestURI 存在时直接复用；ARGS_COMBINED_SIZE 在查询串或
-// 正文读取/解析改变参数集合前缓存。@pm 使用 Aho-Corasick，@ipMatch 使用 net/netip；正则算子在进入
-// 引擎前接受保守的字面量、字节集与最小长度预过滤。昂贵变换链的结果按事务缓存。
+// @pm uses Aho-Corasick with dense root transitions, @ipMatch uses net/netip, and regex operators
+// receive conservative literal, byte-set and minimum-length prefilters before the regex engine runs.
+// Transform results use compact chain IDs and per-transaction caching; a per-rule L1 cache also
+// serves repeated values during parallel evaluation. Negative operator results are cached per rule
+// for repeated values, TX variables use precomputed hashes, and capture uses caller-provided regex
+// buffers. | 规则在加载期完成解析、编译、链展开与阶段分桶；请求处理只读不可变快照。请求行按事务
+// 缓存；r.RequestURI 存在时直接复用；ARGS_COMBINED_SIZE 在查询串或正文读取/解析改变参数集合前缓存。
+// @pm 使用带密集根转移的 Aho-Corasick，@ipMatch 使用 net/netip；正则算子在进入引擎前接受保守的
+// 字面量、字节集与最小长度预过滤。变换结果使用紧凑链 ID 与事务级缓存；规则级 L1 缓存在并行求值时
+// 也能复用重复取值。否定算子结果按规则缓存重复取值；TX 变量使用预计算哈希；捕获使用调用方缓冲区。
 //
 // Consecutive independent rules can run on up to four workers; actions and matches are committed
 // in source order. Set ParallelWorkers to one to disable rule-level parallelism, or to an explicit
@@ -79,11 +83,12 @@
 //		ParallelWorkers: 4,
 //	})
 //
-// regexpx v0.1.11 adds AST-level required-byte/literal prefilters, minimum-length short circuits
-// and a lazy ASCII search DFA. The WAF module requires that release, so these optimizations apply
-// automatically; no WAF API changes are required. | regexpx v0.1.11 新增 AST 必需字节/字面量
-// 预过滤、最小长度短路与惰性 ASCII 搜索 DFA。WAF 模块依赖该版本，因此这些优化自动生效，
-// 无需修改 WAF API。
+// regexpx v0.1.12 adds AST-level required-byte/literal prefilters, minimum-length short circuits
+// and a lazy ASCII search DFA. The WAF module requires that release, calls Regexp.Warm when the
+// engine is built, and uses the caller-provided capture buffers, so these optimizations apply
+// automatically. | regexpx v0.1.12 新增 AST 必需字节/字面量预过滤、最小长度短路与惰性 ASCII 搜索
+// DFA。WAF 模块依赖该版本，在引擎构建时调用 Regexp.Warm，并使用调用方捕获缓冲区，因此这些优化
+// 自动生效。
 //
 // # YD router | YD 路由
 //

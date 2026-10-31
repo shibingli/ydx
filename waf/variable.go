@@ -21,12 +21,15 @@ type varValue struct {
 
 // varSelector selects values from one transaction collection. | varSelector 从事务集合中选择取值。
 type varSelector struct {
-	Name       string
-	Key        string
-	KeyRe      *regexpx.Regexp
-	Exclusions []varSelector
-	scalar     bool
-	Count      bool
+	Name             string
+	Key              string
+	KeyRe            *regexpx.Regexp
+	Exclusions       []varSelector
+	scalar           bool
+	Count            bool
+	exclusionsSelf   bool
+	simpleCollection bool
+	txHash           uint64
 }
 
 // knownVariables lists every variable the engine understands. Unknown variables are a compile
@@ -100,8 +103,11 @@ func finishSelector(selector varSelector) varSelector {
 	if _, ok := scalarVariables[selector.Name]; ok {
 		selector.scalar = true
 	}
+	selector.simpleCollection = selector.Key == "" && selector.KeyRe == nil && !selector.scalar &&
+		!selector.Count && selector.Name != "ARGS_COMBINED_SIZE" && selector.Name != "FILES_COMBINED_SIZE"
 	if selector.Name == "TX" && selector.Key != "" && selector.KeyRe == nil {
 		selector.Key = strings.ToLower(selector.Key)
+		selector.txHash = txNameHash(selector.Key)
 	}
 	return selector
 }
@@ -128,6 +134,7 @@ func parseVarSelectors(raw string) ([]varSelector, error) {
 	}
 	for i := range selectors {
 		selectors[i].Exclusions = exclusions
+		selectors[i].exclusionsSelf = selectors[i].exclusionsTarget(selectors[i].Name)
 	}
 	return selectors, nil
 }
@@ -261,7 +268,7 @@ func (s varSelector) collect(tx *transaction) []varValue {
 	case "XML":
 		values = tx.collectXML()
 	case "TX":
-		values = tx.collectTX(s.Key, s.KeyRe)
+		values = tx.collectTX(s.txHash, s.Key, s.KeyRe)
 	case "MATCHED_VARS":
 		values = tx.matchedVars
 	case "MATCHED_VARS_NAMES":
@@ -340,6 +347,9 @@ var scalarVariables = map[string]struct{}{
 // when the selector needs the general collection path. | fastValue 在不分配集合切片的情况下
 // 求值常见选择器；需要通用集合路径时 handled 为 false。
 func (s varSelector) fastValue(tx *transaction) (value varValue, ok, handled bool) {
+	if s.simpleCollection {
+		return varValue{}, false, false
+	}
 	if s.scalar && s.Key == "" && s.KeyRe == nil && !s.Count && len(s.Exclusions) == 0 {
 		value, found := tx.singleValue(s.Name)
 		return value, found, true
@@ -353,13 +363,13 @@ func (s varSelector) fastValue(tx *transaction) (value varValue, ok, handled boo
 			return value, found, true
 		}
 	}
-	if len(s.Exclusions) > 0 && s.exclusionsTarget(s.Name) {
+	if s.exclusionsSelf {
 		return varValue{}, false, false
 	}
 	if s.Count {
 		if s.Name == "TX" && s.Key != "" && s.KeyRe == nil {
 			count := 0
-			if tx.hasTX(s.Key) {
+			if tx.hasTXHash(s.txHash, s.Key) {
 				count = 1
 			}
 			return varValue{Name: "TX", Value: strconv.Itoa(count)}, true, true
@@ -367,7 +377,7 @@ func (s varSelector) fastValue(tx *transaction) (value varValue, ok, handled boo
 		return varValue{}, false, false
 	}
 	if s.Name == "TX" && s.Key != "" && s.KeyRe == nil {
-		value, found := tx.exactTX(s.Key)
+		value, found := tx.exactTXHash(s.txHash, s.Key)
 		return value, found, true
 	}
 	if s.Name == "RULE" && s.Key != "" {
@@ -487,13 +497,12 @@ func (s varSelector) fastKeyedCount(tx *transaction) (int, bool) {
 
 // collectTX returns TX values matching an exact key or key regex. | collectTX 返回匹配精确键或键
 // 正则的 TX 取值。
-func (tx *transaction) collectTX(key string, keyRe *regexpx.Regexp) []varValue {
+func (tx *transaction) collectTX(hash uint64, key string, keyRe *regexpx.Regexp) []varValue {
 	if key == "" && keyRe == nil {
 		return tx.txCollection()
 	}
-	var out []varValue
 	if keyRe == nil {
-		value, ok := tx.tx[txKey(key)]
+		value, ok := tx.txLookup(hash, key)
 		if !ok {
 			return nil
 		}
@@ -501,14 +510,32 @@ func (tx *transaction) collectTX(key string, keyRe *regexpx.Regexp) []varValue {
 			return nil
 		}
 		if value.single {
-			return []varValue{{Name: "TX", Key: txKey(key), Value: value.first}}
+			return []varValue{{Name: "TX", Key: key, Value: value.first}}
 		}
+		out := make([]varValue, 0, len(value.values))
 		for _, item := range value.values {
-			out = append(out, varValue{Name: "TX", Key: txKey(key), Value: item})
+			out = append(out, varValue{Name: "TX", Key: key, Value: item})
 		}
 		return out
 	}
-	for name, value := range tx.tx {
+	var out []varValue
+	for _, entry := range tx.tx {
+		if !keyRe.MatchString(entry.key) {
+			continue
+		}
+		value := entry.value
+		if !value.expiry.IsZero() && timeNow().After(value.expiry) {
+			continue
+		}
+		if value.single {
+			out = append(out, varValue{Name: "TX", Key: entry.key, Value: value.first})
+			continue
+		}
+		for _, item := range value.values {
+			out = append(out, varValue{Name: "TX", Key: entry.key, Value: item})
+		}
+	}
+	for name, value := range tx.txCollisions {
 		if !keyRe.MatchString(name) {
 			continue
 		}

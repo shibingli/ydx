@@ -77,10 +77,20 @@ func applyTransforms(value string, chain []transformFunc) string {
 	return value
 }
 
+// transformL1 caches the most recent transform result for one rule evaluation. Collections often
+// repeat the same value across adjacent entries, and this small cache works during parallel rule
+// evaluation where the shared transaction map is unavailable. | transformL1 缓存单条规则求值中最近的
+// 变换结果。集合的相邻条目经常重复相同取值，且该小型缓存在并行规则求值、共享事务 map 不可用时仍可工作。
+type transformL1 struct {
+	input  string
+	output string
+	valid  bool
+}
+
 // transformCacheKey identifies one chain result within a transaction. | transformCacheKey 标识事务内
 // 一个变换链的结果。
 type transformCacheKey struct {
-	chain string
+	chain uint32
 	value string
 }
 
@@ -114,19 +124,19 @@ func transformCacheWorthy(name string, chainLength int) bool {
 // applyCachedTransforms applies a transform chain with a per-transaction result cache. The cache is
 // disabled during parallel rule evaluation because workers share the transaction. | applyCachedTransforms
 // 使用事务级结果缓存应用变换链。并行规则求值共享事务，因此该阶段禁用缓存。
-func applyCachedTransforms(tx *transaction, value string, chain []transformFunc, key string, cacheable bool) string {
+func applyCachedTransforms(tx *transaction, value string, chain []transformFunc, chainID uint32, cacheable bool) string {
 	if len(chain) == 0 {
 		return value
 	}
-	if !cacheable || tx == nil || key == "" || tx.parallelEval || len(value) > maxTransformCacheValue {
+	if !cacheable || tx == nil || chainID == 0 || tx.parallelEval || len(value) > maxTransformCacheValue {
 		return applyTransforms(value, chain)
 	}
+	cacheKey := transformCacheKey{chain: chainID, value: value}
 	if tx.transformCache == nil {
 		tx.transformCache = make(map[transformCacheKey]string, 16)
 	} else if len(tx.transformCache) >= maxTransformCacheEntries {
 		return applyTransforms(value, chain)
 	}
-	cacheKey := transformCacheKey{chain: key, value: value}
 	if cached, ok := tx.transformCache[cacheKey]; ok {
 		return cached
 	}

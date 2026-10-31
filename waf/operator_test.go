@@ -95,7 +95,8 @@ func TestOperatorMacroArgument(t *testing.T) {
 	if err != nil {
 		t.Fatalf("compileOperator: %v", err)
 	}
-	tx := &transaction{tx: map[string]txValue{"allowed": {values: []string{"a b c"}}}}
+	tx := &transaction{}
+	tx.setTX("allowed", []string{"a b c"}, 0)
 	matched, _ := op.eval(tx, "b", false)
 	if !matched {
 		t.Fatal("@within macro did not match")

@@ -37,7 +37,8 @@ type transaction struct {
 	now time.Time
 	req *http.Request
 
-	tx             map[string]txValue
+	tx             map[uint64]txEntry
+	txCollisions   map[string]txValue
 	transformCache map[transformCacheKey]string
 
 	interruption *Interruption
@@ -63,6 +64,7 @@ type transaction struct {
 	responseProto    string
 
 	capture         []string
+	captureScratch  []string
 	matches         []Match
 	matchedVars     []varValue
 	parallelIndices []int
@@ -148,12 +150,17 @@ func resetTransaction(tx *transaction) {
 	if tx.tx != nil {
 		clear(tx.tx)
 	}
+	if tx.txCollisions != nil {
+		clear(tx.txCollisions)
+	}
 	if tx.transformCache != nil {
 		clear(tx.transformCache)
 	}
 	tx.parallelEval = false
 	tx.requestLine = ""
 	tx.capture = tx.capture[:0]
+	clear(tx.captureScratch)
+	tx.captureScratch = tx.captureScratch[:0]
 	tx.matches = tx.matches[:0]
 	tx.matchedVars = tx.matchedVars[:0]
 	tx.parallelIndices = tx.parallelIndices[:0]
@@ -271,18 +278,109 @@ func txKey(name string) string {
 	return name
 }
 
+// txEntry is one keyed TX value in the primary hash table. | txEntry 是主哈希表中的一个键控 TX 取值。
+type txEntry struct {
+	key   string
+	value txValue
+}
+
+// txNameHash hashes a normalized TX variable name. Precomputed hashes avoid re-hashing the same
+// compile-time names on every rule evaluation. | txNameHash 对已归一化的 TX 变量名做哈希。预计算哈希
+// 避免在每次规则求值时重复哈希相同的编译期名称。
+func txNameHash(name string) uint64 {
+	hash := uint64(1469598103934665603)
+	for index := 0; index < len(name); index++ {
+		hash ^= uint64(name[index])
+		hash *= 1099511628211
+	}
+	return hash
+}
+
+// txKeyHash normalizes a TX name and returns it with its hash. | txKeyHash 归一化 TX 名称并返回名称与
+// 哈希。
+func txKeyHash(name string) (string, uint64) {
+	key := txKey(name)
+	return key, txNameHash(key)
+}
+
+// txLookup returns a TX value by precomputed hash and normalized key. Collisions are kept in a
+// small secondary map; a 64-bit hash collision is rare, so the common path performs one map probe
+// and one string comparison without hashing the key. | txLookup 按预计算哈希与归一化键返回 TX 取值。
+// 碰撞保存在小型二级 map 中；64 位哈希碰撞很少，因此常见路径只做一次 map 探测与一次字符串比较，
+// 不再哈希键。
+func (tx *transaction) txLookup(hash uint64, key string) (txValue, bool) {
+	if entry, ok := tx.tx[hash]; ok && entry.key == key {
+		return entry.value, true
+	}
+	if tx.txCollisions != nil {
+		value, ok := tx.txCollisions[key]
+		return value, ok
+	}
+	return txValue{}, false
+}
+
+// txStore stores a TX value by precomputed hash and normalized key. | txStore 按预计算哈希与归一化键
+// 保存 TX 取值。
+func (tx *transaction) txStore(hash uint64, key string, value txValue) {
+	if tx.tx == nil {
+		tx.tx = make(map[uint64]txEntry, 8)
+	}
+	entry, ok := tx.tx[hash]
+	if !ok || entry.key == key {
+		if tx.txCollisions != nil {
+			delete(tx.txCollisions, key)
+		}
+		tx.tx[hash] = txEntry{key: key, value: value}
+		return
+	}
+	if tx.txCollisions == nil {
+		tx.txCollisions = make(map[string]txValue, 1)
+	}
+	tx.txCollisions[key] = value
+}
+
+// txDelete removes a TX value by precomputed hash and normalized key. | txDelete 按预计算哈希与归一化
+// 键删除 TX 取值。
+func (tx *transaction) txDelete(hash uint64, key string) {
+	if entry, ok := tx.tx[hash]; ok && entry.key == key {
+		delete(tx.tx, hash)
+		return
+	}
+	if tx.txCollisions != nil {
+		delete(tx.txCollisions, key)
+	}
+}
+
+// txEntries returns every stored TX entry for iteration. | txEntries 返回全部已存储 TX 条目以供遍历。
+func (tx *transaction) txEntries() []txEntry {
+	if len(tx.tx) == 0 && len(tx.txCollisions) == 0 {
+		return nil
+	}
+	entries := make([]txEntry, 0, len(tx.tx)+len(tx.txCollisions))
+	for _, entry := range tx.tx {
+		entries = append(entries, entry)
+	}
+	for key, value := range tx.txCollisions {
+		entries = append(entries, txEntry{key: key, value: value})
+	}
+	return entries
+}
+
 // setTX replaces a TX variable. A positive ttl marks the value as expiring. | setTX 替换 TX 变量；
 // 正数 ttl 表示该值会过期。
 func (tx *transaction) setTX(name string, values []string, ttl time.Duration) {
+	key, hash := txKeyHash(name)
+	tx.setTXHash(hash, key, values, ttl)
+}
+
+// setTXHash replaces a TX variable using a precomputed hash and normalized key. | setTXHash 使用预计算
+// 哈希与归一化键替换 TX 变量。
+func (tx *transaction) setTXHash(hash uint64, key string, values []string, ttl time.Duration) {
 	if len(values) == 1 {
-		tx.setTXValue(name, values[0], ttl)
+		tx.setTXValueHash(hash, key, values[0], ttl)
 		return
 	}
-	key := txKey(name)
-	if tx.tx == nil {
-		tx.tx = make(map[string]txValue, 8)
-	}
-	current := tx.tx[key]
+	current, _ := tx.txLookup(hash, key)
 	current.values = append(current.values[:0], values...)
 	current.first = ""
 	current.single = false
@@ -290,17 +388,20 @@ func (tx *transaction) setTX(name string, values []string, ttl time.Duration) {
 	if ttl > 0 {
 		current.expiry = time.Now().Add(ttl)
 	}
-	tx.tx[key] = current
+	tx.txStore(hash, key, current)
 }
 
 // setTXValue replaces a TX variable with one scalar without allocating a slice. | setTXValue 用一个
 // 标量替换 TX 变量，不分配切片。
 func (tx *transaction) setTXValue(name, value string, ttl time.Duration) {
-	key := txKey(name)
-	if tx.tx == nil {
-		tx.tx = make(map[string]txValue, 8)
-	}
-	current := tx.tx[key]
+	key, hash := txKeyHash(name)
+	tx.setTXValueHash(hash, key, value, ttl)
+}
+
+// setTXValueHash replaces a TX variable using a precomputed hash and normalized key. | setTXValueHash
+// 使用预计算哈希与归一化键替换 TX 变量。
+func (tx *transaction) setTXValueHash(hash uint64, key, value string, ttl time.Duration) {
+	current, _ := tx.txLookup(hash, key)
 	current.first = value
 	current.single = true
 	current.values = current.values[:0]
@@ -308,16 +409,19 @@ func (tx *transaction) setTXValue(name, value string, ttl time.Duration) {
 	if ttl > 0 {
 		current.expiry = time.Now().Add(ttl)
 	}
-	tx.tx[key] = current
+	tx.txStore(hash, key, current)
 }
 
 // addTX appends a value to a TX variable. | addTX 向 TX 变量追加一个值。
 func (tx *transaction) addTX(name, value string, ttl time.Duration) {
-	key := txKey(name)
-	if tx.tx == nil {
-		tx.tx = make(map[string]txValue, 8)
-	}
-	current := tx.tx[key]
+	key, hash := txKeyHash(name)
+	tx.addTXHash(hash, key, value, ttl)
+}
+
+// addTXHash appends a value using a precomputed hash and normalized key. | addTXHash 使用预计算哈希与
+// 归一化键追加取值。
+func (tx *transaction) addTXHash(hash uint64, key, value string, ttl time.Duration) {
+	current, _ := tx.txLookup(hash, key)
 	if !current.expiry.IsZero() && time.Now().After(current.expiry) {
 		current = txValue{}
 	}
@@ -331,21 +435,34 @@ func (tx *transaction) addTX(name, value string, ttl time.Duration) {
 	if ttl > 0 {
 		current.expiry = time.Now().Add(ttl)
 	}
-	tx.tx[key] = current
+	tx.txStore(hash, key, current)
 }
 
 // deleteTX removes a TX variable. | deleteTX 删除 TX 变量。
 func (tx *transaction) deleteTX(name string) {
+	key, hash := txKeyHash(name)
+	tx.deleteTXHash(hash, key)
+}
+
+// deleteTXHash removes a TX variable using a precomputed hash and normalized key. | deleteTXHash 使用
+// 预计算哈希与归一化键删除 TX 变量。
+func (tx *transaction) deleteTXHash(hash uint64, key string) {
 	if tx.tx != nil {
-		delete(tx.tx, txKey(name))
+		tx.txDelete(hash, key)
 	}
 }
 
 // lastTX returns the last value of a TX variable. Expired values are removed lazily.
 // | lastTX 返回 TX 变量的最后一个取值；过期值会被惰性删除。
 func (tx *transaction) lastTX(name string) string {
-	key := txKey(name)
-	value, ok := tx.tx[key]
+	key, hash := txKeyHash(name)
+	return tx.lastTXHash(hash, key)
+}
+
+// lastTXHash returns the last value using a precomputed hash and normalized key. | lastTXHash 使用预计算
+// 哈希与归一化键返回最后一个取值。
+func (tx *transaction) lastTXHash(hash uint64, key string) string {
+	value, ok := tx.txLookup(hash, key)
 	if !ok {
 		return ""
 	}
@@ -366,8 +483,14 @@ func (tx *transaction) lastTX(name string) string {
 // exactTX returns the current value of one TX variable without allocating. | exactTX 零分配地返回
 // 一个 TX 变量的当前值。
 func (tx *transaction) exactTX(name string) (varValue, bool) {
-	key := txKey(name)
-	value, ok := tx.tx[key]
+	key, hash := txKeyHash(name)
+	return tx.exactTXHash(hash, key)
+}
+
+// exactTXHash returns the current TX value using a precomputed hash and normalized key. |
+// exactTXHash 使用预计算哈希与归一化键返回当前 TX 取值。
+func (tx *transaction) exactTXHash(hash uint64, key string) (varValue, bool) {
+	value, ok := tx.txLookup(hash, key)
 	if !ok {
 		return varValue{}, false
 	}
@@ -385,27 +508,41 @@ func (tx *transaction) exactTX(name string) (varValue, bool) {
 
 // hasTX reports whether a TX variable has a live value. | hasTX 报告 TX 变量是否有未过期的值。
 func (tx *transaction) hasTX(name string) bool {
-	_, ok := tx.exactTX(name)
+	key, hash := txKeyHash(name)
+	return tx.hasTXHash(hash, key)
+}
+
+// hasTXHash reports whether a TX variable has a live value using a precomputed hash. | hasTXHash 使用
+// 预计算哈希报告 TX 变量是否有未过期的值。
+func (tx *transaction) hasTXHash(hash uint64, key string) bool {
+	_, ok := tx.exactTXHash(hash, key)
 	return ok
 }
 
 // txCollection returns every live TX variable sorted by name. | txCollection 按名称排序返回所有
 // 未过期的 TX 变量。
 func (tx *transaction) txCollection() []varValue {
-	if len(tx.tx) == 0 {
+	if len(tx.tx) == 0 && len(tx.txCollisions) == 0 {
 		return nil
 	}
-	keys := make([]string, 0, len(tx.tx))
-	for key, value := range tx.tx {
-		if !value.expiry.IsZero() && time.Now().After(value.expiry) {
-			continue
-		}
+	keys := make([]string, 0, len(tx.tx)+len(tx.txCollisions))
+	for _, entry := range tx.tx {
+		keys = append(keys, entry.key)
+	}
+	for key := range tx.txCollisions {
 		keys = append(keys, key)
 	}
 	sort.Strings(keys)
 	out := make([]varValue, 0, len(keys))
 	for _, key := range keys {
-		value := tx.tx[key]
+		hash := txNameHash(key)
+		value, ok := tx.txLookup(hash, key)
+		if !ok {
+			continue
+		}
+		if !value.expiry.IsZero() && time.Now().After(value.expiry) {
+			continue
+		}
 		if value.single {
 			out = append(out, varValue{Name: "TX", Key: key, Value: value.first})
 			continue
@@ -428,7 +565,8 @@ func (tx *transaction) setCapture(groups []string) {
 	}
 	for i := 0; i < len(groups) && i < len(tx.capture); i++ {
 		tx.capture[i] = groups[i]
-		tx.setTXValue(strconv.Itoa(i), groups[i], 0)
+		key := strconv.Itoa(i)
+		tx.setTXValueHash(txNameHash(key), key, groups[i], 0)
 	}
 }
 

@@ -520,6 +520,8 @@ func (e *engine) evalRule(tx *transaction, rule *compiledRule) ruleEval {
 		return ruleEval{}
 	}
 	var result ruleEval
+	var transformed transformL1
+	var operatorCache operatorL1
 	checkTargets := len(tx.removedTargets) > 0
 	for _, selector := range rule.vars {
 		if checkTargets && rule.meta.ID > 0 && tx.targetRemoved(rule.meta.ID, selector) {
@@ -529,7 +531,7 @@ func (e *engine) evalRule(tx *transaction, rule *compiledRule) ruleEval {
 			if !found {
 				continue
 			}
-			matchedValue, captures, hit := evalRuleValue(tx, rule, value)
+			matchedValue, captures, hit := evalRuleValue(tx, rule, value, &transformed, &operatorCache)
 			if !hit {
 				continue
 			}
@@ -544,7 +546,7 @@ func (e *engine) evalRule(tx *transaction, rule *compiledRule) ruleEval {
 		}
 		values := selector.collect(tx)
 		for _, value := range values {
-			matchedValue, captures, hit := evalRuleValue(tx, rule, value)
+			matchedValue, captures, hit := evalRuleValue(tx, rule, value, &transformed, &operatorCache)
 			if !hit {
 				continue
 			}
@@ -563,13 +565,30 @@ func (e *engine) evalRule(tx *transaction, rule *compiledRule) ruleEval {
 
 // evalRuleValue applies transforms and the operator to one value. | evalRuleValue 对一个取值应用
 // 变换与算子。
-func evalRuleValue(tx *transaction, rule *compiledRule, value varValue) (varValue, []string, bool) {
+func evalRuleValue(tx *transaction, rule *compiledRule, value varValue, transformedCache *transformL1, operatorCache *operatorL1) (varValue, []string, bool) {
 	transformed := value.Value
 	if len(rule.transforms) > 0 {
-		transformed = applyCachedTransforms(tx, value.Value, rule.transforms, rule.transformKey, rule.transformCacheable)
+		if transformedCache != nil && transformedCache.valid && transformedCache.input == value.Value {
+			transformed = transformedCache.output
+		} else {
+			transformed = applyCachedTransforms(tx, value.Value, rule.transforms, rule.transformChainID, rule.transformCacheable)
+			if transformedCache != nil {
+				transformedCache.input = value.Value
+				transformedCache.output = transformed
+				transformedCache.valid = true
+			}
+		}
 	}
-	matched, captures := rule.op.eval(tx, transformed, rule.capture)
+	if operatorCache != nil && operatorCache.valid && !operatorCache.hit && operatorCache.input == transformed {
+		return varValue{}, nil, false
+	}
+	matched, captures := rule.op.evalWithBuffer(tx, transformed, rule.capture, !rule.multiMatch)
 	if !matched {
+		if operatorCache != nil {
+			operatorCache.input = transformed
+			operatorCache.hit = false
+			operatorCache.valid = true
+		}
 		return varValue{}, nil, false
 	}
 	value.Value = transformed
@@ -644,28 +663,28 @@ func (tx *transaction) applySetVars(actions []setVarAction) {
 		raw := action.value.expand(tx)
 		switch action.op {
 		case '!':
-			tx.deleteTX(action.name)
+			tx.deleteTXHash(action.hash, action.name)
 		case '=':
-			tx.setTXValue(action.name, raw, action.ttl)
+			tx.setTXValueHash(action.hash, action.name, raw, action.ttl)
 		case '+':
-			current := tx.lastTX(action.name)
+			current := tx.lastTXHash(action.hash, action.name)
 			if current == "" {
-				tx.setTXValue(action.name, raw, action.ttl)
+				tx.setTXValueHash(action.hash, action.name, raw, action.ttl)
 				continue
 			}
 			left, leftOK := parseNumber(current)
 			right, rightOK := parseNumber(raw)
 			if leftOK && rightOK {
-				tx.setTXValue(action.name, formatNumber(left+right), action.ttl)
+				tx.setTXValueHash(action.hash, action.name, formatNumber(left+right), action.ttl)
 				continue
 			}
-			tx.addTX(action.name, raw, action.ttl)
+			tx.addTXHash(action.hash, action.name, raw, action.ttl)
 		case '-':
-			current := tx.lastTX(action.name)
+			current := tx.lastTXHash(action.hash, action.name)
 			left, leftOK := parseNumber(current)
 			right, rightOK := parseNumber(raw)
 			if leftOK && rightOK {
-				tx.setTXValue(action.name, formatNumber(left-right), action.ttl)
+				tx.setTXValueHash(action.hash, action.name, formatNumber(left-right), action.ttl)
 			}
 		}
 	}
@@ -679,13 +698,12 @@ func (tx *transaction) applyExpireVars(actions []expireVarAction) {
 		if err != nil || seconds <= 0 {
 			continue
 		}
-		key := txKey(action.name)
-		current, ok := tx.tx[key]
+		current, ok := tx.txLookup(action.hash, action.name)
 		if !ok || (!current.single && len(current.values) == 0) {
 			continue
 		}
 		current.expiry = time.Now().Add(time.Duration(seconds) * time.Second)
-		tx.tx[key] = current
+		tx.txStore(action.hash, action.name, current)
 	}
 }
 
@@ -830,6 +848,9 @@ func parseNumber(value string) (float64, bool) {
 	value = strings.TrimSpace(value)
 	if value == "" {
 		return 0, false
+	}
+	if number, ok := parseSmallInteger(value); ok {
+		return number, true
 	}
 	number, err := strconv.ParseFloat(value, 64)
 	if err != nil || math.IsNaN(number) || math.IsInf(number, 0) {

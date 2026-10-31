@@ -10,7 +10,8 @@ type acNode struct {
 // acMatcher finds any of a fixed pattern set in one linear scan. | acMatcher 在一次线性扫描中
 // 查找固定模式集合中的任意一个。
 type acMatcher struct {
-	nodes []acNode
+	nodes    []acNode
+	rootNext [256]int32
 }
 
 // newACMatcher builds an Aho-Corasick automaton. Empty patterns are ignored. | newACMatcher
@@ -40,6 +41,9 @@ func newACMatcher(patterns []string) *acMatcher {
 		m.nodes[state].out = true
 	}
 	m.buildFailures()
+	for c, child := range m.nodes[0].next {
+		m.rootNext[c] = child
+	}
 	return m
 }
 
@@ -82,18 +86,30 @@ func (m *acMatcher) match(s string) bool {
 	state := int32(0)
 	for i := 0; i < len(s); i++ {
 		c := s[i]
-		for state != 0 {
-			if _, ok := m.nodes[state].next[c]; ok {
+		if state == 0 {
+			// The root is traversed after every mismatch; a dense row avoids a map lookup. |
+			// 每次失配后都会回到根节点；密集转移行避免 map 查找。
+			next := m.rootNext[c]
+			if next == 0 {
+				continue
+			}
+			state = next
+			if m.nodes[state].out {
+				return true
+			}
+			continue
+		}
+		for {
+			if next, ok := m.nodes[state].next[c]; ok {
+				state = next
+				break
+			}
+			if state == 0 {
 				break
 			}
 			state = m.nodes[state].fail
 		}
-		if next, ok := m.nodes[state].next[c]; ok {
-			state = next
-		} else {
-			state = 0
-		}
-		if m.nodes[state].out {
+		if state != 0 && m.nodes[state].out {
 			return true
 		}
 	}

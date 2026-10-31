@@ -44,6 +44,16 @@ const (
 	opDetectXSS
 )
 
+// operatorL1 caches the most recent negative operator result for one rule evaluation. Repeated
+// values in a collection therefore skip the operator scan. Positive results are not cached because
+// callers may need captures. | operatorL1 缓存单条规则求值中最近的否定算子结果。集合中的重复取值因此
+// 跳过算子扫描。肯定结果不缓存，因为调用方可能需要捕获组。
+type operatorL1 struct {
+	input string
+	hit   bool
+	valid bool
+}
+
 // operator is one compiled SecLang operator. | operator 是一个编译后的 SecLang 算子。
 type operator struct {
 	re           *regexpx.Regexp
@@ -57,9 +67,11 @@ type operator struct {
 	name         string
 	raw          string
 	arg          string
+	argNumber    float64
 	ranges       byteRanges
 	kind         opKind
 	minLen       int
+	argNumberOK  bool
 	needleFold   bool
 	byteSetFold  bool
 	hasByteSet   bool
@@ -69,10 +81,11 @@ type operator struct {
 // compileContext supplies filesystem and diagnostics to operator compilation. | compileContext
 // 为算子编译提供文件系统与诊断。
 type compileContext struct {
-	fsys    fs.FS
-	warn    func(string)
-	baseDir string
-	strict  bool
+	fsys       fs.FS
+	warn       func(string)
+	baseDir    string
+	regexCache map[string]*regexpx.Regexp
+	strict     bool
 }
 
 // supportedOperators lists the operator names accepted by the engine. | supportedOperators 列出
@@ -121,9 +134,19 @@ func compileOperator(negated bool, name, arg string, cc compileContext) (*operat
 		if arg == "" {
 			return nil, errs.Detail(ErrParse, "@rx requires a pattern | @rx 需要模式")
 		}
-		compiled, err := regexpx.Compile(arg)
-		if err != nil {
-			return nil, errs.WrapDetail(err, ErrParse, "invalid @rx pattern | 非法的 @rx 模式")
+		var compiled *regexpx.Regexp
+		if cc.regexCache != nil {
+			compiled = cc.regexCache[arg]
+		}
+		if compiled == nil {
+			var err error
+			compiled, err = regexpx.Compile(arg)
+			if err != nil {
+				return nil, errs.WrapDetail(err, ErrParse, "invalid @rx pattern | 非法的 @rx 模式")
+			}
+			if cc.regexCache != nil {
+				cc.regexCache[arg] = compiled
+			}
 		}
 		op.re = compiled
 		// Every match begins with the literal prefix, so a value that does not contain it cannot
@@ -202,6 +225,9 @@ func compileOperator(negated bool, name, arg string, cc compileContext) (*operat
 			op.argMacro = &compiled
 		} else {
 			op.arg = arg
+			if kind >= opEq && kind <= opLe {
+				op.argNumber, op.argNumberOK = parseOperatorNumber(arg)
+			}
 		}
 	}
 	return op, nil
@@ -210,7 +236,15 @@ func compileOperator(negated bool, name, arg string, cc compileContext) (*operat
 // eval applies the operator to one value. capture selects whether regex submatches are
 // materialized. | eval 对一个取值应用算子；capture 决定是否生成正则子匹配。
 func (o *operator) eval(tx *transaction, value string, capture bool) (bool, []string) {
-	matched, groups := o.match(tx, value, capture)
+	return o.evalWithBuffer(tx, value, capture, false)
+}
+
+// evalWithBuffer is eval with optional reuse of the transaction capture buffer. Reuse is only
+// enabled for a single, non-multiMatch regex result; the caller must consume or copy the returned
+// groups before evaluating another value. | evalWithBuffer 是 eval 的变体，可选复用事务捕获缓冲区。
+// 仅对单个、非 multiMatch 的正则结果启用；调用方必须在求值下一个取值前消费或复制返回的分组。
+func (o *operator) evalWithBuffer(tx *transaction, value string, capture, reuse bool) (bool, []string) {
+	matched, groups := o.match(tx, value, capture, reuse)
 	if o.negated {
 		return !matched, nil
 	}
@@ -218,7 +252,7 @@ func (o *operator) eval(tx *transaction, value string, capture bool) (bool, []st
 }
 
 // match dispatches to the concrete operator implementation. | match 分派到具体算子实现。
-func (o *operator) match(tx *transaction, value string, capture bool) (bool, []string) {
+func (o *operator) match(tx *transaction, value string, capture, reuse bool) (bool, []string) {
 	switch o.kind {
 	case opRx:
 		if o.minLen > 0 && len(value) < o.minLen {
@@ -237,6 +271,13 @@ func (o *operator) match(tx *transaction, value string, capture bool) (bool, []s
 			return false, nil
 		}
 		if capture {
+			if reuse && tx != nil && !tx.parallelEval {
+				groups := o.re.FindStringSubmatchInto(tx.captureScratch[:0], value)
+				if groups != nil {
+					tx.captureScratch = groups
+				}
+				return len(groups) > 0, groups
+			}
 			groups := o.re.FindStringSubmatch(value)
 			return len(groups) > 0, groups
 		}
@@ -250,7 +291,7 @@ func (o *operator) match(tx *transaction, value string, capture bool) (bool, []s
 	case opEndsWith:
 		return strings.HasSuffix(value, o.argument(tx)), nil
 	case opEq, opNe, opGt, opGe, opLt, opLe:
-		return compareNumber(value, o.argument(tx), o.kind), nil
+		return o.compareNumeric(tx, value), nil
 	case opStrMatch:
 		return wildcardMatch(value, o.argument(tx)), nil
 	case opStrEq:
@@ -344,17 +385,24 @@ func isWordByte(c byte) bool {
 	return c == '_' || (c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
 }
 
-// compareNumber implements the numeric comparison operators. | compareNumber 实现数值比较算子。
-func compareNumber(value, argument string, kind opKind) bool {
-	left, err := strconv.ParseFloat(strings.TrimSpace(value), 64)
-	if err != nil {
+// compareNumeric compares one value with the operator argument. Literal arguments are parsed once
+// at compile time; macro arguments are expanded and parsed per evaluation. | compareNumeric 比较一个
+// 取值与算子参数。字面量参数在编译期解析一次；宏参数在每次求值时展开并解析。
+func (o *operator) compareNumeric(tx *transaction, value string) bool {
+	left, ok := parseOperatorNumber(value)
+	if !ok {
 		return false
 	}
-	right, err := strconv.ParseFloat(strings.TrimSpace(argument), 64)
-	if err != nil {
+	right := o.argNumber
+	if o.argMacro != nil {
+		right, ok = parseOperatorNumber(o.argument(tx))
+		if !ok {
+			return false
+		}
+	} else if !o.argNumberOK {
 		return false
 	}
-	switch kind {
+	switch o.kind {
 	case opEq:
 		return left == right
 	case opNe:
@@ -370,6 +418,50 @@ func compareNumber(value, argument string, kind opKind) bool {
 	default:
 		return false
 	}
+}
+
+// parseOperatorNumber parses a SecLang numeric operand. | parseOperatorNumber 解析 SecLang 数值操作数。
+func parseOperatorNumber(value string) (float64, bool) {
+	value = strings.TrimSpace(value)
+	if number, ok := parseSmallInteger(value); ok {
+		return number, true
+	}
+	number, err := strconv.ParseFloat(value, 64)
+	if err != nil {
+		return 0, false
+	}
+	return number, true
+}
+
+// parseSmallInteger parses a short decimal integer without the general float parser. Fifteen
+// digits fit exactly in a float64, so the result is identical to ParseFloat for this range. |
+// parseSmallInteger 使用快速路径解析短十进制整数。十五位数字可精确表示在 float64 中，因此该范围
+// 内结果与 ParseFloat 一致。
+func parseSmallInteger(value string) (float64, bool) {
+	if len(value) == 0 || len(value) > 15 {
+		return 0, false
+	}
+	negative := false
+	index := 0
+	if value[0] == '-' {
+		negative = true
+		index = 1
+		if index == len(value) {
+			return 0, false
+		}
+	}
+	var number int64
+	for ; index < len(value); index++ {
+		c := value[index]
+		if c < '0' || c > '9' {
+			return 0, false
+		}
+		number = number*10 + int64(c-'0')
+	}
+	if negative {
+		number = -number
+	}
+	return float64(number), true
 }
 
 // wildcardMatch matches s against a pattern containing '*' and '?'. | wildcardMatch 用包含 '*' 与

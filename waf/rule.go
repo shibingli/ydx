@@ -27,6 +27,7 @@ type Rule struct {
 type setVarAction struct {
 	name  string
 	value macro
+	hash  uint64
 	op    byte
 	ttl   time.Duration
 }
@@ -35,6 +36,7 @@ type setVarAction struct {
 type expireVarAction struct {
 	name string
 	ttl  macro
+	hash uint64
 }
 
 // ctlKind enumerates supported ctl directives. | ctlKind 枚举受支持的 ctl 指令。
@@ -80,6 +82,7 @@ type compiledRule struct {
 
 	redirect           string
 	transformKey       string
+	transformChainID   uint32
 	vars               []varSelector
 	transforms         []transformFunc
 	chain              []*compiledRule

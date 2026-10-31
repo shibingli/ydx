@@ -114,11 +114,44 @@ func buildRuleSet(entries []specEntry, defaults []actionSpec, defaultPhase Phase
 			rs.byTag[tag] = append(rs.byTag[tag], id)
 		}
 	}
+	prepareTransformCaching(rs)
 	rs.computeNeeds()
 	if len(rs.rules) == 0 {
 		return nil, warnings, ErrNoRules
 	}
 	return rs, warnings, nil
+}
+
+// prepareTransformCaching assigns compact chain IDs used by the per-transaction transform cache.
+// The cache is valuable even for a chain used by one rule because a rule may see repeated values
+// across a collection. | prepareTransformCaching 为事务级变换缓存分配紧凑链 ID。即使一条变换链仅被
+// 一条规则使用，规则在集合中也可能遇到重复取值，因此缓存仍有价值。
+func prepareTransformCaching(rs *ruleSet) {
+	ids := make(map[string]uint32, 32)
+	seen := make(map[*compiledRule]bool, len(rs.rules))
+	var assign func(*compiledRule)
+	assign = func(rule *compiledRule) {
+		if rule == nil || seen[rule] {
+			return
+		}
+		seen[rule] = true
+		if rule.transformCacheable && rule.transformKey != "" {
+			id, ok := ids[rule.transformKey]
+			if !ok {
+				id = uint32(len(ids) + 1)
+				ids[rule.transformKey] = id
+			}
+			rule.transformChainID = id
+		}
+		for _, child := range rule.chain {
+			assign(child)
+		}
+	}
+	for phase := PhaseRequestHeaders; phase <= PhaseLogging; phase++ {
+		for _, entry := range rs.phases[phase] {
+			assign(entry.rule)
+		}
+	}
 }
 
 // ruleBaseDir returns the directory used to resolve operator data files next to a rule file.
@@ -305,7 +338,11 @@ func ruleReadsMutableState(rule *compiledRule) bool {
 // multiMatch actions: evaluation is pure, and commit still happens in source order. Rules with
 // control-flow or state-reading behavior remain barriers. | computeEvalIndependent 标记可以在一段
 // 规则提交前完成求值的规则。与 parallelSafe 不同，这些规则可以带 setvar、expirevar、capture 或
-// multiMatch 动作：求值是纯的，提交仍按源码顺序进行。带控制流或读取状态的规则仍是屏障。
+// multiMatch 动作：求值是纯的，提交仍按源码顺序进行。带控制流的规则仍是屏障；读取 TX 的规则由
+// 收集器按写入依赖切段。 | Rules whose match result can be computed before earlier rules in the
+// same run commit. Unlike parallelSafe, these rules may have setvar, expirevar, capture or
+// multiMatch actions: evaluation is pure and commit still happens in source order. Control-flow
+// rules remain barriers; TX readers are segmented by the collector according to write dependencies.
 func computeEvalIndependent(rule *compiledRule, chainMember bool) bool {
 	if chainMember || rule.actionOnly || len(rule.chain) > 0 || len(rule.ctls) > 0 ||
 		rule.allow || rule.skip > 0 || rule.skipAfter != "" || rule.op == nil {
