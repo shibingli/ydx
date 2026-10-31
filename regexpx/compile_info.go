@@ -31,10 +31,14 @@ func lengthBounds(n node) (min, max int) {
 		return min, max
 	case *nAlt:
 		min, max = -1, -1
-		for _, sub := range n.sub {
+		for i, sub := range n.sub {
 			lo, hi := lengthBounds(sub)
 			if min < 0 || lo < min {
 				min = lo
+			}
+			if i == 0 {
+				max = hi
+				continue
 			}
 			if hi < 0 || max < 0 {
 				max = -1
@@ -75,6 +79,8 @@ func analyze(ast node) progInfo {
 	info.prefix, info.prefixFold, info.prefixOK = literalPrefix(ast)
 	info.hasWordBoundary = containsAssert(ast, assertWordBoundary) || containsAssert(ast, assertNotWordBoundary)
 	info.hasLineAnchor = containsAssert(ast, assertBeginLine) || containsAssert(ast, assertEndLine)
+	info.hasBeginAssert = containsAssert(ast, assertBeginText)
+	info.hasEndAssert = containsAssert(ast, assertEndText) || containsAssert(ast, assertEndTextFinalNewline)
 	info.hasLookBehind = containsLookBehind(ast)
 	if !info.canEmpty && !info.anchored {
 		set, ok := firstByteSet(ast)

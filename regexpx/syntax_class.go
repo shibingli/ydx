@@ -435,6 +435,12 @@ func (p *parser) parseClass(flags flagSet) node {
 		}
 		items++
 	}
+	if neg && p.posix {
+		// POSIX negated classes do not match newline (ClassNL is off), matching
+		// regexp.CompilePOSIX. | POSIX 否定字符类不匹配换行（ClassNL 关闭），与
+		// regexp.CompilePOSIX 一致。
+		b.addRanges([]runeRange{{'\n', '\n'}})
+	}
 	if items == 0 {
 		// [] is an empty class, and [^] is its complement. | [] 是空类，[^] 是其补集。
 		return &nClass{c: b.build(neg, flags&flagFold != 0)}
@@ -579,4 +585,42 @@ func (p *parser) parsePOSIX() ([]runeRange, bool) {
 		return complementRanges(rs), true
 	}
 	return rs, true
+}
+
+// singleRune reports whether the class matches exactly one rune without folding. It is used by
+// LiteralPrefix to treat [a] as the literal a, matching the standard library. | singleRune 报告
+// 字符类是否在不折叠的情况下恰好匹配一个符文。LiteralPrefix 用它把 [a] 当作字面量 a，与标准库一致。
+func (c *charClass) singleRune() (rune, bool) {
+	if c == nil || c.neg || c.fold || len(c.tables) > 0 {
+		return 0, false
+	}
+	var r rune
+	found := false
+	for b := 0; b < 256; b++ {
+		if c.ascii[b>>6]&(uint64(1)<<(b&63)) == 0 {
+			continue
+		}
+		if found {
+			return 0, false
+		}
+		r = rune(b)
+		found = true
+	}
+	for _, rg := range c.ranges {
+		if found && rg.lo == rg.hi && rune(rg.lo) == r {
+			// The class constructor mirrors ASCII members into both the bitmap and the range
+			// list; a duplicate of the rune already found is not a second member. | 字符类构造器
+			// 会把 ASCII 成员同时写入位图与区间列表；与已发现符文相同的重复项不是第二个成员。
+			continue
+		}
+		if rg.lo != rg.hi || found {
+			return 0, false
+		}
+		r = rg.lo
+		found = true
+	}
+	if !found || r == utf8.RuneError {
+		return 0, false
+	}
+	return r, true
 }

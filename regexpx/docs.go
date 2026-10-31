@@ -67,6 +67,32 @@
 //
 // All indices are byte offsets regardless of the engine. | 无论走哪个引擎，索引一律是字节偏移。
 //
+// # Standard library parity | 标准库兼容
+//
+// The exported surface mirrors regexp: CompilePOSIX / MustCompilePOSIX, Longest, LiteralPrefix,
+// Expand / ExpandString, ReplaceAllLiteral / ReplaceAllLiteralString, MatchReader,
+// FindReaderIndex, FindReaderSubmatchIndex, MarshalText / UnmarshalText, AppendText, Copy, and
+// the package-level Match / MatchString / MatchReader functions. | 导出接口镜像 regexp：
+// CompilePOSIX / MustCompilePOSIX、Longest、LiteralPrefix、Expand / ExpandString、
+// ReplaceAllLiteral / ReplaceAllLiteralString、MatchReader、FindReaderIndex、
+// FindReaderSubmatchIndex、MarshalText / UnmarshalText、AppendText、Copy，以及包级
+// Match / MatchString / MatchReader。
+//
+// CompilePOSIX selects leftmost-longest matching and rejects the Perl/.NET escapes and groups that
+// the standard library excludes from POSIX mode. Longest is a configuration method and must not
+// run concurrently with matching. For patterns that need lookaround or backreferences, Longest
+// finds the longest end by testing candidate end positions on the backtracking engine. | CompilePOSIX
+// 选择最左最长匹配，并拒绝标准库在 POSIX 模式下排除的 Perl/.NET 转义与分组。Longest 是配置方法，
+// 不得与匹配并发执行。对需要环视或反向引用的模式，Longest 在回溯引擎上测试候选结束位置以找到
+// 最长结束点。
+//
+// LiteralPrefix and Longest's submatch and replacement paths use a lazily compiled standard-library
+// view for patterns regexp accepts; regexp-only (regexpx .NET) constructs stay on the native engine.
+// This keeps POSIX subexpression semantics aligned without putting stdlib on the group-zero hot path.
+// | LiteralPrefix 与 Longest 的子匹配、替换路径对 regexp 可接受的模式使用惰性编译的标准库视图；
+// regexpx 独有的 .NET 构造仍走原生引擎。这样在不把标准库放进分组 0 热路径的前提下对齐 POSIX
+// 子表达式语义。
+//
 // # Usage | 用法
 //
 // YD route | YD 路由：

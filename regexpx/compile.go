@@ -99,6 +99,8 @@ type progInfo struct {
 	hasBacktrack    bool
 	hasWordBoundary bool
 	hasLineAnchor   bool
+	hasBeginAssert  bool
+	hasEndAssert    bool
 	hasLookBehind   bool
 }
 

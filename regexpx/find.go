@@ -3,7 +3,8 @@ package regexpx
 // FindString returns the text of the first match, or the empty string when nothing matches. | FindString
 // 返回首个匹配的文本，没有匹配时返回空串。
 func (r *Regexp) FindString(s string) string {
-	caps, ok, err := r.execute(s, 0, 2, -1, false)
+	var buf [2]int
+	caps, ok, err := r.executeInto(s, 0, 2, -1, false, buf[:])
 	if err != nil || !ok {
 		return ""
 	}
@@ -13,7 +14,8 @@ func (r *Regexp) FindString(s string) string {
 // FindStringIndex returns the byte offset pair of the first match, or nil when nothing matches. |
 // FindStringIndex 返回首个匹配的字节偏移对，没有匹配时返回 nil。
 func (r *Regexp) FindStringIndex(s string) []int {
-	caps, ok, err := r.execute(s, 0, 2, -1, false)
+	var buf [2]int
+	caps, ok, err := r.executeInto(s, 0, 2, -1, false, buf[:])
 	if err != nil || !ok {
 		return nil
 	}
@@ -23,6 +25,11 @@ func (r *Regexp) FindStringIndex(s string) []int {
 // FindStringSubmatch returns the first match and its submatches, or nil when nothing matches. |
 // FindStringSubmatch 返回首个匹配及其子匹配，没有匹配时返回 nil。
 func (r *Regexp) FindStringSubmatch(s string) []string {
+	if r.longest {
+		if std := r.stdRegexp(); std != nil {
+			return std.FindStringSubmatch(s)
+		}
+	}
 	caps, ok, err := r.execute(s, 0, len(r.names)*2, -1, false)
 	if err != nil || !ok {
 		return nil
@@ -42,6 +49,11 @@ func (r *Regexp) FindStringSubmatch(s string) []string {
 // library's contract. | FindStringSubmatchIndex 返回首个匹配及其子匹配的字节偏移对。每个分组贡献两个
 // 整数；未参与匹配的分组贡献 -1, -1，与标准库约定一致。
 func (r *Regexp) FindStringSubmatchIndex(s string) []int {
+	if r.longest {
+		if std := r.stdRegexp(); std != nil {
+			return std.FindStringSubmatchIndex(s)
+		}
+	}
 	caps, ok, err := r.execute(s, 0, len(r.names)*2, -1, false)
 	if err != nil || !ok {
 		return nil
@@ -91,6 +103,11 @@ func (r *Regexp) FindAllStringSubmatch(s string, n int) [][]string {
 // FindAllStringSubmatchE is FindAllStringSubmatch with the engine error exposed. |
 // FindAllStringSubmatchE 是暴露引擎错误的 FindAllStringSubmatch。
 func (r *Regexp) FindAllStringSubmatchE(s string, n int) ([][]string, error) {
+	if r.longest {
+		if std := r.stdRegexp(); std != nil {
+			return std.FindAllStringSubmatch(s, n), nil
+		}
+	}
 	width := len(r.names) * 2
 	rows, err := r.findAll(s, n, width)
 	out := make([][]string, len(rows))
@@ -117,6 +134,11 @@ func (r *Regexp) FindAllStringSubmatchIndex(s string, n int) [][]int {
 // FindAllStringSubmatchIndexE is FindAllStringSubmatchIndex with the engine error exposed. |
 // FindAllStringSubmatchIndexE 是暴露引擎错误的 FindAllStringSubmatchIndex。
 func (r *Regexp) FindAllStringSubmatchIndexE(s string, n int) ([][]int, error) {
+	if r.longest {
+		if std := r.stdRegexp(); std != nil {
+			return std.FindAllStringSubmatchIndex(s, n), nil
+		}
+	}
 	return r.findAll(s, n, len(r.names)*2)
 }
 
@@ -138,6 +160,11 @@ func (r *Regexp) FindIndex(b []byte) []int {
 // FindSubmatch returns the first match and its submatches in b. | FindSubmatch 返回 b 中首个匹配及其
 // 子匹配。
 func (r *Regexp) FindSubmatch(b []byte) [][]byte {
+	if r.longest {
+		if std := r.stdRegexp(); std != nil {
+			return std.FindSubmatch(b)
+		}
+	}
 	index := r.FindSubmatchIndex(b)
 	if index == nil {
 		return nil
@@ -154,6 +181,11 @@ func (r *Regexp) FindSubmatch(b []byte) [][]byte {
 // FindSubmatchIndex returns the byte offset pairs of the first match and its submatches in b. |
 // FindSubmatchIndex 返回 b 中首个匹配及其子匹配的字节偏移对。
 func (r *Regexp) FindSubmatchIndex(b []byte) []int {
+	if r.longest {
+		if std := r.stdRegexp(); std != nil {
+			return std.FindSubmatchIndex(b)
+		}
+	}
 	return r.FindStringSubmatchIndex(bytesToString(b))
 }
 
@@ -176,6 +208,11 @@ func (r *Regexp) FindAllIndex(b []byte, n int) [][]int {
 // FindAllSubmatch returns every non-overlapping match and its submatches in b. | FindAllSubmatch 返回 b
 // 中每个不重叠匹配及其子匹配。
 func (r *Regexp) FindAllSubmatch(b []byte, n int) [][][]byte {
+	if r.longest {
+		if std := r.stdRegexp(); std != nil {
+			return std.FindAllSubmatch(b, n)
+		}
+	}
 	index := r.FindAllSubmatchIndex(b, n)
 	out := make([][][]byte, len(index))
 	for i, row := range index {
@@ -193,5 +230,10 @@ func (r *Regexp) FindAllSubmatch(b []byte, n int) [][][]byte {
 // FindAllSubmatchIndex returns the byte offset pairs of every match and its submatches in b. |
 // FindAllSubmatchIndex 返回 b 中每个匹配及其子匹配的字节偏移对。
 func (r *Regexp) FindAllSubmatchIndex(b []byte, n int) [][]int {
+	if r.longest {
+		if std := r.stdRegexp(); std != nil {
+			return std.FindAllSubmatchIndex(b, n)
+		}
+	}
 	return r.FindAllStringSubmatchIndex(bytesToString(b), n)
 }

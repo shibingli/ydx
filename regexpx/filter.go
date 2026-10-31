@@ -156,7 +156,7 @@ func indexByteSetBitmap(s string, set *byteSet, from int) int {
 // 使用位图扫描，因为半字节表只编码 ASCII。
 func (r *Regexp) firstCandidate(s string, from int) int {
 	if r.firstASCIISet {
-		return indexByteSet(s, &r.firstTables, from)
+		return indexByteSet(s, r.firstTables, from)
 	}
 	return indexByteSetBitmap(s, &r.prog.info.firstBytes, from)
 }

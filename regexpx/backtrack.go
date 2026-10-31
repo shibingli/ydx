@@ -508,3 +508,106 @@ func (m *btMachine) findFrom(re *Regexp, s string, start, startLimit int) ([]int
 	}
 	return nil, false, nil
 }
+
+// findFromLongest looks for the leftmost-longest match whose start lies in [start, startLimit).
+// Candidate starts use the same prefix and first-byte filters as findFrom; candidate ends are
+// tested only at UTF-8 rune boundaries, from the longest down. | findFromLongest 查找起点位于
+// [start, startLimit) 的最左最长匹配。候选起点使用与 findFrom 相同的前缀与首字节过滤；候选结束
+// 位置只在 UTF-8 符文边界上从最长向下测试。
+func (m *btMachine) findFromLongest(re *Regexp, s string, start, startLimit int) ([]int, bool, error) {
+	m.input = s
+	if startLimit < 0 || startLimit > len(s)+1 {
+		startLimit = len(s) + 1
+	}
+	if start < 0 {
+		start = 0
+	}
+	if start > len(s) {
+		return nil, false, nil
+	}
+	m.deadline = time.Now().Add(MatchTimeout)
+	m.steps = 0
+	longestAt := func(pos int) ([]int, bool, error) {
+		minEnd := pos + m.prog.info.minLen
+		if minEnd < pos {
+			minEnd = pos
+		}
+		maxEnd := len(s)
+		if m.prog.info.maxLen >= 0 {
+			// maxLen counts runes; four bytes per rune is a safe upper bound. | maxLen 以符文计；
+			// 每个符文最多四字节，是安全上界。
+			remaining := len(s) - pos
+			maxBytes := m.prog.info.maxLen
+			if maxBytes > remaining/4 {
+				maxBytes = remaining
+			} else {
+				maxBytes *= 4
+			}
+			if pos+maxBytes < maxEnd {
+				maxEnd = pos + maxBytes
+			}
+		}
+		for end := maxEnd; end >= minEnd; {
+			m.clearState()
+			_, ok, err := m.run(m.prog.patternStart, pos, end)
+			if err != nil {
+				return nil, false, err
+			}
+			if ok {
+				return append([]int(nil), m.caps...), true, nil
+			}
+			if end == pos {
+				break
+			}
+			_, size := utf8.DecodeLastRuneInString(s[:end])
+			end -= size
+		}
+		return nil, false, nil
+	}
+	if m.prog.info.anchored {
+		if start != 0 || startLimit <= 0 {
+			return nil, false, nil
+		}
+		return longestAt(0)
+	}
+	if re != nil && re.prog.info.selectivePrefilter && re.prog.info.prefixOK {
+		for candidate := re.nextPrefix(s, start); candidate >= 0; candidate = re.nextPrefix(s, candidate+1) {
+			if candidate >= startLimit {
+				break
+			}
+			if !utf8.RuneStart(s[candidate]) {
+				continue
+			}
+			if caps, ok, err := longestAt(candidate); err != nil || ok {
+				return caps, ok, err
+			}
+		}
+		return nil, false, nil
+	}
+	if re != nil && re.prog.info.selectivePrefilter && re.prog.info.firstBytesOK {
+		for candidate := re.firstCandidate(s, start); candidate >= 0; candidate = re.firstCandidate(s, candidate+1) {
+			if candidate >= startLimit {
+				break
+			}
+			if !utf8.RuneStart(s[candidate]) {
+				continue
+			}
+			if caps, ok, err := longestAt(candidate); err != nil || ok {
+				return caps, ok, err
+			}
+		}
+		return nil, false, nil
+	}
+	for candidate := start; candidate < startLimit && candidate <= len(s); {
+		if candidate == len(s) {
+			// A zero-width match may start at end of input. | 零宽匹配可以从输入末尾开始。
+			return longestAt(candidate)
+		}
+		if caps, ok, err := longestAt(candidate); err != nil || ok {
+			return caps, ok, err
+		}
+		_, size := utf8.DecodeRuneInString(s[candidate:])
+		candidate += size
+	}
+	return nil, false, nil
+}

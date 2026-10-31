@@ -15,8 +15,14 @@
 ## 功能
 
 - `Compile` / `MustCompile`：编译模式。
+- `CompilePOSIX` / `MustCompilePOSIX`：POSIX 模式，选择最左最长匹配，并拒绝标准库在
+  POSIX 模式下排除的 Perl/.NET 转义与分组。
 - 常用方法与标准库镜像：`MatchString`、`FindString`、`FindStringIndex`、`FindAllString`、
   `FindAllStringIndex`、`ReplaceAllString` 等。
+- 完整补齐标准库 API：`Longest`、`LiteralPrefix`、`Expand` / `ExpandString`、
+  `ReplaceAllLiteral` / `ReplaceAllLiteralString`、`MatchReader`、`FindReaderIndex`、
+  `FindReaderSubmatchIndex`、`MarshalText` / `UnmarshalText`、`AppendText`、`Copy`，
+  以及包级 `Match` / `MatchString` / `MatchReader`。
 - E 变体暴露 `ErrMatchTimeout`，适合校验类调用。
 - `FindAllStringParallel` / `FindAllStringIndexParallel`：在大输入且存在可靠起点过滤器时
   并行扫描。
@@ -37,6 +43,14 @@
 - **并行扫描**：存在可靠且具选择性的起点过滤器时按块并行；可匹配空串、锚定与回溯模式
   自动回退顺序执行，结果与顺序 API 一致。
 - **字节偏移**：所有索引一律是字节偏移，与执行引擎无关。
+- **最左最长**：`Longest` 切换为最左最长；线性引擎直接跟踪最长结束位置，含环视/反向引用
+  的模式在回溯引擎上从最长候选结束位置向下测试。`Longest` 是配置方法，不得与匹配并发
+  执行。
+- **兼容 oracle**：`LiteralPrefix` 与 `Longest` 的子匹配/替换路径对 `regexp` 可接受的模式
+  惰性使用标准库视图，保证 POSIX 子表达式语义一致；分组 0 的 `MatchString`/`FindString`
+  仍走原生引擎，regexpx 独有的 .NET 构造不受影响。
+- **Reader 优化**：`MatchReader` 指数分块提前返回；定长且无边界断言的 `FindReaderIndex`/
+  `FindReaderSubmatchIndex` 使用滚动窗口，避免读完整个流。
 
 ## 快速开始
 

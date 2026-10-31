@@ -2,7 +2,6 @@ package regexpx
 
 import (
 	"fmt"
-	"unicode"
 )
 
 // flagSet holds the inline matching options that apply to a pattern region. | flagSet 保存作用于模式
@@ -155,12 +154,23 @@ type parser struct {
 	numCap int
 	names  map[string]int
 	err    error
+	// posix selects POSIX repetition grammar, where a quantifier following another quantifier
+	// applies to the quantified expression instead of acting as a lazy/possessive modifier. |
+	// posix 选择 POSIX 重复语法：量词后的另一个量词作用于已量化的表达式，而不是作为惰性/占有
+	// 修饰符。
+	posix bool
 }
 
 // parsePattern parses src into an AST plus the capture metadata. | parsePattern 把 src 解析为 AST 与
 // 捕获元数据。
 func parsePattern(src string) (node, int, map[string]int, error) {
-	p := &parser{src: src, runes: []rune(src), names: make(map[string]int)}
+	return parsePatternWithMode(src, false)
+}
+
+// parsePatternWithMode parses src with the standard or POSIX repetition grammar. | parsePatternWithMode
+// 使用标准或 POSIX 重复语法解析 src。
+func parsePatternWithMode(src string, posix bool) (node, int, map[string]int, error) {
+	p := &parser{src: src, runes: []rune(src), names: make(map[string]int), posix: posix}
 	flags := flagSet(0)
 	n := p.parseAlternation(&flags)
 	if p.err == nil && p.pos < len(p.runes) {
@@ -300,13 +310,15 @@ func (p *parser) parseAtom(flags *flagSet) node {
 		return &nAny{dotAll: *flags&flagDotAll != 0}
 	case '^':
 		p.pos++
-		if *flags&flagMultiline != 0 {
+		if p.posix || *flags&flagMultiline != 0 {
+			// POSIX mode has no OneLine flag: ^ and $ are line anchors. | POSIX 模式没有 OneLine
+			// 标志：^ 与 $ 是行锚点。
 			return &nAssert{kind: assertBeginLine}
 		}
 		return &nAssert{kind: assertBeginText}
 	case '$':
 		p.pos++
-		if *flags&flagMultiline != 0 {
+		if p.posix || *flags&flagMultiline != 0 {
 			return &nAssert{kind: assertEndLine}
 		}
 		return &nAssert{kind: assertEndText}
@@ -336,28 +348,23 @@ func (p *parser) literal(r rune, flags flagSet) node {
 	return &nLiteral{r: r, fold: flags&flagFold != 0}
 }
 
-// parseQuantifier parses an optional quantifier and its greediness modifier. | parseQuantifier 解析可选的
-// 量词及其贪婪性修饰。
+// parseQuantifier parses an optional quantifier and its greediness modifier. In POSIX mode a
+// following quantifier is a nested repetition, matching regexp.CompilePOSIX. | parseQuantifier 解析
+// 可选的量词及其贪婪性修饰。POSIX 模式下后续量词构成嵌套重复，与 regexp.CompilePOSIX 一致。
 func (p *parser) parseQuantifier(atom node, flags flagSet) node {
-	var min, max int
-	switch p.peek() {
-	case '*':
-		p.pos++
-		min, max = 0, -1
-	case '+':
-		p.pos++
-		min, max = 1, -1
-	case '?':
-		p.pos++
-		min, max = 0, 1
-	case '{':
-		var ok bool
-		min, max, ok = p.tryRepeatCount()
-		if !ok {
-			return atom
-		}
-	default:
+	min, max, ok := p.parseRepeatOp()
+	if !ok {
 		return atom
+	}
+	if p.posix {
+		var n node = &nRepeat{sub: atom, min: min, max: max, greedy: true}
+		for {
+			nextMin, nextMax, nextOK := p.parseRepeatOp()
+			if !nextOK {
+				return n
+			}
+			n = &nRepeat{sub: n, min: nextMin, max: nextMax, greedy: true}
+		}
 	}
 	greedy := flags&flagUngreedy == 0
 	possessive := false
@@ -384,6 +391,25 @@ func (p *parser) parseQuantifier(atom node, flags flagSet) node {
 		return &nAtomic{sub: n}
 	}
 	return n
+}
+
+// parseRepeatOp consumes one repetition operator. It leaves the position unchanged when the next
+// token is not a quantifier. | parseRepeatOp 消费一个重复运算符；下一个标记不是量词时不移动位置。
+func (p *parser) parseRepeatOp() (min, max int, ok bool) {
+	switch p.peek() {
+	case '*':
+		p.pos++
+		return 0, -1, true
+	case '+':
+		p.pos++
+		return 1, -1, true
+	case '?':
+		p.pos++
+		return 0, 1, true
+	case '{':
+		return p.tryRepeatCount()
+	}
+	return 0, 0, false
 }
 
 // tryRepeatCount parses {n}, {n,} or {n,m} and reports whether the text was a valid count. It leaves
@@ -565,9 +591,11 @@ func (p *parser) parseName(close rune) string {
 		p.fail("empty group name | 空分组名")
 		return ""
 	}
-	for i, r := range name {
-		ok := r == '_' || unicode.IsLetter(r) || (i > 0 && unicode.IsDigit(r))
-		if !ok {
+	for _, r := range name {
+		// The standard library accepts [A-Za-z0-9_]+ for capture names, including a leading
+		// digit, and rejects non-ASCII letters. | 标准库接受 [A-Za-z0-9_]+ 作为捕获名（允许数字
+		// 开头），并拒绝非 ASCII 字母。
+		if r != '_' && !(r >= '0' && r <= '9') && !(r >= 'A' && r <= 'Z') && !(r >= 'a' && r <= 'z') {
 			p.failf("invalid group name %q | 非法的分组名 %q", name, name)
 			return ""
 		}

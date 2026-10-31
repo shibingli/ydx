@@ -66,6 +66,15 @@ type pikeMachine struct {
 	simple   []addSimpleFrame
 	capPool  [][]int
 
+	// longest enables leftmost-longest selection; bestStart and bestEnd track the best match seen
+	// so far. In first-match mode hasBest is only used to mirror the selected match. | longest
+	// 启用最左最长选择；bestStart 与 bestEnd 记录目前最佳匹配。最左优先模式下 hasBest 只用于
+	// 镜像已选匹配。
+	longest   bool
+	hasBest   bool
+	bestStart int
+	bestEnd   int
+
 	// startSet gates unanchored start injection at positions that cannot begin a match. |
 	// startSet 在不可能开始匹配的位置阻止未锚定起点注入。
 	startSet     *byteSet
@@ -277,18 +286,16 @@ func (m *pikeMachine) step(runq, nextq *threadList, pos, nextPos int, r rune, wi
 		t := &runq.dense[j]
 		in := &m.prog.insts[t.pc]
 		if in.op == opMatch {
-			switch {
-			case m.capLen == 2:
-				m.matchcap[0], m.matchcap[1] = t.start, t.end
-			case m.capLen > 2:
-				copy(m.matchcap, t.cap)
-				m.matchcap[1] = pos
+			m.recordMatch(t, pos)
+			if !m.longest {
+				// First-match mode: cut off all lower-priority threads. | 最左优先模式：截断所有
+				// 更低优先级的线程。
+				m.releaseList(runq)
+				return
 			}
-			m.matched = true
-			// First-match mode: cut off all lower-priority threads. | 最左优先模式：截断所有更低
-			// 优先级的线程。
-			m.releaseList(runq)
-			return
+			// Longest mode keeps lower-priority threads alive so a later-ending match can replace
+			// the current best. | 最长模式保留更低优先级的线程，使结束更晚的匹配可以替换当前最佳。
+			continue
 		}
 		if width == 0 || !m.consumes(t, r) {
 			continue
@@ -298,12 +305,77 @@ func (m *pikeMachine) step(runq, nextq *threadList, pos, nextPos int, r rune, wi
 	m.releaseList(runq)
 }
 
+// recordMatch records one match thread. In longest mode it keeps the match with the earliest start
+// and, among equal starts, the furthest end; in first-match mode the caller immediately cuts off
+// lower-priority threads, so the first record is the selected one. | recordMatch 记录一个匹配线程。
+// 最长模式保留起点最早、起点相同时结束最晚的匹配；最左优先模式下调用方会立即截断更低优先级
+// 线程，因此首次记录即为选中匹配。
+func (m *pikeMachine) recordMatch(t *pikeThread, pos int) {
+	start, end := t.start, pos
+	if m.hasBest {
+		if start > m.bestStart {
+			return
+		}
+		if start == m.bestStart {
+			if end < m.bestEnd {
+				return
+			}
+			if end == m.bestEnd {
+				// Same overall match: POSIX subexpression order prefers the earlier start and,
+				// for equal starts, the longer end. | 整体匹配相同时，POSIX 子表达式顺序偏好更早的
+				// 起点，以及起点相同时更晚的终点。
+				if m.capLen <= 2 || t.cap == nil || !betterLongestCaptures(t.cap, m.matchcap) {
+					return
+				}
+			}
+		}
+	}
+	m.hasBest = true
+	m.bestStart, m.bestEnd = start, end
+	m.matched = true
+	switch {
+	case m.capLen == 2:
+		m.matchcap[0], m.matchcap[1] = start, end
+	case m.capLen > 2:
+		copy(m.matchcap, t.cap)
+		m.matchcap[0], m.matchcap[1] = start, end
+	}
+}
+
+// betterLongestCaptures reports whether candidate is preferable to current under POSIX
+// leftmost-longest subexpression order. Group zero has already been compared by the caller. |
+// betterLongestCaptures 报告在 POSIX 最左最长子表达式顺序下 candidate 是否优于 current。调用方已
+// 比较分组 0。
+func betterLongestCaptures(candidate, current []int) bool {
+	for i := 2; i+1 < len(candidate) && i+1 < len(current); i += 2 {
+		candidateStart, candidateEnd := candidate[i], candidate[i+1]
+		currentStart, currentEnd := current[i], current[i+1]
+		candidateMatched := candidateStart >= 0
+		currentMatched := currentStart >= 0
+		if candidateMatched != currentMatched {
+			return candidateMatched
+		}
+		if !candidateMatched {
+			continue
+		}
+		if candidateStart != currentStart {
+			return candidateStart < currentStart
+		}
+		if candidateEnd != currentEnd {
+			return candidateEnd > currentEnd
+		}
+	}
+	return false
+}
+
 // run executes the program from startPC at start. When allowNewStarts is true the pattern may start at
 // every later position, implementing an unanchored search. | run 从 start 处的 startPC 开始执行程序。
 // allowNewStarts 为 true 时模式可以在其后每个位置开始，实现未锚定搜索。
 func (m *pikeMachine) run(s string, startPC uint32, start int, allowNewStarts bool) bool {
 	m.input = s
 	m.matched = false
+	m.hasBest = false
+	m.bestStart, m.bestEnd = 0, 0
 	if m.capLen > 0 {
 		if cap(m.matchcap) < m.capLen {
 			m.matchcap = make([]int, m.capLen)
@@ -372,6 +444,20 @@ func (m *pikeMachine) search(s string, start int) bool {
 // matchAt reports whether a match starts exactly at start. | matchAt 报告是否有匹配恰好从 start 开始。
 func (m *pikeMachine) matchAt(s string, start int) bool {
 	return m.run(s, m.prog.patternStart, start, false)
+}
+
+// capsInto returns the most recent match captures, reusing dst when it has room. |
+// capsInto 返回最近一次匹配的捕获，dst 有足够空间时复用。
+func (m *pikeMachine) capsInto(dst []int) []int {
+	if m.capLen == 0 {
+		return nil
+	}
+	if dst != nil && cap(dst) >= m.capLen {
+		dst = dst[:m.capLen]
+		copy(dst, m.matchcap)
+		return dst
+	}
+	return append([]int(nil), m.matchcap...)
 }
 
 // caps returns a private copy of the most recent match captures. | caps 返回最近一次匹配捕获的私有副本。
