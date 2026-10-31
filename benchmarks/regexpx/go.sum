@@ -8,6 +8,8 @@ github.com/shibingli/ydx/regexpx v0.1.7 h1:pLEH/b8iaIooTIfb8c5YTpaJ3imsWUzbji5eG
 github.com/shibingli/ydx/regexpx v0.1.7/go.mod h1:oC3q0ssHYf1m92iRnRNpl3rsXfLnwLMtLwiZsoftnDw=
 github.com/shibingli/ydx/regexpx v0.1.8 h1:BNPvxr+p1qvi3vJppjE9lxdFCn2ZAkMjc2Vv2XPxZyQ=
 github.com/shibingli/ydx/regexpx v0.1.8/go.mod h1:oC3q0ssHYf1m92iRnRNpl3rsXfLnwLMtLwiZsoftnDw=
+github.com/shibingli/ydx/regexpx v0.1.9 h1:ks3Yo8nfmrgdqpJWNxCIkuLxkqHKokQzVjoItX8kY2c=
+github.com/shibingli/ydx/regexpx v0.1.9/go.mod h1:oC3q0ssHYf1m92iRnRNpl3rsXfLnwLMtLwiZsoftnDw=
 github.com/wasilibs/go-re2 v1.13.0 h1:FImemHDWIeNRuDq/o8Vvx0seJ2k7ofloHLt4z0V+eR0=
 github.com/wasilibs/go-re2 v1.13.0/go.mod h1:E/UzEXX4cjlurXHJwfzKh46OhfQMLmOM0oG0ljyDL/8=
 golang.org/x/sys v0.48.0 h1:bbX/i/6MgT9BVLM9RT1thmxL04yeTAhbEz4SyadbXoo=
