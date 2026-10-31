@@ -52,6 +52,12 @@ func TestRandomAPICompatibility(t *testing.T) {
 				t.Fatalf("%q Longest FindAllStringSubmatchIndex(%q) = %v, stdlib %v",
 					pattern, input, a, b)
 			}
+			if a, b := got.Split(input, -1), std.Split(input, -1); !equalStrings(a, b) {
+				t.Fatalf("%q Longest Split(%q) = %q, stdlib %q", pattern, input, a, b)
+			}
+			if a, b := got.ReplaceAllString(input, "X"), std.ReplaceAllString(input, "X"); a != b {
+				t.Fatalf("%q Longest ReplaceAllString(%q) = %q, stdlib %q", pattern, input, a, b)
+			}
 		}
 	}
 }
