@@ -227,6 +227,20 @@ func isMetaByte(b byte) bool {
 // String returns the source pattern. | String 返回模式原文。
 func (r *Regexp) String() string { return r.prog.src }
 
+// Warm initializes the lazy unanchored search DFA without matching any input. It is safe for
+// concurrent use and is intended for service startup or rule loading so the first request does not
+// pay the lazy search-DFA construction cost. The anchored full-match DFA remains lazy. |
+// Warm 在不匹配任何输入的情况下初始化惰性未锚定搜索 DFA。它可安全并发调用，用于服务启动或规则加载，
+// 避免首个请求承担惰性搜索 DFA 构建成本。锚定全匹配 DFA 仍保持惰性。
+func (r *Regexp) Warm() {
+	if r == nil || r.compat == nil {
+		return
+	}
+	if r.searchDFAEligible {
+		_ = r.searchDFA()
+	}
+}
+
 // NumSubexp returns the number of capturing groups, excluding the whole match. | NumSubexp 返回捕获分组
 // 数量，不含整个匹配。
 func (r *Regexp) NumSubexp() int { return len(r.names) - 1 }

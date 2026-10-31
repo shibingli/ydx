@@ -183,6 +183,37 @@ func TestSearchDFARandomDifferential(t *testing.T) {
 	}
 }
 
+// TestWarmInitializesFastPaths verifies Warm builds eligible DFA caches without changing results.
+// | TestWarmInitializesFastPaths 验证 Warm 构建符合条件模式的 DFA 缓存且不改变结果。
+func TestWarmInitializesFastPaths(t *testing.T) {
+	var pattern strings.Builder
+	pattern.WriteString(`(?i)(?:^(?:json\.|\x5c)?|`)
+	for i := 0; i < 80; i++ {
+		if i > 0 {
+			pattern.WriteByte('|')
+		}
+		pattern.WriteString(`cmd`)
+		pattern.WriteByte(byte('a' + i%26))
+		pattern.WriteString(`[0-9]{0,3}\b`)
+	}
+	pattern.WriteString(`)[a-z0-9_]+`)
+	re := MustCompile(pattern.String())
+	want := re.MatchString("json.cmdA42x")
+	re.Warm()
+	if re.compat.searchDFA == nil {
+		t.Fatal("Warm did not build the search DFA")
+	}
+	if got := re.MatchString("json.cmdA42x"); got != want {
+		t.Fatalf("Warm changed MatchString: got %v want %v", got, want)
+	}
+
+	full := MustCompile(`^[a-z]+$`)
+	full.Warm()
+	if !full.MatchString("abc") || full.MatchString("abc1") {
+		t.Fatal("Warm changed full-match results")
+	}
+}
+
 // TestSearchDFAConcurrentMatch exercises concurrent access while transition rows are populated. |
 // TestSearchDFAConcurrentMatch 在填充转移行时验证并发访问。
 func TestSearchDFAConcurrentMatch(t *testing.T) {

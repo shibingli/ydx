@@ -40,10 +40,10 @@
 //     地址形态 local@domain.tld 从 '@' 定位并反向扫描局部部分；
 //   - anchored ^body$ validation patterns build a compact ASCII DFA lazily on first use; |
 //     锚定的 ^body$ 校验模式在首次使用时惰性构建紧凑 ASCII DFA；
-//   - large, broad general patterns build a lazy ASCII search DFA on first use and fall back to the
-//     Pike VM for non-ASCII input, unsupported assertions or state-budget overflow. | 大型宽首字节
-//     通用模式在首次使用时构建惰性 ASCII 搜索 DFA；非 ASCII 输入、不支持的断言或状态预算溢出时
-//     回退到 Pike VM。
+//   - large, broad general patterns build a lazy ASCII search DFA on first use (or via Warm at
+//     startup) and fall back to the Pike VM for non-ASCII input, unsupported assertions or
+//     state-budget overflow. | 大型宽首字节通用模式在首次使用时（或通过启动期 Warm）构建惰性 ASCII
+//     搜索 DFA；非 ASCII 输入、不支持的断言或状态预算溢出时回退到 Pike VM。
 //
 // # SIMD | 指令集
 //
@@ -117,6 +117,14 @@
 //
 // The common methods mirror the standard library, and the E variants expose ErrMatchTimeout. |
 // 常用方法镜像标准库，E 变体暴露 ErrMatchTimeout。
+//
+// # Startup warm-up | 启动预热
+//
+// Call Warm once after Compile to initialize the lazy unanchored search DFA before serving traffic.
+// Warm does not accept input and never runs the backtracking engine. | 在 Compile 后调用一次 Warm，
+// 可在开始服务前初始化惰性未锚定搜索 DFA。Warm 不接收输入，也不会运行回溯引擎。
+//
+//	re.Warm()
 //
 // # Caller-provided buffers | 调用方缓冲区
 //

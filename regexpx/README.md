@@ -34,14 +34,14 @@
 ## 1. 安装与导入
 
 ```bash
-go get github.com/shibingli/ydx/regexpx@v0.1.11
+go get github.com/shibingli/ydx/regexpx@v0.1.12
 ```
 
 ```go
 import "github.com/shibingli/ydx/regexpx"
 ```
 
-> `v0.1.11` 起提供本文档中的 `*Into` 调用方缓冲区 API 与惰性 ASCII 搜索 DFA。
+> `v0.1.11` 起提供调用方缓冲区 API 与惰性 ASCII 搜索 DFA；`v0.1.12` 起提供 `Warm()` 预热接口。
 
 包标识符为 `regexpx`，与目录名一致。产品模块只依赖 Go 标准库与 `ydx/errs`；本包不依赖
 第三方正则库。
@@ -508,9 +508,10 @@ DFA 只影响性能；回退路径保证结果一致。
 - `ReplaceAllString` 约为标准库的 1/2.8，`ReplaceAllLiteralString` 约 1/3–1/6（受标准库样本波动影响）；
 - `Longest` 通配/线性快路径比标准库快 2–3 个数量级，单运行快约 5–6x；
 - `MatchReader`/`FindReaderIndex` 早期匹配比标准库快约 1.5–1.7x；
-- v0.1.11 增加最小匹配长度短路、无捕获 Pike VM 快路径与 AST 必需字节/字面量预过滤；短输入可提前返回，标点密集或宽首字节模式可快数十到数百倍；
+- v0.1.11/v0.1.12 增加最小匹配长度短路、无捕获 Pike VM 快路径与 AST 必需字节/字面量预过滤；短输入可提前返回，标点密集或宽首字节模式可快数十到数百倍；
 - 大型宽首字节通用模式在首次匹配时构建惰性 ASCII 搜索 DFA；CRS 932236/932260 形态的善意值可快约 40–70x，非 ASCII 输入、不支持断言或状态上限溢出时自动回退 Pike VM；
 - 新增调用方缓冲区 API，预热后的子匹配索引/字符串结果可 0 allocs/op；
+- 新增 `Warm()`，服务启动时可提前构建惰性搜索 DFA；
 - `LiteralPrefix` 约 2.2 ns，唯一仍有相对差距的项目，但不在热路径。
 
 通用匹配/查找场景的 Zen 5、AVX2、AVX-512、arm64 与并行数据见
@@ -518,8 +519,8 @@ DFA 只影响性能；回退路径保证结果一致。
 
 ### 13.1 惰性 ASCII 搜索 DFA
 
-对满足以下条件的模式，`regexpx` 会在**首次匹配时**自动构建惰性 ASCII 搜索 DFA，无需任何
-配置或新 API：
+对满足以下条件的模式，`regexpx` 会在**首次匹配时**自动构建惰性 ASCII 搜索 DFA；也可以在
+启动或规则加载阶段调用 `Regexp.Warm()` 提前构建搜索 DFA：
 
 - 不含环视、反向引用或原子组等回溯构造；
 - 没有字面量前缀，且首字节集足够宽（避免抢占已有的前缀/首字节快路径）；
@@ -532,9 +533,12 @@ DFA 只影响性能；回退路径保证结果一致。
 // commandNames 是足够大的命令名集合（类似 OWASP CRS 932236 的形态）。
 pattern := `(?i)(?:^(?:json\.|\x5c)?|` + strings.Join(commandNames, "|") + `\b)[a-z0-9_]+`
 re := regexpx.MustCompile(pattern)
-// 首次调用构建 DFA；后续调用直接扫描。
+re.Warm() // 可选：启动期提前构建搜索 DFA，不执行任何匹配
 matched := re.MatchString("json.cmd42x")
 ```
+
+`Warm()` 只构建惰性未锚定搜索 DFA，不接收输入、不触发回溯，可安全并发调用；锚定
+`^body$` 全匹配 DFA 仍保持惰性。对延迟敏感的服务，建议在规则加载完成后调用一次。
 
 - `MatchString` / 字节 `Match` 在 ASCII 输入上直接采用 DFA 结果；带捕获的
   `Find*Submatch*` 只把 DFA 当作存在性预过滤，命中后仍由 Pike VM 生成捕获。

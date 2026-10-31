@@ -149,5 +149,40 @@ WAF 基准（regexpx v0.1.11，CRS 善意请求）约 124–141 µs / 2.5 KB / 1
 `TestMinimumLengthShortCircuit`、`TestRequiredBytes*`、`TestRequiredLiterals*`、
 `TestRequiredByteConditions*`、`TestSearchDFA*`、`TestFind*Into*` 固定行为与并发安全。
 预过滤基准位于 [`benchmarks/regexpx/required_bench_test.go`](../benchmarks/regexpx/required_bench_test.go)；
-基准模块在本次依赖同步后引用 v0.1.11，可直接复现上述数值。`waf/go.mod` 已同步到 v0.1.11，
-WAF 可使用 DFA 与缓冲区 API；WAF 侧的请求行缓存、`RequestURI` 复用与参数总大小缓存独立生效。
+基准模块与 `waf/go.mod` 在 v0.1.12 发布后同步引用该版本，可直接复现上述数值。WAF 侧的请求行
+缓存、`RequestURI` 复用与参数总大小缓存独立生效。
+
+## 8. v0.1.12 启动预热与 WAF 联动
+
+v0.1.12 在不改变匹配语义的前提下新增 `Regexp.Warm()`：
+
+```go
+re := regexpx.MustCompile(pattern)
+re.Warm() // 启动期预建惰性 ASCII 搜索 DFA，不接收输入、不运行回溯引擎
+```
+
+- `Warm` 只初始化未锚定搜索 DFA；锚定全匹配 DFA 仍按首次使用惰性构建。
+- 未命中 DFA 条件的模式（专用快路径、含环视/反向引用、行锚点等）直接返回，不增加构建成本。
+- 该方法可安全并发调用，重复调用幂等；预热不改变任何匹配结果。
+
+WAF 在规则快照构建完成、引擎发布之前，对全部已编译规则及其链式子规则调用 `Warm()`。这不会
+执行匹配，因此不会触发回溯或改变规则语义。效果是首个请求不再承担 DFA 构建成本：CRS 4.29.0
+全量规则下，冷启动首请求由约 1.47–1.63 ms 降到约 0.42–0.61 ms；代价是引擎构建/热重载增加
+约 15–20 ms。对于长期运行的服务，这是启动期一次性成本换取稳定的首请求延迟。
+
+同一机器、CRS 4.29.0、WAF 最终优化版本（regexpx v0.1.12）与 v0.1.11 基线的对比：
+
+| 场景 | v0.1.11 基线 | v0.1.12 + WAF 优化 | 变化 |
+|---|---:|---:|---:|
+| CRS 善意请求（自动并行） | 123–141 µs / 2.51 KB / 111 allocs | 91.7–93.0 µs / 2.47 KB / 110 allocs | 延迟约 -27%，分配持平 |
+| 善意请求（顺序） | 109–111 µs | 92.5–93.8 µs | 约 -15% |
+| 50 个唯一参数（自动并行） | 575–600 µs / 58 KB / 2945 allocs | 460–476 µs / 36 KB / 1573 allocs | 延迟约 -20%，分配约 -47% |
+| 50 个唯一参数（顺序） | 772–786 µs / 38.1 KB / 1854 allocs | 564–579 µs / 30.8 KB / 1363 allocs | 延迟约 -27%，分配约 -26% |
+| 并发善意请求 | 19.7–22.1 µs/op | 17.1–17.9 µs/op | 约 -15% |
+| 首请求（冷启动） | 1.47–1.63 ms | 0.42–0.61 ms | 约 -70% |
+| 捕获子匹配 | 7.4–7.8 µs / 527 B / 12 allocs | 6.3–6.8 µs / 28 B / 2 allocs | 分配约 -95% |
+
+WAF 侧同时使用 `FindStringSubmatchInto` 复用事务捕获缓冲区，并对相同输入使用规则级 L1
+变换/算子缓存；TX 变量使用预计算哈希表，`@pm` 使用密集根转移。上述数值为 `benchtime=1s`、
+`count=5` 取中位数，绝对值随 CPU 与后台负载变化，复现命令见
+[`waf/README.md`](../waf/README.md)。
