@@ -76,6 +76,7 @@ const (
 	defaultRequestBodyInMemoryLimit = 128 << 10
 	defaultResponseBodyLimit        = 1 << 20
 	maxBodyLimit                    = 1 << 30
+	maxArgumentsLimit               = 1 << 20
 )
 
 // defaultResponseBodyMimeTypes mirrors the content types that Coraza's recommended configuration
@@ -109,6 +110,23 @@ type Options struct {
 	// must be safe for concurrent use. | Exclude 报告请求是否完全跳过检测。适用于健康检查、
 	// 指标端点以及不应被缓冲的上传。它可能被并发调用，必须并发安全。
 	Exclude func(*http.Request) bool
+	// InspectRequestBody reports whether one request body should be buffered for inspection. It
+	// is consulted only when the rule set would otherwise inspect a body. Returning false keeps
+	// URI and header inspection, leaves REQUEST_BODY and ARGS_POST empty, and hands the raw body
+	// to the handler. Use it for per-route body policy on a single shared WAF instance. It may be
+	// called concurrently and must be cheap and safe for concurrent use. | InspectRequestBody
+	// 报告单个请求的正文是否应被缓冲检测。仅当规则集本会检测正文时才会调用。返回 false 仍保留
+	// URI 与请求头检测，但 REQUEST_BODY 与 ARGS_POST 为空，处理器直接拿到原始正文。用于在单个
+	// 共享 WAF 实例上实现按路由的正文策略。它可能被并发调用，必须轻量且并发安全。
+	InspectRequestBody func(*http.Request) bool
+	// InspectResponseBody reports whether one response body should be buffered for inspection. It
+	// is consulted only when the rule set would otherwise inspect a body. Returning false keeps
+	// response header inspection, but phase 4-5 rules cannot see the body and the response is
+	// streamed. It may be called concurrently and must be cheap and safe for concurrent use. |
+	// InspectResponseBody 报告单个请求的响应正文是否应被缓冲检测。仅当规则集本会检测正文时才会
+	// 调用。返回 false 仍保留响应头检测，但 phase 4-5 规则看不到正文，响应直接流式下发。它可能
+	// 被并发调用，必须轻量且并发安全。
+	InspectResponseBody func(*http.Request) bool
 	// ClientIP overrides the client host reported to Coraza and observers, for deployments
 	// behind a trusted proxy. It must return a host without a port and be safe for concurrent
 	// use. The default parses the host part of RemoteAddr. | ClientIP 覆盖报告给 Coraza 与观察者的
@@ -150,6 +168,12 @@ type Options struct {
 	// 空列表使用 text/plain、text/html、application/json、application/xml、application/xhtml+xml
 	// 与 text/xml。
 	ResponseBodyMimeTypes []string
+	// ArgumentsLimit caps the number of arguments Coraza parses per collection. Zero keeps
+	// Coraza's default (1000). Public endpoints can lower it to bound the per-argument rule cost;
+	// the ARGUMENTS_LIMIT_REACHED variable is set when the cap is hit. | ArgumentsLimit 限制
+	// Coraza 每个集合解析的参数数量。零值保持 Coraza 默认值（1000）。公开端点可以调低该值以限制
+	// 每个参数触发的规则成本；达到上限时会设置 ARGUMENTS_LIMIT_REACHED 变量。
+	ArgumentsLimit int
 	// RequestBodyLimit caps the inspected request body in bytes; zero selects 8 MiB. | RequestBodyLimit
 	// 限制被检测的请求正文字节数；零值使用 8 MiB。
 	RequestBodyLimit int
@@ -188,6 +212,9 @@ func (o Options) normalize() (Options, error) {
 		return Options{}, ErrInvalidLimit
 	}
 	if o.ResponseBodyLimit < 0 || o.ResponseBodyLimit > maxBodyLimit {
+		return Options{}, ErrInvalidLimit
+	}
+	if o.ArgumentsLimit < 0 || o.ArgumentsLimit > maxArgumentsLimit {
 		return Options{}, ErrInvalidLimit
 	}
 	n := o
@@ -265,6 +292,11 @@ func (o Options) directiveBlock() string {
 	b.WriteString(strconv.Itoa(o.RequestBodyInMemoryLimit))
 	b.WriteByte('\n')
 	b.WriteString("SecRequestBodyLimitAction Reject\n")
+	if o.ArgumentsLimit > 0 {
+		b.WriteString("SecArgumentsLimit ")
+		b.WriteString(strconv.Itoa(o.ArgumentsLimit))
+		b.WriteByte('\n')
+	}
 	if o.ResponseBodyAccess {
 		b.WriteString("SecResponseBodyAccess On\n")
 	} else {

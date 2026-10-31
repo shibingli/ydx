@@ -113,7 +113,8 @@ api.GET("/admin/users", adminHandler)
 预期：绝大多数请求（静态、健康检查、公开读接口）不支付规则求值成本。
 
 注意：只挂路由组时，未注册路径的 404 不经过 WAF；如果威胁模型要求全站覆盖，需要全局
-挂载并接受成本，或对全局 WAF 使用更小的规则集。
+挂载并接受成本，或对全局 WAF 使用更小的规则集。如果只想对部分路由跳过正文而不是整条
+旁路，用单实例的 `InspectRequestBody` / `InspectResponseBody`（见 A3）。
 
 ### A3. 请求正文策略：正文解析是 POST 的主要成本
 
@@ -136,6 +137,27 @@ uploads := waf.Options{
 forms := r.Group("/api", formEngine.Middleware())     // 需要正文规则
 upload := r.Group("/upload", uploadEngine.Middleware()) // 不缓冲正文
 ```
+
+不想为每种策略拆引擎时，可以用一个全局实例按请求决定正文策略：
+
+```go
+engine, err := waf.New(waf.Options{
+	RuleFiles:      rules,
+	ArgumentsLimit: 200, // 0 表示 Coraza 默认 1000
+	InspectRequestBody: func(r *http.Request) bool {
+		return r.URL.Path != "/upload"
+	},
+	InspectResponseBody: func(r *http.Request) bool {
+		return !strings.HasPrefix(r.URL.Path, "/download/")
+	},
+})
+```
+
+- 返回 `false` 只跳过正文缓冲；URI、请求头与响应头规则照常执行。
+- 回调只在规则集本会检测正文时调用，没有正文规则时不增加每请求开销。
+- `ArgumentsLimit` 限制每个集合解析的参数数量，直接约束「参数数 × 规则数」的最坏成本；
+  URLENCODED 与 JSON 解析都会停止在上限处，并设置 `ARGUMENTS_LIMIT_REACHED`。
+- 需要整条请求旁路时用 `Exclude`，不要用正文回调模拟。
 
 不要为了“以防万一”在所有路由保持正文检测；正文解析（URLENCODED/multipart/JSON）是
 POST 延迟与分配的主要来源。源码层已经做两件事：没有 phase 2-5 规则时自动跳过缓冲；需要
@@ -468,7 +490,9 @@ logger、error callback 等实例状态，需要仔细隔离；收益主要在�
       941/942/949，并移除 934 的 Ruby/PHP/Perl 子规则），而非完整 CRS；按需追加
       913/922/943，排除 933/944 与 950-980。
 - [ ] WAF 只挂高风险路由组；静态/健康检查/指标不挂。
-- [ ] 不需要正文规则的路由关闭 `RequestBodyAccess`（阶段自省也会自动跳过）。
+- [ ] 不需要正文规则的路由关闭 `RequestBodyAccess`（阶段自省也会自动跳过）；全局实例可用
+  `InspectRequestBody` / `InspectResponseBody` 按路径跳过正文。
+- [ ] 对公开表单设置 `ArgumentsLimit`，限制每个参数触发的规则成本。
 - [ ] 没有响应规则的路由不开启 `ResponseBodyAccess`（阶段自省也会自动跳过）。
 - [ ] 响应检测只收窄到需要的 MIME 与上限。
 - [ ] RateLimit 在 WAF 之前，AccessLog 在 RateLimit 之前。

@@ -169,7 +169,11 @@ func (w *WAF) serve(rw http.ResponseWriter, r *http.Request, run func(http.Respo
 		}
 	}()
 
-	interruption, err := processRequest(tx, r, client, e.readRequestBody)
+	readBody := e.readRequestBody && r.Method != http.MethodConnect
+	if readBody && e.cfg.InspectRequestBody != nil && !e.cfg.InspectRequestBody(r) {
+		readBody = false
+	}
+	interruption, err := processRequest(tx, r, client, readBody)
 	if err != nil {
 		status := requestErrorStatus(err)
 		w.counts.errors.Add(1)
@@ -240,12 +244,16 @@ func (w *WAF) serve(rw http.ResponseWriter, r *http.Request, run func(http.Respo
 		return true
 	}
 
+	inspect := e.inspectResponse
+	if inspect.body && e.cfg.InspectResponseBody != nil && !e.cfg.InspectResponseBody(r) {
+		inspect.body = false
+	}
 	// No response-phase rule and no observer means nothing needs the response writer wrapper.
 	// Hand the original writer to the handler so Flusher/Hijacker/Pusher and net/http content
 	// sniffing keep their native fast paths. | 没有响应阶段规则且没有观察者时，响应写入器包装器
 	// 没有用途。直接把原始写入器交给处理器，保留 Flusher/Hijacker/Pusher 与 net/http 的
 	// Content-Type 嗅探快路径。
-	if !e.inspectResponse.headers && !e.inspectResponse.body && e.cfg.Observer == nil {
+	if !inspect.headers && !inspect.body && e.cfg.Observer == nil {
 		run(rw)
 		if detected := detectionInterruption(tx); detected != nil {
 			w.counts.detected.Add(1)
@@ -263,7 +271,7 @@ func (w *WAF) serve(rw http.ResponseWriter, r *http.Request, run func(http.Respo
 		return true
 	}
 
-	writer, ic := newResponseWriter(rw, r, tx, e.cfg.ErrorHandler, e.inspectResponse)
+	writer, ic := newResponseWriter(rw, r, tx, e.cfg.ErrorHandler, inspect)
 	defer releaseInterceptor(ic)
 	run(writer)
 

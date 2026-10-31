@@ -25,6 +25,12 @@
 // interfaces stay available. | CONNECT 隧道（HTTP/2 或 HTTP/3 WebSocket、WebTransport、原始 TCP）
 // 只检测请求行与请求头；响应阶段会被跳过，以保留传输层专用的写入器接口。
 //
+// Per-route body policy is available on a single shared instance through InspectRequestBody and
+// InspectResponseBody; URI and header inspection still runs when a body is skipped. ArgumentsLimit
+// bounds the per-collection argument count and therefore the cost of per-argument rules. |
+// 单个共享实例可以用 InspectRequestBody 与 InspectResponseBody 实现按路由的正文策略；跳过正文时
+// URI 与请求头检测仍然执行。ArgumentsLimit 限制每个集合的参数数量，从而约束按参数规则的成本。
+//
 // YD router | YD 路由：
 //
 //	engine, err := waf.New(waf.Options{

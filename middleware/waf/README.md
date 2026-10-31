@@ -202,15 +202,18 @@ curl -i --data-urlencode "q=1' OR '1'='1" http://127.0.0.1:8080/login
 | `ResponseBodyLimit` | `int` | 1 MiB | 响应正文检测上限；超出按 ProcessPartial 处理 |
 | `ResponseBodyMimeTypes` | `[]string` | `text/plain` 等 6 种 | 参与响应正文检测的 Content-Type |
 | `Exclude` | `func(*http.Request) bool` | `nil` | 完全旁路（请求与响应都不检测） |
+| `InspectRequestBody` | `func(*http.Request) bool` | `nil` | 按请求决定是否缓冲请求正文；返回 false 时仍检测 URI/头，正文原样交给处理器 |
+| `InspectResponseBody` | `func(*http.Request) bool` | `nil` | 按请求决定是否缓冲响应正文；返回 false 时仍检测响应头，正文直接流式下发 |
+| `ArgumentsLimit` | `int` | `0`（Coraza 默认 1000） | 每个集合解析的参数上限；调低可限制每个参数触发的规则成本 |
 | `ClientIP` | `func(*http.Request) string` | 解析 `RemoteAddr` | 报告给 Coraza 的客户端主机，不含端口 |
 | `Logger` | `*log.Logger` | 进程默认 | 拦截/检测/错误日志；自动命名 `waf` |
 | `DebugLogWriter` | `io.Writer` | `nil` | 打开 Coraza 内部 debug 日志；生产保持 nil（no-op 免分配） |
 | `Observer` | `func(Event)` | `nil` | 每请求事件，可能并发调用 |
 | `ErrorHandler` | `ErrorHandler` | `DefaultErrorHandler` | 自定义拦截响应；必须写完整响应 |
 
-并发契约：`Exclude`、`ClientIP`、`Observer`、`ErrorHandler` 都可能被并发调用，必须并发
-安全；`Directives`、`RuleFiles`、`ResponseBodyMimeTypes` 在构造时复制，调用方之后修改
-原切片不会影响实例。
+并发契约：`Exclude`、`InspectRequestBody`、`InspectResponseBody`、`ClientIP`、`Observer`、
+`ErrorHandler` 都可能被并发调用，必须并发安全；`Directives`、`RuleFiles`、
+`ResponseBodyMimeTypes` 在构造时复制，调用方之后修改原切片不会影响实例。
 
 **自动跳过**：中间件在编译期按规则阶段统计需求，热路径会自动省掉无用工作：
 
@@ -233,6 +236,7 @@ RuleFiles → 安全基线 → Directives
 | `SecRuleEngine` | `On`（`ModeBlock`） | `Options.Mode` 或内联指令 |
 | `SecAuditEngine` | `Off` | 内联指令 |
 | `SecRequestBodyAccess` | `On` | `DisableRequestBodyAccess` 或内联指令 |
+| `SecArgumentsLimit` | 未设置（Coraza 默认 1000） | `Options.ArgumentsLimit`（大于 0 时写入） |
 | `SecRequestBodyLimit` | 8388608 | `RequestBodyLimit` 或内联指令 |
 | `SecRequestBodyInMemoryLimit` | 131072 | `RequestBodyInMemoryLimit` 或内联指令 |
 | `SecRequestBodyLimitAction` | `Reject` | 内联指令 |
@@ -519,8 +523,8 @@ if err := engine.Reload(); err != nil {
 ```
 
 - `Reload` 重新读取 `RuleFiles`，按当前 Options 重编译。
-- `ReloadWith` 替换**全部** Options（Logger/DebugLogWriter/Observer/Exclude/ErrorHandler
-  也会被替换）。
+- `ReloadWith` 替换**全部** Options（Logger/DebugLogWriter/Observer/Exclude/
+  InspectRequestBody/InspectResponseBody/ArgumentsLimit/ErrorHandler 也会被替换）。
 - 重载是原子的：新请求使用新引擎；旧引擎在最后一个在途请求结束后关闭。
 - 失败时不切换，旧引擎继续服务。
 - 没有内置文件监听器；在配置发布流程中调用 `Reload` 或定时调用。
@@ -704,6 +708,37 @@ waf.Options{
 
 或者直接 `Exclude` 上传路径。下载/大文件响应保持 `ResponseBodyAccess: false`，让
 `ReadFrom` 走底层快路径。
+
+### 7.4.1 单实例按路由控制正文
+
+不必为每一种正文策略拆多个引擎：一个全局实例可以用 `InspectRequestBody` /
+`InspectResponseBody` 按路径决定是否缓冲正文，URI 与头规则仍然生效。
+
+```go
+engine, err := waf.New(waf.Options{
+	RuleFiles:      crsSubset,
+	ArgumentsLimit: 200, // 公开表单的参数上限；0 表示 Coraza 默认 1000
+	InspectRequestBody: func(r *http.Request) bool {
+		switch r.URL.Path {
+		case "/upload", "/webhooks/stripe":
+			return false // 不缓冲；REQUEST_BODY/ARGS_POST 为空，处理器读原始正文
+		}
+		return true
+	},
+	InspectResponseBody: func(r *http.Request) bool {
+		return !strings.HasPrefix(r.URL.Path, "/download/")
+	},
+})
+if err != nil {
+	return err
+}
+r.Use(engine.Middleware())
+```
+
+- 返回 `false` 只跳过正文缓冲，不跳过请求行、URI 与请求头检测。
+- 响应侧返回 `false` 时仍执行阶段 3 的响应头规则；阶段 4-5 的正文规则看不到正文。
+- 回调只在规则集本会检测正文时调用；没有正文规则时没有额外开销。
+- 需要整条请求都不检测时用 `Exclude`，不要用这两个回调模拟旁路。
 
 ### 7.5 SSE、长轮询与流式响应
 
