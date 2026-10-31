@@ -34,7 +34,7 @@
 ## 1. 安装与导入
 
 ```bash
-go get github.com/shibingli/ydx/regexpx@v0.1.9
+go get github.com/shibingli/ydx/regexpx@v0.1.10
 ```
 
 ```go

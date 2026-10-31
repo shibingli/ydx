@@ -8,7 +8,7 @@ require (
 	github.com/goccy/go-json v0.11.2
 	github.com/json-iterator/go v1.1.12
 	github.com/segmentio/encoding v0.5.4
-	github.com/shibingli/ydx/json v0.1.13
+	github.com/shibingli/ydx/json v0.1.14
 )
 
 require (

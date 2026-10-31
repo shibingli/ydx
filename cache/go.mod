@@ -6,11 +6,11 @@ require (
 	github.com/alicebob/miniredis/v2 v2.40.0
 	github.com/glebarez/sqlite v1.11.0
 	github.com/redis/go-redis/v9 v9.23.0
-	github.com/shibingli/ydx/afs v0.1.4
+	github.com/shibingli/ydx/afs v0.1.6
 	github.com/shibingli/ydx/config v0.1.8
 	github.com/shibingli/ydx/errs v0.1.4
-	github.com/shibingli/ydx/json v0.1.12
-	github.com/shibingli/ydx/log v0.1.9
+	github.com/shibingli/ydx/json v0.1.14
+	github.com/shibingli/ydx/log v0.1.11
 	github.com/shibingli/ydx/nodeid v0.1.4
 	github.com/shibingli/ydx/sysinfo v0.1.4
 	github.com/spf13/afero v1.15.0

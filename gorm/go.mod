@@ -7,10 +7,10 @@ require (
 	github.com/go-sql-driver/mysql v1.10.1
 	github.com/godoes/gorm-dameng v0.7.2
 	github.com/jackc/pgx/v5 v5.11.0
-	github.com/shibingli/ydx/afs v0.1.5
-	github.com/shibingli/ydx/config v0.1.5
+	github.com/shibingli/ydx/afs v0.1.6
+	github.com/shibingli/ydx/config v0.1.8
 	github.com/shibingli/ydx/errs v0.1.4
-	github.com/shibingli/ydx/log v0.1.9
+	github.com/shibingli/ydx/log v0.1.11
 	github.com/spf13/afero v1.15.0
 	gorm.io/driver/mysql v1.6.0
 	gorm.io/driver/postgres v1.6.3
@@ -36,7 +36,7 @@ require (
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
 	github.com/sagikazarmark/locafero v0.12.0 // indirect
 	github.com/shibingli/ydx/base64 v0.1.12 // indirect
-	github.com/shibingli/ydx/json v0.1.12 // indirect
+	github.com/shibingli/ydx/json v0.1.14 // indirect
 	github.com/shibingli/ydx/sysinfo v0.1.4 // indirect
 	github.com/spf13/cast v1.10.0 // indirect
 	github.com/spf13/pflag v1.0.10 // indirect

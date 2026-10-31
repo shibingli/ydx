@@ -20,8 +20,8 @@ require (
 	github.com/shibingli/ydx/afs v0.1.6 // indirect
 	github.com/shibingli/ydx/base64 v0.1.12 // indirect
 	github.com/shibingli/ydx/errs v0.1.4 // indirect
-	github.com/shibingli/ydx/json v0.1.13 // indirect
-	github.com/shibingli/ydx/log v0.1.10 // indirect
+	github.com/shibingli/ydx/json v0.1.14 // indirect
+	github.com/shibingli/ydx/log v0.1.11 // indirect
 	github.com/shibingli/ydx/sysinfo v0.1.4 // indirect
 	github.com/valyala/bytebufferpool v1.0.0 // indirect
 	golang.org/x/mod v0.41.0 // indirect

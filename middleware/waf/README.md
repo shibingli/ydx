@@ -79,10 +79,10 @@
 
 ```bash
 # 标签发布后
-go get github.com/shibingli/ydx/middleware/waf@v0.1.0
+go get github.com/shibingli/ydx/middleware/waf@v0.1.1
 ```
 
-新模块需要先发布子目录标签 `middleware/waf/v0.1.0`；未发布前下游无法按版本引用。
+当前发布标签为 `middleware/waf/v0.1.1`；推送标签后下游才能按版本引用。
 
 **为什么不在 `middleware` 聚合门面里**
 
@@ -1241,7 +1241,7 @@ gRPC 正文是二进制/protobuf，默认 body processor 不解析；建议只�
 - 本模块锁定 `github.com/corazawaf/coraza/v3 v3.8.1`；升级需单独评审，并重新跑规则
   回归、race 测试与 CRS 端到端验证。
 - `coraza-coreruleset` 由应用显式引入；升级 CRS 后必须重跑误报统计。
-- 每个模块按子目录标签发布，例如 `middleware/waf/v0.1.0`；已推送标签不可移动。
+- 每个模块按子目录标签发布，例如 `middleware/waf/v0.1.1`；已推送标签不可移动。
 - 发布前：所有模块测试、`repotest`、全模块构建通过；新模块需要先发布标签，下游才能按
   版本引用。
 - 正式基准待首个标签发布后补充 `benchmarks/waf`（基准模块不能引用未打标签的新模块）。

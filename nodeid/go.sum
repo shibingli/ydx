@@ -16,10 +16,10 @@ github.com/rogpeppe/go-internal v1.9.0 h1:73kH8U+JUqXU8lRuOHeVHaa/SZPifC7BkcraZV
 github.com/rogpeppe/go-internal v1.9.0/go.mod h1:WtVeX8xhTBvf0smdhujwtBcq4Qrzq/fJaraNFVN+nFs=
 github.com/sagikazarmark/locafero v0.12.0 h1:/NQhBAkUb4+fH1jivKHWusDYFjMOOKU88eegjfxfHb4=
 github.com/sagikazarmark/locafero v0.12.0/go.mod h1:sZh36u/YSZ918v0Io+U9ogLYQJ9tLLBmM4eneO6WwsI=
-github.com/shibingli/ydx/afs v0.1.4 h1:Ky+uwF0/uSjOL5be5wqjjw0jRt30Vy74iZsZPueFbJs=
-github.com/shibingli/ydx/afs v0.1.4/go.mod h1:1BSoOKjXQXzUaWiQ1KFugxVI32cbROgOn+M2DRnEkFo=
-github.com/shibingli/ydx/config v0.1.7 h1:Y2FPEbzA2/bYQzZAG9JbBLyOea8tJIS1loYcPthgPzQ=
-github.com/shibingli/ydx/config v0.1.7/go.mod h1:FCQCjq65sOQA7UBTuZTvv20GWDUwEJXtLB7oRpTXiTE=
+github.com/shibingli/ydx/afs v0.1.6 h1:SCOdkG0X5xCHkaNUW3XjVyOTJXqSi5QOx+Jqbcqj3aY=
+github.com/shibingli/ydx/afs v0.1.6/go.mod h1:SAC2x4VE/zrJMUDfJm2371Zgx4VLi3lch3DPWk/ZVL0=
+github.com/shibingli/ydx/config v0.1.8 h1:vGgqju8UqN3Fq/mIwbN0JYCQJnMz8JrxTF2TJC8oZAQ=
+github.com/shibingli/ydx/config v0.1.8/go.mod h1:FCQCjq65sOQA7UBTuZTvv20GWDUwEJXtLB7oRpTXiTE=
 github.com/shibingli/ydx/errs v0.1.4 h1:/hexB5eDFA/wWhRof5yxWEVeVlHn1P7IZmys9U4h1iA=
 github.com/shibingli/ydx/errs v0.1.4/go.mod h1:N6GNQq5eustT11WTdXOip9bXcIwrFd4c9UWG0gIDuwU=
 github.com/spf13/afero v1.15.0 h1:b/YBCLWAJdFWJTN9cLhiXXcD7mzKn9Dm86dNnfyQw1I=

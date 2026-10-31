@@ -4,7 +4,7 @@ go 1.27.3
 
 require (
 	github.com/emmansun/gmsm v0.45.1
-	github.com/shibingli/ydx/guomi v0.1.1
+	github.com/shibingli/ydx/guomi v0.1.2
 	github.com/tjfoc/gmsm v1.4.1
 	golang.org/x/crypto v0.58.0
 )

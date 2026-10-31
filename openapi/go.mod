@@ -3,10 +3,10 @@ module github.com/shibingli/ydx/openapi
 go 1.27.3
 
 require (
-	github.com/shibingli/ydx/afs v0.1.5
+	github.com/shibingli/ydx/afs v0.1.6
 	github.com/shibingli/ydx/errs v0.1.4
-	github.com/shibingli/ydx/json v0.1.12
-	github.com/shibingli/ydx/log v0.1.9
+	github.com/shibingli/ydx/json v0.1.14
+	github.com/shibingli/ydx/log v0.1.11
 	github.com/shibingli/ydx/sysinfo v0.1.4
 	github.com/spf13/afero v1.15.0
 	go.yaml.in/yaml/v3 v3.0.5

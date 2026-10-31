@@ -138,7 +138,7 @@ captcha/
 ## 4. 快速开始
 
 ```bash
-go get github.com/shibingli/ydx/captcha@v0.1.0
+go get github.com/shibingli/ydx/captcha@v0.1.1
 ```
 
 最小可用配置（单机内存状态）：
