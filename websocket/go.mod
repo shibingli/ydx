@@ -11,7 +11,7 @@ require (
 	github.com/shibingli/ydx/json v0.1.14
 	github.com/shibingli/ydx/log v0.1.11
 	github.com/shibingli/ydx/protocol v0.1.5
-	github.com/shibingli/ydx/regexpx v0.1.10
+	github.com/shibingli/ydx/regexpx v0.1.11
 	github.com/shibingli/ydx/router v0.1.12
 	github.com/shibingli/ydx/sysinfo v0.1.4
 	golang.org/x/net v0.61.0
