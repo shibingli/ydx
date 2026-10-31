@@ -1,0 +1,71 @@
+goos: windows
+goarch: amd64
+pkg: github.com/shibingli/ydx/benchmarks/regexpx
+cpu: Intel(R) Core(TM) i9-10980HK CPU @ 2.40GHz
+                                                                               │ results/regexpx-v0.1.13-parallel-windows-i9-10980hk.txt │
+                                                                               │                         sec/op                          │
+ParallelFindAll/sequential/\w+-16                                                                                           92.50m ± ∞ ¹
+ParallelFindAll/parallel/\w+-16                                                                                             94.51m ± ∞ ¹
+ParallelFindAll/sequential/\d{4}-\d{2}-\d{2}-16                                                                             4.501m ± ∞ ¹
+ParallelFindAll/parallel/\d{4}-\d{2}-\d{2}-16                                                                               2.543m ± ∞ ¹
+ParallelFindAll/sequential/[a-z]+-16                                                                                        65.70m ± ∞ ¹
+ParallelFindAll/parallel/[a-z]+-16                                                                                          65.52m ± ∞ ¹
+ParallelFindAll/sequential/[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}-16                                              3.996m ± ∞ ¹
+ParallelFindAll/parallel/[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}-16                                                2.407m ± ∞ ¹
+ParallelFindAll/sequential/\p{Han}+-16                                                                                      40.85m ± ∞ ¹
+ParallelFindAll/parallel/\p{Han}+-16                                                                                        44.13m ± ∞ ¹
+ParallelFindAll/sequential/\p{So}+-16                                                                                       61.43m ± ∞ ¹
+ParallelFindAll/parallel/\p{So}+-16                                                                                         64.39m ± ∞ ¹
+geomean                                                                                                                     23.58m
+¹ need >= 6 samples for confidence interval at level 0.95
+
+                                                                               │ results/regexpx-v0.1.13-parallel-windows-i9-10980hk.txt │
+                                                                               │                           B/s                           │
+ParallelFindAll/sequential/\w+-16                                                                                          43.26Mi ± ∞ ¹
+ParallelFindAll/parallel/\w+-16                                                                                            42.33Mi ± ∞ ¹
+ParallelFindAll/sequential/\d{4}-\d{2}-\d{2}-16                                                                            888.9Mi ± ∞ ¹
+ParallelFindAll/parallel/\d{4}-\d{2}-\d{2}-16                                                                              1.537Gi ± ∞ ¹
+ParallelFindAll/sequential/[a-z]+-16                                                                                       60.89Mi ± ∞ ¹
+ParallelFindAll/parallel/[a-z]+-16                                                                                         61.06Mi ± ∞ ¹
+ParallelFindAll/sequential/[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}-16                                            1001.2Mi ± ∞ ¹
+ParallelFindAll/parallel/[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}-16                                               1.624Gi ± ∞ ¹
+ParallelFindAll/sequential/\p{Han}+-16                                                                                     97.92Mi ± ∞ ¹
+ParallelFindAll/parallel/\p{Han}+-16                                                                                       90.67Mi ± ∞ ¹
+ParallelFindAll/sequential/\p{So}+-16                                                                                      65.13Mi ± ∞ ¹
+ParallelFindAll/parallel/\p{So}+-16                                                                                        62.13Mi ± ∞ ¹
+geomean                                                                                                                    169.7Mi
+¹ need >= 6 samples for confidence interval at level 0.95
+
+                                                                               │ results/regexpx-v0.1.13-parallel-windows-i9-10980hk.txt │
+                                                                               │                          B/op                           │
+ParallelFindAll/sequential/\w+-16                                                                                          135.1Mi ± ∞ ¹
+ParallelFindAll/parallel/\w+-16                                                                                            135.1Mi ± ∞ ¹
+ParallelFindAll/sequential/\d{4}-\d{2}-\d{2}-16                                                                            4.097Mi ± ∞ ¹
+ParallelFindAll/parallel/\d{4}-\d{2}-\d{2}-16                                                                              6.943Mi ± ∞ ¹
+ParallelFindAll/sequential/[a-z]+-16                                                                                       70.30Mi ± ∞ ¹
+ParallelFindAll/parallel/[a-z]+-16                                                                                         70.30Mi ± ∞ ¹
+ParallelFindAll/sequential/[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}-16                                             4.097Mi ± ∞ ¹
+ParallelFindAll/parallel/[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}-16                                               6.943Mi ± ∞ ¹
+ParallelFindAll/sequential/\p{Han}+-16                                                                                     14.10Mi ± ∞ ¹
+ParallelFindAll/parallel/\p{Han}+-16                                                                                       14.10Mi ± ∞ ¹
+ParallelFindAll/sequential/\p{So}+-16                                                                                      43.95Mi ± ∞ ¹
+ParallelFindAll/parallel/\p{So}+-16                                                                                        43.95Mi ± ∞ ¹
+geomean                                                                                                                    23.48Mi
+¹ need >= 6 samples for confidence interval at level 0.95
+
+                                                                               │ results/regexpx-v0.1.13-parallel-windows-i9-10980hk.txt │
+                                                                               │                        allocs/op                        │
+ParallelFindAll/sequential/\w+-16                                                                                           862.1k ± ∞ ¹
+ParallelFindAll/parallel/\w+-16                                                                                             862.1k ± ∞ ¹
+ParallelFindAll/sequential/\d{4}-\d{2}-\d{2}-16                                                                             28.76k ± ∞ ¹
+ParallelFindAll/parallel/\d{4}-\d{2}-\d{2}-16                                                                               87.00k ± ∞ ¹
+ParallelFindAll/sequential/[a-z]+-16                                                                                        546.0k ± ∞ ¹
+ParallelFindAll/parallel/[a-z]+-16                                                                                          546.0k ± ∞ ¹
+ParallelFindAll/sequential/[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}-16                                              28.76k ± ∞ ¹
+ParallelFindAll/parallel/[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}-16                                                87.00k ± ∞ ¹
+ParallelFindAll/sequential/\p{Han}+-16                                                                                      113.4k ± ∞ ¹
+ParallelFindAll/parallel/\p{Han}+-16                                                                                        113.4k ± ∞ ¹
+ParallelFindAll/sequential/\p{So}+-16                                                                                       302.4k ± ∞ ¹
+ParallelFindAll/parallel/\p{So}+-16                                                                                         302.4k ± ∞ ¹
+geomean                                                                                                                     185.2k
+¹ need >= 6 samples for confidence interval at level 0.95

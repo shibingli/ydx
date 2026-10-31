@@ -8,7 +8,7 @@ require (
 	github.com/shibingli/ydx/errs v0.1.4
 	github.com/shibingli/ydx/json v0.1.14
 	github.com/shibingli/ydx/log v0.1.11
-	github.com/shibingli/ydx/regexpx v0.1.12
+	github.com/shibingli/ydx/regexpx v0.1.13
 	github.com/shibingli/ydx/router v0.1.12
 	github.com/tetratelabs/wazero v1.12.0
 )

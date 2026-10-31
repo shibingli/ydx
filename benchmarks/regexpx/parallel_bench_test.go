@@ -1,5 +1,3 @@
-//go:build regexpx_dev
-
 package regexpx
 
 import (

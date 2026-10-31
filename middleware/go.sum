@@ -68,8 +68,8 @@ github.com/shibingli/ydx/nodeid v0.1.4 h1:b1jie1cCaS38TX5jPV20xGIfY4PKdVXzn0mbT5
 github.com/shibingli/ydx/nodeid v0.1.4/go.mod h1:B6po4MAdrvcfKR7xJGf9lhvJaTykdjISGHHDnJ29YBo=
 github.com/shibingli/ydx/protocol v0.1.5 h1:+rXZJY3eb5lsArppW0H0T1TLCVO9qCVxJ9juOPvnvyI=
 github.com/shibingli/ydx/protocol v0.1.5/go.mod h1:eKLAtgDa8Cf4Sg0eMYzf4srW8SW7+T3ceTGV73E1nZ0=
-github.com/shibingli/ydx/regexpx v0.1.12 h1:Yo5Oa2dV4YNv5JG9xx7JS22VkQrl0/EyK7mnLy7HoFg=
-github.com/shibingli/ydx/regexpx v0.1.12/go.mod h1:oC3q0ssHYf1m92iRnRNpl3rsXfLnwLMtLwiZsoftnDw=
+github.com/shibingli/ydx/regexpx v0.1.13 h1:0WZJ9ggE0BIprMKfksaiEO/J62kf8I7jDDxPB4JIWUE=
+github.com/shibingli/ydx/regexpx v0.1.13/go.mod h1:oC3q0ssHYf1m92iRnRNpl3rsXfLnwLMtLwiZsoftnDw=
 github.com/shibingli/ydx/router v0.1.12 h1:So1LEnykINSkfwlcJeX4AmyTkTogS7VeievVMZ7GBqE=
 github.com/shibingli/ydx/router v0.1.12/go.mod h1:xOV2qf9nKtimo6P7zjgXFmlYHJ30nB1NHEjWZuPLFM8=
 github.com/shibingli/ydx/sysinfo v0.1.4 h1:tskX01rpXsDkEmCCz+2s7FnSQqrQCY8SQUeWstPQhMk=

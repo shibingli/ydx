@@ -2,6 +2,8 @@
 
 对比自研 `github.com/shibingli/ydx/regexpx` 与 Go 主流正则实现的延迟、吞吐与分配。
 
+> 最新指标：`regexpx v0.1.13` 的兼容 API、本机 AVX2 与并行结果；Zen 5、AVX-512、arm64 表为历史远端数据。
+
 ## 对比对象
 
 | 标签 | 实现 | 说明 |
@@ -14,37 +16,34 @@
 
 ## 环境与方法
 
-- **主表（2026-10-24）**：AMD Ryzen AI MAX+ 395（Zen 5，32 线程，AVX-512F/BW/VBMI/VBMI2），Ubuntu 26.04，Go 1.27.3，`GOMAXPROCS=32`。
-- 本机：Windows 11，Intel i9-10980HK，AVX2，Go 1.27.3。
-- AVX-512 主机：Ubuntu，x86_64，AVX-512F/BW/VL/VBMI，Go 1.27.3（本地交叉编译测试二进制）。
-- 旧指令集 AVX-512 主机：Skylake 代 Xeon，仅 AVX-512F/BW/CD/DQ/VL（无 VBMI/VBMI2），Go 1.27.3（同样使用交叉编译测试二进制）。
-- arm64 主机：aarch64 云主机，NEON，Go 1.27.3（本地交叉编译测试二进制）。
+- **本机最新（2026-10-31）**：Windows 11，Intel i9-10980HK（AVX2），Go 1.27.3，regexpx v0.1.13。
+- **历史远端（2026-10-24）**：AMD Ryzen AI MAX+ 395（Zen 5，32 线程，AVX-512F/BW/VBMI/VBMI2），Ubuntu 26.04，Go 1.27.3，`GOMAXPROCS=32`；AVX-512 主机；Skylake 代 AVX-512 主机；aarch64 NEON 主机。远端表保留作架构横向参考，尚未在 v0.1.13 上复测。
 - 语料：256 KiB 的英文/数字/日期/邮箱/URL 混合文本；128 KiB 中英希混合文本；128 KiB 含 emoji（ZWJ、肤色、旗帜、变体选择符）、简繁中文与中英文混排的混合文本。
-- 所有模式在计时外编译；每项跑 3 次取中位数（本机 `-benchtime=300ms`，远端 80ms），`-benchmem`。
+- 计时：本机主表与并行 `-benchtime=300ms -count=5`，兼容 API `-benchtime=1s -count=6`；历史远端 `-benchtime=80ms -count=3`；均 `-benchmem`，所有模式在计时外编译。
 - 绝对值受 CPU、负载与调度影响；跨实现比较请优先看同一行的相对值。
 
-## 新增兼容 API 指标（regexpx v0.1.9）
+## 兼容 API 指标（regexpx v0.1.13，2026-10-31）
 
 `api_bench_test.go` 覆盖 `Copy`、`Expand`、流式替换、`Longest` 快路径、Reader 提前返回与
 回溯最长匹配，与标准库同场对比。完整表格、内存/分配、分析、复现命令与原始样本见
 [`../../regexpx/PERFORMANCE.md`](../../regexpx/PERFORMANCE.md)。
 
-摘录（Windows 11 / i9-10980HK / Go 1.27.3）：
-
 | 项目 | regexpx | 标准库 | 结论 |
 |---|---:|---:|---|
-| `Copy` | ~70 ns，160 B，1 alloc | ~67 ns，160 B，1 alloc | 结构对齐，基本持平 |
-| `ReplaceAllString` | ~321 µs，3 allocs | ~892 µs，18 allocs | 约 2.8x 快 |
-| `ReplaceAllLiteralString` | ~225 µs，5 allocs | ~0.73–1.31 ms，21 allocs | 约 3–6x 快 |
-| `Longest` 通配字面量 | ~159 ns，0 alloc | ~161 µs，0 alloc | 约 1000x 快 |
-| `Longest` 定长线性 | ~235 ns，0 alloc | ~64 µs，0 alloc | 约 270x 快 |
-| `MatchReader` 早期匹配 | ~66 ns | ~109 ns | 约 1.7x 快 |
-| `FindReaderIndex` 早期匹配 | ~111 ns | ~163 ns | 约 1.5x 快 |
-| `LiteralPrefix` | ~2.2 ns | ~0.83 ns | 绝对值纳秒级，非热路径 |
+| `Copy` | ~37.7 ns，160 B，1 alloc | ~37.7 ns，160 B，1 alloc | 基本持平 |
+| `ReplaceAllString` | ~263 µs，3 allocs | ~695 µs，18 allocs | 约 2.6x 快 |
+| `ReplaceAllLiteralString` | ~172 µs，5 allocs | ~568 µs，21 allocs | 约 3.3x 快 |
+| `Longest` 通配字面量 | ~121 ns，0 alloc | ~128 µs，0 alloc | 约 1050x 快 |
+| `Longest` 定长线性 | ~181 ns，0 alloc | ~50.3 µs，0 alloc | 约 278x 快 |
+| `MatchReader` 早期匹配 | ~43 ns | ~85 ns | 约 2.0x 快 |
+| `FindReaderIndex` 早期匹配 | ~77 ns | ~125 ns | 约 1.6x 快 |
+| `LiteralPrefix` | ~1.8 ns | ~0.67 ns | 纳秒级，非热路径 |
 
-原始样本与 `benchstat` 输出保存在 `results/`。
+原始样本与 `benchstat` 输出见
+[`results/regexpx-v0.1.13-api-windows-i9-10980hk.txt`](results/regexpx-v0.1.13-api-windows-i9-10980hk.txt)
+与 [`results/regexpx-v0.1.13-api-windows-benchstat.txt`](results/regexpx-v0.1.13-api-windows-benchstat.txt)。
 
-## Zen 5 主表结果（2026-10-24）
+## 历史远端主机：Zen 5 主表（2026-10-24）
 
 | 场景 | ydx | stdlib | grafana | regexp2 | go-re2 |
 |---|---:|---:|---:|---:|---:|
@@ -58,45 +57,46 @@
 所有匹配/查找/批量扫描场景领先；简单模式（如 `\d+`）的 `BenchmarkCompile` 仍慢于
 标准库（约 780 vs 253 ns），属于启动期一次性解析/编译成本，不影响请求热路径。
 
-## 本机 AVX2 结果
+## 本机 AVX2 结果（regexpx v0.1.13，2026-10-31）
 
 | 场景 | ydx | stdlib | grafana | regexp2 | go-re2 |
 |---|---:|---:|---:|---:|---:|
-| MatchString/literal | 33.1 ns | 466 ns | 460 ns | 434 µs | 10.8 µs |
-| MatchString/literal_ci | 102 µs | 6.58 ms | 6.17 ms | 659 µs | 277 µs |
-| MatchString/word | 48.5 ns | 120 ns | 120 ns | 408 µs | 10.8 µs |
-| MatchString/email | 77.6 ns | 1.17 µs | 1.16 µs | 411 µs | 10.8 µs |
-| MatchString/uri | 186 ns | 412 ns | 412 ns | 399 µs | 10.5 µs |
-| MatchString/date | 84.1 ns | 1.01 µs | 994 ns | 416 µs | 11.8 µs |
-| MatchString/anchored_id | 22.2 ns | 278 ns | 278 ns | 269 ns | 198 ns |
-| MatchString/unicode | 63.6 ns | 146 ns | 150 ns | 298 µs | 3.2 µs |
-| MatchString/han | 73 ns | 139 ns | 150 ns | 259 µs | 3.16 µs |
-| MatchString/emoji | 105 ns | 182 ns | 181 ns | 260 µs | 3.21 µs |
-| FindStringIndex/word | 75.8 ns | 417 ns | 422 ns | 1.13 ms | 10.9 µs |
-| FindStringIndex/literal | 54.7 ns | 564 ns | 553 ns | 1.11 ms | 11.5 µs |
-| FindStringIndex/literal_ci | 101 µs | 6.97 ms | 6.68 ms | 660 µs | 271 µs |
-| FindStringIndex/email | 105 ns | 1.33 µs | 1.32 µs | 1.17 ms | 10.9 µs |
-| FindStringIndex/uri | 224 ns | 1.2 µs | 1.21 µs | 1.21 ms | 10.9 µs |
-| FindStringIndex/date | 115 ns | 1.2 µs | 1.21 µs | 1.12 ms | 11.1 µs |
-| FindStringIndex/anchored_id | 54.9 ns | 305 ns | 310 ns | 616 ns | 279 ns |
-| FindStringIndex/captures | 792 ns | 1.3 µs | 1.24 µs | 1.16 ms | 11.3 µs |
-| FindAll/word | 10.7 ms | 20.3 ms | 20.8 ms | 28.8 ms | 21.7 ms |
-| FindAll/email | 311 µs | 12.4 ms | 12.9 ms | 43.3 ms | 1.66 ms |
-| FindAll/date | 350 µs | 8.52 ms | 8.41 ms | 7.59 ms | 1.56 ms |
-| FindAll/unicode | 3.14 ms | 6.77 ms | 6.98 ms | 12.5 ms | 6.68 ms |
-| FindAll/han | 1.23 ms | 2.81 ms | 3 ms | 4.69 ms | 1.83 ms |
-| FindAll/emoji | 2.03 ms | 4.38 ms | 4.5 ms | 8.65 ms | 4.2 ms |
+| MatchString/literal | **34.7 ns** | 503 ns | 488 ns | 360 µs | 10.7 µs |
+| MatchString/literal_ci | **99.8 µs** | 6.17 ms | 5.97 ms | 644 µs | 273 µs |
+| MatchString/word | **54.0 ns** | 123 ns | 121 ns | 367 µs | 10.4 µs |
+| MatchString/email | **77.5 ns** | 1.16 µs | 1.15 µs | 365 µs | 10.6 µs |
+| MatchString/uri | **194 ns** | 415 ns | 404 ns | 370 µs | 10.3 µs |
+| MatchString/date | **86.8 ns** | 1.03 µs | 1.00 µs | 366 µs | 10.9 µs |
+| MatchString/anchored_id | **24.5 ns** | 277 ns | 266 ns | 247 ns | 193 ns |
+| MatchString/unicode | **72.8 ns** | 149 ns | 155 ns | 285 µs | 3.19 µs |
+| MatchString/han | **80.6 ns** | 137 ns | 142 ns | 249 µs | 3.08 µs |
+| MatchString/emoji | **107 ns** | 184 ns | 182 ns | 254 µs | 3.66 µs |
+| FindStringIndex/word | **62.6 ns** | 413 ns | 412 ns | 1.34 ms | 10.8 µs |
+| FindStringIndex/literal | **44.6 ns** | 559 ns | 559 ns | 1.38 ms | 11.2 µs |
+| FindStringIndex/literal_ci | **100.5 µs** | 6.76 ms | 6.46 ms | 724 µs | 269 µs |
+| FindStringIndex/email | **91.8 ns** | 1.37 µs | 1.35 µs | 1.55 ms | 10.7 µs |
+| FindStringIndex/uri | **212 ns** | 1.20 µs | 1.17 µs | 1.48 ms | 10.9 µs |
+| FindStringIndex/date | **99.5 ns** | 1.17 µs | 1.17 µs | 1.48 ms | 10.9 µs |
+| FindStringIndex/anchored_id | **47.5 ns** | 311 ns | 308 ns | 504 ns | 270 ns |
+| FindStringIndex/captures | **889 ns** | 1.25 µs | 1.22 µs | 1.57 ms | 10.8 µs |
+| FindAll/word | **5.40 ms** | 17.1 ms | 18.2 ms | 20.9 ms | 19.6 ms |
+| FindAll/email | **254 µs** | 11.9 ms | 11.7 ms | 41.7 ms | 1.52 ms |
+| FindAll/date | **291 µs** | 8.06 ms | 8.04 ms | 6.42 ms | 1.48 ms |
+| FindAll/unicode | **2.38 ms** | 5.87 ms | 6.10 ms | 8.65 ms | 5.63 ms |
+| FindAll/han | **1.23 ms** | 2.70 ms | 2.63 ms | 3.62 ms | 1.69 ms |
+| FindAll/emoji | **1.95 ms** | 4.10 ms | 4.03 ms | 5.83 ms | 3.75 ms |
 
-表中 24 个场景全部最快；完整 32 个场景也全部最快。四个重点场景的优化结果：
+表中 24 个场景全部最快；完整 32 个场景也全部最快。四个重点场景：
 
-- `(?i)` 字面量：2 字节折叠 SIMD 扫描后为 102 µs，约为 go-re2 的 1/2.7、标准库的 1/65。
-- URI `MatchString`：可选段 + 尾运行的线性匹配器后为 186 ns，约为标准库的 1/2.2。
-- 邮箱 `FindAll`：围绕 `@` 定位并反向扫描局部部分后为 311 µs，约为标准库的 1/40、go-re2 的 1/5.3。
-- 日期 `FindAll`：以固定偏移的 `-` 为锚点后为 350 µs，约为 go-re2 的 1/4.5、标准库的 1/24。
+- `(?i)` 字面量：2 字节折叠 SIMD 扫描后为 99.8 µs，约为 go-re2 的 1/2.7、标准库的 1/62。
+- URI `MatchString`：可选段 + 尾运行的线性匹配器后为 194 ns，约为标准库的 1/2.1。
+- 邮箱 `FindAll`：围绕 `@` 定位并反向扫描局部部分后为 254 µs，约为标准库的 1/47、go-re2 的 1/6.0。
+- 日期 `FindAll`：以固定偏移的 `-` 为锚点后为 291 µs，约为 go-re2 的 1/5.1、标准库的 1/28。
 
-不同 CPU 与负载会改变绝对值；跨实现请用 `benchstat` 复核。
+`BenchmarkCompile` 是启动期一次性成本：简单模式 `\d+` 约 1.9 µs（标准库 0.61 µs），
+锚定 ID 约 5.6 µs（标准库 32 µs），邮箱形态约 4.6 µs（标准库 2.8 µs），不影响请求热路径。
 
-## AVX-512 主机
+## 历史远端主机：AVX-512（2026-10-24）
 
 | 场景 | ydx | stdlib | grafana | regexp2 | go-re2 |
 |---|---:|---:|---:|---:|---:|
@@ -128,7 +128,7 @@ AVX-512 内核只要求 `AVX512F + AVX512BW` 与操作系统对 opmask/ZMM 的 `
 
 没有 AVX2 时按 **SSE4.2 → SSE4.1 → 标量** 的顺序回退，SSE 内核一次处理 16 字节。SSE4.2 的 `PCMPESTRI` 实测比 `PCMPEQB` 慢（256 KiB 无匹配扫描 22.8 µs vs 9.9 µs，提前匹配 3.0 ns vs 2.4 ns），因此 SSE4.2 入口使用相同的 16 字节字节比较循环，集合与折叠字节对复用 SSE4.1 内核；两套 SSE 内核在强制安装后通过逐字节对照测试。
 
-## arm64 主机
+## 历史远端主机：arm64（2026-10-24）
 
 | 场景 | ydx | stdlib | grafana | regexp2 | go-re2 |
 |---|---:|---:|---:|---:|---:|
@@ -152,19 +152,25 @@ AVX-512 内核只要求 `AVX512F + AVX512BW` 与操作系统对 opmask/ZMM 的 `
 
 表中 17 个场景全部最快，完整 32 个场景也全部最快；NEON 的 `VTBL`/`VUMAXV` 与折叠字节对内核通过逐字节对照测试。
 
-## 并行
+## 并行（regexpx v0.1.13，2026-10-31）
 
-`FindAllStringIndexParallel` 在存在可靠且具有选择性的起点过滤器时按块并行；密集无界运行（如 `\w+`）、锚定、整模式字面量、通配字面量与可空模式自动回退顺序执行。
+`FindAllStringIndexParallel` 在存在可靠且具有选择性的起点过滤器时按块并行；密集无界运行（如
+`\w+`）、锚定、整模式字面量、通配字面量与可空模式自动回退顺序执行。
 
-本机（AVX2，4 MiB 文本，取中位数）：
+本机（AVX2，4 MiB 文本，`-benchtime=300ms -count=5`）：
 
 | 场景 | 顺序 | 并行 |
 |---|---:|---:|
-| `\d{4}-\d{2}-\d{2}` | 4.11 ms | 2.94 ms |
-| 邮箱 | 3.47 ms | 2.65 ms |
-| `\w+` | 83.6 ms | 91.8 ms（回退，差异为噪声） |
+| `\d{4}-\d{2}-\d{2}` | 4.50 ms | **2.54 ms** |
+| 邮箱 | 4.00 ms | **2.41 ms** |
+| `\w+` | 92.5 ms | 94.5 ms（回退，差异为噪声） |
+| `[a-z]+` | 65.7 ms | 65.5 ms（回退） |
+| `\p{Han}+` | 40.9 ms | 44.1 ms（回退） |
+| `\p{So}+` | 61.4 ms | 64.4 ms（回退） |
 
-快速路径把定长与邮箱扫描降到内存带宽附近；分块在小语料上没有收益，4 MiB 时才摊薄协作与合并开销。密集的通用 NFA 扫描（如 `\p{Han}+`）在同样语料上顺序更快，建议使用顺序 API。并行结果与顺序结果逐项一致，测试覆盖跨块匹配、结果上限、并发调用与非法 UTF-8 回退。
+快速路径把定长与邮箱扫描降到内存带宽附近，并行分别为 1.77x 与 1.66x；分块在小语料上没有收益，
+4 MiB 时才摊薄协作与合并开销。密集通用 NFA 扫描（如 `\p{Han}+`、`\p{So}+`）顺序更快，建议使用
+顺序 API。并行结果与顺序结果逐项一致，测试覆盖跨块匹配、结果上限、并发调用与非法 UTF-8 回退。
 
 ## 复现
 
@@ -177,11 +183,11 @@ GOWORK=off go test -run '^$' -bench . -benchmem
 cd benchmarks/regexpx
 go test -run '^$' -bench . -benchmem
 
-# 新增兼容 API / Longest / Reader 基准（v0.1.9+）
+# 兼容 API / Longest / Reader 基准（最新样本 v0.1.13）
 GOWORK=off go test -run '^$' -bench 'Benchmark(Copy|StdCopy|ExpandString|StdExpandString|ReplaceAllString|StdReplaceAllString|ReplaceAllLiteralString|StdReplaceAllLiteralString|LongestExact|StdLongestExact|LongestRun|StdLongestRun|LongestWild|StdLongestWild|LongestLinear|StdLongestLinear|LongestDFA|StdLongestDFA|MatchReaderEarly|StdMatchReaderEarly|FindReaderIndexEarly|StdFindReaderIndexEarly|LongestLookahead|LiteralPrefix|StdLiteralPrefix)$' -benchmem -count=6 -benchtime=1s
 
-# 并行基准使用 regexpx_dev 构建标签（并行 API 尚未包含在已发布版本中）
-go test -run '^$' -bench BenchmarkParallelFindAll -tags regexpx_dev
+# 并行基准（v0.1.13 起并行 API 已包含在发布版本中）
+GOWORK=off go test -run '^$' -bench BenchmarkParallelFindAll -benchmem
 
 # 交叉编译到远端主机
 GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go test -c -o /tmp/regexbench_amd64.test .
@@ -194,8 +200,8 @@ GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go test -c -o /tmp/regexbench_arm64.test .
 
 `required_bench_test.go` 固定了 CRS 4.29 的 942420（标点重复 8 次）与 932240（宽首字节
 字符类分支）形态、最小长度短路，以及一个可触发惰性 ASCII 搜索 DFA 的大型命令名交替模式。
-它们使用公开 API；基准模块已引用 `regexpx v0.1.12`，可直接复现 AST 必需字节/字面量预过滤、
-最小长度短路、搜索 DFA 与 `Warm()` 启动预热相对旧版本的差异：
+它们使用公开 API；基准模块已引用 `regexpx v0.1.13`，可直接复现 AST 必需字节/字面量预过滤、
+最小长度短路、搜索 DFA、`Warm()` 启动预热以及 v0.1.13 折叠字面量预过滤优化：
 
 ```bash
 cd benchmarks/regexpx
@@ -205,4 +211,16 @@ GOWORK=off go test -run '^$' \
 ```
 
 缓冲区 API 的零分配验证位于 `regexpx/find_buffer_test.go`；`Warm()` 的行为验证位于
-`regexpx/dfa_search_test.go`，基准模块可直接引用这些符号。
+`regexpx/dfa_search_test.go`；折叠字面量预过滤验证位于 `regexpx/literal_prefilter_test.go`。
+基准模块可直接引用这些符号。
+
+## 最新结果文件
+
+- [`results/regexpx-v0.1.13-windows-i9-10980hk.txt`](results/regexpx-v0.1.13-windows-i9-10980hk.txt)
+- [`results/regexpx-v0.1.13-windows-benchstat.txt`](results/regexpx-v0.1.13-windows-benchstat.txt)
+- [`results/regexpx-v0.1.13-api-windows-i9-10980hk.txt`](results/regexpx-v0.1.13-api-windows-i9-10980hk.txt)
+- [`results/regexpx-v0.1.13-api-windows-benchstat.txt`](results/regexpx-v0.1.13-api-windows-benchstat.txt)
+- [`results/regexpx-v0.1.13-parallel-windows-i9-10980hk.txt`](results/regexpx-v0.1.13-parallel-windows-i9-10980hk.txt)
+- [`results/regexpx-v0.1.13-parallel-windows-benchstat.txt`](results/regexpx-v0.1.13-parallel-windows-benchstat.txt)
+
+历史 v0.1.9 样本保留在 [`results/regexpx-v0.1.9-windows-i9-10980hk.txt`](results/regexpx-v0.1.9-windows-i9-10980hk.txt)。

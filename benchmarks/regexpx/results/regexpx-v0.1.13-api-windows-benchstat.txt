@@ -1,0 +1,92 @@
+goos: windows
+goarch: amd64
+pkg: github.com/shibingli/ydx/benchmarks/regexpx
+cpu: Intel(R) Core(TM) i9-10980HK CPU @ 2.40GHz
+                              │ results/regexpx-v0.1.13-api-windows-i9-10980hk.txt │
+                              │                       sec/op                       │
+Copy-16                                                               37.70n ±  3%
+StdCopy-16                                                            37.74n ±  1%
+ExpandString-16                                                       104.0n ±  3%
+StdExpandString-16                                                    109.7n ±  1%
+ReplaceAllString-16                                                   262.7µ ±  1%
+StdReplaceAllString-16                                                695.1µ ±  1%
+ReplaceAllLiteralString-16                                            172.4µ ±  1%
+StdReplaceAllLiteralString-16                                         568.3µ ±  1%
+LongestExact-16                                                       128.7n ±  1%
+StdLongestExact-16                                                    159.9n ±  1%
+LongestRun-16                                                         34.89n ±  8%
+StdLongestRun-16                                                      194.7n ± 13%
+LongestWild-16                                                        121.1n ±  1%
+StdLongestWild-16                                                     127.8µ ± 10%
+LongestLinear-16                                                      180.8n ± 12%
+StdLongestLinear-16                                                   50.30µ ±  2%
+LongestDFA-16                                                         16.25µ ±  1%
+StdLongestDFA-16                                                      46.28µ ±  1%
+MatchReaderEarly-16                                                   43.06n ±  1%
+StdMatchReaderEarly-16                                                85.28n ±  1%
+FindReaderIndexEarly-16                                               76.68n ±  1%
+StdFindReaderIndexEarly-16                                            125.4n ±  2%
+LongestLookahead-16                                                   2.203µ ±  1%
+LiteralPrefix-16                                                      1.770n ±  1%
+StdLiteralPrefix-16                                                  0.6690n ±  7%
+geomean                                                               731.0n
+
+                              │ results/regexpx-v0.1.13-api-windows-i9-10980hk.txt │
+                              │                        B/op                        │
+Copy-16                                                               160.0 ± 0%
+StdCopy-16                                                            160.0 ± 0%
+ExpandString-16                                                       8.000 ± 0%
+StdExpandString-16                                                    8.000 ± 0%
+ReplaceAllString-16                                                 28.02Ki ± 0%
+StdReplaceAllString-16                                              57.69Ki ± 0%
+ReplaceAllLiteralString-16                                          89.27Ki ± 0%
+StdReplaceAllLiteralString-16                                       135.1Ki ± 0%
+LongestExact-16                                                       0.000 ± 0%
+StdLongestExact-16                                                    0.000 ± 0%
+LongestRun-16                                                         0.000 ± 0%
+StdLongestRun-16                                                      0.000 ± 0%
+LongestWild-16                                                        0.000 ± 0%
+StdLongestWild-16                                                     53.50 ±  ?
+LongestLinear-16                                                      0.000 ± 0%
+StdLongestLinear-16                                                   1.000 ±  ?
+LongestDFA-16                                                         0.000 ± 0%
+StdLongestDFA-16                                                      0.000 ± 0%
+MatchReaderEarly-16                                                   32.00 ± 0%
+StdMatchReaderEarly-16                                                24.00 ± 0%
+FindReaderIndexEarly-16                                               44.00 ± 0%
+StdFindReaderIndexEarly-16                                            40.00 ± 0%
+LongestLookahead-16                                                 2.750Ki ± 0%
+LiteralPrefix-16                                                      0.000 ± 0%
+StdLiteralPrefix-16                                                   0.000 ± 0%
+geomean                                                                          ¹
+¹ summaries must be >0 to compute geomean
+
+                              │ results/regexpx-v0.1.13-api-windows-i9-10980hk.txt │
+                              │                     allocs/op                      │
+Copy-16                                                               1.000 ± 0%
+StdCopy-16                                                            1.000 ± 0%
+ExpandString-16                                                       1.000 ± 0%
+StdExpandString-16                                                    1.000 ± 0%
+ReplaceAllString-16                                                   3.000 ± 0%
+StdReplaceAllString-16                                                18.00 ± 0%
+ReplaceAllLiteralString-16                                            5.000 ± 0%
+StdReplaceAllLiteralString-16                                         21.00 ± 0%
+LongestExact-16                                                       0.000 ± 0%
+StdLongestExact-16                                                    0.000 ± 0%
+LongestRun-16                                                         0.000 ± 0%
+StdLongestRun-16                                                      0.000 ± 0%
+LongestWild-16                                                        0.000 ± 0%
+StdLongestWild-16                                                     0.000 ± 0%
+LongestLinear-16                                                      0.000 ± 0%
+StdLongestLinear-16                                                   0.000 ± 0%
+LongestDFA-16                                                         0.000 ± 0%
+StdLongestDFA-16                                                      0.000 ± 0%
+MatchReaderEarly-16                                                   2.000 ± 0%
+StdMatchReaderEarly-16                                                1.000 ± 0%
+FindReaderIndexEarly-16                                               3.000 ± 0%
+StdFindReaderIndexEarly-16                                            2.000 ± 0%
+LongestLookahead-16                                                   36.00 ± 0%
+LiteralPrefix-16                                                      0.000 ± 0%
+StdLiteralPrefix-16                                                   0.000 ± 0%
+geomean                                                                          ¹
+¹ summaries must be >0 to compute geomean
