@@ -187,6 +187,19 @@ func TestSkipAfterAcrossPhases(t *testing.T) {
 	}
 }
 
+func TestSkipAfterMarkerResumesLaterPhaseRules(t *testing.T) {
+	instance := newTestWAF(t, []string{
+		`SecRule REQUEST_URI "@contains guarded" "id:9740,phase:1,pass,nolog,skipAfter:END-FILE"`,
+		`SecRule REQUEST_URI "@contains guarded" "id:9741,phase:1,deny,status:403"`,
+		`SecRule REQUEST_URI "@contains guarded" "id:9742,phase:2,pass,nolog"`,
+		`SecMarker "END-FILE"`,
+		`SecRule REQUEST_URI "@contains guarded" "id:9743,phase:1,deny,status:418"`,
+	}, nil)
+	if response := serveTest(t, instance, httptestNewRequest("/guarded")); response.Code != 418 {
+		t.Fatalf("status = %d, want 418; phase-1 rules after the marker must still run", response.Code)
+	}
+}
+
 func TestArgsCombinedSize(t *testing.T) {
 	instance := newTestWAF(t, []string{
 		`SecRule ARGS_COMBINED_SIZE "@gt 5" "id:9720,phase:1,deny,status:403"`,

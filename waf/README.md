@@ -86,7 +86,9 @@ _ = engine.Shutdown(ctx)
 
 **CRS 语义**：`block` 动作按 ModSecurity 语义执行 `SecDefaultAction` 选定的破坏性动作；CRS 默认
 `pass`，因此攻击规则只计分，由 `949110`（`deny`）在异常分达到阈值时统一拦截。`@validateByteRange`、
-`@validateUrlEncoding`、`@validateUtf8Encoding` 在校验失败时命中。`SecRuleUpdateTarget*`
+`@validateUrlEncoding`、`@validateUtf8Encoding` 在校验失败时命中。`@pm`/`@pmFromFile` 与
+ModSecurity、Coraza 一致，按大小写不敏感匹配。`SecMarker` 是配置流中的位置而非阶段内条目，
+`skipAfter` 在各阶段按源码位置跳转，标记之后的其他文件规则继续执行。`SecRuleUpdateTarget*`
 按 ModSecurity 语义追加/排除目标，不替换原列表。
 
 ```go
@@ -246,7 +248,7 @@ WASMPlugins: []waf.WASMPluginConfig{{
 - 请求行按事务缓存；`RequestURI` 头/字段存在时直接复用，缺少时才回退到 `URL.RequestURI()`；
   参数总大小在查询串或正文读取/解析改变参数集合前缓存，避免逐规则重复遍历 ARGS。仅依赖
   `ARGS_COMBINED_SIZE`、`ARGS_NAMES`、多部件或文件合计大小的规则也会正确触发正文读取。
-- `@pm` 使用 Aho-Corasick 一次扫描；`@ipMatch` 使用 `net/netip`。
+- `@pm`/`@pmFromFile` 使用大小写折叠的 Aho-Corasick 一次扫描；`@ipMatch` 使用 `net/netip`。
 - 独立规则并发纯求值，命中动作按源码顺序提交；只有参数/头等值足够多时才启动工作协程，
   自动模式在并发请求升高时退回串行，避免请求级并行与规则级并行互相抢占。
 - 依赖 `regexpx v0.1.12`：AST 必需字节/字面量、最小长度预过滤与惰性 ASCII 搜索 DFA 直接

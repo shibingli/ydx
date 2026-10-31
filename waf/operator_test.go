@@ -160,6 +160,21 @@ func TestPMFromFile(t *testing.T) {
 	if matched, _ := op.eval(nil, "union all users", false); !matched {
 		t.Fatal("pmFromFile did not match")
 	}
+	if matched, _ := op.eval(nil, "UNION ALL users", false); !matched {
+		t.Fatal("pmFromFile must match case-insensitively")
+	}
+}
+
+func TestPMCaseInsensitive(t *testing.T) {
+	op, err := compileOperator(false, "@pm", "sqlmap nikto", compileContext{strict: true})
+	if err != nil {
+		t.Fatalf("compileOperator: %v", err)
+	}
+	for _, value := range []string{"sqlmap/1.7", "Nikto/2.5", "SQLMAP"} {
+		if matched, _ := op.eval(nil, value, false); !matched {
+			t.Fatalf("@pm did not match %q case-insensitively", value)
+		}
+	}
 }
 
 func TestIPMatchFromFile(t *testing.T) {

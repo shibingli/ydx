@@ -14,8 +14,19 @@ type acMatcher struct {
 	rootNext [256]int32
 }
 
-// newACMatcher builds an Aho-Corasick automaton. Empty patterns are ignored. | newACMatcher
-// 构建 Aho-Corasick 自动机；空模式会被忽略。
+// foldASCII lowercases one ASCII letter and leaves every other byte unchanged. ModSecurity and
+// Coraza define @pm and @pmFromFile as case-insensitive, so both patterns and input are folded. |
+// foldASCII 把一个 ASCII 字母转为小写，其余字节保持不变。ModSecurity 与 Coraza 将 @pm 与
+// @pmFromFile 定义为大小写不敏感，因此模式与输入都做折叠。
+func foldASCII(c byte) byte {
+	if c >= 'A' && c <= 'Z' {
+		return c + ('a' - 'A')
+	}
+	return c
+}
+
+// newACMatcher builds a case-insensitive Aho-Corasick automaton. Empty patterns are ignored. |
+// newACMatcher 构建大小写不敏感的 Aho-Corasick 自动机；空模式会被忽略。
 func newACMatcher(patterns []string) *acMatcher {
 	m := &acMatcher{nodes: make([]acNode, 1)}
 	for _, pattern := range patterns {
@@ -24,7 +35,7 @@ func newACMatcher(patterns []string) *acMatcher {
 		}
 		state := int32(0)
 		for i := 0; i < len(pattern); i++ {
-			c := pattern[i]
+			c := foldASCII(pattern[i])
 			next := m.nodes[state].next
 			if next == nil {
 				next = make(map[byte]int32, 2)
@@ -85,7 +96,7 @@ func (m *acMatcher) match(s string) bool {
 	}
 	state := int32(0)
 	for i := 0; i < len(s); i++ {
-		c := s[i]
+		c := foldASCII(s[i])
 		if state == 0 {
 			// The root is traversed after every mismatch; a dense row avoids a map lookup. |
 			// 每次失配后都会回到根节点；密集转移行避免 map 查找。

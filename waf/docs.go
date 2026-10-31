@@ -62,15 +62,19 @@
 // Rules are parsed, compiled, chained and bucketed by phase at load time; request handling only
 // reads immutable snapshots. The request line is cached per transaction, r.RequestURI is reused when
 // present, and ARGS_COMBINED_SIZE is cached until query or body reading/parsing changes the argument set.
-// @pm uses Aho-Corasick with dense root transitions, @ipMatch uses net/netip, and regex operators
-// receive conservative literal, byte-set and minimum-length prefilters before the regex engine runs.
+// @pm and @pmFromFile use case-insensitive Aho-Corasick with dense root transitions, @ipMatch uses
+// net/netip, and regex operators receive conservative literal, byte-set and minimum-length
+// prefilters before the regex engine runs. SecMarker is a configuration-stream position: a
+// skipAfter in any phase resumes at the marker's source position, so rules declared after it in
+// later files still run.
 // Transform results use compact chain IDs and per-transaction caching; a per-rule L1 cache also
 // serves repeated values during parallel evaluation. Negative operator results are cached per rule
 // for repeated values, TX variables use precomputed hashes, and capture uses caller-provided regex
 // buffers. | 规则在加载期完成解析、编译、链展开与阶段分桶；请求处理只读不可变快照。请求行按事务
 // 缓存；r.RequestURI 存在时直接复用；ARGS_COMBINED_SIZE 在查询串或正文读取/解析改变参数集合前缓存。
-// @pm 使用带密集根转移的 Aho-Corasick，@ipMatch 使用 net/netip；正则算子在进入引擎前接受保守的
-// 字面量、字节集与最小长度预过滤。变换结果使用紧凑链 ID 与事务级缓存；规则级 L1 缓存在并行求值时
+// @pm 与 @pmFromFile 使用大小写不敏感的密集根转移 Aho-Corasick，@ipMatch 使用 net/netip；正则算子
+// 在进入引擎前接受保守的字面量、字节集与最小长度预过滤。SecMarker 是配置流中的位置：任一阶段的
+// skipAfter 都在标记的源码位置恢复，因此后续文件中声明于标记之后的规则仍会执行。变换结果使用紧凑链 ID 与事务级缓存；规则级 L1 缓存在并行求值时
 // 也能复用重复取值。否定算子结果按规则缓存重复取值；TX 变量使用预计算哈希；捕获使用调用方缓冲区。
 //
 // Consecutive independent rules can run on up to four workers; actions and matches are committed

@@ -39,11 +39,15 @@ func buildRuleSet(entries []specEntry, defaults []actionSpec, defaultPhase Phase
 	}
 	for _, entry := range entries {
 		if entry.marker != "" {
-			phase := entry.phase
-			if phase < PhaseRequestHeaders || phase > PhaseLogging {
-				phase = PhaseRequestBody
+			// SecMarker is a configuration-stream position, not a phase-bound rule. Register it in
+			// every phase at its current source position so a phase-1 skipAfter still resumes at
+			// rules declared after the marker in later files, as ModSecurity and Coraza do. |
+			// SecMarker 是配置流中的位置，不隶属于某一阶段。把标记按当前源码位置注册到每个阶段，
+			// 使 phase 1 的 skipAfter 仍能在后续文件中的标记之后继续执行规则，与 ModSecurity、
+			// Coraza 一致。
+			for phase := PhaseRequestHeaders; phase <= PhaseLogging; phase++ {
+				rs.phases[phase] = append(rs.phases[phase], phaseEntry{marker: entry.marker})
 			}
-			rs.phases[phase] = append(rs.phases[phase], phaseEntry{marker: entry.marker})
 			continue
 		}
 		spec := entry.spec
