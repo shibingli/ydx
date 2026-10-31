@@ -6,7 +6,7 @@
 
 | 标签 | 实现 | 说明 |
 |---|---|---|
-| `ydx` | 本仓 `regexpx` | 自研解析器、Pike VM、回溯 VM、DFA/运行/定长/线性/邮件/字面量快速路径与 SIMD 预过滤 |
+| `ydx` | 本仓 `regexpx` | 自研解析器、Pike VM、回溯 VM、惰性 ASCII 搜索 DFA、运行/定长/线性/邮件/字面量快速路径与 SIMD 预过滤 |
 | `stdlib` | 标准库 `regexp` | RE2 语法，one-pass / bitstate / NFA |
 | `grafana` | `github.com/grafana/regexp` | 标准库分支，接口与语义相同 |
 | `regexp2` | `github.com/dlclark/regexp2` | .NET 回溯引擎，使用 `regexp2.RE2` 模式 |
@@ -189,3 +189,20 @@ GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go test -c -o /tmp/regexbench_arm64.test .
 ```
 
 `benchmarks/regexpx/go.mod` 在发布前指向当前已发布版本；开发期请使用工作区或临时 `go.work`，不要提交本地 `replace`。
+
+## 预过滤回归基准
+
+`required_bench_test.go` 固定了 CRS 4.29 的 942420（标点重复 8 次）与 932240（宽首字节
+字符类分支）形态、最小长度短路，以及一个可触发惰性 ASCII 搜索 DFA 的大型命令名交替模式。
+它们使用公开 API，发布 `regexpx` 新版本后即可对比 AST 必需字节/字面量预过滤、最小长度短路
+与搜索 DFA 相对旧版本的差异：
+
+```bash
+cd benchmarks/regexpx
+GOWORK=off go test -run '^$' \
+  -bench 'Benchmark(CRSRequiredByteRepetition|CRSRequiredByteAlternation|MinimumLengthShort|DFALargeAlternation)$' \
+  -benchmem -count=5
+```
+
+缓冲区 API 的零分配验证位于 `regexpx/find_buffer_test.go`，因为基准模块在发布前仍引用旧版本，
+无法引用尚未发布的符号。
