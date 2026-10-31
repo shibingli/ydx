@@ -39,10 +39,12 @@ type compatCache struct {
 	literalOnce     sync.Once
 	stdOnce         sync.Once
 	dfaOnce         sync.Once
+	searchOnce      sync.Once
 	literalResult   atomic.Pointer[literalPrefixValue]
 	literalPrefix   string
 	std             *stdregexp.Regexp
 	dfa             *asciiDFA
+	searchDFA       *searchDFA
 	literalComplete bool
 }
 
@@ -77,6 +79,9 @@ type Regexp struct {
 	// The full-match DFA is built lazily on first use so package-level Compile stays cheap. |
 	// 全匹配 DFA 在首次使用时惰性构建，使包级 Compile 保持廉价。
 	dfaEligible bool
+	// searchDFAEligible enables the lazy unanchored ASCII search DFA for large general patterns. |
+	// searchDFAEligible 为大型通用模式启用惰性未锚定 ASCII 搜索 DFA。
+	searchDFAEligible bool
 
 	pikePool *sync.Pool
 	btPool   *sync.Pool
@@ -162,6 +167,7 @@ func compile(expr string, posix bool) (*Regexp, error) {
 		r.dfaEligible = true
 		prog.dfaAST = ast
 	}
+	r.searchDFAEligible = searchDFAEligible(prog)
 	r.exact = analyzeExact(ast, numCap)
 	r.run = analyzeRun(ast, numCap)
 	r.wild = analyzeWild(ast)
@@ -347,6 +353,12 @@ func (r *Regexp) executeInto(s string, start, maxSlot, startLimit int, preferSea
 	if startLimit >= 0 && startLimit > len(s)+1 {
 		startLimit = len(s) + 1
 	}
+	// minLen is measured in runes; a remaining byte length below it cannot possibly match. This is
+	// exact for the common ASCII case and a safe lower bound otherwise. | minLen 以符文计；剩余字节数
+	// 小于它时不可能命中。对常见 ASCII 情形精确，其它情形也是安全下界。
+	if minimum := r.prog.info.minLen; minimum > 0 && len(s)-start < minimum {
+		return nil, false, nil
+	}
 	// Longest keeps only specialized paths whose result is inherently leftmost-longest: exact
 	// literals, greedy runs, wildcard-literal shapes, fixed-length linear shapes and the anchored
 	// full-match DFA. Email and lazy/variable shapes fall through to the general engine. |
@@ -423,6 +435,33 @@ func (r *Regexp) executeInto(s string, start, maxSlot, startLimit int, preferSea
 					return []int{0, len(s)}, true, nil
 				}
 				return nil, true, nil
+			}
+		}
+	}
+	// Required bytes filter the general engine. Specialized exact/run/wild/email/linear/DFA paths
+	// return above, so their SIMD scans never pay for a second pass. | 必需字节用于过滤通用引擎。
+	// 专用 exact/run/wild/email/linear/DFA 路径已在上面返回，因此它们的 SIMD 扫描不会多付一次检查。
+	value := s[start:]
+	for i := uint8(0); i < r.prog.info.requiredConditions.count; i++ {
+		if !r.prog.info.requiredConditions.conditions[i].matches(value) {
+			return nil, false, nil
+		}
+	}
+	if literals := r.prog.info.literals; literals.ok && !literals.matches(value) {
+		return nil, false, nil
+	}
+	// The lazy DFA answers existence on ASCII input. For no-capture searches it is the final
+	// answer; with captures it only rejects impossible inputs before the Pike VM runs. |
+	// 惰性 DFA 在 ASCII 输入上回答存在性。无捕获搜索直接采用结果；有捕获时只用于在 Pike VM 前拒绝
+	// 不可能命中的输入。
+	if dfa := r.searchDFA(); dfa != nil && start == 0 && startLimit < 0 {
+		matched, known := dfa.match(s)
+		if known {
+			if maxSlot == 0 {
+				return nil, matched, nil
+			}
+			if !matched {
+				return nil, false, nil
 			}
 		}
 	}

@@ -113,22 +113,27 @@ func (m *pikeMachine) canStartAt(s string, pos int) bool {
 // and never touches capture slices. | addSimple 是只跟踪分组 0 的模式的空转移闭包。它使用紧凑帧且
 // 不触碰捕获切片。
 func (m *pikeMachine) addSimple(list *threadList, pc uint32, pos, start, end int) {
-	m.simple = append(m.simple[:0], addSimpleFrame{pc: pc, start: start, end: end})
-	for len(m.simple) > 0 {
-		f := m.simple[len(m.simple)-1]
-		m.simple = m.simple[:len(m.simple)-1]
-		if list.seen(f.pc) {
+	stack := append(m.simple[:0], addSimpleFrame{pc: pc, start: start, end: end})
+	insts := m.prog.insts
+	stamp := list.stamp
+	gen := list.gen
+	input := m.input
+	dense := list.dense
+	for len(stack) > 0 {
+		f := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		if stamp[f.pc] == gen {
 			continue
 		}
-		list.mark(f.pc)
-		in := &m.prog.insts[f.pc]
+		stamp[f.pc] = gen
+		in := &insts[f.pc]
 		switch in.op {
 		case opFail:
 		case opJmp:
-			m.simple = append(m.simple, addSimpleFrame{pc: in.x, start: f.start, end: f.end})
+			stack = append(stack, addSimpleFrame{pc: in.x, start: f.start, end: f.end})
 		case opSplit:
-			m.simple = append(m.simple, addSimpleFrame{pc: in.y, start: f.start, end: f.end})
-			m.simple = append(m.simple, addSimpleFrame{pc: in.x, start: f.start, end: f.end})
+			stack = append(stack, addSimpleFrame{pc: in.y, start: f.start, end: f.end})
+			stack = append(stack, addSimpleFrame{pc: in.x, start: f.start, end: f.end})
 		case opSave:
 			nstart, nend := f.start, f.end
 			switch in.arg {
@@ -137,15 +142,17 @@ func (m *pikeMachine) addSimple(list *threadList, pc uint32, pos, start, end int
 			case 1:
 				nend = pos
 			}
-			m.simple = append(m.simple, addSimpleFrame{pc: f.pc + 1, start: nstart, end: nend})
+			stack = append(stack, addSimpleFrame{pc: f.pc + 1, start: nstart, end: nend})
 		case opAssert:
-			if assertHolds(assertKind(in.arg), m.input, pos) {
-				m.simple = append(m.simple, addSimpleFrame{pc: f.pc + 1, start: f.start, end: f.end})
+			if assertHolds(assertKind(in.arg), input, pos) {
+				stack = append(stack, addSimpleFrame{pc: f.pc + 1, start: f.start, end: f.end})
 			}
 		case opMatch, opRune, opClass, opAny:
-			list.dense = append(list.dense, pikeThread{pc: f.pc, start: f.start, end: f.end})
+			dense = append(dense, pikeThread{pc: f.pc, start: f.start, end: f.end})
 		}
 	}
+	m.simple = stack[:0]
+	list.dense = dense
 }
 
 // addThread dispatches to the compact or full closure. | addThread 分派到紧凑或完整闭包。
@@ -282,6 +289,10 @@ func (m *pikeMachine) consumes(t *pikeThread, r rune) bool {
 // step processes one input position. It records matches in priority order and cuts off every thread
 // below the matching one. | step 处理一个输入位置。它按优先级记录匹配，并截断匹配线程之下的所有线程。
 func (m *pikeMachine) step(runq, nextq *threadList, pos, nextPos int, r rune, width int) {
+	if m.capLen <= 2 {
+		m.stepSimple(runq, nextq, pos, nextPos, r, width)
+		return
+	}
 	for j := 0; j < len(runq.dense); j++ {
 		t := &runq.dense[j]
 		in := &m.prog.insts[t.pc]
@@ -301,6 +312,52 @@ func (m *pikeMachine) step(runq, nextq *threadList, pos, nextPos int, r rune, wi
 			continue
 		}
 		m.addThread(nextq, t.pc+1, nextPos, t.cap, t.start, t.end)
+	}
+	m.releaseList(runq)
+}
+
+// stepSimple processes one input position when only group zero is tracked. It inlines instruction
+// dispatch and consumption checks to keep the common no-capture path free of helper calls. |
+// stepSimple 在只跟踪分组 0 时处理一个输入位置。它内联指令分派与消费检查，使常见的无捕获路径
+// 不产生辅助函数调用。
+func (m *pikeMachine) stepSimple(runq, nextq *threadList, pos, nextPos int, r rune, width int) {
+	insts := m.prog.insts
+	classes := m.prog.classes
+	dense := runq.dense
+	for j := range dense {
+		t := &dense[j]
+		in := &insts[t.pc]
+		switch in.op {
+		case opMatch:
+			m.recordMatch(t, pos)
+			if !m.longest {
+				m.releaseList(runq)
+				return
+			}
+		case opRune:
+			if width == 0 {
+				continue
+			}
+			want := rune(in.arg)
+			if in.flags&instFold != 0 {
+				if !equalFoldRune(r, want) {
+					continue
+				}
+			} else if r != want {
+				continue
+			}
+			m.addSimple(nextq, t.pc+1, nextPos, t.start, t.end)
+		case opClass:
+			if width == 0 || !classes[in.arg].match(r) {
+				continue
+			}
+			m.addSimple(nextq, t.pc+1, nextPos, t.start, t.end)
+		case opAny:
+			if width == 0 || in.flags&instDotAll == 0 && r == '\n' {
+				continue
+			}
+			m.addSimple(nextq, t.pc+1, nextPos, t.start, t.end)
+		}
 	}
 	m.releaseList(runq)
 }

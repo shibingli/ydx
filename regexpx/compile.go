@@ -97,13 +97,16 @@ type progInfo struct {
 	// 锚定尝试更快。
 	selectivePrefilter bool
 
-	anchored        bool
-	hasBacktrack    bool
-	hasWordBoundary bool
-	hasLineAnchor   bool
-	hasBeginAssert  bool
-	hasEndAssert    bool
-	hasLookBehind   bool
+	required           requiredBytes
+	requiredConditions requiredByteSet
+	literals           requiredLiteralFilter
+	anchored           bool
+	hasBacktrack       bool
+	hasWordBoundary    bool
+	hasLineAnchor      bool
+	hasBeginAssert     bool
+	hasEndAssert       bool
+	hasLookBehind      bool
 }
 
 // compiler translates an AST into a Thompson program. | compiler 把 AST 翻译为 Thompson 程序。

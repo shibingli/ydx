@@ -61,6 +61,87 @@ func (r *Regexp) FindStringSubmatchIndex(s string) []int {
 	return caps
 }
 
+// FindStringSubmatchIndexInto is FindStringSubmatchIndex with a caller-provided index buffer. When
+// dst has enough capacity the result aliases dst; otherwise a new slice is allocated. The returned
+// slice is nil when nothing matches. | FindStringSubmatchIndexInto 是带调用方下标缓冲区的
+// FindStringSubmatchIndex。dst 容量足够时结果复用 dst，否则分配新切片。没有匹配时返回 nil。
+func (r *Regexp) FindStringSubmatchIndexInto(dst []int, s string) []int {
+	width := len(r.names) * 2
+	out := intBuffer(dst, width)
+	if r.longest {
+		if std := r.stdRegexp(); std != nil {
+			index := std.FindStringSubmatchIndex(s)
+			if index == nil || len(index) > len(out) {
+				return nil
+			}
+			copy(out, index)
+			return out[:len(index)]
+		}
+	}
+	caps, ok, err := r.executeInto(s, 0, width, -1, false, out)
+	if err != nil || !ok {
+		return nil
+	}
+	if len(caps) != width {
+		return nil
+	}
+	copy(out, caps)
+	return out
+}
+
+// FindStringSubmatchInto is FindStringSubmatch with a caller-provided string buffer. When dst has
+// enough capacity the result aliases dst; otherwise a new slice is allocated. The returned slice is
+// nil when nothing matches. | FindStringSubmatchInto 是带调用方字符串缓冲区的 FindStringSubmatch。
+// dst 容量足够时结果复用 dst，否则分配新切片。没有匹配时返回 nil。
+func (r *Regexp) FindStringSubmatchInto(dst []string, s string) []string {
+	width := len(r.names)
+	var small [16]int
+	var index []int
+	if width*2 <= len(small) {
+		index = small[:width*2]
+	} else {
+		index = make([]int, width*2)
+	}
+	index = r.FindStringSubmatchIndexInto(index, s)
+	if index == nil {
+		return nil
+	}
+	out := stringBuffer(dst, width)
+	for i := 0; i < width; i++ {
+		slot := 2 * i
+		if index[slot] >= 0 && index[slot+1] >= 0 {
+			out[i] = s[index[slot]:index[slot+1]]
+		} else {
+			out[i] = ""
+		}
+	}
+	return out
+}
+
+// intBuffer returns a width-length buffer aliasing dst when possible. | intBuffer 返回尽可能复用 dst
+// 的指定长度缓冲区。
+func intBuffer(dst []int, width int) []int {
+	if width <= 0 {
+		return nil
+	}
+	if cap(dst) >= width {
+		return dst[:width]
+	}
+	return make([]int, width)
+}
+
+// stringBuffer returns a width-length buffer aliasing dst when possible. | stringBuffer 返回尽可能复用
+// dst 的指定长度缓冲区。
+func stringBuffer(dst []string, width int) []string {
+	if width <= 0 {
+		return nil
+	}
+	if cap(dst) >= width {
+		return dst[:width]
+	}
+	return make([]string, width)
+}
+
 // FindAllString returns the text of every non-overlapping match. n limits the number of matches; a
 // negative n means all matches. | FindAllString 返回每个不重叠匹配的文本。n 限制匹配数量，负数表示全部。
 func (r *Regexp) FindAllString(s string, n int) []string {
@@ -187,6 +268,47 @@ func (r *Regexp) FindSubmatchIndex(b []byte) []int {
 		}
 	}
 	return r.FindStringSubmatchIndex(bytesToString(b))
+}
+
+// FindSubmatchIndexInto is FindSubmatchIndex with a caller-provided index buffer. | FindSubmatchIndexInto
+// 是带调用方下标缓冲区的 FindSubmatchIndex。
+func (r *Regexp) FindSubmatchIndexInto(dst []int, b []byte) []int {
+	return r.FindStringSubmatchIndexInto(dst, bytesToString(b))
+}
+
+// FindSubmatchInto is FindSubmatch with a caller-provided slice buffer. When dst has enough
+// capacity the result aliases dst; otherwise a new slice is allocated. | FindSubmatchInto 是带调用方
+// 切片缓冲区的 FindSubmatch。dst 容量足够时结果复用 dst，否则分配新切片。
+func (r *Regexp) FindSubmatchInto(dst [][]byte, b []byte) [][]byte {
+	width := len(r.names)
+	var small [16]int
+	var index []int
+	if width*2 <= len(small) {
+		index = small[:width*2]
+	} else {
+		index = make([]int, width*2)
+	}
+	index = r.FindSubmatchIndexInto(index, b)
+	if index == nil {
+		return nil
+	}
+	if width == 0 {
+		return nil
+	}
+	if cap(dst) < width {
+		dst = make([][]byte, width)
+	} else {
+		dst = dst[:width]
+	}
+	for i := 0; i < width; i++ {
+		slot := 2 * i
+		if index[slot] >= 0 && index[slot+1] >= 0 {
+			dst[i] = b[index[slot]:index[slot+1]]
+		} else {
+			dst[i] = nil
+		}
+	}
+	return dst
 }
 
 // FindAll returns every non-overlapping match in b. | FindAll 返回 b 中每个不重叠匹配。

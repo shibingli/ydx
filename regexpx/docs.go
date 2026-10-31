@@ -38,8 +38,12 @@
 //     确定性遍历；
 //   - the address shape local@domain.tld is located from '@' with a reverse local-part scan; | 邮箱
 //     地址形态 local@domain.tld 从 '@' 定位并反向扫描局部部分；
-//   - anchored ^body$ validation patterns build a compact ASCII DFA lazily on first use. | 锚定的
-//     ^body$ 校验模式在首次使用时惰性构建紧凑 ASCII DFA。
+//   - anchored ^body$ validation patterns build a compact ASCII DFA lazily on first use; |
+//     锚定的 ^body$ 校验模式在首次使用时惰性构建紧凑 ASCII DFA；
+//   - large, broad general patterns build a lazy ASCII search DFA on first use and fall back to the
+//     Pike VM for non-ASCII input, unsupported assertions or state-budget overflow. | 大型宽首字节
+//     通用模式在首次使用时构建惰性 ASCII 搜索 DFA；非 ASCII 输入、不支持的断言或状态预算溢出时
+//     回退到 Pike VM。
 //
 // # SIMD | 指令集
 //
@@ -113,4 +117,19 @@
 //
 // The common methods mirror the standard library, and the E variants expose ErrMatchTimeout. |
 // 常用方法镜像标准库，E 变体暴露 ErrMatchTimeout。
+//
+// # Caller-provided buffers | 调用方缓冲区
+//
+// The *Into variants reuse caller storage for submatch results: | *Into 变体复用调用方存储返回子匹配：
+//
+//	var indexBuf [16]int
+//	var stringBuf [8]string
+//	index := re.FindStringSubmatchIndexInto(indexBuf[:0], value)
+//	groups := re.FindStringSubmatchInto(stringBuf[:0], value)
+//
+// When dst has enough capacity the returned slice aliases dst; otherwise a new slice is allocated.
+// A no-match result is nil. Returned strings are substrings of the input. Warm linear-engine calls
+// allocate nothing; backtracking patterns may still allocate engine-internal capture state. |
+// dst 容量足够时返回切片复用 dst，否则分配新切片。无匹配返回 nil。返回字符串是输入的子串。预热后
+// 线性引擎调用不分配内存；回溯模式仍可能分配引擎内部捕获状态。
 package regexpx

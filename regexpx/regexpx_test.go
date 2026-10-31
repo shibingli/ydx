@@ -556,3 +556,31 @@ func TestBacktrackingConcurrentUse(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+// TestMinimumLengthShortCircuit pins behavior for inputs shorter than the minimum match length.
+// The prefilter is an optimization, so matches and non-matches must be identical to the general
+// engines. | TestMinimumLengthShortCircuit 固定短于最小匹配长度输入的行为。预过滤只是优化，命中与
+// 未命中结果必须与通用引擎一致。
+func TestMinimumLengthShortCircuit(t *testing.T) {
+	re := MustCompile(`abcdef`)
+	if re.MatchString("abc") {
+		t.Fatal("short input matched")
+	}
+	if !re.MatchString("abcdef") {
+		t.Fatal("full literal did not match")
+	}
+	if groups := re.FindStringSubmatch("abc"); groups != nil {
+		t.Fatalf("short capture = %v", groups)
+	}
+	folded := MustCompile(`(?i)abcdef`)
+	if folded.MatchString("ABC") {
+		t.Fatal("short folded input matched")
+	}
+	if !folded.MatchString("AbCdEf") {
+		t.Fatal("folded literal did not match")
+	}
+	anchored := MustCompile(`^abcdef$`)
+	if anchored.MatchString("abcde") || !anchored.MatchString("abcdef") {
+		t.Fatal("anchored min length behavior changed")
+	}
+}

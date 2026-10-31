@@ -34,12 +34,14 @@
 ## 1. 安装与导入
 
 ```bash
-go get github.com/shibingli/ydx/regexpx@v0.1.10
+go get github.com/shibingli/ydx/regexpx@v0.1.11
 ```
 
 ```go
 import "github.com/shibingli/ydx/regexpx"
 ```
+
+> `v0.1.11` 起提供本文档中的 `*Into` 调用方缓冲区 API 与惰性 ASCII 搜索 DFA。
 
 包标识符为 `regexpx`，与目录名一致。产品模块只依赖 Go 标准库与 `ydx/errs`；本包不依赖
 第三方正则库。
@@ -109,13 +111,16 @@ if _, err := regexpx.Compile(`(`); errors.Is(err, regexpx.ErrCompile) {
 | `FindStringIndex(s string) []int` | 首个匹配的字节偏移对；无匹配为 `nil` |
 | `FindStringSubmatch(s string) []string` | 首个匹配及各分组文本 |
 | `FindStringSubmatchIndex(s string) []int` | 首个匹配及各分组字节偏移 |
+| `FindStringSubmatchInto(dst []string, s string) []string` | 同上，复用调用方字符串缓冲区 |
+| `FindStringSubmatchIndexInto(dst []int, s string) []int` | 同上，复用调用方索引缓冲区 |
 | `FindAllString(s string, n int) []string` | 所有非重叠匹配；`n < 0` 表示全部 |
 | `FindAllStringIndex(s string, n int) [][]int` | 所有匹配的字节偏移 |
 | `FindAllStringSubmatch(s string, n int) [][]string` | 所有匹配及分组文本 |
 | `FindAllStringSubmatchIndex(s string, n int) [][]int` | 所有匹配及分组偏移 |
 
 字节输入对应 `Find`、`FindIndex`、`FindSubmatch`、`FindSubmatchIndex`、`FindAll`、
-`FindAllIndex`、`FindAllSubmatch`、`FindAllSubmatchIndex`。
+`FindAllIndex`、`FindAllSubmatch`、`FindAllSubmatchIndex`；缓冲区版本为
+`FindSubmatchInto` 与 `FindSubmatchIndexInto`。
 
 ```go
 re := regexpx.MustCompile(`(\d{4})-(\d{2})-(\d{2})`)
@@ -129,6 +134,51 @@ if loc != nil {
 
 所有索引都是**字节偏移**，不是 rune 下标。未参与匹配的分组在 `SubmatchIndex` 中为
 `-1, -1`；未匹配的 `Submatch` 元素为空字符串。
+
+### 3.1.1 调用方缓冲区（零分配）
+
+高频捕获场景可以用 `*Into` 方法复用调用方切片，避免每次调用分配索引与字符串切片：
+
+```go
+func parseLine(re *regexpx.Regexp, line string) (string, string) {
+    var indexStorage [32]int
+    var groupStorage [16]string
+    loc := re.FindStringSubmatchIndexInto(indexStorage[:0], line)
+    if loc == nil || loc[2] < 0 {
+        return "", ""
+    }
+    groups := re.FindStringSubmatchInto(groupStorage[:0], line)
+    return groups[1], groups[2]
+}
+```
+
+调用方也可以把这两个数组放在请求上下文或对象池中，在每个 goroutine 内复用；不要把同一组
+缓冲区交给并发调用。
+
+规则如下：
+
+- 只看 `dst` 的**容量**，不看长度；通常传 `dst[:0]`。容量足够时返回切片复用 `dst`，
+  否则分配新切片。
+- 索引结果长度为 `2 * (NumSubexp()+1)`，字符串结果长度为 `NumSubexp()+1`；无匹配返回
+  `nil`。未匹配分组在索引中为 `-1, -1`，在字符串中为空串。
+- 返回的字符串是输入的子串，不复制内容；输入必须在使用期间保持有效。
+- 线性引擎（不含环视/反向引用）预热后为零分配；回溯模式仍可能分配引擎内部捕获状态。
+- 缓冲区属于单次调用；不要把同一个 `dst` 交给并发调用，也不要让调用方缓冲区与输入
+  生命周期混淆。每个 goroutine 使用自己的缓冲区即可。
+- `Longest`、`CompilePOSIX`、命名分组与未匹配分组语义与对应的分配版本完全一致。
+- 字节输入使用 `FindSubmatchIndexInto(dst []int, b []byte)` 与
+  `FindSubmatchInto(dst [][]byte, b []byte)`。
+
+```go
+var byteGroups [8][]byte
+groups := re.FindSubmatchInto(byteGroups[:0], []byte("user=alice"))
+if groups != nil {
+    // groups[1] 是 b 的子切片，不复制内容
+}
+```
+
+基准测试 `TestFindStringSubmatchIntoAllocations` 验证预热后字符串/索引缓冲区 API 为
+`0 allocs/op`。
 
 ### 3.2 空匹配规则
 
@@ -434,6 +484,22 @@ POSIX 模式只接受标准库 POSIX parser 接受的语法；`\d`、`\w`、`(?i
 
 不适合。它每次调用都会编译模式；请求热路径应复用 `Compile`/`MustCompile` 的结果。
 
+### 12.11 为什么大型模式第一次 `MatchString` 比较慢？
+
+满足条件的大型宽首字节模式会在首次匹配时构建惰性 ASCII 搜索 DFA，之后长期加速。构建由
+`sync.Once` 保护，多个并发首次调用只会构建一次。对延迟敏感的启动路径，可以在服务接收流量
+前用一个良性输入预热：
+
+```go
+// 932236 形态下，该输入通过预过滤并触发 DFA 构建。
+re.MatchString("value-0-hello-world")
+```
+
+预热输入必须能通过最小长度/必需字节/必需字面量等前置过滤；否则会在到达 DFA 前返回，
+不会构建。具体输入应按规则集选择。
+
+DFA 只影响性能；回退路径保证结果一致。
+
 ## 13. 性能
 
 新增兼容 API 与 `Longest` 快路径的完整对比数据见 [`PERFORMANCE.md`](PERFORMANCE.md)：
@@ -442,10 +508,47 @@ POSIX 模式只接受标准库 POSIX parser 接受的语法；`\d`、`\w`、`(?i
 - `ReplaceAllString` 约为标准库的 1/2.8，`ReplaceAllLiteralString` 约 1/3–1/6（受标准库样本波动影响）；
 - `Longest` 通配/线性快路径比标准库快 2–3 个数量级，单运行快约 5–6x；
 - `MatchReader`/`FindReaderIndex` 早期匹配比标准库快约 1.5–1.7x；
+- v0.1.11 增加最小匹配长度短路、无捕获 Pike VM 快路径与 AST 必需字节/字面量预过滤；短输入可提前返回，标点密集或宽首字节模式可快数十到数百倍；
+- 大型宽首字节通用模式在首次匹配时构建惰性 ASCII 搜索 DFA；CRS 932236/932260 形态的善意值可快约 40–70x，非 ASCII 输入、不支持断言或状态上限溢出时自动回退 Pike VM；
+- 新增调用方缓冲区 API，预热后的子匹配索引/字符串结果可 0 allocs/op；
 - `LiteralPrefix` 约 2.2 ns，唯一仍有相对差距的项目，但不在热路径。
 
 通用匹配/查找场景的 Zen 5、AVX2、AVX-512、arm64 与并行数据见
 [`benchmarks/regexpx/README.md`](../benchmarks/regexpx/README.md)。
+
+### 13.1 惰性 ASCII 搜索 DFA
+
+对满足以下条件的模式，`regexpx` 会在**首次匹配时**自动构建惰性 ASCII 搜索 DFA，无需任何
+配置或新 API：
+
+- 不含环视、反向引用或原子组等回溯构造；
+- 没有字面量前缀，且首字节集足够宽（避免抢占已有的前缀/首字节快路径）；
+- 指令数不少于 128 且不超过 8192；
+- 只包含起始/结束/单词边界断言（行锚点 `(?m)`、`\Z` 等会回退）。
+
+行为与保证：
+
+```go
+// commandNames 是足够大的命令名集合（类似 OWASP CRS 932236 的形态）。
+pattern := `(?i)(?:^(?:json\.|\x5c)?|` + strings.Join(commandNames, "|") + `\b)[a-z0-9_]+`
+re := regexpx.MustCompile(pattern)
+// 首次调用构建 DFA；后续调用直接扫描。
+matched := re.MatchString("json.cmd42x")
+```
+
+- `MatchString` / 字节 `Match` 在 ASCII 输入上直接采用 DFA 结果；带捕获的
+  `Find*Submatch*` 只把 DFA 当作存在性预过滤，命中后仍由 Pike VM 生成捕获。
+- 输入出现非 ASCII 字节、构建时发现不支持构造或状态数超过 1024 时，自动回退到 Pike VM，
+  结果与不回退时完全一致。
+- DFA 状态按需增长，已完成的转移以原子方式读取；多个 goroutine 可并发使用同一个
+  `Regexp`。首次构建是串行的一次性成本；此后稳态搜索无锁，首次遇到新的字母表转移时仍会短暂
+  加锁计算。
+- 构建在 `sync.Once` 内完成；首次调用会承担字母表与起始状态的构建成本。当前 CRS
+  932236/932260 形态约 0.5 ms/模式，稳态搜索约 0.10–0.27 µs。
+- 该路径只影响性能，不改变 `Longest`、POSIX、捕获、未匹配分组或超时语义。
+
+若希望精确观测是否构建成功，可在包内测试中使用 `searchDFA()`；公开 API 不暴露 DFA 对象，
+避免调用方依赖内部状态。
 
 ## 14. 依赖、相关模块与许可证
 

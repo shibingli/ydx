@@ -97,3 +97,57 @@ GOWORK=off go test -run '^$' \
 
 > 绝对值受 CPU 频率、并行负载与 Windows 调度影响。跨机器比较请优先看同一行的相对值，
 > 并在目标平台重新运行基准。
+
+## 7. v0.1.11 热路径优化
+
+在不改变既有导出 API 的匹配语义或超时策略的前提下，v0.1.11 增加了六项优化：
+
+1. **最小匹配长度短路**：`prog.info.minLen` 在进入专用快路径和 Pike VM 之前检查剩余字节数；
+   剩余字节少于最小符文数时直接返回未命中。该检查对 ASCII 精确，对多字节输入也是安全下界。
+2. **无捕获 Pike VM 快路径**：`addSimple` 将指令表、代际标记与线程列表放入局部变量；
+   `step` 在 `capLen <= 2` 时走 `stepSimple`，内联指令分派、rune/class/any 消费检查，避免
+   每线程 `consumes`/`addThread` 调用。捕获路径与回溯路径保持不变。
+3. **AST 必需字节集/计数预过滤**：从 AST 推导“匹配至少包含 N 个来自集合的字节”的可靠必要条件，
+   支持 ASCII 字符类、`\d`/`\s`/`\w`、字面量、分支、重复（计数按最小重复次数放大）、捕获与
+   原子组；Unicode/折叠/否定类保守处理。它只作用于通用引擎，专用 exact/run/wild/email/linear/DFA
+   路径已在前面返回，不会为 SIMD 扫描增加第二遍开销。
+4. **AST 必需字面量预过滤**：单字面量使用 `Contains`，多字面量使用 1–4 字节 gram 布隆过滤；
+   含单字母分支或无法证明的折叠构造会直接放弃。与字节集过滤互补，主要帮助带长必需片段、但
+   字符类特征不明显的模式。
+5. **惰性 ASCII 搜索 DFA**：对无回溯、无字面量前缀、首字节足够宽且指令数不少于 128 的通用
+   模式，在首次匹配时构建按需填充的确定性自动机。DFA 只处理 ASCII 输入；遇到非 ASCII 字节、
+   行锚点等不支持构造或超过 1024 个状态时立即回退到 Pike VM。状态转移按字母表分组缓存，
+   已完成的单元以原子方式读取，稳态搜索无锁竞争。无捕获搜索直接采用 DFA 结果；带捕获搜索
+   只用它提前拒绝不可能命中的输入。
+6. **调用方缓冲区 API**：新增 `FindStringSubmatchIndexInto`、`FindStringSubmatchInto`、
+   `FindSubmatchIndexInto` 与 `FindSubmatchInto`。调用方提供 `[]int` / `[]string` / `[][]byte`
+   后，预热路径可复用缓冲区；8 组以内的字符串 API 还使用栈上索引缓冲。基准测试确认
+   `FindStringSubmatchIndexInto` / `FindStringSubmatchInto` 在缓冲区充足时 0 allocs/op。
+
+同一机器、同一组模式（`benchtime=1s`，`count=3`，取中位数；临时外部基准，非正式发布门禁）：
+
+| 场景 | 优化前 | v0.1.11 | 变化 |
+|---|---:|---:|---:|
+| 短于最小长度输入（`abcdef` vs `abc`） | 179.9 ns | 4.0 ns | 约 45x |
+| 大型交替模式善意值 | 18.58 µs | 17.18 µs | -7.5% |
+| 方法名交替 | 657 ns | 595 ns | -9.4% |
+| 捕获子匹配 | 823 ns | 770 ns | -6.5% |
+| 200 条命令名交替 | 61.1 ns | 55.0 ns | -10.0% |
+| CRS 942420 善意值（标点重复 8 次） | 2.22 µs | 26 ns | 约 85x |
+| CRS 932240 善意值（宽首字节字符类分支） | 24.2 µs | 26 ns | 约 930x |
+| CRS 932236 善意值（巨型命令名分支，20 B） | 约 6.8 µs | 约 0.10 µs | 约 65x |
+| CRS 932260 善意值（20 B） | 约 6.6 µs | 约 0.13–0.17 µs | 约 40–50x |
+| CRS 932236 / 932260 较长善意值（50 B） | 约 19 µs | 约 0.25–0.27 µs | 约 70x |
+| 缓冲区 API 子匹配（预热） | — | 0 allocs/op | 消除切片分配 |
+
+DFA 首次构建成本（含字母表与起始状态）在 932236/932260 上约 0.5 ms/模式，之后状态按需
+增长；在 OWASP CRS 4.29.0 全量规则下，首次请求额外约 1.1–1.4 ms，冷内存约 300 KB。稳态
+WAF 基准（regexpx v0.1.11，CRS 善意请求）约 124–141 µs / 2.5 KB / 111 allocs，并发约
+21–23 µs/op；50 个唯一参数约 670 µs / 58 KB / 2945 allocs。绝对值受 CPU 频率与后台负载影响。
+
+验证：`GOWORK=off CGO_ENABLED=1 CC=clang go test ./... -race` 通过；新增
+`TestMinimumLengthShortCircuit`、`TestRequiredBytes*`、`TestRequiredLiterals*`、
+`TestRequiredByteConditions*`、`TestSearchDFA*`、`TestFind*Into*` 固定行为与并发安全。
+预过滤基准位于 [`benchmarks/regexpx/required_bench_test.go`](../benchmarks/regexpx/required_bench_test.go)；
+基准模块在本次依赖同步后引用 v0.1.11，可直接复现上述数值。`waf/go.mod` 已同步到 v0.1.11，
+WAF 可使用 DFA 与缓冲区 API；WAF 侧的请求行缓存、`RequestURI` 复用与参数总大小缓存独立生效。

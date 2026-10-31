@@ -82,6 +82,12 @@ func analyze(ast node) progInfo {
 	info.hasBeginAssert = containsAssert(ast, assertBeginText)
 	info.hasEndAssert = containsAssert(ast, assertEndText) || containsAssert(ast, assertEndTextFinalNewline)
 	info.hasLookBehind = containsLookBehind(ast)
+	info.required = analyzeRequiredBytes(ast)
+	info.requiredConditions = analyzeRequiredByteSet(ast)
+	if info.requiredConditions.count == 0 {
+		info.requiredConditions.add(info.required)
+	}
+	info.literals = buildRequiredLiteralFilter(analyzeRequiredLiterals(ast))
 	if !info.canEmpty && !info.anchored {
 		set, ok := firstByteSet(ast)
 		if ok && set != allBytes() {
