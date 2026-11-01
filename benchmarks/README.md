@@ -1,7 +1,7 @@
 # ydx 基准与主流实现对比
 
-本目录是 ydx 的基准模块集合，共 **17 个独立 Go 模块**（其中 `benchmarks/xml` 以
-`xml/v0.1.0` 子目录标签发布为门禁，标签发布前需通过仓库外临时 `go.work` 运行）。原 yd 仓
+本目录是 ydx 的基准模块集合，共 **17 个独立 Go 模块**（`benchmarks/xml` 依赖已发布的
+`xml/v0.1.1` 子目录标签；联调未发布改动时可在仓库外使用临时 `go.work`，不得提交）。原 yd 仓
 `benchmarks/` 的独有场景
 已全部并入本目录（json 的 7 字段载荷、base64 的 32 B/1 MiB、jwt 的 cristal/jwt 与
 kataras/jwt、log 的 prebound 场景、router 的 echo/fiber、websocket 的 gobwas/gws、

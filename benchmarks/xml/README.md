@@ -12,9 +12,9 @@ XML 库做兼容性与性能对比：
 
 ## 发布门禁与运行方式
 
-本模块依赖 `github.com/shibingli/ydx/xml v0.1.1`。在该子目录标签发布之前，`go.mod`
-中的版本无法从代理解析；请在**仓库之外**创建临时 `go.work`，同时纳入 `xml` 与
-`benchmarks/xml` 后运行（不得提交 `replace` 或 `go.work`）：
+本模块依赖 `github.com/shibingli/ydx/xml v0.1.1`，标签已发布，`go.mod`/`go.sum` 已锁定，
+`GOWORK=off` 可直接运行。需要联调尚未发布的上游改动时，请在**仓库之外**创建临时
+`go.work`，同时纳入 `xml` 与 `benchmarks/xml` 后运行（不得提交 `replace` 或 `go.work`）：
 
 ```bash
 mkdir -p /tmp/xmlws && cd /tmp/xmlws
@@ -24,8 +24,7 @@ GOWORK=/tmp/xmlws/go.work go test -run 'Test.*Compatibility' -v
 GOWORK=/tmp/xmlws/go.work go test -run '^$' -bench . -benchmem -benchtime=1s -count=5
 ```
 
-`xml/v0.1.1` 发布后删除临时 workspace，执行 `go mod tidy` 生成最终 `go.sum` 即可按普通
-基准模块运行。
+联调结束后删除临时 workspace；最终 `go.mod`/`go.sum` 以已发布标签为准。
 
 ## 兼容性结果
 
