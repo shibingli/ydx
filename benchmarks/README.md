@@ -53,10 +53,10 @@ README 与 [optimization-report.md](optimization-report.md)。
 
 | 模块 | 场景 | ydx | 对比实现 |
 |---|---|---:|---:|
-| base64 | `Encode` 32 B | 5.83 ns | cloudwego 7.51 ns / cristalhq 9.59 ns / stdlib 15.04 ns |
-| base64 | `Decode` 32 B | 10.40 ns | cloudwego 11.58 ns / cristalhq 12.77 ns / stdlib 19.35 ns |
-| base64 | `Encode` 1 MiB | 56.3 GB/s | cloudwego 25.6 GB/s / cristalhq 5.04 GB/s / stdlib 2.19 GB/s |
-| base64 | `Decode` 1 MiB | 41.4 GB/s | cloudwego 20.4 GB/s / cristalhq 3.73 GB/s / stdlib 2.30 GB/s |
+| base64 | `Encode` 32 B | 5.82 ns | cloudwego 7.47 ns / cristalhq 9.57 ns / stdlib 14.52 ns |
+| base64 | `Decode` 32 B | 10.42 ns | cloudwego 11.67 ns / cristalhq 12.51 ns / stdlib 20.14 ns |
+| base64 | `Encode` 1 MiB | 56.1 GB/s | cloudwego 25.6 GB/s / cristalhq 5.04 GB/s / stdlib 2.39 GB/s |
+| base64 | `Decode` 1 MiB | 41.3 GB/s | cloudwego 20.5 GB/s / cristalhq 3.75 GB/s / stdlib 2.30 GB/s |
 | buffpool | 4 KiB `Get`/`Put` | 9.94 ns | `sync.Pool` 7.23 ns / bytebufferpool 9.49 ns |
 | cache | L1 `Get` 命中（防御性副本） | 45.1 ns | ristretto 35.7 ns / `sync.Map` 13.4 ns |
 | cache | L1 `GetAppend` / `View`（零拷贝） | 38.3 / 36.6 ns | ristretto 35.7 ns |
@@ -67,10 +67,10 @@ README 与 [optimization-report.md](optimization-report.md)。
 | cron | 单点读取（1000 任务） | **173 ns** | robfig 75.1 µs（线性扫描） |
 | crypto | SM3 4 KiB | 7.36 µs | SHA-256 约 23% 的吞吐（无 SHA-NI 对应指令） |
 | crypto | SM2 签名 / 验签 | **14.02 / 33.91 µs** | 旧版 tjfoc 130.5 / 686.5 µs；快于 ECDSA P-256（17.67 / 38.54 µs） |
-| json | `Marshal` 64 对象 | 2.59 µs | goccy 4.23 µs / sonic 2.99 µs / stdlib 12.8 µs |
-| json | `Unmarshal` 64 对象 | 6.51 µs | goccy 6.87 µs / sonic 10.9 µs / stdlib 28.7 µs |
-| json | 7 字段 `Marshal` n=1000 | **89.68 µs** | go-json 116.19 µs / stdlib 302.24 µs |
-| json | 7 字段 `Unmarshal` n=1000 | **174.3 µs** | go-json 195.2 µs / stdlib 708.0 µs |
+| json | `Marshal` 64 对象 | 2.80 µs | goccy 4.50 µs / sonic 3.36 µs / stdlib 12.9 µs |
+| json | `Unmarshal` 64 对象 | 7.23 µs | goccy 7.70 µs / sonic 12.3 µs / stdlib 30.2 µs |
+| json | 7 字段 `Marshal` n=1000 | **87.91 µs** | go-json 110.4 µs / stdlib 295.1 µs |
+| json | 7 字段 `Unmarshal` n=1000 | **162.1 µs** | go-json 180.9 µs / stdlib 691.1 µs |
 | jwt | HS256 `Sign` | 1.257 µs（类型化 535.3 ns） | cristalhq 1.061 µs（类型化）/ jwx 2.237 µs / golang-jwt 2.544 µs |
 | jwt | HS256 `Parse` | 782.6 ns | golang-jwt 3.170 µs / jwx 4.726 µs |
 | log | 5 字段 JSON Info | 134.1 ns | zerolog 168.6 ns / zap 395.2 ns / slog 529.9 ns |
