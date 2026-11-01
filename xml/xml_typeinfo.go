@@ -44,6 +44,9 @@ const (
 
 var tinfoMap sync.Map // map[reflect.Type]*typeInfo
 
+// emptyTypeInfo is shared by every non-struct value. | emptyTypeInfo 由所有非结构体值共享。
+var emptyTypeInfo = &typeInfo{}
+
 var nameType = reflect.TypeFor[Name]()
 var attrType = reflect.TypeFor[Attr]()
 

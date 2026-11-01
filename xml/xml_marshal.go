@@ -13,30 +13,35 @@ import (
 // Marshal returns the XML encoding of v. It mirrors encoding/xml.Marshal. | Marshal 返回 v 的 XML
 // 编码，行为与 encoding/xml.Marshal 一致。
 func Marshal(v any) ([]byte, error) {
-	var b bytes.Buffer
-	enc := NewEncoder(&b)
-	if err := enc.Encode(v); err != nil {
+	return marshalDirect(v, "", "")
+}
+
+// marshalDirect encodes into a printer that appends to one byte slice, avoiding the
+// bytes.Buffer plus bufio.Writer staging that Encoder uses for streams. The resulting slice is
+// returned without a final copy. | marshalDirect 编码到直接追加字节切片的打印器，避免 Encoder
+// 流式路径所需的 bytes.Buffer 与 bufio.Writer 中转；结果切片无需最后复制即可返回。
+func marshalDirect(v any, prefix, indent string) ([]byte, error) {
+	enc := &Encoder{}
+	enc.p = printer{
+		direct:  true,
+		buf:     make([]byte, 0, 512),
+		prefix:  prefix,
+		indent:  indent,
+		encoder: enc,
+	}
+	if err := enc.p.marshalValue(reflect.ValueOf(v), nil, nil); err != nil {
 		return nil, err
 	}
-	if err := enc.Close(); err != nil {
+	if err := enc.p.Close(); err != nil {
 		return nil, err
 	}
-	return b.Bytes(), nil
+	return enc.p.buf, nil
 }
 
 // MarshalIndent works like Marshal, but each element begins on a new indented line. | MarshalIndent
 // 类似 Marshal，但每个元素从新行开始并缩进。
 func MarshalIndent(v any, prefix, indent string) ([]byte, error) {
-	var b bytes.Buffer
-	enc := NewEncoder(&b)
-	enc.Indent(prefix, indent)
-	if err := enc.Encode(v); err != nil {
-		return nil, err
-	}
-	if err := enc.Close(); err != nil {
-		return nil, err
-	}
-	return b.Bytes(), nil
+	return marshalDirect(v, prefix, indent)
 }
 
 // Marshaler is the interface implemented by objects that can marshal themselves into valid XML
@@ -72,29 +77,36 @@ func (p *printer) marshalValue(val reflect.Value, finfo *fieldInfo, startTemplat
 	kind := val.Kind()
 	typ := val.Type()
 
-	if val.CanInterface() {
-		if marshaler, ok := reflect.TypeAssert[Marshaler](val); ok {
-			return p.marshalInterface(marshaler, defaultStart(typ, finfo, startTemplate))
-		}
-	}
-	if val.CanAddr() {
-		pv := val.Addr()
-		if pv.CanInterface() {
-			if marshaler, ok := reflect.TypeAssert[Marshaler](pv); ok {
-				return p.marshalInterface(marshaler, defaultStart(pv.Type(), finfo, startTemplate))
+	// Only named types from a package can declare methods; predeclared types such as string
+	// and int, and unnamed composites, cannot implement Marshaler or TextMarshaler. Skipping
+	// the four interface probes for them removes most of the reflection overhead on scalar
+	// fields. | 只有包内具名类型才能声明方法；string、int 等预声明类型与未命名复合类型不可能
+	// 实现 Marshaler 或 TextMarshaler。对它们跳过四次接口探测，可消除标量字段的大部分反射开销。
+	if typ.PkgPath() != "" {
+		if val.CanInterface() {
+			if marshaler, ok := reflect.TypeAssert[Marshaler](val); ok {
+				return p.marshalInterface(marshaler, defaultStart(typ, finfo, startTemplate))
 			}
 		}
-	}
-	if val.CanInterface() {
-		if tm, ok := reflect.TypeAssert[encoding.TextMarshaler](val); ok {
-			return p.marshalTextInterface(tm, defaultStart(typ, finfo, startTemplate))
+		if val.CanAddr() {
+			pv := val.Addr()
+			if pv.CanInterface() {
+				if marshaler, ok := reflect.TypeAssert[Marshaler](pv); ok {
+					return p.marshalInterface(marshaler, defaultStart(pv.Type(), finfo, startTemplate))
+				}
+			}
 		}
-	}
-	if val.CanAddr() {
-		pv := val.Addr()
-		if pv.CanInterface() {
-			if tm, ok := reflect.TypeAssert[encoding.TextMarshaler](pv); ok {
-				return p.marshalTextInterface(tm, defaultStart(pv.Type(), finfo, startTemplate))
+		if val.CanInterface() {
+			if tm, ok := reflect.TypeAssert[encoding.TextMarshaler](val); ok {
+				return p.marshalTextInterface(tm, defaultStart(typ, finfo, startTemplate))
+			}
+		}
+		if val.CanAddr() {
+			pv := val.Addr()
+			if pv.CanInterface() {
+				if tm, ok := reflect.TypeAssert[encoding.TextMarshaler](pv); ok {
+					return p.marshalTextInterface(tm, defaultStart(pv.Type(), finfo, startTemplate))
+				}
 			}
 		}
 	}
@@ -108,9 +120,17 @@ func (p *printer) marshalValue(val reflect.Value, finfo *fieldInfo, startTemplat
 		return nil
 	}
 
-	tinfo, err := getTypeInfo(typ)
-	if err != nil {
-		return err
+	// Non-struct kinds have no fields, attributes or XMLName, so they share one empty type
+	// info instead of hashing every element type through the sync.Map on each value. |
+	// 非结构体 kind 没有字段、属性或 XMLName，因此共用一个空类型信息，避免每个值都到 sync.Map
+	// 中按类型查找。
+	tinfo := emptyTypeInfo
+	if kind == reflect.Struct {
+		ti, err := getTypeInfo(typ)
+		if err != nil {
+			return err
+		}
+		tinfo = ti
 	}
 
 	var start StartElement
@@ -169,6 +189,7 @@ func (p *printer) marshalValue(val reflect.Value, finfo *fieldInfo, startTemplat
 		return err
 	}
 
+	var err error
 	if val.Kind() == reflect.Struct {
 		err = p.marshalStruct(tinfo, val)
 	} else {
@@ -191,22 +212,11 @@ func (p *printer) marshalValue(val reflect.Value, finfo *fieldInfo, startTemplat
 }
 
 func (p *printer) marshalAttr(start *StartElement, name Name, val reflect.Value) error {
-	if val.CanInterface() {
-		if marshaler, ok := reflect.TypeAssert[MarshalerAttr](val); ok {
-			attr, err := marshaler.MarshalXMLAttr(name)
-			if err != nil {
-				return err
-			}
-			if attr.Name.Local != "" {
-				start.Attr = append(start.Attr, attr)
-			}
-			return nil
-		}
-	}
-	if val.CanAddr() {
-		pv := val.Addr()
-		if pv.CanInterface() {
-			if marshaler, ok := reflect.TypeAssert[MarshalerAttr](pv); ok {
+	// As in marshalValue, only named package types can implement the attribute interfaces. |
+	// 与 marshalValue 相同，只有包内具名类型可以实现属性接口。
+	if val.Type().PkgPath() != "" {
+		if val.CanInterface() {
+			if marshaler, ok := reflect.TypeAssert[MarshalerAttr](val); ok {
 				attr, err := marshaler.MarshalXMLAttr(name)
 				if err != nil {
 					return err
@@ -217,27 +227,42 @@ func (p *printer) marshalAttr(start *StartElement, name Name, val reflect.Value)
 				return nil
 			}
 		}
-	}
-	if val.CanInterface() {
-		if tm, ok := reflect.TypeAssert[encoding.TextMarshaler](val); ok {
-			text, err := tm.MarshalText()
-			if err != nil {
-				return err
+		if val.CanAddr() {
+			pv := val.Addr()
+			if pv.CanInterface() {
+				if marshaler, ok := reflect.TypeAssert[MarshalerAttr](pv); ok {
+					attr, err := marshaler.MarshalXMLAttr(name)
+					if err != nil {
+						return err
+					}
+					if attr.Name.Local != "" {
+						start.Attr = append(start.Attr, attr)
+					}
+					return nil
+				}
 			}
-			start.Attr = append(start.Attr, Attr{name, string(text)})
-			return nil
 		}
-	}
-	if val.CanAddr() {
-		pv := val.Addr()
-		if pv.CanInterface() {
-			if tm, ok := reflect.TypeAssert[encoding.TextMarshaler](pv); ok {
+		if val.CanInterface() {
+			if tm, ok := reflect.TypeAssert[encoding.TextMarshaler](val); ok {
 				text, err := tm.MarshalText()
 				if err != nil {
 					return err
 				}
 				start.Attr = append(start.Attr, Attr{name, string(text)})
 				return nil
+			}
+		}
+		if val.CanAddr() {
+			pv := val.Addr()
+			if pv.CanInterface() {
+				if tm, ok := reflect.TypeAssert[encoding.TextMarshaler](pv); ok {
+					text, err := tm.MarshalText()
+					if err != nil {
+						return err
+					}
+					start.Attr = append(start.Attr, Attr{name, string(text)})
+					return nil
+				}
 			}
 		}
 	}

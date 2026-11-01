@@ -37,7 +37,7 @@ func (enc *Encoder) Encode(v any) error {
 	if err := enc.p.marshalValue(reflect.ValueOf(v), nil, nil); err != nil {
 		return err
 	}
-	return enc.p.w.Flush()
+	return enc.p.flush()
 }
 
 // EncodeElement writes the XML encoding of v using start as the outermost tag. | EncodeElement 使用
@@ -46,7 +46,7 @@ func (enc *Encoder) EncodeElement(v any, start StartElement) error {
 	if err := enc.p.marshalValue(reflect.ValueOf(v), nil, &start); err != nil {
 		return err
 	}
-	return enc.p.w.Flush()
+	return enc.p.flush()
 }
 
 var (
@@ -81,7 +81,7 @@ func (enc *Encoder) EncodeToken(t Token) error {
 		p.WriteString("-->")
 		return p.cachedWriteError()
 	case ProcInst:
-		if t.Target == "xml" && p.w.Buffered() != 0 {
+		if t.Target == "xml" && p.buffered() != 0 {
 			return errs.Detail(ErrTypeMismatch, "xml: EncodeToken of ProcInst xml target only valid for xml declaration, first token encoded")
 		}
 		if !isNameString(t.Target) {
@@ -150,7 +150,7 @@ func isValidDirective(dir Directive) bool {
 }
 
 // Flush flushes buffered XML to the underlying writer. | Flush 把缓冲的 XML 刷新到底层写入器。
-func (enc *Encoder) Flush() error { return enc.p.w.Flush() }
+func (enc *Encoder) Flush() error { return enc.p.flush() }
 
 // Close flushes buffered XML and reports unclosed elements. | Close 刷新缓冲的 XML 并报告未关闭元素。
 func (enc *Encoder) Close() error { return enc.p.Close() }
@@ -158,6 +158,8 @@ func (enc *Encoder) Close() error { return enc.p.Close() }
 type printer struct {
 	err        error
 	w          *bufio.Writer
+	buf        []byte
+	direct     bool
 	encoder    *Encoder
 	attrNS     map[string]string
 	attrPrefix map[string]string
@@ -292,6 +294,11 @@ func (p *printer) Write(b []byte) (n int, err error) {
 		p.err = errs.New("xml: use of closed Encoder | xml：使用已关闭的 Encoder")
 	}
 	if p.err == nil {
+		if p.direct {
+			p.ensure(len(b))
+			p.buf = append(p.buf, b...)
+			return len(b), nil
+		}
 		n, p.err = p.w.Write(b)
 	}
 	return n, p.err
@@ -302,6 +309,11 @@ func (p *printer) WriteString(s string) (n int, err error) {
 		p.err = errs.New("xml: use of closed Encoder | xml：使用已关闭的 Encoder")
 	}
 	if p.err == nil {
+		if p.direct {
+			p.ensure(len(s))
+			p.buf = append(p.buf, s...)
+			return len(s), nil
+		}
 		n, p.err = p.w.WriteString(s)
 	}
 	return n, p.err
@@ -312,6 +324,11 @@ func (p *printer) WriteByte(c byte) error {
 		p.err = errs.New("xml: use of closed Encoder | xml：使用已关闭的 Encoder")
 	}
 	if p.err == nil {
+		if p.direct {
+			p.ensure(1)
+			p.buf = append(p.buf, c)
+			return nil
+		}
 		p.err = p.w.WriteByte(c)
 	}
 	return p.err
@@ -322,13 +339,51 @@ func (p *printer) Close() error {
 		return nil
 	}
 	p.closed = true
-	if err := p.w.Flush(); err != nil {
+	if err := p.flush(); err != nil {
 		return err
 	}
 	if len(p.tags) > 0 {
 		return errs.Detail(ErrTypeMismatch, "xml: unclosed tag <%s>", p.tags[len(p.tags)-1].Local)
 	}
 	return nil
+}
+
+// ensure grows the direct output buffer geometrically. Doubling keeps the total bytes
+// allocated across growth steps near twice the final size, whereas the runtime's 1.25x growth
+// for large slices allocates roughly five times the final size. | ensure 按倍数增长直接输出缓冲。
+// 翻倍使整个增长过程累计分配的字节接近最终大小的两倍；运行时对大切片采用 1.25 倍增长，累计
+// 分配约为最终大小的五倍。
+func (p *printer) ensure(n int) {
+	if cap(p.buf)-len(p.buf) >= n {
+		return
+	}
+	newCap := 2 * cap(p.buf)
+	if newCap < len(p.buf)+n {
+		newCap = len(p.buf) + n
+	}
+	if newCap < 512 {
+		newCap = 512
+	}
+	next := make([]byte, len(p.buf), newCap)
+	copy(next, p.buf)
+	p.buf = next
+}
+
+// flush flushes buffered output; the direct byte-slice printer needs no flush. |
+// flush 刷新缓冲输出；直接写入字节切片的打印器无需刷新。
+func (p *printer) flush() error {
+	if p.direct {
+		return p.err
+	}
+	return p.w.Flush()
+}
+
+// buffered reports the number of bytes written so far. | buffered 返回目前已写入的字节数。
+func (p *printer) buffered() int {
+	if p.direct {
+		return len(p.buf)
+	}
+	return p.w.Buffered()
 }
 
 func (p *printer) cachedWriteError() error {

@@ -45,6 +45,11 @@ amd64 手写 SSE2 / AVX2 / AVX-512BW 扫描内核，arm64 手写 NEON，其它�
 `Token` 返回的字节切片遵循标准库语义：在下一次 `Token`/`RawToken` 调用前有效；但
 `StartElement.Attr` 切片与名称/属性值字符串是独立的稳定值，可在后续调用后继续持有。
 
+Unicode 兼容同样逐项对拍 `encoding/xml`：CJK 元素/属性名与文本、表情符号、数字字符
+引用（含代理对码点）、注释、CDATA、处理指令，以及 `xml:"别名"`、`xml:"类型,attr"`、
+`xml:",chardata"`、`xml:",innerxml"`、`xml:"外层>内层"` 等标签别名；非法 UTF-8 在
+`EscapeText` 中与标准库一样输出 U+FFFD。
+
 ## 原生扩展
 
 以下能力是标准库没有或更严格的行为，默认开启且不破坏合法文档的兼容性：
@@ -261,45 +266,46 @@ http.HandleFunc("/orders", func(w http.ResponseWriter, r *http.Request) {
 ## 性能
 
 测试载荷：约 1.7 MB 的 catalog 文档（8000 条记录，含属性、嵌套元素、实体文本）；
-`-benchmem -benchtime=1s`，每台机器 `-count=3`/`-count=5` 取中位数，同一轮内比较。
-完整的第三方对比、兼容性矩阵与方法见
+`-benchmem`，每台机器 `-count=3`/`-count=5` 取中位数，同一轮内比较。Zen 5、Xeon 与 ARM64
+数据于 2026-11-01 在 v0.1.1 上以 `-benchtime=500ms` 复采；Windows 表为 2026-10-24 的
+`-benchtime=1s` 快照，两台主机的绝对值不可跨机比较。完整的第三方对比、兼容性矩阵与方法见
 [`benchmarks/xml/README.md`](../benchmarks/xml/README.md)。
 
 ### AMD Ryzen AI MAX+ 395（Zen 5，AVX-512，32 vCPU）
 
 | 基准 | ydx/xml | encoding/xml | etree | xmlquery | mxj |
 |---|---:|---:|---:|---:|---:|
-| DOM Parse | **21.8 ms** / 77 MB/s | — | 28.3 ms | 27.5 ms | 29.8 ms |
-| DOM 路径查询 | **0.82 ms** / 2.0 GB/s | — | 1.88 ms | 1.53 ms | 0.15 ms¹ |
-| 流式 Selector | 11.0 ms / 153 MB/s | — | — | — | — |
-| Token 流 | **13.4 ms** / 125 MB/s | 18.7 ms / 91 MB/s | — | — | — |
-| Unmarshal | **24.5 ms** / 69 MB/s | 27.1 ms / 61 MB/s | — | — | — |
-| Marshal | **6.19 ms** | 6.33 ms | 2.69 ms² | — | 5.25 ms² |
-| Valid | 10.3 ms / 164 MB/s | — | — | — | — |
+| DOM Parse | **22.55 ms** / 71.3 MB/s | — | 28.09 ms | 29.15 ms | 34.60 ms |
+| DOM 路径查询 | **0.865 ms** / 1.82 GB/s | — | 1.814 ms | 1.489 ms | 0.157 ms¹ |
+| 流式 Selector | 11.20 ms / 143.6 MB/s | — | — | — | — |
+| Token 流 | **13.46 ms** / 119.5 MB/s | 18.67 ms / 86.1 MB/s | — | — | — |
+| Unmarshal | **22.79 ms** / 70.5 MB/s | 27.07 ms / 59.4 MB/s | — | — | — |
+| Marshal | **3.758 ms** | 6.358 ms | 2.935 ms² | — | 5.692 ms² |
+| Valid | 10.30 ms / 156.1 MB/s | — | — | — | — |
 
 ### AMD64 AVX-512（Intel Xeon Platinum，4 vCPU）
 
 | 基准 | ydx/xml | encoding/xml | etree | xmlquery | mxj |
 |---|---:|---:|---:|---:|---:|
-| DOM Parse | **56.9 ms** / 29.6 MB/s | — | 66.5 ms | 81.3 ms | 82.5 ms |
-| DOM 路径查询 | **3.02 ms** / 558 MB/s | — | 8.01 ms | 4.62 ms | 0.61 ms¹ |
-| 流式 Selector | 37.0 ms / 45.5 MB/s | — | — | — | — |
-| Token 流 | **44.0 ms** / 38.3 MB/s | 54.0 ms / 31.2 MB/s | — | — | — |
-| Unmarshal | **70.2 ms** / 24.0 MB/s | 78.4 ms / 21.5 MB/s | — | — | — |
-| Marshal | 20.4 ms | **20.2 ms** | 8.39 ms² | — | 17.2 ms² |
-| Valid | 35.1 ms / 48.0 MB/s | — | — | — | — |
+| DOM Parse | **56.92 ms** / 28.25 MB/s | — | 67.21 ms | 81.09 ms | 82.11 ms |
+| DOM 路径查询 | **3.266 ms** / 492 MB/s | — | 8.684 ms | 5.179 ms | 0.650 ms¹ |
+| 流式 Selector | 36.67 ms / 43.84 MB/s | — | — | — | — |
+| Token 流 | **41.85 ms** / 38.41 MB/s | 51.41 ms / 31.27 MB/s | — | — | — |
+| Unmarshal | **68.93 ms** / 23.33 MB/s | 76.51 ms / 21.01 MB/s | — | — | — |
+| Marshal | **12.94 ms** | 21.85 ms | 9.406 ms² | — | 18.83 ms² |
+| Valid | 34.83 ms / 46.16 MB/s | — | — | — | — |
 
 ### ARM64（aarch64，4 vCPU，NEON）
 
 | 基准 | ydx/xml | encoding/xml | etree | xmlquery | mxj |
 |---|---:|---:|---:|---:|---:|
-| DOM Parse | **42.1 ms** / 40 MB/s | — | 49.6 ms | 60.9 ms | 69.5 ms |
-| DOM 路径查询 | **1.76 ms** / 956 MB/s | — | 5.36 ms | 3.48 ms | 0.70 ms¹ |
-| 流式 Selector | 29.7 ms / 57 MB/s | — | — | — | — |
-| Token 流 | **34.9 ms** / 48 MB/s | 42.3 ms / 40 MB/s | — | — | — |
-| Unmarshal | **53.2 ms** / 32 MB/s | 59.8 ms / 28 MB/s | — | — | — |
-| Marshal | 14.5 ms | **14.2 ms** | 6.33 ms² | — | 13.0 ms² |
-| Valid | 28.1 ms / 60 MB/s | — | — | — | — |
+| DOM Parse | **42.17 ms** / 38.13 MB/s | — | 49.93 ms | 61.17 ms | 70.04 ms |
+| DOM 路径查询 | **1.932 ms** / 832 MB/s | — | 6.266 ms | 4.267 ms | 0.857 ms¹ |
+| 流式 Selector | 29.22 ms / 55.03 MB/s | — | — | — | — |
+| Token 流 | **33.86 ms** / 47.47 MB/s | 42.17 ms / 38.13 MB/s | — | — | — |
+| Unmarshal | **53.45 ms** / 30.08 MB/s | 61.14 ms / 26.29 MB/s | — | — | — |
+| Marshal | **10.40 ms** | 16.69 ms | 7.539 ms² | — | 15.72 ms² |
+| Valid | 27.96 ms / 57.50 MB/s | — | — | — | — |
 
 ### 本机 Windows（Intel i9-10980HK，AVX2，16 线程）
 
