@@ -1,6 +1,10 @@
 package json
 
 import (
+	stdjson "encoding/json"
+	"errors"
+	"reflect"
+
 	"github.com/shibingli/ydx/errs"
 )
 
@@ -39,12 +43,102 @@ func Prewarm(samples ...any) {
 //
 // The classification is based on the shared Valid re-check (performed only on the error path, so normal-path performance is unaffected), | 归类依据是共享的 Valid 复检（仅在出错时执行，不影响正常路径性能），因此不依赖
 // so it depends on no backend-private error type. Both errors are annotated with errs.Wrap, leaving the original backend error intact in the error chain. | 任何后端私有错误类型。两个错误均以 errs.Wrap 注解，原始后端错误保持不变地保留在错误链中。
-func wrapDecodeError(data []byte, err error) error {
+//
+// On the error path only, the native backend also recovers the standard library's *SyntaxError
+// or *UnmarshalTypeError form, so errors.As keeps working with the encoding/json error types
+// documented by this package; the target value is not touched again on success. | 仅在错误路径上，
+// 自研后端还会取得标准库的 *SyntaxError 或 *UnmarshalTypeError 形态，使 errors.As 与本包文档所列的
+// encoding/json 错误类型保持兼容；成功路径不会再次触碰目标值。
+func wrapDecodeError(data []byte, v any, err error) error {
 	if err == nil {
 		return nil
 	}
 	if !Valid(data) {
-		return errs.Wrap(err, ErrSyntax)
+		return errs.Wrap(standardSyntaxError(data, err), ErrSyntax)
 	}
-	return errs.Wrap(err, ErrTypeMismatch)
+	return errs.Wrap(standardTypeError(data, v, err), ErrTypeMismatch)
+}
+
+// standardSyntaxError returns err when it already carries a standard *SyntaxError, otherwise
+// re-validates data with encoding/json to obtain the same error type, message and offset. |
+// standardSyntaxError 在 err 已携带标准 *SyntaxError 时原样返回，否则用 encoding/json 重新校验
+// data，取得相同类型、文案与偏移的错误。
+func standardSyntaxError(data []byte, err error) error {
+	var se *stdjson.SyntaxError
+	if errors.As(err, &se) {
+		return err
+	}
+	return stdSyntaxError(data)
+}
+
+// standardTypeError returns err when it already carries a standard *UnmarshalTypeError,
+// otherwise decodes data into a fresh value of the same type to recover the standard library's
+// error. A panic from an UnmarshalJSON implementation during that probe is recovered and the
+// original error is kept. | standardTypeError 在 err 已携带标准 *UnmarshalTypeError 时原样返回，
+// 否则把 data 解码进同类型的新值以取得标准库错误；探针过程中 UnmarshalJSON 发生的 panic 会被
+// 恢复并保留原始错误。
+func standardTypeError(data []byte, v any, err error) error {
+	var ute *stdjson.UnmarshalTypeError
+	if errors.As(err, &ute) {
+		return err
+	}
+	t := reflect.TypeOf(v)
+	if t == nil || t.Kind() != reflect.Pointer {
+		return err
+	}
+	if probeErr := probeStdUnmarshal(data, t.Elem()); probeErr != nil {
+		return probeErr
+	}
+	return err
+}
+
+// standardMarshalError attaches the standard library's typed marshal error
+// (*UnsupportedTypeError, *UnsupportedValueError or *MarshalerError) to the backend error when
+// encoding/json reports one, so errors.As keeps working with the encoding/json error types
+// documented by this package. Both chains are preserved through errors.Join. A panic raised by
+// a MarshalJSON implementation during the probe is recovered and the original error is kept. |
+// standardMarshalError 在 encoding/json 报告带类型的编码错误（*UnsupportedTypeError、
+// *UnsupportedValueError 或 *MarshalerError）时把它附加到后端错误上，使 errors.As 与本包文档
+// 所列的 encoding/json 错误类型兼容，两条错误链经 errors.Join 一并保留。探针过程中
+// MarshalJSON 发生的 panic 会被恢复并保留原始错误。
+func standardMarshalError(v any, err error) (out error) {
+	if err == nil {
+		return nil
+	}
+	var ute *stdjson.UnsupportedTypeError
+	var uve *stdjson.UnsupportedValueError
+	var me *stdjson.MarshalerError
+	if errors.As(err, &ute) || errors.As(err, &uve) || errors.As(err, &me) {
+		return err
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			out = err
+		}
+	}()
+	if _, e := stdjson.Marshal(v); e != nil {
+		if errors.As(e, &ute) || errors.As(e, &uve) || errors.As(e, &me) {
+			return errors.Join(err, e)
+		}
+	}
+	return err
+}
+
+// probeStdUnmarshal decodes data into a fresh value of type t and returns the error only when it
+// is a standard library type error; any other outcome keeps the caller's original error. |
+// probeStdUnmarshal 把 data 解码进 t 类型的新值，仅当结果是标准库类型错误时返回该错误；其他结果
+// 都保留调用方原有的错误。
+func probeStdUnmarshal(data []byte, t reflect.Type) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = nil
+		}
+	}()
+	if e := stdjson.Unmarshal(data, reflect.New(t).Interface()); e != nil {
+		var ute *stdjson.UnmarshalTypeError
+		if errors.As(e, &ute) {
+			return e
+		}
+	}
+	return nil
 }

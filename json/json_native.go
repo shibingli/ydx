@@ -117,6 +117,16 @@ type emptyInterface struct {
 
 // Marshal returns the JSON encoding of v. | Marshal 返回 v 的 JSON 编码。
 func Marshal(v any) ([]byte, error) {
+	b, err := marshal(v)
+	if err != nil {
+		return nil, standardMarshalError(v, err)
+	}
+	return b, nil
+}
+
+// marshal is the hot path: it performs no error-path compatibility work. |
+// marshal 是热路径，不执行任何错误路径兼容处理。
+func marshal(v any) ([]byte, error) {
 	rv := reflect.ValueOf(v)
 	// A struct passed by value sits behind a non-addressable reflect.Value, which used to send
 	// the whole encoding through the reflective fallback. The interface's data word already
@@ -250,7 +260,10 @@ func Valid(data []byte) bool {
 // Encoder writes JSON values to an io.Writer. | Encoder 把 JSON 值写入 io.Writer。
 type Encoder struct {
 	w          io.Writer
+	prefix     string
+	indent     string
 	escapeHTML bool
+	indented   bool
 }
 
 // NewEncoder returns an Encoder writing to w. | NewEncoder 返回写入 w 的 Encoder。
@@ -258,10 +271,24 @@ func NewEncoder(w io.Writer) *Encoder { return &Encoder{w: w, escapeHTML: true} 
 
 // Encode writes v followed by a newline. | Encode 写入 v 并追加换行。
 func (e *Encoder) Encode(v any) error {
+	if err := e.encode(v); err != nil {
+		return standardMarshalError(v, err)
+	}
+	return nil
+}
+
+// encode is the hot path of Encoder.Encode. | encode 是 Encoder.Encode 的热路径。
+func (e *Encoder) encode(v any) error {
 	enc := getEncoder(e.escapeHTML)
 	if err := enc.value(reflect.ValueOf(v)); err != nil {
 		putEncoder(enc)
 		return err
+	}
+	if e.indented {
+		// Format into a separate buffer: appendIndent reads src while writing dst, so reusing
+		// enc.buf's array would overwrite input bytes it has not read yet. | 格式化写入独立缓冲：
+		// appendIndent 边读 src 边写 dst，复用 enc.buf 的底层数组会覆盖尚未读取的输入字节。
+		enc.buf = appendIndent(make([]byte, 0, len(enc.buf)+len(enc.buf)/2+32), enc.buf, e.prefix, e.indent)
 	}
 	enc.buf = append(enc.buf, '\n')
 	_, err := e.w.Write(enc.buf)
@@ -272,13 +299,43 @@ func (e *Encoder) Encode(v any) error {
 // SetEscapeHTML controls HTML escaping. | SetEscapeHTML 控制 HTML 转义。
 func (e *Encoder) SetEscapeHTML(on bool) { e.escapeHTML = on }
 
+// SetIndent instructs the Encoder to indent the output it produces, following
+// encoding/json.Encoder.SetIndent: each element begins on a new line led by prefix and one or
+// more copies of indent. | SetIndent 指示 Encoder 对输出进行缩进，行为与
+// encoding/json.Encoder.SetIndent 一致：每个元素另起一行，由 prefix 与一层或多层 indent 引导。
+func (e *Encoder) SetIndent(prefix, indent string) {
+	e.prefix, e.indent, e.indented = prefix, indent, true
+}
+
 // Decoder reads JSON values from an io.Reader. | Decoder 从 io.Reader 读取 JSON 值。
 type Decoder struct {
-	r         io.Reader
-	data      []byte
-	pos       int
-	loaded    bool
-	useNumber bool
+	r               io.Reader
+	data            []byte
+	tokens          []tokenFrame
+	pos             int
+	loaded          bool
+	useNumber       bool
+	disallowUnknown bool
+}
+
+// load buffers the whole reader on first use. | load 在首次使用时把读取器读入内存。
+func (d *Decoder) load() error {
+	if d.loaded {
+		return nil
+	}
+	if d.r == nil {
+		// A nil reader cannot deliver any value; report the empty stream instead of
+		// panicking on a nil interface call. | nil 读取器不可能给出任何值；按空流上报，
+		// 而不是在 nil 接口调用上 panic。
+		d.loaded = true
+		return nil
+	}
+	data, err := io.ReadAll(d.r)
+	if err != nil {
+		return err
+	}
+	d.data, d.loaded = data, true
+	return nil
 }
 
 // NewDecoder returns a Decoder reading from r. | NewDecoder 返回从 r 读取的 Decoder。
@@ -303,31 +360,28 @@ func (d *Decoder) UseNumber() { d.useNumber = true }
 // return io.EOF once the buffer is exhausted. | 第一次调用会把 r 读至 EOF（见 NewDecoder）；后续调用从
 // 缓冲区继续，缓冲区耗尽后返回 io.EOF。
 func (d *Decoder) Decode(v any) error {
-	if !d.loaded {
-		if d.r == nil {
-			// A nil reader cannot deliver a value; report the empty stream instead of
-			// panicking on a nil interface call. | nil 读取器不可能给出任何值；按空流上报，
-			// 而不是在 nil 接口调用上 panic。
-			d.loaded = true
-		} else {
-			data, err := io.ReadAll(d.r)
-			if err != nil {
-				return err
-			}
-			d.data, d.loaded = data, true
-		}
+	if err := d.load(); err != nil {
+		return err
 	}
-	dec := &decoder{data: d.data, pos: d.pos, useNumber: d.useNumber}
+	dec := &decoder{data: d.data, pos: d.pos, useNumber: d.useNumber, disallowUnknown: d.disallowUnknown}
 	dec.skipSpace()
 	if dec.pos >= len(dec.data) {
 		d.pos = dec.pos
 		return io.EOF
 	}
 	rv := reflect.ValueOf(v)
-	if rv.Kind() != reflect.Pointer || rv.IsNil() {
-		return errs.Detail(ErrTypeMismatch, "jsonx: Decode target must be a non-nil pointer | jsonx：Decode 目标必须是非 nil 指针")
+	if !rv.IsValid() || rv.Kind() != reflect.Pointer || rv.IsNil() {
+		var t reflect.Type
+		if rv.IsValid() {
+			t = rv.Type()
+		}
+		return errs.Wrap(&stdjson.InvalidUnmarshalError{Type: t}, ErrTypeMismatch)
 	}
 	if err := dec.value(rv.Elem()); err != nil {
+		// Keep the decoder position at the failure point, as encoding/json does, so a later
+		// InputOffset call reports where decoding stopped. | 与 encoding/json 一样把解码位置留在
+		// 失败处，使之后的 InputOffset 报告停止解码的位置。
+		d.pos = dec.pos
 		return err
 	}
 	d.pos = dec.pos

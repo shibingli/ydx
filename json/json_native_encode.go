@@ -9,6 +9,7 @@ import (
 	"reflect"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -538,26 +539,32 @@ func lookupFastStruct(t reflect.Type) *fastStructInfo {
 func buildStructEncoder(t reflect.Type) encodeFunc {
 	fields := cachedStruct(t).fields
 	type encField struct {
-		typ       reflect.Type
-		fast      func(*encoder, unsafe.Pointer) error
-		fastEmpty func(unsafe.Pointer) bool
-		enc       encodeFunc
-		quotedEnc func(*encoder, reflect.Value) error
-		isZero    func(reflect.Value) bool
-		full      func(*encoder, unsafe.Pointer) error
-		key       []byte
-		fastKey   []byte
-		index     []int
-		offset    uintptr
-		direct    int
-		keyPad    [16]byte
-		omitEmpty bool
-		omitZero  bool
-		quoted    bool
-		fastOK    bool
-		keyFixed  bool
-		kind      uint8
+		typ         reflect.Type
+		fast        func(*encoder, unsafe.Pointer) error
+		fastEmpty   func(unsafe.Pointer) bool
+		enc         encodeFunc
+		quotedEnc   func(*encoder, reflect.Value) error
+		isZero      func(reflect.Value) bool
+		full        func(*encoder, unsafe.Pointer) error
+		key         []byte
+		fastKey     []byte
+		keyHTML     []byte
+		fastKeyHTML []byte
+		index       []int
+		offset      uintptr
+		direct      int
+		keyPad      [16]byte
+		keyPadHTML  [16]byte
+		omitEmpty   bool
+		omitZero    bool
+		quoted      bool
+		fastOK      bool
+		keyFixed    bool
+		keyHTMLKey  bool
+		htmlKey     bool
+		kind        uint8
 	}
+
 	list := make([]encField, len(fields))
 	allFast := true
 	for i, f := range fields {
@@ -581,6 +588,28 @@ func buildStructEncoder(t reflect.Type) encodeFunc {
 		if len(fastKey) <= len(keyPad) {
 			copy(keyPad[:], fastKey)
 		}
+		// Tags containing HTML-sensitive characters have a second precomputed key for
+		// Encoder.SetEscapeHTML(true); all other tags share one key across both modes. |
+		// 含 HTML 敏感字符的标签为 Encoder.SetEscapeHTML(true) 额外预计算一份键；其余标签在两种
+		// 模式下共用同一份键。
+		htmlKey := strings.ContainsAny(f.name, "<>&") ||
+			strings.ContainsRune(f.name, ' ') || strings.ContainsRune(f.name, ' ')
+		var keyHTML, fastKeyHTML []byte
+		var keyPadHTML [16]byte
+		if htmlKey {
+			var keh encoder
+			keh.escapeHTML = true
+			keh.str(f.name)
+			keh.buf = append(keh.buf, ':')
+			keyHTML = keh.buf
+			fastKeyHTML = keyHTML
+			if i > 0 {
+				fastKeyHTML = append([]byte{','}, keyHTML...)
+			}
+			if len(fastKeyHTML) <= len(keyPadHTML) {
+				copy(keyPadHTML[:], fastKeyHTML)
+			}
+		}
 		kind := uint8(fieldKindNone)
 		if fastOK && fast != nil {
 			kind = fastFieldKind(f.typ)
@@ -590,32 +619,40 @@ func buildStructEncoder(t reflect.Type) encodeFunc {
 			quotedEnc = buildQuotedEncoder(f.typ)
 		}
 		list[i] = encField{
-			key:       ke.buf,
-			fastKey:   fastKey,
-			typ:       f.typ,
-			index:     f.index,
-			offset:    offset,
-			direct:    direct,
-			fast:      fast,
-			fastEmpty: buildFastEmpty(f.typ),
-			enc:       encoderFor(f.typ),
-			isZero:    f.isZero,
-			quotedEnc: quotedEnc,
-			keyPad:    keyPad,
-			omitEmpty: f.omitEmpty,
-			omitZero:  f.omitZero,
-			quoted:    f.quoted,
-			fastOK:    fastOK && !f.quoted,
-			keyFixed:  len(fastKey) <= len(keyPad),
-			kind:      kind,
+			key:         ke.buf,
+			fastKey:     fastKey,
+			keyHTML:     keyHTML,
+			fastKeyHTML: fastKeyHTML,
+			typ:         f.typ,
+			index:       f.index,
+			offset:      offset,
+			direct:      direct,
+			fast:        fast,
+			fastEmpty:   buildFastEmpty(f.typ),
+			enc:         encoderFor(f.typ),
+			isZero:      f.isZero,
+			quotedEnc:   quotedEnc,
+			keyPad:      keyPad,
+			keyPadHTML:  keyPadHTML,
+			omitEmpty:   f.omitEmpty,
+			omitZero:    f.omitZero,
+			quoted:      f.quoted,
+			fastOK:      fastOK && !f.quoted,
+			keyFixed:    len(fastKey) <= len(keyPad),
+			keyHTMLKey:  len(fastKeyHTML) <= len(keyPadHTML),
+			htmlKey:     htmlKey,
+			kind:        kind,
 		}
-		if !fastOK || fast == nil || f.omitEmpty || f.omitZero || f.quoted {
+		// HTML-sensitive tag names use the reflective path, so the common fast loops keep
+		// their original branch-free key writes; such names are rare. | 含 HTML 敏感字符的标签名
+		// 走反射路径，使常见类型的快速循环保持无分支的键写入；这类标签名很少见。
+		if !fastOK || fast == nil || f.omitEmpty || f.omitZero || f.quoted || htmlKey {
 			allFast = false
 		}
 	}
 	for i := range list {
 		f := &list[i]
-		if f.typ != timeType || !f.fastOK || f.omitEmpty || f.omitZero || f.quoted || len(f.fastKey) > 16 {
+		if f.typ != timeType || !f.fastOK || f.omitEmpty || f.omitZero || f.quoted || f.htmlKey || len(f.fastKey) > 16 {
 			continue
 		}
 		key := append([]byte(nil), f.fastKey...)
@@ -883,7 +920,11 @@ func buildStructEncoder(t reflect.Type) encodeFunc {
 				e.buf = append(e.buf, ',')
 			}
 			first = false
-			e.buf = append(e.buf, f.key...)
+			if f.htmlKey && e.escapeHTML {
+				e.buf = append(e.buf, f.keyHTML...)
+			} else {
+				e.buf = append(e.buf, f.key...)
+			}
 			if f.quotedEnc != nil {
 				if !fv.IsValid() {
 					fv = reflect.NewAt(f.typ, fieldPtr).Elem()

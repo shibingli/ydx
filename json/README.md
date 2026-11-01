@@ -13,17 +13,53 @@ amd64 使用手写 SSE2/AVX2/AVX-512BW 字符串扫描内核，arm64 使用手�
 
 ## 功能
 
-- 导出与 `encoding/json` 对齐的符号集：`Marshal`、`Unmarshal`、`MarshalIndent`、`Valid`、
-  `NewEncoder`、`NewDecoder`。
+- 导出与 `encoding/json` 完全对齐的符号集：
+  - 函数：`Marshal`、`Unmarshal`、`MarshalIndent`、`Valid`、`Compact`、`Indent`、
+    `HTMLEscape`、`NewEncoder`、`NewDecoder`。
+  - `Encoder`：`Encode`、`SetEscapeHTML`、`SetIndent`。
+  - `Decoder`：`Decode`、`UseNumber`、`DisallowUnknownFields`、`Token`、`More`、
+    `Buffered`、`InputOffset`。
+  - 类型别名：`Number`、`RawMessage`、`Delim`、`Token`、`Marshaler`、`Unmarshaler`，以及
+    全部标准错误类型（`SyntaxError`、`UnmarshalTypeError`、`InvalidUnmarshalError`、
+    `UnsupportedTypeError`、`UnsupportedValueError`、`MarshalerError` 与两个已弃用类型）
+    和 v1/v2 `Options` 辅助函数。
 - `Prewarm(samples ...any)`：启动期预编译编码/解码计划。
 - `Backend()`：返回 `"yd-native"` 或 `"encoding/json"`。
-- 跨后端稳定错误：`ErrSyntax`、`ErrTypeMismatch`，可用 `errors.Is` 判定。
+- 跨后端稳定错误：`ErrSyntax`、`ErrTypeMismatch`，可用 `errors.Is` 判定；同时可用
+  `errors.As` 取出与标准库同类型、同文案、同字节偏移的 `*json.SyntaxError`、
+  `*json.UnmarshalTypeError` 等错误。
+
+## 兼容 API
+
+与 `encoding/json` v1 逐项对齐的完整接口：
+
+| 类别 | 符号 |
+|---|---|
+| 函数 | `Marshal`、`Unmarshal`、`MarshalIndent`、`Valid`、`Compact`、`Indent`、`HTMLEscape`、`NewEncoder`、`NewDecoder` |
+| `Encoder` | `Encode`、`SetEscapeHTML`、`SetIndent` |
+| `Decoder` | `Decode`、`UseNumber`、`DisallowUnknownFields`、`Token`、`More`、`Buffered`、`InputOffset` |
+| 类型 | `Number`、`RawMessage`、`Delim`、`Token`、`Marshaler`、`Unmarshaler`（均为 `encoding/json` 类型别名，方法与语义完全继承） |
+| 错误类型 | `SyntaxError`、`UnmarshalTypeError`、`InvalidUnmarshalError`、`UnsupportedTypeError`、`UnsupportedValueError`、`MarshalerError`、`InvalidUTF8Error`、`UnmarshalFieldError` |
+| v1/v2 选项 | `Options` 与全部 `DefaultOptionsV1` / `CallMethodsWithLegacySemantics` 等辅助函数 |
+
+错误类型、错误文案与字节偏移在两个后端下都与标准库一致，`errors.As` 可直接使用；
+`Token` 序列、`More`/`Buffered`/`InputOffset`、`SetIndent`、`DisallowUnknownFields`
+的行为均有逐项对拍测试覆盖。
+
+Unicode 与标签别名同样逐项对拍 `encoding/json`：CJK、表情符号（含 ZWJ 组合）、组合
+附加符、RTL 文本、控制字符、U+2028/U+2029 与非法 UTF-8 在字符串、对象键与字段名中的
+编码/解码；`json:"别名"`、`json:"🚀"`、含空格或标点的标签名、保留字符截断规则、
+`omitempty`/`omitzero`/`string`/`-` 选项以及 `SetEscapeHTML` 对字段名的转义。
 
 ## 特性
 
 - **语义基线是标准库**：字符串 HTML 转义、map key 排序、`[]byte` 走 StdEncoding Base64、
   `time.Time` 走 RFC3339Nano，并兼容 `json.Marshaler`、`json.TextMarshaler`、
-  `json.RawMessage`、`omitempty`。
+  `json.RawMessage`、`omitempty`。`Compact` / `Indent` / `HTMLEscape` 的输出、
+  `Decoder.Token` / `More` / `Buffered` / `InputOffset` 的行为、`SetIndent` /
+  `DisallowUnknownFields` 的语义均与 `encoding/json` 对拍一致。
+- **错误类型兼容**：错误路径上用标准库复解析失败输入，取得与 `encoding/json` 完全相同的
+  错误类型、文案与偏移；成功路径不受影响。
 - **无反射热路径**：按类型缓存编码/解码计划；字段可直接按内存读取的结构体走无反射快速
   编码器；字符串扫描由 SIMD 内核完成。
 - **池化缓冲**：中/大载荷先写池化缓冲，再复制为精确大小结果；结构体切片使用按类型池化
@@ -89,22 +125,22 @@ AI MAX+ 395（Zen 5，AVX-512）、Go 1.27.3、Linux，`-count=5`、`-benchtime=
 
 | 场景 | ydx/json | `encoding/json` | goccy | sonic |
 |---|---:|---:|---:|---:|
-| `Marshal/one` | **61.2 ns** | 305.7 ns | 93.1 ns | 89.0 ns |
-| `Marshal/many`（64 对象） | **2.50 µs** | 12.9 µs | 4.18 µs | 3.01 µs |
-| `Marshal/large`（1024 对象） | **39.8 µs** | 204 µs | 66.8 µs | 46.7 µs |
-| `Unmarshal/one` | **136.5 ns** | 600.2 ns | 142.0 ns | 229.1 ns |
-| `Unmarshal/many` | **7.71 µs** | 30.9 µs | 7.77 µs | 13.0 µs |
-| `Unmarshal/large` | **120.2 µs** | 481.1 µs | 131.6 µs | 214.0 µs |
+| `Marshal/one` | **61.88 ns** | 318.5 ns | 99.23 ns | 94.86 ns |
+| `Marshal/many`（64 对象） | **2.799 µs** | 12.93 µs | 4.503 µs | 3.357 µs |
+| `Marshal/large`（1024 对象） | **43.07 µs** | 208.4 µs | 71.58 µs | 50.01 µs |
+| `Unmarshal/one` | **120.7 ns** | 559.2 ns | 137.2 ns | 193.0 ns |
+| `Unmarshal/many` | **7.233 µs** | 30.15 µs | 7.697 µs | 12.28 µs |
+| `Unmarshal/large` | **110.1 µs** | 458.4 µs | 121.1 µs | 160.2 µs |
 
 7 字段 `record` 载荷（含 `time.Time` 与长小数）：
 
 | 场景 | ydx/json | go-json | sonic-std | `encoding/json` |
 |---|---:|---:|---:|---:|
-| `Marshal/n=1000` | **89.68 µs** | 116.19 µs | 152.54 µs | 302.24 µs |
-| `Unmarshal/n=1000` | **174.3 µs** | 195.2 µs | 330.6 µs | 708.0 µs |
+| `Marshal/n=1000` | **87.91 µs** | 110.4 µs | 157.1 µs | 295.1 µs |
+| `Unmarshal/n=1000` | **162.1 µs** | 180.9 µs | 286.9 µs | 691.1 µs |
 
-- 相对标准库：编码快约 5.0–5.2 倍，解码快约 4.0–4.4 倍。
-- 相对 goccy：六个主场景全部领先；相对 sonic：编码快约 15%–31%，解码快约 40%–44%。
+- 相对标准库：编码快约 4.6–5.1 倍，解码快约 4.2–4.6 倍。
+- 相对 goccy：六个主场景全部领先；相对 sonic：编码快约 14%–35%，解码快约 31%–41%。
 - 分配特征与代码生成型实现持平：`Marshal/one` 96 B / 1 alloc，`Marshal/many` 约
   6.1 KiB / 1 alloc；`Unmarshal` 的分配包含目标值本身。
 - `Prewarm` 对复杂类型可把首次 `Marshal` 从 42.1 µs 降到 6.43 µs（约 6.6×），

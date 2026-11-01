@@ -28,7 +28,7 @@ func Marshal(v any) ([]byte, error) {
 //
 // The error returned on failure can be matched with errors.Is against ErrSyntax or ErrTypeMismatch. | 出错时返回的错误可用 errors.Is 判定为 ErrSyntax 或 ErrTypeMismatch。
 func Unmarshal(data []byte, v any) error {
-	return wrapDecodeError(data, stdjson.Unmarshal(data, v))
+	return wrapDecodeError(data, v, stdjson.Unmarshal(data, v))
 }
 
 // MarshalIndent is like Marshal but indents the output according to prefix and indent. | MarshalIndent 与 Marshal 类似，但按 prefix 与 indent 缩进输出。
@@ -62,6 +62,12 @@ func (e *Encoder) SetEscapeHTML(on bool) {
 	e.enc.SetEscapeHTML(on)
 }
 
+// SetIndent instructs the Encoder to use the standard library's indented output. | SetIndent
+// 让 Encoder 使用标准库的缩进输出。
+func (e *Encoder) SetIndent(prefix, indent string) {
+	e.enc.SetIndent(prefix, indent)
+}
+
 // Decoder reads and parses JSON values from an io.Reader, and can read several values in a row from the stream. | Decoder 从 io.Reader 读取并解析 JSON 值，可连续读取流中的多个值。
 type Decoder struct {
 	dec *stdjson.Decoder
@@ -81,4 +87,34 @@ func (d *Decoder) Decode(v any) error {
 // UseNumber causes Decode to parse numbers as json.Number (preserving the original text) instead of float64. | UseNumber 使 Decode 把数字解析为 json.Number（保留原始文本）而不是 float64。
 func (d *Decoder) UseNumber() {
 	d.dec.UseNumber()
+}
+
+// DisallowUnknownFields causes Decode to return an error when the destination is a struct and
+// the input contains object keys that do not match any destination struct field. |
+// DisallowUnknownFields 使 Decode 在目标为结构体且输入含有不匹配任何目标字段的对象键时返回错误。
+func (d *Decoder) DisallowUnknownFields() {
+	d.dec.DisallowUnknownFields()
+}
+
+// More reports whether there is another element in the current array or object being parsed. |
+// More 报告当前解析中的数组或对象是否还有下一个元素。
+func (d *Decoder) More() bool {
+	return d.dec.More()
+}
+
+// Token returns the next JSON token in the input stream. | Token 返回输入流中的下一个 JSON 记号。
+func (d *Decoder) Token() (Token, error) {
+	return d.dec.Token()
+}
+
+// Buffered returns a reader of the data remaining in the decoder's buffer. | Buffered 返回解码器
+// 缓冲区中剩余数据的读取器。
+func (d *Decoder) Buffered() io.Reader {
+	return d.dec.Buffered()
+}
+
+// InputOffset returns the input stream byte offset of the current decoder position. |
+// InputOffset 返回当前解码位置在输入流中的字节偏移。
+func (d *Decoder) InputOffset() int64 {
+	return d.dec.InputOffset()
 }

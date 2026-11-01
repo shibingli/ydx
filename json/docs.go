@@ -13,12 +13,24 @@
 //     Backend() 返回 "yd-native"；
 //   - with the jsonx_std tag: the standard library encoding/json (troubleshooting and compatibility reference, see jsonx_std.go) | 设置 jsonx_std 标签：标准库 encoding/json（排障与兼容性对照，见 jsonx_std.go）
 //
-// All backends export exactly the same symbol set (Marshal / Unmarshal / MarshalIndent / Valid /
-// NewEncoder / NewDecoder / Prewarm / Backend), and each carries its own build constraint,
-// compiling mutually exclusively with unique symbols, so any supported target platform can be
-// built directly. | 各后端导出完全相同的符号集（Marshal / Unmarshal / MarshalIndent / Valid /
-// NewEncoder / NewDecoder / Prewarm / Backend），且都配备对应的构建约束，互斥编译、符号唯一，
-// 因此任何受支持的目标平台都能直接构建。
+// All backends export exactly the same symbol set, covering the whole encoding/json v1 surface:
+// Marshal, Unmarshal, MarshalIndent, Valid, Compact, Indent and HTMLEscape; NewEncoder with
+// Encode, SetEscapeHTML and SetIndent; NewDecoder with Decode, UseNumber,
+// DisallowUnknownFields, Token, More, Buffered and InputOffset; and the type aliases Number,
+// RawMessage, Delim, Token, Marshaler, Unmarshaler together with every encoding/json error type
+// (SyntaxError, UnmarshalTypeError, InvalidUnmarshalError, UnsupportedTypeError,
+// UnsupportedValueError, MarshalerError, plus the deprecated InvalidUTF8Error and
+// UnmarshalFieldError) and the v1/v2 Options helpers. Each backend carries its own build
+// constraint, compiling mutually exclusively with unique symbols, so any supported target
+// platform can be built directly. | 各后端导出完全相同的符号集，覆盖 encoding/json v1 的全部
+// 接口：Marshal、Unmarshal、MarshalIndent、Valid、Compact、Indent、HTMLEscape；NewEncoder
+// 及其 Encode、SetEscapeHTML、SetIndent；NewDecoder 及其 Decode、UseNumber、
+// DisallowUnknownFields、Token、More、Buffered、InputOffset；以及 Number、RawMessage、Delim、
+// Token、Marshaler、Unmarshaler 类型别名和 encoding/json 的全部错误类型（SyntaxError、
+// UnmarshalTypeError、InvalidUnmarshalError、UnsupportedTypeError、UnsupportedValueError、
+// MarshalerError，以及已弃用的 InvalidUTF8Error、UnmarshalFieldError）与 v1/v2 Options
+// 辅助函数。各后端都配备对应的构建约束，互斥编译、符号唯一，因此任何受支持的目标平台都能直接
+// 构建。
 //
 // The semantic baseline is encoding/json: strings are HTML-escaped, map keys are output in
 // sorted order, []byte goes through StdEncoding base64, time.Time goes through RFC3339Nano,
@@ -38,6 +50,15 @@
 //	}
 //
 // To determine errors stably across backends, combine errors.Is with ErrSyntax / ErrTypeMismatch. | 需要跨后端稳定判定错误时，可用 errors.Is 配合 ErrSyntax / ErrTypeMismatch。
+//
+// Every error also keeps the encoding/json type: errors.As works with *json.SyntaxError,
+// *json.UnmarshalTypeError, *json.InvalidUnmarshalError and the marshal error types under both
+// backends, with the same messages and byte offsets as the standard library. On the error path
+// only, the native backend may re-parse the failing input with encoding/json to recover that
+// type; the success path never does so. | 所有错误同时保留 encoding/json 的类型：在两个后端下，
+// errors.As 都能取出 *json.SyntaxError、*json.UnmarshalTypeError、
+// *json.InvalidUnmarshalError 及各类编码错误，且文案与字节偏移都与标准库一致。只有在错误路径
+// 上，自研后端才可能用 encoding/json 重新解析失败输入以取得该类型；成功路径绝不会这样做。
 //
 // For services whose payload types are fixed at startup, Prewarm compiles the encoder and decoder
 // plans before the first request, so plan construction never lands on a latency-sensitive path.

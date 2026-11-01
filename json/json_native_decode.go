@@ -21,15 +21,22 @@ import (
 const maxNestingDepth = 10000
 
 type decoder struct {
-	timeVal   time.Time
-	data      []byte
-	arena     []byte
-	pos       int
-	depth     int
-	timeRaw   [40]byte
-	timeLen   uint8
-	useNumber bool
-	skipLen   bool
+	timeVal         time.Time
+	data            []byte
+	arena           []byte
+	pos             int
+	depth           int
+	timeRaw         [40]byte
+	timeLen         uint8
+	useNumber       bool
+	skipLen         bool
+	disallowUnknown bool
+}
+
+// unknownField builds the error reported by Decoder.DisallowUnknownFields for key. |
+// unknownField 构造 Decoder.DisallowUnknownFields 对 key 报告的未知字段错误。
+func (d *decoder) unknownField(key string) error {
+	return typeErr("jsonx: unknown field %q | jsonx：未知字段 %q", key, key)
 }
 
 // enter marks entry into one container and enforces the nesting limit. | enter 标记进入一层容器并执行嵌套上限校验。
@@ -145,8 +152,12 @@ var decoderPool = sync.Pool{New: func() any { return new(decoder) }}
 // Unmarshal parses data and stores the result in the value pointed to by v. | Unmarshal 解析 data 并写入 v 指向的值。
 func Unmarshal(data []byte, v any) error {
 	rv := reflect.ValueOf(v)
-	if rv.Kind() != reflect.Pointer || rv.IsNil() {
-		return errs.Detail(ErrTypeMismatch, "jsonx: Unmarshal target must be a non-nil pointer | jsonx：Unmarshal 目标必须是非 nil 指针")
+	if !rv.IsValid() || rv.Kind() != reflect.Pointer || rv.IsNil() {
+		var t reflect.Type
+		if rv.IsValid() {
+			t = rv.Type()
+		}
+		return errs.Wrap(&stdjson.InvalidUnmarshalError{Type: t}, ErrTypeMismatch)
 	}
 	d := decoderPool.Get().(*decoder)
 	// Keep the append-only string arena and reset only the fields that carry state between
@@ -167,7 +178,7 @@ func Unmarshal(data []byte, v any) error {
 	// Classify the backend error so errors.Is(ErrSyntax/ErrTypeMismatch) behaves identically on
 	// every backend; the native path used to return it raw. | 对后端错误归类，使
 	// errors.Is(ErrSyntax/ErrTypeMismatch) 在各后端行为一致；原生路径过去直接返回原始错误。
-	return wrapDecodeError(data, err)
+	return wrapDecodeError(data, v, err)
 }
 
 // unmarshal decodes one top-level value into rv. | unmarshal 把一个顶层值解码进 rv。
@@ -754,9 +765,11 @@ func buildStructDecoder(t reflect.Type) decodeFunc {
 				if d.pos >= len(d.data) || d.data[d.pos] != '"' {
 					return syntaxErr("expected object key | 期望对象键")
 				}
+				var key string
 				f, ok := matchKey(d)
 				if !ok {
-					key, err := d.parseKey()
+					var err error
+					key, err = d.parseKey()
 					if err != nil {
 						return err
 					}
@@ -772,6 +785,9 @@ func buildStructDecoder(t reflect.Type) decodeFunc {
 					return syntaxErr("unexpected end of object | 对象意外结束")
 				}
 				if !ok {
+					if d.disallowUnknown {
+						return d.unknownField(key)
+					}
 					if err := d.skipValue(); err != nil {
 						return err
 					}
@@ -837,9 +853,11 @@ func buildStructDecoder(t reflect.Type) decodeFunc {
 			if d.pos >= len(d.data) || d.data[d.pos] != '"' {
 				return syntaxErr("expected object key | 期望对象键")
 			}
+			var key string
 			f, ok := matchKey(d)
 			if !ok {
-				key, err := d.parseKey()
+				var err error
+				key, err = d.parseKey()
 				if err != nil {
 					return err
 				}
@@ -855,6 +873,9 @@ func buildStructDecoder(t reflect.Type) decodeFunc {
 				return syntaxErr("unexpected end of object | 对象意外结束")
 			}
 			if !ok {
+				if d.disallowUnknown {
+					return d.unknownField(key)
+				}
 				if err := d.skipValue(); err != nil {
 					return err
 				}

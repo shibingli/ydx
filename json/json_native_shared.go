@@ -7,7 +7,6 @@ import (
 	"sort"
 	"strings"
 	"sync"
-	"unicode"
 )
 
 // fieldInfo is one exported struct field. | fieldInfo 是一个可导出的结构体字段。
@@ -186,10 +185,7 @@ func collectFields(t reflect.Type) []fieldInfo {
 				if tag == "-" {
 					continue
 				}
-				name, opts := parseTag(tag)
-				if !isValidTag(name) {
-					name = ""
-				}
+				name, opts := parseJSONTag(tag)
 				index := make([]int, len(f.index)+1)
 				copy(index, f.index)
 				index[len(f.index)] = i
@@ -318,30 +314,21 @@ func isQuotableKind(k reflect.Kind) bool {
 	return false
 }
 
-// isValidTag reports whether s is a usable JSON field name, matching encoding/json. | isValidTag
-// 报告 s 是否是合法的 JSON 字段名，与 encoding/json 一致。
-func isValidTag(s string) bool {
-	if s == "" {
-		return false
-	}
-	for _, c := range s {
-		switch {
-		case strings.ContainsRune("!#$%&()*+-./:;<=>?@[]^_{|}~ ", c):
-			// Backslash and quote are reserved; other punctuation is allowed. | 反斜杠与引号
-			// 保留，其余标点允许出现在 tag 名中。
-		case !unicode.IsLetter(c) && !unicode.IsDigit(c):
-			return false
+// parseJSONTag splits a json struct tag into its member name and the remaining options,
+// matching the encoding/json implemented by this Go toolchain: the name ends before ',',
+// '\'', '"', '\\' or '`', and only a comma starts the option list. Names may contain spaces,
+// punctuation, CJK text and emoji; an empty name falls back to the Go field name. |
+// parseJSONTag 按当前 Go 工具链的 encoding/json 拆分 json 结构体标签：名称在 ','、'\''、'"'、
+// '\\' 或 '`' 之前结束，只有逗号开始选项列表。名称可以包含空格、标点、CJK 文本与表情符号；
+// 名称为空时回退到 Go 字段名。
+func parseJSONTag(tag string) (name, opts string) {
+	for i := 0; i < len(tag); i++ {
+		switch tag[i] {
+		case ',':
+			return tag[:i], tag[i+1:]
+		case '\'', '"', '\\', '`':
+			return tag[:i], ""
 		}
-	}
-	return true
-}
-
-func parseTag(tag string) (string, string) {
-	if tag == "" {
-		return "", ""
-	}
-	if i := strings.IndexByte(tag, ','); i >= 0 {
-		return tag[:i], tag[i+1:]
 	}
 	return tag, ""
 }
