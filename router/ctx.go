@@ -1,8 +1,8 @@
 package router
 
 import (
-	"encoding/xml"
 	"errors"
+	"github.com/shibingli/ydx/xml"
 	"io"
 	"mime/multipart"
 	"net/http"
@@ -433,7 +433,7 @@ func (c *Ctx) JSONStream(code int, v any) error {
 	return json.NewEncoder(c.Writer).Encode(v)
 }
 
-// XML writes XML (standard library encoding/xml). | XML 输出 XML（标准库 encoding/xml）。
+// XML writes XML encoded by github.com/shibingli/ydx/xml. | XML 输出由 ydx/xml 编码的 XML。
 func (c *Ctx) XML(code int, v any) error {
 	buf, err := xml.Marshal(v)
 	if err != nil {

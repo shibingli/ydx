@@ -8,6 +8,7 @@ require (
 	github.com/shibingli/ydx/json v0.1.14
 	github.com/shibingli/ydx/log v0.1.11
 	github.com/shibingli/ydx/protocol v0.1.5
+	github.com/shibingli/ydx/xml v0.1.0
 	github.com/spf13/afero v1.15.0
 )
 
