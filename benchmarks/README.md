@@ -10,7 +10,8 @@ template 模块，避免同一引擎在两处重复对比），yd 仓不再保�
 每个模块只依赖 ydx 的已发布子目录标签与对应的对比库；`cache/local` 与 `cache/compare`
 是 `cache` 模块内的子包。产品模块本身不包含任何 `Benchmark*`，也不依赖基准专用库。
 
-- 实测日期：2026-10-24
+- 实测日期：2026-10-24；`router` 与 `workflow` 于 2026-11-01 在 v0.1.13 / v0.1.6 上复采；
+  `base64`、`json`、`xml` 于 2026-11-01 在 v0.1.13 / v0.1.15 / v0.1.1 上复采
 - 主表运行环境：Linux AMD Ryzen AI MAX+ 395（Zen 5，16 核 32 线程，AVX-512
   VBMI/VBMI2），Ubuntu 26.04.1，Go **1.27.3** linux/amd64，`GOMAXPROCS=32`。
 - 架构补充：Linux Neoverse-N2（4 vCPU，arm64）与旧指令集 x86_64（4 vCPU）的冒烟结果见
@@ -78,16 +79,19 @@ README 与 [optimization-report.md](optimization-report.md)。
 | middleware | 恢复（无 panic） | **7.85 ns** | chi 8.62 ns |
 | middleware | 限流放行 | 136.5 ns | `x/time/rate` 59.92 ns（全局、不写头）；+headers 127.8 ns；按 IP + headers 139.0 ns |
 | regexpx | `FindAll/email` | **94.98 µs** | go-re2 732.3 µs / stdlib 5.679 ms |
-| router | 静态路由（`GETRaw`） | **8.40 ns** | httprouter 12.86 ns / stdlib 60.15 ns |
-| router | 参数 / 通配 / 未命中 | **18.9 / 18.9 / 25.8 ns** | httprouter 29.0 / 28.1 / 158.3 ns；gin 41.8 / 25.6 / 28.1 ns |
+| router | 静态路由（`GETRaw`） | **16.75 ns** | httprouter 23.81 ns / stdlib 147.8 ns |
+| router | 参数 / 通配 / 未命中 | **52.4 / 44.1 / 60.1 ns** | httprouter 74.9 / 74.1 / 380.2 ns；gin 65.4 / 59.8 / 65.6 ns |
 | sse | 32 B / 4 KiB `WriteData` | 14.1 ns / 63.7 ns | gin-contrib 47.5 ns / 1.45 µs；手写 33.6 ns / 52.3 ns |
 | template | 100 行页面（物化） | **18.78 µs** | quicktemplate 21.46 µs / html/template 473.2 µs |
 | template | 绑定渲染微基准（`BenchmarkRender`） | **253.7 ns** | html/template 3.43 µs / text/template 2.12 µs |
 | websocket | 32 B 回显往返 | **4.07 µs** | gorilla 4.26 µs / gobwas 4.34 µs / coder 5.59 µs |
 | websocket | 64×1 KiB 批量写 | **14.06 µs** | coder 73.7 µs / gorilla 124.3 µs |
-| workflow | 空扫描 / 发起最小实例 | 516 µs / 6.66 ms | 无同类可比实现（SQLite 基线） |
+| workflow | 空扫描 / 发起最小实例 | 399 µs / 6.07 ms | 无同类可比实现（SQLite 基线） |
+| xml | Parse 1.7 MB DOM | **22.55 ms** / 71.3 MB/s | etree 28.09 ms / xmlquery 29.15 ms / mxj 34.60 ms |
+| xml | Marshal 8000 条记录 | **3.76 ms** | mxj 5.69 ms / stdlib 6.36 ms / etree 2.94 ms¹ |
 
-> 说明：`base64` 的 cloudwego/base64x 对照已并入上表（Linux Zen 5，与 ydx 同一轮采集）；
+> 说明：xml 的 etree 行序列化的是已解析树，`Marshal` 与 ydx/stdlib 的结构体反射编组不是同一
+> 操作（见 [xml/README.md](xml/README.md) 脚注）；`base64` 的 cloudwego/base64x 对照已并入上表（Linux Zen 5，与 ydx 同一轮采集）；
 > [base64/README.md](base64/README.md) 另给出 Windows AVX2 的 cloudwego 同机对照，两台
 > 主机的绝对数字不可跨机比较。
 > `cache` 的 `sync.Map`/ristretto/go-cache/golang-lru 返回缓存内引用，`ydx` 的

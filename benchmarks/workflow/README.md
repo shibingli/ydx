@@ -17,9 +17,9 @@
 
 | 场景 | ns/op | B/op | allocs/op |
 |---|---:|---:|---:|
-| 调度器启动 + 停止（私有 cron，1h 间隔） | 65.6 µs | 4.0 KiB | 48 |
-| 空扫描一次（`RunOnce`，无到期工作） | 516 µs | 64.2 KiB | 316 |
-| 发起最小实例（开始 → 结束，SQLite） | 6.66 ms | 150 KiB | 1470 |
+| 调度器启动 + 停止（私有 cron，1h 间隔） | 61.6 µs | 4.0 KiB | 48 |
+| 空扫描一次（`RunOnce`，无到期工作） | 399 µs | 64.2 KiB | 316 |
+| 发起最小实例（开始 → 结束，SQLite） | 6.07 ms | 150 KiB | 1470 |
 
 ## 口径说明
 
@@ -40,5 +40,5 @@ cd benchmarks/workflow
 GOWORK=off go test -run '^$' -bench . -benchmem -count=5 -benchtime=500ms
 ```
 
-本模块依赖已发布的 `workflow/v0.1.3` 子目录标签。标签推送前可在仓库外创建临时 `go.work`
+本模块依赖已发布的 `workflow/v0.1.6` 子目录标签。标签推送前可在仓库外创建临时 `go.work`
 或使用本地 `replace` 联调；`go.work` 与 `replace` 都不得提交。

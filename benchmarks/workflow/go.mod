@@ -4,7 +4,7 @@ go 1.27.3
 
 require (
 	github.com/glebarez/sqlite v1.11.0
-	github.com/shibingli/ydx/workflow v0.1.3
+	github.com/shibingli/ydx/workflow v0.1.6
 	gorm.io/gorm v1.31.2
 )
 
@@ -39,8 +39,9 @@ require (
 	github.com/shibingli/ydx/log v0.1.11 // indirect
 	github.com/shibingli/ydx/protocol v0.1.5 // indirect
 	github.com/shibingli/ydx/regexpx v0.1.13 // indirect
-	github.com/shibingli/ydx/router v0.1.12 // indirect
+	github.com/shibingli/ydx/router v0.1.13 // indirect
 	github.com/shibingli/ydx/sysinfo v0.1.4 // indirect
+	github.com/shibingli/ydx/xml v0.1.0 // indirect
 	github.com/spf13/afero v1.15.0 // indirect
 	github.com/spf13/cast v1.10.0 // indirect
 	github.com/spf13/pflag v1.0.10 // indirect

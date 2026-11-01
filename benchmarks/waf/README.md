@@ -1,7 +1,7 @@
 # ydx/waf vs Coraza 性能与兼容性基准
 
 [`github.com/shibingli/ydx/waf`](../../waf) 是基于自研 SecLang 引擎的 WAF。本模块在同一
-`net/http` 请求路径上对比 `ydx/waf v0.1.4` 与 Coraza `v3.8.1`，并验证 OWASP CRS 4.29.0
+`net/http` 请求路径上对比 `ydx/waf v0.1.5` 与 Coraza `v3.8.1`，并验证 OWASP CRS 4.29.0
 全量规则下的检测一致性。组件模块本身不依赖 Coraza 或任何基准专用库。
 
 ## 环境与方法
@@ -34,13 +34,17 @@ YDX_WAF_CRS_DIR=/path/to/coreruleset GOWORK=off go test \
   -run '^$' -bench 'Benchmark(BenignGET|AttackGET|BenignPOST|AttackPOST|ParallelBenignGET|SequentialBenignGET|Build)$' \
   -benchmem -count=5 -benchtime=1s
 
-# 汇总
+# 汇总（v0.1.4 全量 CRS 快照；v0.1.5 可按上方命令复跑生成新文件）
 benchstat results/waf-v0.1.4-linux-i9-10980hk.txt
 ```
 
 Windows PowerShell 设置环境变量：`$env:YDX_WAF_CRS_DIR='E:\coreruleset'`。
 
 ## 性能结果（完整 CRS 4.29.0）
+
+> 下表与 `results/waf-v0.1.4-*` 是 v0.1.4 的全量 CRS 快照。v0.1.5 仅将 XML 正文解析
+> 从标准库切换为 `ydx/xml`，不改变本页 GET/POST 与 CRS 求值路径；如需 v0.1.5 数字，
+> 可按上方命令重新采样。
 
 `ydx` 列为默认自动并行；`ydx 顺序` 为 `ParallelWorkers: 1`，用于与 Coraza 的单事务执行路径
 做同条件对比。绝对值受 CPU 频率、后台负载与 WSL 调度影响，同一机器多次运行有 ±10–20% 波动；
@@ -97,7 +101,7 @@ Windows 的 3 个差异全部是 **ydx 拦截、Coraza 放行**：`lfi-var-log`�
 把 `/` 转成 `\`，导致 CRS 数据文件中的 `var/log`、`etc/passwd`、`dev/tcp` 特征无法命中；
 Linux 上同一批请求完全一致。测试对这三个已知差异显式记录并继续，其他任何差异都会失败。
 
-在集成测试过程中，对比还发现并修复了两个 CRS 兼容问题，从 `waf v0.1.2` 起提供，并包含在 `v0.1.4` 中：
+在集成测试过程中，对比还发现并修复了两个 CRS 兼容问题，从 `waf v0.1.2` 起提供，并包含在 `v0.1.4` 及后续版本中：
 
 - 跨阶段 `SecMarker`/`skipAfter` 会错误跳过后续文件的 phase 1 规则，导致 Scanner UA 与
   Shellshock 漏报；

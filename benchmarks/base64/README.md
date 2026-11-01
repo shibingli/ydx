@@ -12,7 +12,7 @@ cloudwego/base64x 的 Windows AVX2 对照单独列出。
 
 | 实现 | 版本/构建 | 说明 |
 |---|---|---|
-| ydx/base64 | v0.1.12（当前） | 自研后端，运行时选择最宽可用内核 |
+| ydx/base64 | v0.1.13（当前） | 自研后端，运行时选择最宽可用内核 |
 | `encoding/base64` | Go 1.27.3 | 标准库对照 |
 | `github.com/cristalhq/base64` | v0.1.2 | 第三方实现（纯 Go SWAR） |
 | `github.com/cloudwego/base64x` | v0.1.7 + sonic/loader v0.5.2 | 自研 JIT/汇编实现；loader 版本覆盖见下 |
@@ -22,6 +22,23 @@ cloudwego/base64x 的 Windows AVX2 对照单独列出。
 > 使整个测试进程中止。本基准模块在 `go.mod` 中把 loader 显式覆盖为 v0.5.2，JIT 路径因此
 > 可以正常加载。删除该覆盖会让任何包含 cloudwego 的 `go test` 直接崩溃。
 
+## API 兼容性测试
+
+`api_compat_test.go` 与 `agreement_test.go` 一起把 `ydx/base64` 与 `encoding/base64`
+逐项对拍，覆盖本模块新增（v0.1.13）的完整兼容面：
+
+- `TestEncodingOptionsMatchStdlib`：`NewEncoding` 自定义字母表、`WithPadding`
+  （`NoPadding` 与自定义填充字符）、`Strict` 的编码/解码结果；
+- `TestStrictAndCorruptInputMatchStdlib`：strict 尾部比特校验，以及 `CorruptInputError`
+  的错误类型、文案与字节偏移；
+- `TestPartialDecodeMatchesStdlib`：非法输入下 `Decode`/`DecodeString` 返回的部分结果；
+- `TestStreamingCodecMatchesStdlib`：`NewEncoder`/`NewDecoder` 的分块写入、`Close`
+  刷新与 CR/LF 过滤；
+- `TestUnicodePayloadsMatchStdlib`：CJK、表情符号（含 ZWJ 组合）、RTL 文本、元字符、
+  控制字符与非法 UTF-8 载荷在全部编码变体和三种填充余数下与标准库一致；
+- `TestCodecsAgree`：ydx、标准库、cristalhq、cloudwego 四种实现的编码输出逐字节一致，
+  且能互相解码。
+
 ## 运行环境
 
 - **amd64**：AMD Ryzen AI MAX+ 395（Zen 5，32 逻辑 CPU，AVX-512F/BW/VBMI；主机也支持
@@ -29,7 +46,8 @@ cloudwego/base64x 的 Windows AVX2 对照单独列出。
 - **arm64**：Neoverse-N2，4 vCPU，3.0 GHz，Linux，Go 1.27.3。
 - **Windows 开发机（cloudwego AVX2 对照）**：Intel Core i9-10980HK，16 逻辑 CPU（AVX2），
   Windows 11，Go 1.27.3，`GOMAXPROCS=16`。
-- 实测日期：2026-10-26。
+- 实测日期：2026-10-26 首次采样；2026-11-01 在 v0.1.13 上复测 Zen 5 主表与 API
+  兼容性测试；arm64 与 Windows 对照表仍为 2026-10-26 快照。
 
 ## 场景
 
@@ -46,33 +64,35 @@ cloudwego/base64x 的 Windows AVX2 对照单独列出。
 
 | 场景 | ydx/base64 | cloudwego/base64x | stdlib | cristalhq |
 |---|---:|---:|---:|---:|
-| `Encode` 16 B | **5.83** | 8.09 | 7.43 | 6.10 |
-| `Encode` 1 KiB | **19.94** | 42.40 | 472.15 | 200.10 |
-| `Encode` 64 KiB | **1.027 µs** | 2.536 µs | 29.879 µs | 12.917 µs |
-| `EncodeToString` 16 B | **12.91** | 15.45 | 18.19 | 13.16 |
-| `EncodeToString` 1 KiB | **111.60** | 130.90 | 641.90 | 288.60 |
-| `RawURLEncode` 16 B | **5.58** | 8.03 | 7.26 | 6.01 |
-| `RawURLEncode` 1 KiB | **19.01** | 42.35 | 472.20 | 200.20 |
-| `RawURLEncode` 64 KiB | **1.101 µs** | 2.533 µs | 29.870 µs | 12.860 µs |
-| `Decode` 16 B | **7.29** | 12.27 | 12.07 | 7.49 |
-| `Decode` 1 KiB | **30.52** | 59.00 | 453.95 | 274.90 |
-| `Decode` 64 KiB | **1.590 µs** | 3.178 µs | 28.317 µs | 17.459 µs |
-| `DecodeString` 16 B | **14.59** | 19.00 | 19.91 | 16.85 |
-| `DecodeString` 256 B | 46.04 | 45.18 | 145.90 | 98.49 |
-| `DecodeString` 1 KiB | 131.00 | 130.70 | 544.80 | 364.10 |
-| `DecodeString` 64 KiB | 6.669 µs | 6.841 µs | 31.168 µs | 21.040 µs |
-| `AppendEncodeDecode` 1 KiB encode | 21.20 | — | — | — |
-| `AppendEncodeDecode` 1 KiB decode | 30.56 | — | — | — |
+| `Encode` 16 B | **5.824** | 8.089 | 7.446 | 6.095 |
+| `Encode` 1 KiB | **19.54** | 42.32 | 432.6 | 197.7 |
+| `Encode` 64 KiB | **1.012 µs** | 2.532 µs | 27.16 µs | 12.83 µs |
+| `EncodeToString` 16 B | **13.15** | 15.72 | 17.07 | 13.11 |
+| `EncodeToString` 1 KiB | **120.7** | 141.9 | 604.5 | 286.4 |
+| `RawURLEncode` 16 B | **5.696** | 8.037 | 7.318 | 6.024 |
+| `RawURLEncode` 1 KiB | **21.29** | 42.35 | 434.9 | 202.7 |
+| `RawURLEncode` 64 KiB | **1.016 µs** | 2.534 µs | 27.40 µs | 12.85 µs |
+| `Decode` 16 B | **7.348** | 12.30 | 12.49 | 7.465 |
+| `Decode` 1 KiB | **29.02** | 58.91 | 454.7 | 273.8 |
+| `Decode` 64 KiB | **1.600 µs** | 3.180 µs | 28.45 µs | 17.46 µs |
+| `DecodeString` 16 B | **14.83** | 18.73 | 19.98 | 16.71 |
+| `DecodeString` 256 B | 46.04 | 45.34 | 150.0 | 97.73 |
+| `DecodeString` 1 KiB | **131.1** | 133.4 | 542.1 | 361.3 |
+| `DecodeString` 64 KiB | **6.826 µs** | 6.977 µs | 31.28 µs | 20.99 µs |
+| `AppendEncodeDecode` 1 KiB encode | 21.52 | — | — | — |
+| `AppendEncodeDecode` 1 KiB decode | 32.03 | — | — | — |
 
 所有场景均领先三个对照实现：
 
-- 块路径（1 KiB / 64 KiB）领先 cristalhq 约 **9.0–12.6 倍**、标准库约 **14.9–29.1 倍**、
-  cloudwego 约 **1.9–2.5 倍**；
-- 16 B 短路径领先 cristalhq 约 **2%–16%**，其中 `Encode`/`Decode` 16 B 约 2%–5%，处在
-  同一轮内的噪声边界；
+- 块路径（1 KiB / 64 KiB）领先 cristalhq 约 **8.9–12.6 倍**、标准库约 **17.8–28.4 倍**、
+  cloudwego 约 **1.9–2.6 倍**；
+- 16 B 短路径 `Encode`/`Decode` 领先 cristalhq 约 **1.6%–4.4%**，`EncodeToString`
+  与 cristalhq 基本持平（13.15 vs 13.11 ns，噪声内），`RawURLEncode` 领先约 5.5%；
 - `DecodeString` 所有尺寸均为 **1 次分配**（标准库 1 次、cristalhq 1 次），不再有过渡
-  缓冲；`EncodeToString` 同样只有结果分配。分配式入口的 256 B–64 KiB `DecodeString`
-  与 cloudwego 基本持平（差异在 5% 噪声内）。
+  缓冲；`EncodeToString` 同样只有结果分配。`DecodeString` 在 256 B 与 cloudwego
+  基本持平（cloudwego 领先 1.6%，噪声内），1 KiB/64 KiB 领先 1.7%/2.2%。
+- 分配式字符串入口对分配器状态敏感，表中该组数字来自单独的 10 次采样（其余行来自同一
+  轮 5 次采样），避免 full-suite 的顺序与 GC 偏差。
 
 ## arm64 关键结果
 
@@ -102,15 +122,15 @@ Zen 5 上：
 
 | 操作 | ydx/base64 | cloudwego/base64x | cristalhq/base64 | stdlib |
 |---|---:|---:|---:|---:|
-| `Encode` 32 B | **5.83 ns** | 7.51 ns | 9.59 ns | 15.04 ns |
-| `Decode` 32 B | **10.40 ns** | 11.58 ns | 12.77 ns | 19.35 ns |
+| `Encode` 32 B | **5.824 ns** | 7.472 ns | 9.566 ns | 14.52 ns |
+| `Decode` 32 B | **10.42 ns** | 11.67 ns | 12.51 ns | 20.14 ns |
 
 1 MiB 块（AMD Zen 5）：
 
 | 操作 | ydx/base64 | cloudwego/base64x | cristalhq/base64 | stdlib |
 |---|---:|---:|---:|---:|
-| `Encode` 1 MiB | **18.63 µs / 56.3 GB/s** | 40.96 µs / 25.6 GB/s | 208.15 µs / 5.04 GB/s | 478.37 µs / 2.19 GB/s |
-| `Decode` 1 MiB | **25.36 µs / 41.4 GB/s** | 51.35 µs / 20.4 GB/s | 281.15 µs / 3.73 GB/s | 455.49 µs / 2.30 GB/s |
+| `Encode` 1 MiB | **18.68 µs / 56.1 GB/s** | 40.96 µs / 25.6 GB/s | 207.9 µs / 5.04 GB/s | 439.0 µs / 2.39 GB/s |
+| `Decode` 1 MiB | **25.42 µs / 41.3 GB/s** | 51.25 µs / 20.5 GB/s | 279.9 µs / 3.75 GB/s | 455.7 µs / 2.30 GB/s |
 
 arm64 Neoverse-N2 的 1 MiB 块：
 

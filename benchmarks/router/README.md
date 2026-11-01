@@ -10,7 +10,7 @@
 
 | 实现 | 版本 | 说明 |
 |---|---|---|
-| ydx/router | v0.1.9 | 基数树 + `Ctx` 对象池；静态路由走 `GETRaw` 无上下文快路径 |
+| ydx/router | v0.1.13 | 基数树 + `Ctx` 对象池；静态路由走 `GETRaw` 无上下文快路径 |
 | `net/http.ServeMux` | Go 1.27.3 | Go 1.22+ 方法/参数模式 |
 | `github.com/julienschmidt/httprouter` | v1.3.0 | 经典基数树路由 |
 | `github.com/go-chi/chi/v5` | v5.5.0 | 轻量组合式路由 |
@@ -31,14 +31,16 @@
 
 | 场景 | ydx | stdlib | httprouter | chi | gin |
 |---|---:|---:|---:|---:|---:|
-| 静态 | **8.395 ns** | 60.15 ns | 12.86 ns | 114.9 ns | 33.17 ns |
-| 参数 | **18.89 ns** | 104.7 ns | 29.02 ns | 165.9 ns | 41.83 ns |
-| 通配 | **18.94 ns** | 165.4 ns | 28.06 ns | 223.0 ns | 25.62 ns |
-| 未命中 | **25.75 ns** | 283.5 ns | 158.3 ns | 199.2 ns | 28.07 ns |
+| 静态 | **16.75 ns** | 147.8 ns | 23.81 ns | 330.0 ns | 51.88 ns |
+| 参数 | **52.40 ns** | 330.6 ns | 74.89 ns | 494.3 ns | 65.39 ns |
+| 通配 | **44.06 ns** | 477.3 ns | 74.11 ns | 668.8 ns | 59.75 ns |
+| 未命中 | **60.06 ns** | 674.3 ns | 380.2 ns | 807.4 ns | 65.64 ns |
 
-- ydx 在四类请求上都最快；静态为 httprouter 的 65%、gin 的 25%，参数为 httprouter
-  的 65%、gin 的 45%，通配为 gin 的 74%、httprouter 的 67%；未命中领先 gin 约 8%、
+- ydx 在四类请求上都最快；静态为 httprouter 的 70%、gin 的 32%，参数为 httprouter
+  的 70%、gin 的 80%，通配为 gin 的 74%、httprouter 的 59%；未命中领先 gin 约 8.5%、
   领先 httprouter 约 84%。
+- 2026-11-01 在 `ydx/router v0.1.13` 上复跑 `BenchmarkRouterCompare`、`BenchmarkAdapt`
+  与下载基准；下表绝对值为该轮机器状态，相对关系与上一轮一致。
 - 静态用例按文档把完全静态路由注册为 `GETRaw`（无 `Ctx`、无参数提取），参数与通配
   仍走常规 `Ctx` 路径；其它实现没有等价的“无上下文”注册形态，因此静态行是 ydx 的
   最佳形态对手方的最佳形态。
@@ -54,17 +56,17 @@
 
 | 场景 | 耗时 | 分配 |
 |---|---:|---:|
-| 直连 `http.Handler` | 1.566 ns | 0 |
-| `Adapt` 0 个中间件 | 18.42 ns | 0 |
-| `Adapt` 1 个中间件 | 21.80 ns | 0 |
-| `Adapt` 2 个中间件 | 24.24 ns | 0 |
-| `DownloadBytes` 4 KiB | 275.3 ns | 102 B / 5 allocs |
-| `DownloadReader` 4 KiB | 200.7 ns | 53 B / 4 allocs |
+| 直连 `http.Handler` | 3.20 ns | 0 |
+| `Adapt` 0 个中间件 | 36.64 ns | 0 |
+| `Adapt` 1 个中间件 | 43.11 ns | 0 |
+| `Adapt` 2 个中间件 | 43.73 ns | 0 |
+| `DownloadBytes` 4 KiB | 629.2 ns | 102 B / 5 allocs |
+| `DownloadReader` 4 KiB | 447.3 ns | 53 B / 4 allocs |
 
 ## 完整数据
 
 <details>
-<summary>5 轮均值</summary>
+<summary>5 轮均值（v0.1.9 历史快照）</summary>
 
 **github.com/shibingli/ydx/benchmarks/router**
 

@@ -11,7 +11,7 @@ SWAR/标量路径。不需要 `GOEXPERIMENT=simd`，也不依赖 cgo；显式 `j
 
 | 实现 | 版本 | 配置 |
 |---|---|---|
-| ydx/json | v0.1.10（原生后端） | 默认构建 |
+| ydx/json | v0.1.15（原生后端） | 默认构建 |
 | `encoding/json` | Go 1.27.3 | 标准库 |
 | `github.com/goccy/go-json` | v0.11.2 | 默认配置 |
 | `github.com/json-iterator/go` | v1.1.12 | `ConfigCompatibleWithStandardLibrary` |
@@ -19,10 +19,8 @@ SWAR/标量路径。不需要 `GOEXPERIMENT=simd`，也不依赖 cgo；显式 `j
 | `github.com/segmentio/encoding/json` | v0.5.4 | 默认配置 |
 | `github.com/go-json-experiment/json` | v0.0.0-20260820222146 | 官方实验版（表中 `go-json-v2`） |
 
-> 表中 `Marshal` 与 `Unmarshal` 的 `ydx` 数值分别采样于 v0.1.8 与 v0.1.10。`Unmarshal`
-> 于 2026-10-23 第三轮重测（3 次中位数）：v0.1.10 为长尾数与指数形式加入非舍入缩放快速
-> 路径，超出 19 位有效数字时用 d 与 d+1 判定截断尾部，仍不确定才回退 strconv；本表使用的
-> `Score=98.5` 短小数不受影响。长小数与 `time.Time` 载荷的对照见
+> 表中数值于 2026-11-01 在 v0.1.15 上重测（5 次中位数）；`FrameworkUnmarshal/n=1`
+> 另用 10 次独立重测确认（见下文）。长小数与 `time.Time` 载荷的对照见
 > [`../yd-vs-ydx-analysis.md`](../yd-vs-ydx-analysis.md)。
 
 > 2026-10-24：yd 仓的 7 字段 `record` 载荷（`time.Time`、长小数、n=1/100/1000、并行）
@@ -30,12 +28,29 @@ SWAR/标量路径。不需要 `GOEXPERIMENT=simd`，也不依赖 cgo；显式 `j
 > `benchUser` 载荷（`BenchmarkMarshal/Unmarshal*`）。两套载荷的结果都在同一台主机、
 > 同一轮采样中给出。
 
+## API 兼容性测试
+
+`api_compat_test.go` 覆盖本模块新增（v0.1.15）的 `encoding/json` 完整 API 面，并与标准库
+逐项对拍：
+
+- `TestFormattingAPIMatchesStdlib`：`Compact`、`Indent`、`HTMLEscape` 的输出与语法错误
+  类型/偏移；
+- `TestTokenAPIMatchesStdlib`：`Token` 序列、`More`、`Buffered`、`InputOffset`；
+- `TestEncoderOptionsMatchStdlib`：`Encoder.SetIndent`、`Encoder.SetEscapeHTML`、
+  `Decoder.DisallowUnknownFields`；
+- `TestErrorTypesMatchStdlib`：`SyntaxError`、`UnmarshalTypeError`、
+  `InvalidUnmarshalError`、`UnsupportedTypeError` 的 `errors.As` 兼容性；
+- `TestUnicodeAPIMatchesStdlib`：CJK、表情符号、组合附加符、元字符、控制字符与
+  U+2028/U+2029 在字符串、对象键与字段名别名中的编码/解码，包含 `SetEscapeHTML`
+  对字段名的转义；`unicodeTagTarget` 覆盖含 CJK、emoji、空格和保留字符的标签别名；
+- `TestEncodersAgree` / `TestDecodersAgree`：所有对比实现输出合法 JSON 且往返值一致。
+
 ## 运行环境
 
 - **amd64**：AMD Ryzen AI MAX+ 395（Zen 5，32 逻辑 CPU，AVX-512F/BW/VBMI/VBMI2），
   Linux，Go 1.27.3，`GOMAXPROCS=32`。
 - **arm64**：Neoverse-N2，4 vCPU，3.0 GHz，Linux，Go 1.27.3。
-- 实测日期：2026-10-24。
+- 实测日期：2026-10-24 首次采样；2026-11-01 在 v0.1.15 上复测。
 
 ## 场景
 
@@ -52,29 +67,29 @@ SWAR/标量路径。不需要 `GOEXPERIMENT=simd`，也不依赖 cgo；显式 `j
 
 | 场景 | ydx | stdlib | goccy | jsoniter | sonic | segmentio | go-json-v2 |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| `Marshal/one` | **61.2** | 305.7 | 93.1 | 141.2 | 89.0 | 101.5 | 310.2 |
-| `Marshal/many` | **2.50 µs** | 12.9 µs | 4.18 µs | 6.84 µs | 3.01 µs | 4.88 µs | 13.0 µs |
-| `Marshal/large` | **39.8 µs** | 204 µs | 66.8 µs | 109 µs | 46.7 µs | 77.7 µs | 206 µs |
-| `Unmarshal/one` | **136.5** | 600.2 | 142.0 | 253.0 | 229.1 | 255.8 | 487.1 |
-| `Unmarshal/many` | **7.71 µs** | 30.9 µs | 7.77 µs | 15.7 µs | 13.0 µs | 15.5 µs | 27.4 µs |
-| `Unmarshal/large` | **120.2 µs** | 481.1 µs | 131.6 µs | 247.8 µs | 214.0 µs | 252.8 µs | 428.0 µs |
+| `Marshal/one` | **61.88** | 318.5 | 99.23 | 158.9 | 94.86 | 105.9 | 315.9 |
+| `Marshal/many` | **2.799 µs** | 12.93 µs | 4.503 µs | 7.241 µs | 3.357 µs | 5.174 µs | 13.03 µs |
+| `Marshal/large` | **43.07 µs** | 208.4 µs | 71.58 µs | 115.8 µs | 50.01 µs | 79.47 µs | 203.7 µs |
+| `Unmarshal/one` | **120.7** | 559.2 | 137.2 | 254.3 | 193.0 | 232.6 | 458.6 |
+| `Unmarshal/many` | **7.233 µs** | 30.15 µs | 7.697 µs | 15.45 µs | 12.28 µs | 13.37 µs | 26.27 µs |
+| `Unmarshal/large` | **110.1 µs** | 458.4 µs | 121.1 µs | 232.6 µs | 160.2 µs | 226.9 µs | 407.7 µs |
 
 六个场景全部领先所有对比实现：
 
-- 相对 goccy：`Marshal/one` 快约 34%，`Marshal/many` 快约 40%，`Marshal/large` 快约 40%，
-  `Unmarshal/one` 快约 4%，`Unmarshal/many` 快约 0.8%，`Unmarshal/large` 快约 8.7%；
-- 相对 sonic：编码快约 15%–31%，解码快约 40%–44%；
-- 相对标准库：编码快约 5.0–5.2 倍，解码快约 4.0–4.4 倍。
+- 相对 goccy：`Marshal/one` 快约 38%，`Marshal/many` 快约 38%，`Marshal/large` 快约 40%，
+  `Unmarshal/one` 快约 12%，`Unmarshal/many` 快约 6.0%，`Unmarshal/large` 快约 9.1%；
+- 相对 sonic：编码快约 14%–35%，解码快约 31%–41%；
+- 相对标准库：编码快约 4.6–5.1 倍，解码快约 4.2–4.6 倍。
 
 分配特征（B/op、allocs/op）：
 
 | 场景 | ydx | goccy | 说明 |
 |---|---|---|---|
 | `Marshal/one` | 96 B / 1 | 96 B / 1 | 与代码生成型实现相同的分配特征 |
-| `Marshal/many` | 6165 B / 1 | 6156 B / 1 | 池化缓冲 + 一次精确输出分配 |
-| `Marshal/large` | 98.6 KiB / 1 | 98.5 KiB / 1 | 大载荷同样精确输出，不再过量分配 |
-| `Unmarshal/many` | 9547 B / 66 | 10544 B / 66 | 每次新建 64 元素切片，66 次分配已含目标 |
-| `Unmarshal/large` | 140.3 KiB / 1027 | 163.1 KiB / 1028 | 大切片使用池化结构体缓冲与精确最终分配 |
+| `Marshal/many` | 6.02 KiB / 1 | 6.01 KiB / 1 | 池化缓冲 + 一次精确输出分配 |
+| `Marshal/large` | 96.3 KiB / 1 | 96.1 KiB / 1 | 大载荷同样精确输出，不再过量分配 |
+| `Unmarshal/many` | 9.31 KiB / 66 | 10.29 KiB / 66 | 每次新建 64 元素切片，66 次分配已含目标 |
+| `Unmarshal/large` | 136.8 KiB / 1027 | 159.3 KiB / 1028 | 大切片使用池化结构体缓冲与精确最终分配 |
 
 ### 7 字段 record 载荷（合并自 yd，2026-10-24）
 
@@ -83,16 +98,17 @@ SWAR/标量路径。不需要 `GOEXPERIMENT=simd`，也不依赖 cgo；显式 `j
 
 | 场景 | ydx | go-json | sonic-std | stdlib |
 |---|---:|---:|---:|---:|
-| `Marshal/n=1` | **109.9 ns** | 117.3 ns | 253.8 ns | 407.9 ns |
-| `Marshal/n=100` | **8.97 µs** | 11.35 µs | 16.03 µs | 31.31 µs |
-| `Marshal/n=1000` | **89.68 µs** | 116.19 µs | 152.54 µs | 302.24 µs |
-| `Unmarshal/n=1` | **214.2 ns** | 245.6 ns | 366.8 ns | 810.3 ns |
-| `Unmarshal/n=100` | **16.43 µs** | 18.79 µs | 29.51 µs | 72.29 µs |
-| `Unmarshal/n=1000` | **174.3 µs** | 195.2 µs | 330.6 µs | 708.0 µs |
+| `Marshal/n=1` | **97.43 ns** | 118.3 ns | 305.8 ns | 409.6 ns |
+| `Marshal/n=100` | **8.729 µs** | 12.06 µs | 16.48 µs | 30.31 µs |
+| `Marshal/n=1000` | **87.91 µs** | 110.4 µs | 157.1 µs | 295.1 µs |
+| `Unmarshal/n=1` | **219.3 ns** | 256.3 ns | 365.5 ns | 797.6 ns |
+| `Unmarshal/n=100` | **16.28 µs** | 20.04 µs | 30.43 µs | 69.37 µs |
+| `Unmarshal/n=1000` | **162.1 µs** | 180.9 µs | 286.9 µs | 691.1 µs |
 
-- n=1 的 Unmarshal 领先 go-json 约 12.8%（214.2 vs 245.6 ns），保持 3 allocs、
-  221 B/op（go-json 为 3 allocs、542 B/op）；n=100/1000 的 Unmarshal 领先约
-  12.5%/10.7%，长小数与 `time.Time` 载荷不再构成弱项。
+- n=1 的 Unmarshal 领先 go-json 约 14.4%（219.3 vs 256.3 ns），保持 3 allocs、
+  221 B/op（go-json 为 3 allocs、543 B/op）；n=100/1000 的 Unmarshal 领先约
+  18.8%/10.4%，长小数与 `time.Time` 载荷不再构成弱项。独立 10 次复测为
+  224.5 ns vs 252.0 ns，结论一致。
 - n=1 的优化：载荷不超过 512 字节时直接把元素解码进紧凑目标切片，跳过池化暂存缓冲的
   Get/解码/复制/清零往返；大载荷仍走池化路径，以保持「结果容量精确、分配次数与真实
   大小一致」。同进程 A/B 显示该路径从约 538 ns 降到约 470 ns（本地开发机），分配次数
