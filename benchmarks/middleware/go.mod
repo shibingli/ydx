@@ -26,12 +26,12 @@ require (
 	github.com/redis/go-redis/v9 v9.23.0 // indirect
 	github.com/sagikazarmark/locafero v0.12.0 // indirect
 	github.com/shibingli/ydx/afs v0.1.6 // indirect
-	github.com/shibingli/ydx/base64 v0.1.12 // indirect
+	github.com/shibingli/ydx/base64 v0.1.13 // indirect
 	github.com/shibingli/ydx/buffpool v0.1.4 // indirect
 	github.com/shibingli/ydx/cache v0.1.17 // indirect
 	github.com/shibingli/ydx/config v0.1.8 // indirect
 	github.com/shibingli/ydx/errs v0.1.4 // indirect
-	github.com/shibingli/ydx/json v0.1.14 // indirect
+	github.com/shibingli/ydx/json v0.1.15 // indirect
 	github.com/shibingli/ydx/middleware/accesslog v0.1.12 // indirect
 	github.com/shibingli/ydx/middleware/asyncafter v0.1.12 // indirect
 	github.com/shibingli/ydx/middleware/reqlog v0.1.12 // indirect

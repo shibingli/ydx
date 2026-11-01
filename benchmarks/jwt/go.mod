@@ -16,8 +16,8 @@ require (
 	github.com/lestrrat-go/dsig v1.4.0 // indirect
 	github.com/lestrrat-go/option/v3 v3.0.0-alpha1 // indirect
 	github.com/shibingli/ydx/afs v0.1.6 // indirect
-	github.com/shibingli/ydx/base64 v0.1.12 // indirect
-	github.com/shibingli/ydx/json v0.1.14 // indirect
+	github.com/shibingli/ydx/base64 v0.1.13 // indirect
+	github.com/shibingli/ydx/json v0.1.15 // indirect
 	github.com/shibingli/ydx/log v0.1.11 // indirect
 	github.com/shibingli/ydx/protocol v0.1.5 // indirect
 	github.com/shibingli/ydx/router v0.1.12 // indirect

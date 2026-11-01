@@ -6,9 +6,9 @@ require (
 	github.com/coder/websocket v1.8.15
 	github.com/klauspost/compress v1.20.3
 	github.com/quic-go/quic-go v0.64.1
-	github.com/shibingli/ydx/base64 v0.1.12
+	github.com/shibingli/ydx/base64 v0.1.13
 	github.com/shibingli/ydx/errs v0.1.4
-	github.com/shibingli/ydx/json v0.1.14
+	github.com/shibingli/ydx/json v0.1.15
 	github.com/shibingli/ydx/log v0.1.11
 	github.com/shibingli/ydx/protocol v0.1.5
 	github.com/shibingli/ydx/regexpx v0.1.13
