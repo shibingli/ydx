@@ -1,0 +1,225 @@
+//go:build amd64 && !xml_std
+
+#include "textflag.h"
+
+// func indexByteAVX512(data []byte, start int, c byte) int
+TEXT ·indexByteAVX512(SB), NOSPLIT, $0-48
+	MOVQ data_base+0(FP), AX
+	MOVQ data_len+8(FP), BX
+	MOVQ start+24(FP), R8
+	MOVBLZX c+32(FP), R12
+	MOVD R12, X1
+	VPBROADCASTB X1, Z1
+loop:
+	MOVQ BX, R9
+	SUBQ R8, R9
+	CMPQ R9, $64
+	JL tail
+	LEAQ (AX)(R8*1), R10
+	VMOVDQU64 (R10), Z0
+	VPCMPEQB Z1, Z0, K1
+	KORTESTQ K1, K1
+	JZ next
+	KMOVQ K1, R11
+	BSFQ R11, R11
+	ADDQ R11, R8
+	VZEROUPPER
+	MOVQ R8, ret+40(FP)
+	RET
+next:
+	ADDQ $64, R8
+	JMP loop
+tail:
+	CMPQ R8, BX
+	JGE notfound
+	MOVBLZX (AX)(R8*1), R11
+	CMPB R11, R12
+	JE found
+	INCQ R8
+	JMP tail
+found:
+	VZEROUPPER
+	MOVQ R8, ret+40(FP)
+	RET
+notfound:
+	VZEROUPPER
+	MOVQ $-1, R8
+	MOVQ R8, ret+40(FP)
+	RET
+
+// func indexAny2AVX512(data []byte, start int, c1, c2 byte) int
+TEXT ·indexAny2AVX512(SB), NOSPLIT, $0-48
+	MOVQ data_base+0(FP), AX
+	MOVQ data_len+8(FP), BX
+	MOVQ start+24(FP), R8
+	MOVBLZX c1+32(FP), R12
+	MOVBLZX c2+33(FP), R13
+	MOVD R12, X1
+	VPBROADCASTB X1, Z1
+	MOVD R13, X2
+	VPBROADCASTB X2, Z2
+loop:
+	MOVQ BX, R9
+	SUBQ R8, R9
+	CMPQ R9, $64
+	JL tail
+	LEAQ (AX)(R8*1), R10
+	VMOVDQU64 (R10), Z0
+	VPCMPEQB Z1, Z0, K1
+	VPCMPEQB Z2, Z0, K2
+	KORQ K2, K1, K1
+	KORTESTQ K1, K1
+	JZ next
+	KMOVQ K1, R11
+	BSFQ R11, R11
+	ADDQ R11, R8
+	VZEROUPPER
+	MOVQ R8, ret+40(FP)
+	RET
+next:
+	ADDQ $64, R8
+	JMP loop
+tail:
+	CMPQ R8, BX
+	JGE notfound
+	MOVBLZX (AX)(R8*1), R11
+	CMPB R11, R12
+	JE found
+	CMPB R11, R13
+	JE found
+	INCQ R8
+	JMP tail
+found:
+	VZEROUPPER
+	MOVQ R8, ret+40(FP)
+	RET
+notfound:
+	VZEROUPPER
+	MOVQ $-1, R8
+	MOVQ R8, ret+40(FP)
+	RET
+
+// func indexAny3AVX512(data []byte, start int, c1, c2, c3 byte) int
+TEXT ·indexAny3AVX512(SB), NOSPLIT, $0-48
+	MOVQ data_base+0(FP), AX
+	MOVQ data_len+8(FP), BX
+	MOVQ start+24(FP), R8
+	MOVBLZX c1+32(FP), R12
+	MOVBLZX c2+33(FP), R13
+	MOVBLZX c3+34(FP), R14
+	MOVD R12, X1
+	VPBROADCASTB X1, Z1
+	MOVD R13, X2
+	VPBROADCASTB X2, Z2
+	MOVD R14, X3
+	VPBROADCASTB X3, Z3
+loop:
+	MOVQ BX, R9
+	SUBQ R8, R9
+	CMPQ R9, $64
+	JL tail
+	LEAQ (AX)(R8*1), R10
+	VMOVDQU64 (R10), Z0
+	VPCMPEQB Z1, Z0, K1
+	VPCMPEQB Z2, Z0, K2
+	KORQ K2, K1, K1
+	VPCMPEQB Z3, Z0, K2
+	KORQ K2, K1, K1
+	KORTESTQ K1, K1
+	JZ next
+	KMOVQ K1, R11
+	BSFQ R11, R11
+	ADDQ R11, R8
+	VZEROUPPER
+	MOVQ R8, ret+40(FP)
+	RET
+next:
+	ADDQ $64, R8
+	JMP loop
+tail:
+	CMPQ R8, BX
+	JGE notfound
+	MOVBLZX (AX)(R8*1), R11
+	CMPB R11, R12
+	JE found
+	CMPB R11, R13
+	JE found
+	CMPB R11, R14
+	JE found
+	INCQ R8
+	JMP tail
+found:
+	VZEROUPPER
+	MOVQ R8, ret+40(FP)
+	RET
+notfound:
+	VZEROUPPER
+	MOVQ $-1, R8
+	MOVQ R8, ret+40(FP)
+	RET
+
+// func indexAny4AVX512(data []byte, start int, c1, c2, c3, c4 byte) int
+TEXT ·indexAny4AVX512(SB), NOSPLIT, $0-48
+	MOVQ data_base+0(FP), AX
+	MOVQ data_len+8(FP), BX
+	MOVQ start+24(FP), R8
+	MOVBLZX c1+32(FP), R12
+	MOVBLZX c2+33(FP), R13
+	MOVBLZX c3+34(FP), R14
+	MOVBLZX c4+35(FP), R15
+	MOVD R12, X1
+	VPBROADCASTB X1, Z1
+	MOVD R13, X2
+	VPBROADCASTB X2, Z2
+	MOVD R14, X3
+	VPBROADCASTB X3, Z3
+	MOVD R15, X4
+	VPBROADCASTB X4, Z4
+loop:
+	MOVQ BX, R9
+	SUBQ R8, R9
+	CMPQ R9, $64
+	JL tail
+	LEAQ (AX)(R8*1), R10
+	VMOVDQU64 (R10), Z0
+	VPCMPEQB Z1, Z0, K1
+	VPCMPEQB Z2, Z0, K2
+	KORQ K2, K1, K1
+	VPCMPEQB Z3, Z0, K2
+	KORQ K2, K1, K1
+	VPCMPEQB Z4, Z0, K2
+	KORQ K2, K1, K1
+	KORTESTQ K1, K1
+	JZ next
+	KMOVQ K1, R11
+	BSFQ R11, R11
+	ADDQ R11, R8
+	VZEROUPPER
+	MOVQ R8, ret+40(FP)
+	RET
+next:
+	ADDQ $64, R8
+	JMP loop
+tail:
+	CMPQ R8, BX
+	JGE notfound
+	MOVBLZX (AX)(R8*1), R11
+	CMPB R11, R12
+	JE found
+	CMPB R11, R13
+	JE found
+	CMPB R11, R14
+	JE found
+	CMPB R11, R15
+	JE found
+	INCQ R8
+	JMP tail
+found:
+	VZEROUPPER
+	MOVQ R8, ret+40(FP)
+	RET
+notfound:
+	VZEROUPPER
+	MOVQ $-1, R8
+	MOVQ R8, ret+40(FP)
+	RET

@@ -29,7 +29,7 @@ ydx 是 yd 全栈框架的可复用组件仓库；组件源码以本仓库为唯
   YD 路由与原生 `net/http`（或原生 Go）两种用法。
 - **组件模块不得包含基准**：所有 `Benchmark*` 放 `benchmarks/*` 独立模块；组件模块也不得
   依赖基准专用库。基准模块的包名同样等于目录名。
-- 产品模块：`errs`、`sysinfo`、`gc`、`buffpool`、`protocol`、`nodeid`、`base64`、`json`、`afs`、
+- 产品模块：`errs`、`sysinfo`、`gc`、`buffpool`、`protocol`、`nodeid`、`base64`、`json`、`xml`、`afs`、
   `config`、`log`、`regexpx`、`router`、`gorm`、`redis`、`asynq`、`cron`、`cache`、`sse`、`websocket`、
   `webtransport`、`realtime`、`render`、`i18n`、`openapi`、`openapi/ydrouter`、`jwt`、`captcha`、`guomi`、
   `workflow`、`waf`、`middleware` 及
