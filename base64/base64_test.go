@@ -132,9 +132,15 @@ func TestStdEncodingMatchesStdlib(t *testing.T) {
 		if _, err := stdb64.StdEncoding.Decode(make([]byte, stdb64.StdEncoding.DecodedLen(len(bad))), bad); err == nil {
 			t.Fatalf("n=%d: 标准库同样应拒绝该输入（对拍前提不成立）", n)
 		}
-		if got, err := StdEncoding.DecodeString(string(bad)); err == nil || got != nil {
-			t.Fatalf("n=%d: DecodeString 对非法输入应返回 (nil, err)，实际 (%d 字节, %v)", n, len(got), err)
+		stdBad, stdBadErr := stdb64.StdEncoding.DecodeString(string(bad))
+		got, err := StdEncoding.DecodeString(string(bad))
+		if err == nil || stdBadErr == nil {
+			t.Fatalf("n=%d: DecodeString 对非法输入应返回错误，实际 (%d 字节, %v)", n, len(got), err)
 		}
+		if !bytes.Equal(got, stdBad) {
+			t.Fatalf("n=%d: DecodeString 部分结果不一致（yd %d 字节，标准库 %d 字节）", n, len(got), len(stdBad))
+		}
+		assertCorruptAt(t, err, stdBadErr)
 	}
 }
 
@@ -330,29 +336,41 @@ func TestDecodeErrorOnInvalid(t *testing.T) {
 				t.Fatal("the standard library must reject this input as well (the cross-check premise does not hold) | 标准库同样应拒绝该输入（对拍前提不成立）")
 			}
 
+			stdDst := make([]byte, c.std.DecodedLen(len(c.in)))
+			stdN, stdErr := c.std.Decode(stdDst, []byte(c.in))
 			dst := make([]byte, c.enc.DecodedLen(len(c.in)))
 			n, err := c.enc.Decode(dst, []byte(c.in))
 			if err == nil {
 				t.Fatalf("Decode 应返回错误，实际成功（n=%d）", n)
 			}
-			if n != 0 {
-				t.Fatalf("解码失败时 n 应为 0，实际 %d", n)
+			// encoding/base64 returns the bytes decoded before the error; match it exactly. |
+			// encoding/base64 会返回出错前已解码的字节，必须完全一致。
+			if n != stdN || !bytes.Equal(dst[:n], stdDst[:stdN]) {
+				t.Fatalf("部分解码结果不一致（yd n=%d，标准库 n=%d）", n, stdN)
 			}
 			if !errors.Is(err, ErrInvalidData) {
 				t.Fatalf("errors.Is(err, ErrInvalidData) 应为 true，实际 err=%v", err)
 			}
+			assertCorruptAt(t, err, stdErr)
 
-			if got, err := c.enc.DecodeString(c.in); err == nil || got != nil {
-				t.Fatalf("DecodeString 应返回 (nil, err)，实际 (%d 字节, %v)", len(got), err)
+			stdGot, stdGotErr := c.std.DecodeString(c.in)
+			got, err := c.enc.DecodeString(c.in)
+			if err == nil || stdGotErr == nil {
+				t.Fatalf("DecodeString 应返回错误，实际 (%d 字节, %v)", len(got), err)
 			}
+			if !bytes.Equal(got, stdGot) {
+				t.Fatalf("DecodeString 部分结果不一致（yd %d 字节，标准库 %d 字节）", len(got), len(stdGot))
+			}
+			assertCorruptAt(t, err, stdGotErr)
 
 			const prefix = "keep"
 			out, err := c.enc.AppendDecode([]byte(prefix), []byte(c.in))
 			if err == nil {
 				t.Fatal("AppendDecode must return an error | AppendDecode 应返回错误")
 			}
-			if string(out) != prefix {
-				t.Fatalf("解码失败时 AppendDecode 不应改动 dst，实际 %q", out)
+			stdOut, _ := c.std.AppendDecode([]byte(prefix), []byte(c.in))
+			if string(out) != string(stdOut) {
+				t.Fatalf("AppendDecode = %q want %q", out, stdOut)
 			}
 			if !errors.Is(err, ErrInvalidData) {
 				t.Fatalf("AppendDecode 错误应可用 ErrInvalidData 判定，实际 err=%v", err)

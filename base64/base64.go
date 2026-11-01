@@ -1,6 +1,10 @@
 package base64
 
-import "github.com/shibingli/ydx/errs"
+import (
+	"strconv"
+
+	"github.com/shibingli/ydx/errs"
+)
 
 // decodeWriteSlack is spare capacity reserved for SIMD decoders, which may write a
 // few bytes past DecodedLen while filling a block. It is never exposed in the
@@ -16,3 +20,63 @@ var (
 	// with errs.Wrap, so it can be matched with errors.Is. | errs.Wrap 一并注解，可用 errors.Is 匹配。
 	ErrInvalidData = errs.New("b64x: invalid Base64 data | b64x：非法的 Base64 数据")
 )
+
+// Padding options shared with encoding/base64. | 与 encoding/base64 一致的填充选项。
+const (
+	// StdPadding is the standard Base64 padding character. | StdPadding 是标准 Base64 填充字符。
+	StdPadding rune = '='
+	// NoPadding disables padding. | NoPadding 关闭填充。
+	NoPadding rune = -1
+)
+
+const (
+	stdAlpha = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+	urlAlpha = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+)
+
+// CorruptInputError reports the position of illegal Base64 data, matching
+// encoding/base64.CorruptInputError. | CorruptInputError 报告非法 Base64 数据的位置，与
+// encoding/base64.CorruptInputError 一致。
+type CorruptInputError int64
+
+// Error returns the encoding/base64-compatible error text. | Error 返回与
+// encoding/base64 兼容的错误文本。
+func (e CorruptInputError) Error() string {
+	return "illegal base64 data at input byte " + strconv.FormatInt(int64(e), 10)
+}
+
+// validAlphabet reports whether encoder is a usable 64-byte Base64 alphabet.
+// Invalid alphabets make NewEncoding return nil instead of panicking. |
+// validAlphabet 判断 encoder 是否为可用的 64 字节 Base64 字母表；非法字母表使
+// NewEncoding 返回 nil 而不是 panic。
+func validAlphabet(encoder string) bool {
+	if len(encoder) != 64 {
+		return false
+	}
+	var seen [256]bool
+	for i := 0; i < len(encoder); i++ {
+		c := encoder[i]
+		if c == 13 || c == 10 || seen[c] {
+			return false
+		}
+		seen[c] = true
+	}
+	return true
+}
+
+// validPadding reports whether padding can be applied to alphabet. | validPadding
+// 判断 padding 是否可以应用于 alphabet。
+func validPadding(alphabet string, padding rune) bool {
+	if padding < NoPadding || padding == 13 || padding == 10 || padding > 0xff {
+		return false
+	}
+	if padding == NoPadding {
+		return true
+	}
+	for i := 0; i < len(alphabet); i++ {
+		if rune(alphabet[i]) == padding {
+			return false
+		}
+	}
+	return true
+}

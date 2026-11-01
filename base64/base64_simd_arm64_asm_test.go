@@ -46,7 +46,7 @@ func TestNEONAsmDecodeAllLengths(t *testing.T) {
 				v.enc.encodeScalar(enc, src)
 				got := make([]byte, v.enc.DecodedLen(len(enc)))
 				ni, no := decodeSIMDNEONAsm(got, enc, v.url, !v.padded)
-				tail, err := v.enc.decodeSlow(got[no:], enc[ni:])
+				tail, err := v.enc.decodeSlow(got[no:], enc[ni:], ni)
 				if err != nil || no+tail != n || !bytes.Equal(got[:no+tail], src) {
 					t.Fatalf("n=%d: assembly decode: n=%d err=%v | 汇编解码不一致", n, no+tail, err)
 				}
@@ -73,10 +73,10 @@ func TestNEONAsmDecodeInvalid(t *testing.T) {
 					mutated := append([]byte(nil), enc...)
 					mutated[pos] = r
 					ref := make([]byte, v.enc.DecodedLen(len(mutated)))
-					refN, refErr := v.enc.decodeSlow(ref, mutated)
+					refN, refErr := v.enc.decodeSlow(ref, mutated, 0)
 					got := make([]byte, v.enc.DecodedLen(len(mutated)))
 					ni, no := decodeSIMDNEONAsm(got, mutated, v.url, !v.padded)
-					tail, err := v.enc.decodeSlow(got[no:], mutated[ni:])
+					tail, err := v.enc.decodeSlow(got[no:], mutated[ni:], ni)
 					if (refErr == nil) != (err == nil) {
 						t.Fatalf("pos=%d repl=%q: error mismatch | 错误语义不一致", pos, r)
 					}
@@ -130,7 +130,7 @@ func TestNEONAsmNoWritePastDecodedLen(t *testing.T) {
 			need := v.enc.DecodedLen(len(enc))
 			buf := bytes.Repeat([]byte{0xA5}, need+32)
 			ni, no := decodeSIMDNEONAsm(buf, enc, v.url, !v.padded)
-			tail, err := v.enc.decodeSlow(buf[no:], enc[ni:])
+			tail, err := v.enc.decodeSlow(buf[no:], enc[ni:], ni)
 			if err != nil {
 				t.Fatalf("n=%d: %v", n, err)
 			}

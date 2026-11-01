@@ -14,12 +14,36 @@
 ## 功能
 
 - 四个编码变体：`StdEncoding`、`RawStdEncoding`、`URLEncoding`、`RawURLEncoding`。
+- 与 `encoding/base64` 对齐的构造与选项：`NewEncoding`、`Strict`、`WithPadding`、
+  `StdPadding`、`NoPadding`。
 - 与 `encoding/base64` 对齐的方法：`Encode`、`Decode`、`EncodeToString`、`DecodeString`、
   `EncodedLen`、`DecodedLen`、`AppendEncode`、`AppendDecode`。
+- 与 `encoding/base64` 对齐的流式入口：`NewEncoder`（`io.WriteCloser`）与 `NewDecoder`
+  （自动忽略 CR/LF）；错误类型 `CorruptInputError` 与标准库字节偏移一致。
 - 额外提供 `AppendDecodeString`（直接读取字符串，不转 `[]byte`）以及
   `EncodeParallel` / `DecodeParallel`（按 `sysinfo.Parallelism()` 自动分块）。
 - `Backend()` 返回当前后端名称：默认构建为 `"yd-native"`，`b64x_std` 标签下为
   `"encoding/base64"`。
+
+## 兼容 API
+
+与 `encoding/base64` 逐项对齐的完整接口：
+
+| 类别 | 符号 |
+|---|---|
+| 编码变体 | `StdEncoding`、`RawStdEncoding`、`URLEncoding`、`RawURLEncoding` |
+| 构造与选项 | `NewEncoding`、`Strict`、`WithPadding`、`StdPadding`、`NoPadding` |
+| 编解码方法 | `Encode`、`Decode`、`EncodeToString`、`DecodeString`、`EncodedLen`、`DecodedLen`、`AppendEncode`、`AppendDecode` |
+| 流式入口 | `NewEncoder`（`io.WriteCloser`）、`NewDecoder`（忽略 CR/LF） |
+| 错误 | `CorruptInputError`（类型、文案与字节偏移一致） |
+
+行为约定：解码出错时与标准库一样返回已解码的部分结果；`Strict` 的尾部比特校验、
+自定义填充、换行的忽略规则均与标准库相同。差异只有两项且已文档化：非法字母表或非法
+填充时 `NewEncoding` / `WithPadding` 返回 `nil` 而不是 panic；目标缓冲区不足时返回
+`ErrShortBuffer` 而不是越界 panic。
+
+Unicode 与任意字节输入（CJK、表情符号含 ZWJ 组合、RTL 文本、控制字符、非法 UTF-8）
+在全部编码变体、三种填充余数与流式入口下均与 `encoding/base64` 逐字节一致。
 
 ## 特性
 
@@ -29,8 +53,11 @@
 - **零拷贝 append**：`AppendEncode` / `AppendDecode` 在目标缓冲容量充足时复用底层数组，
   不产生新的分配；`DecodeString` 只分配结果本身。
 - **错误可判定**：目标缓冲过短返回 `ErrShortBuffer` 而不是越界 panic；非法数据可用
-  `errors.Is(err, ErrInvalidData)` 判定，同时保留底层错误。
-- **语义一致**：长度计算与编码结果与 `encoding/base64` 逐字节一致；所有后端行为一致。
+  `errors.Is(err, ErrInvalidData)` 判定，也可用 `errors.As` 取出与 `encoding/base64`
+  字节偏移相同的 `CorruptInputError`，同时保留底层错误。
+- **语义一致**：长度计算、编码结果、解码结果（含出错时返回的部分输出）、错误位置与
+  流式行为都与 `encoding/base64` 一致；`NewEncoding` / `WithPadding` 对非法参数返回
+  `nil` 而不是 panic。所有后端行为一致。
 - **可控回退**：显式 `b64x_std` 构建标签可切回标准库，用于排障与兼容性对照。
 - **无 cgo**：纯 Go + 手写汇编内核，默认 `CGO_ENABLED=0` 可构建。
 
@@ -77,20 +104,20 @@ AI MAX+ 395（Zen 5，AVX-512 VBMI，`GOMAXPROCS=32`）、Go 1.27.3、Linux；1 
 
 | 场景 | ydx/base64 | cloudwego/base64x | cristalhq/base64 | `encoding/base64` |
 |---|---:|---:|---:|---:|
-| `Encode` 32 B | **5.83 ns** | 7.51 ns | 9.59 ns | 15.04 ns |
-| `Decode` 32 B | **10.40 ns** | 11.58 ns | 12.77 ns | 19.35 ns |
-| `Encode` 1 KiB | **19.94 ns** | 42.40 ns | 200.10 ns | 472.15 ns |
-| `Decode` 1 KiB | **30.52 ns** | 59.00 ns | 274.90 ns | 453.95 ns |
-| `Encode` 64 KiB | **1.027 µs** | 2.536 µs | 12.917 µs | 29.879 µs |
-| `Decode` 64 KiB | **1.590 µs** | 3.178 µs | 17.459 µs | 28.317 µs |
-| `Encode` 1 MiB | **56.3 GB/s** | 25.6 GB/s | 5.04 GB/s | 2.19 GB/s |
-| `Decode` 1 MiB | **41.4 GB/s** | 20.4 GB/s | 3.73 GB/s | 2.30 GB/s |
+| `Encode` 32 B | **5.824 ns** | 7.472 ns | 9.566 ns | 14.52 ns |
+| `Decode` 32 B | **10.42 ns** | 11.67 ns | 12.51 ns | 20.14 ns |
+| `Encode` 1 KiB | **19.54 ns** | 42.32 ns | 197.7 ns | 432.6 ns |
+| `Decode` 1 KiB | **29.02 ns** | 58.91 ns | 273.8 ns | 454.7 ns |
+| `Encode` 64 KiB | **1.012 µs** | 2.532 µs | 12.83 µs | 27.16 µs |
+| `Decode` 64 KiB | **1.600 µs** | 3.180 µs | 17.46 µs | 28.45 µs |
+| `Encode` 1 MiB | **56.1 GB/s** | 25.6 GB/s | 5.04 GB/s | 2.39 GB/s |
+| `Decode` 1 MiB | **41.3 GB/s** | 20.5 GB/s | 3.75 GB/s | 2.30 GB/s |
 
-- 对 cloudwego/base64x：1 KiB 编码/解码领先约 2.1×/1.9×，64 KiB 约 2.5×/2.0×，
+- 对 cloudwego/base64x：1 KiB 编码/解码领先约 2.2×/2.0×，64 KiB 约 2.5×/2.0×，
   1 MiB 约 2.2×/2.0×。
-- 对 cristalhq/base64：1 KiB/64 KiB 块路径领先约 9.0–12.6×；对 `encoding/base64`
-  领先约 14.9–29.1×。
-- 32 B 短路径领先 cloudwego 约 29%/11%，领先 cristalhq 约 64%/23%。
+- 对 cristalhq/base64：1 KiB/64 KiB 块路径领先约 8.9–12.6×；对 `encoding/base64`
+  领先约 17.8–28.4×。
+- 32 B 短路径领先 cloudwego 约 28%/11%，领先 cristalhq 约 64%/20%。
 - `DecodeString` / `EncodeToString` 均只有结果分配；`AppendEncode` / `AppendDecode`
   在容量充足时零分配。
 - arm64 Neoverse-N2 上 1 KiB 编码/解码为 134.5 ns/281.3 ns，领先 cloudwego 约

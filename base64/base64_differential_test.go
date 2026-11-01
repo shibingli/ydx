@@ -249,11 +249,17 @@ func TestDecodeInvalidDifferential(t *testing.T) {
 					if !errors.Is(ydErr, ErrInvalidData) {
 						t.Fatalf("%q: 错误应可用 ErrInvalidData 判定，实际 %v", in, ydErr)
 					}
-					if ydN != 0 {
-						t.Fatalf("%q: 解码失败时 n 应为 0，实际 %d", in, ydN)
+					if ydN != stdN || !bytes.Equal(ydOut[:ydN], stdOut[:stdN]) {
+						t.Fatalf("%q: 部分解码结果不一致（yd n=%d，标准库 n=%d）", in, ydN, stdN)
 					}
-					if got, err := v.enc.DecodeString(in); err == nil || got != nil {
-						t.Fatalf("%q: DecodeString 应返回 (nil, err)，实际 (%d 字节, %v)", in, len(got), err)
+					assertCorruptAt(t, ydErr, stdErr)
+					stdGot, stdGotErr := v.std.DecodeString(in)
+					got, err := v.enc.DecodeString(in)
+					if err == nil || stdGotErr == nil {
+						t.Fatalf("%q: DecodeString 应返回错误，实际 (%d 字节, %v)", in, len(got), err)
+					}
+					if !bytes.Equal(got, stdGot) {
+						t.Fatalf("%q: DecodeString 部分结果不一致（yd %d 字节，标准库 %d 字节）", in, len(got), len(stdGot))
 					}
 					continue
 				}
@@ -333,9 +339,12 @@ func checkDecodeLikeStdlib(t *testing.T, enc *Encoding, std *stdb64.Encoding, in
 		if !errors.Is(err, ErrInvalidData) {
 			t.Fatalf("%q: 错误应可用 ErrInvalidData 判定，实际 %v", in, err)
 		}
-		if n != 0 {
-			t.Fatalf("%q: 解码失败时 n 应为 0，实际 %d", in, n)
+		// encoding/base64 returns the bytes decoded before the error; match it exactly. |
+		// encoding/base64 会返回出错前已解码的字节，必须完全一致。
+		if n != stdN || !bytes.Equal(out[:n], stdOut[:stdN]) {
+			t.Fatalf("%q: 部分解码结果不一致（yd n=%d，标准库 n=%d）", in, n, stdN)
 		}
+		assertCorruptAt(t, err, stdErr)
 		return
 	}
 	if err != nil {

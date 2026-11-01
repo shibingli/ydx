@@ -18,14 +18,19 @@
 //     "encoding/base64". | 指定 b64x_std 标签：使用标准库 encoding/base64，Backend() 返回
 //     "encoding/base64"。
 //
-// All backends expose exactly the same symbols and semantics: the four encoding variants
-// StdEncoding, RawStdEncoding, URLEncoding and RawURLEncoding, plus the Encoding methods
-// Encode, Decode, EncodeToString, DecodeString, EncodedLen, DecodedLen, AppendEncode and
-// AppendDecode, with length calculations and encoding results byte-for-byte identical to
-// encoding/base64. | 所有后端暴露完全相同的符号与语义：StdEncoding、RawStdEncoding、URLEncoding、
-// RawURLEncoding 四个编码变体，以及 Encoding 的 Encode、Decode、EncodeToString、DecodeString、
-// EncodedLen、DecodedLen、AppendEncode、AppendDecode 方法，长度计算与编码结果均与 encoding/base64
-// 逐字节一致。
+// All backends expose exactly the same symbols and semantics as encoding/base64: the four
+// encoding variants StdEncoding, RawStdEncoding, URLEncoding and RawURLEncoding; NewEncoding,
+// Strict, WithPadding and the StdPadding/NoPadding constants; the Encoding methods Encode,
+// Decode, EncodeToString, DecodeString, EncodedLen, DecodedLen, AppendEncode and AppendDecode;
+// NewEncoder and NewDecoder for stream use; and the CorruptInputError error type. Length
+// calculations, encoding results, decoded output (including the partial output returned with
+// a decode error), error positions and stream behavior are byte-for-byte identical to
+// encoding/base64. | 所有后端暴露与 encoding/base64 完全相同的符号与语义：StdEncoding、
+// RawStdEncoding、URLEncoding、RawURLEncoding 四个编码变体；NewEncoding、Strict、WithPadding
+// 与 StdPadding/NoPadding 常量；Encoding 的 Encode、Decode、EncodeToString、DecodeString、
+// EncodedLen、DecodedLen、AppendEncode、AppendDecode 方法；流式的 NewEncoder 与 NewDecoder；
+// 以及 CorruptInputError 错误类型。长度计算、编码结果、解码结果（包括解码出错时一并返回的部分
+// 输出）、错误位置与流式行为均与 encoding/base64 逐字节一致。
 //
 // Zero copy: AppendEncode and AppendDecode reuse the underlying array of the destination
 // buffer when its capacity is sufficient, producing no new allocation; DecodeString
@@ -35,19 +40,23 @@
 // Differences from encoding/base64 (all backends behave identically): | 与 encoding/base64 的差异
 // （所有后端行为一致）：
 //
-//   - on decode failure Decode returns (0, err); like encoding/base64 it may leave partial
-//     output in dst. DecodeString returns (nil, err) and AppendDecode returns dst unchanged.
-//     | 解码失败时 Decode 返回 (0, err)；与 encoding/base64 一样，dst 可能留有部分输出。
-//     DecodeString 返回 (nil, err)，AppendDecode 原样返回 dst。
+//   - NewEncoding and WithPadding return nil for an invalid alphabet or padding instead of
+//     panicking, following the repository-wide no-panic policy; | NewEncoding 与 WithPadding
+//     对非法字母表或非法填充返回 nil 而不是 panic，遵循仓库的禁止 panic 约束；
 //   - when the destination buffer is shorter than DecodedLen(len(src)) it returns
 //     ErrShortBuffer instead of panicking out of bounds; | 目标缓冲区长度小于
 //     DecodedLen(len(src)) 时返回 ErrShortBuffer，而不是越界 panic；
-//   - every illegal-data error can be matched with errors.Is(err, ErrInvalidData), while the
-//     underlying error is kept for further matching. | 一切非法数据错误都可用
-//     errors.Is(err, ErrInvalidData) 判定，同时保留底层错误供进一步匹配。
+//   - every illegal-data error can be matched with errors.Is(err, ErrInvalidData) as well as
+//     errors.As(err, &base64.CorruptInputError{}) with the same byte offset as the standard
+//     library, while the underlying error is kept for further matching. | 一切非法数据错误既能用
+//     errors.Is(err, ErrInvalidData) 判定，也能用 errors.As 取出与标准库字节偏移相同的
+//     base64.CorruptInputError，同时保留底层错误供进一步匹配。
 //
 // Typical usage | 典型用法：
 //
 //	out := base64.StdEncoding.AppendEncode(dst[:0], src)
 //	data, err := base64.URLEncoding.DecodeString(token)
+//	enc := base64.NewEncoding(alphabet).WithPadding(base64.NoPadding)
+//	w := base64.NewEncoder(base64.URLEncoding, conn)
+//	r := base64.NewDecoder(base64.StdEncoding, body)
 package base64

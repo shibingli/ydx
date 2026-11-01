@@ -9,9 +9,6 @@ import (
 	"github.com/shibingli/ydx/errs"
 )
 
-// errCorrupt is the underlying error for malformed Base64 input. | errCorrupt 是非法 Base64 输入的底层错误。
-var errCorrupt = errs.New("b64x: corrupt Base64 input | b64x：损坏的 Base64 输入")
-
 // Encoding is the self-developed Base64 codec used on every architecture unless
 // b64x_std is set. | Encoding 是除 b64x_std 构建外所有架构上默认使用的自研 Base64
 // 编解码器。
@@ -22,6 +19,7 @@ type Encoding struct {
 	alphabet [64]byte
 	pad      byte
 	raw      bool
+	strict   bool
 	simd     uint8
 }
 
@@ -119,11 +117,6 @@ func installDecode(level int, fn func(dst, src []byte, url, raw bool) (int, int)
 	}
 }
 
-const (
-	stdAlpha = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
-	urlAlpha = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
-)
-
 // newEncoding builds one encoding from its alphabet. | newEncoding 根据字母表构造一个编码器。
 func newEncoding(alpha string, padded bool) *Encoding {
 	e := &Encoding{raw: !padded}
@@ -163,6 +156,55 @@ var (
 
 // Backend returns the active backend name for this build. | Backend 返回当前构建使用的后端名称。
 func Backend() string { return "yd-native" }
+
+// NewEncoding returns an Encoding built from a 64-byte alphabet with '=' padding. Invalid
+// alphabets return nil instead of panicking, following the repository no-panic policy. |
+// NewEncoding 使用 64 字节字母表与 '=' 填充构造 Encoding；非法字母表返回 nil 而不是 panic，
+// 遵循仓库的禁止 panic 约束。
+func NewEncoding(encoder string) *Encoding {
+	if !validAlphabet(encoder) {
+		return nil
+	}
+	e := newEncoding(encoder, true)
+	if e.pair == nil {
+		e.pair = makeEncodePairLUT(encoder)
+	}
+	if e.quad == nil {
+		e.quad = makeDecodeQuadLUT(encoder)
+	}
+	return e
+}
+
+// Strict returns a copy of the encoding that rejects non-zero trailing padding bits, matching
+// encoding/base64. | Strict 返回拒绝非零尾部填充位的编码副本，与 encoding/base64 一致。
+func (e Encoding) Strict() *Encoding {
+	e.strict = true
+	return &e
+}
+
+// WithPadding returns a copy of the encoding using padding, or NoPadding for an unpadded
+// encoding. Invalid padding returns nil instead of panicking. | WithPadding 返回使用 padding 的
+// 编码副本，NoPadding 表示无填充；非法填充返回 nil 而不是 panic。
+func (e Encoding) WithPadding(padding rune) *Encoding {
+	if !validPadding(string(e.alphabet[:]), padding) {
+		return nil
+	}
+	if padding == NoPadding {
+		e.raw, e.pad = true, 0
+	} else {
+		e.raw, e.pad = false, byte(padding)
+	}
+	return &e
+}
+
+// isRaw reports whether padding is disabled. | isRaw 判断是否关闭填充。
+func (e *Encoding) isRaw() bool { return e.raw }
+
+// corrupt builds a CorruptInputError at pos classified as ErrInvalidData. | corrupt 构造位于 pos
+// 的 CorruptInputError，并归类为 ErrInvalidData。
+func (e *Encoding) corrupt(pos int) error {
+	return errs.Wrap(CorruptInputError(pos), ErrInvalidData)
+}
 
 // EncodedLen returns the encoded length of an n-byte source. | EncodedLen 返回 n 字节源码编码后的长度。
 func (e *Encoding) EncodedLen(n int) int {
@@ -367,7 +409,11 @@ func (e *Encoding) EncodeToString(src []byte) string {
 	return unsafe.String(unsafe.SliceData(b), n)
 }
 
-// Decode decodes Base64 text into dst and returns the number of bytes written. | Decode 把 Base64 文本解码到 dst 并返回写入字节数。
+// Decode decodes Base64 text into dst and returns the number of bytes written. On malformed
+// input it returns the bytes decoded before the error together with a CorruptInputError that
+// carries the same byte offset as encoding/base64. | Decode 把 Base64 文本解码到 dst 并返回
+// 写入字节数。输入非法时返回出错前已解码的字节，以及与 encoding/base64 字节偏移相同的
+// CorruptInputError。
 func (e *Encoding) Decode(dst, src []byte) (int, error) {
 	if len(src) == 0 {
 		return 0, nil
@@ -376,7 +422,11 @@ func (e *Encoding) Decode(dst, src []byte) (int, error) {
 		return 0, ErrShortBuffer
 	}
 	out, i := 0, 0
-	if len(src) >= 32 && len(src) < simdDecodeMin && simdDecode32 != nil && e.simd != 0 {
+	// The block kernels assume '=' padding and do not verify strict trailing bits, so custom
+	// padding and Strict() take the scalar path. | 块内核假定 '=' 填充且不校验 strict 尾部比特，
+	// 因此自定义填充与 Strict() 走标量路径。
+	simdOK := e.simd != 0 && !e.strict && (e.raw || e.pad == '=')
+	if len(src) >= 32 && len(src) < simdDecodeMin && simdDecode32 != nil && simdOK {
 		var mode uint64
 		if e.simd == 2 {
 			mode = 1
@@ -392,7 +442,7 @@ func (e *Encoding) Decode(dst, src []byte) (int, error) {
 	// Every block SIMD decoder handles at least 64 characters; shorter inputs skip the indirect
 	// call and its immediate no-op return. | 所有块 SIMD 解码器至少处理 64 个字符，更短的输入跳过
 	// 间接调用及其立即空返回。
-	if len(src) >= simdDecodeMin && simdDecode != nil && e.simd != 0 {
+	if len(src) >= simdDecodeMin && simdDecode != nil && simdOK {
 		// Align the source before the block kernel: unaligned 32/64-byte loads
 		// cross cache lines on every iteration, while a short scalar prologue
 		// costs almost nothing on a large input. | 在块内核之前对齐源地址：
@@ -458,6 +508,9 @@ func (e *Encoding) Decode(dst, src []byte) (int, error) {
 			a := e.decode[src[i]]
 			b := e.decode[src[i+1]]
 			if (a|b)&0x80 == 0 {
+				if e.strict && b&0x0F != 0 {
+					return out, e.corrupt(i)
+				}
 				dst[out] = a<<2 | b>>4
 				return out + 1, nil
 			}
@@ -466,6 +519,9 @@ func (e *Encoding) Decode(dst, src []byte) (int, error) {
 			b := e.decode[src[i+1]]
 			c := e.decode[src[i+2]]
 			if (a|b|c)&0x80 == 0 {
+				if e.strict && c&0x03 != 0 {
+					return out, e.corrupt(i + 2)
+				}
 				dst[out] = a<<2 | b>>4
 				dst[out+1] = b<<4 | c>>2
 				return out + 2, nil
@@ -481,6 +537,9 @@ func (e *Encoding) Decode(dst, src []byte) (int, error) {
 			a := e.decode[src[i]]
 			b := e.decode[src[i+1]]
 			if (a|b)&0x80 == 0 {
+				if e.strict && b&0x0F != 0 {
+					return out, e.corrupt(i + 2)
+				}
 				dst[out] = a<<2 | b>>4
 				return out + 1, nil
 			}
@@ -489,136 +548,130 @@ func (e *Encoding) Decode(dst, src []byte) (int, error) {
 			b := e.decode[src[i+1]]
 			c := e.decode[src[i+2]]
 			if (a|b|c)&0x80 == 0 {
+				if e.strict && c&0x03 != 0 {
+					return out, e.corrupt(i + 3)
+				}
 				dst[out] = a<<2 | b>>4
 				dst[out+1] = b<<4 | c>>2
 				return out + 2, nil
 			}
 		}
 	}
-	n, err := e.decodeSlow(dst[out:], src[i:])
+	n, err := e.decodeSlow(dst[out:], src[i:], i)
 	if err != nil {
-		return 0, err
+		return out + n, err
 	}
 	return out + n, nil
 }
 
-// decodeSlow handles padding, CR/LF and invalid input after the fast path. | decodeSlow 处理快路径之后的填充、CR/LF 与非法输入。
-func (e *Encoding) decodeSlow(dst, src []byte) (int, error) {
-	var quad [4]uint8
-	q, out, padAt := 0, 0, -1
-	padDone := false
-	for _, c := range src {
-		if c == '\r' || c == '\n' {
-			continue
-		}
-		if padDone {
-			return 0, errs.Wrap(errCorrupt, ErrInvalidData)
-		}
-		if c == e.pad {
-			if e.raw {
-				return 0, errs.Wrap(errCorrupt, ErrInvalidData)
-			}
-			if padAt >= 0 {
-				if padAt != 2 || q != 3 {
-					return 0, errs.Wrap(errCorrupt, ErrInvalidData)
-				}
-				quad[3] = 64
-				q = 4
-			} else {
-				if q < 2 {
-					return 0, errs.Wrap(errCorrupt, ErrInvalidData)
-				}
-				padAt = q
-				quad[q] = 64
-				q++
-			}
-		} else {
-			if padAt >= 0 {
-				return 0, errs.Wrap(errCorrupt, ErrInvalidData)
-			}
-			v := e.decode[c]
-			if v == 0xFF {
-				return 0, errs.Wrap(errCorrupt, ErrInvalidData)
-			}
-			quad[q] = v
-			q++
-		}
-		if q == 4 {
-			real := 4
-			switch padAt {
-			case 2:
-				real = 2
-			case 3:
-				real = 3
-			}
-			n, ok := e.decodeQuad(dst[out:], quad, real)
-			if !ok {
-				return 0, errs.Wrap(errCorrupt, ErrInvalidData)
-			}
-			out += n
-			q = 0
-			if padAt >= 0 {
-				padDone, padAt = true, -1
-			}
-		}
-	}
-	if q != 0 {
-		if e.raw {
-			if q == 1 {
-				return 0, errs.Wrap(errCorrupt, ErrInvalidData)
-			}
-			n, ok := e.decodeQuad(dst[out:], quad, q)
-			if !ok {
-				return 0, errs.Wrap(errCorrupt, ErrInvalidData)
-			}
-			out += n
-		} else {
-			return 0, errs.Wrap(errCorrupt, ErrInvalidData)
+// decodeSlow handles padding, CR/LF and invalid input after the fast path. base is the absolute
+// offset of src within the caller's input, so error positions match encoding/base64 exactly. On
+// error it returns the bytes decoded before the error, following encoding/base64. | decodeSlow
+// 处理快路径之后的填充、CR/LF 与非法输入；base 是 src 在调用方输入中的绝对偏移，使错误位置与
+// encoding/base64 完全一致。出错时返回已解码的字节，与 encoding/base64 一致。
+func (e *Encoding) decodeSlow(dst, src []byte, base int) (int, error) {
+	si, out := 0, 0
+	for si < len(src) {
+		nsi, n, err := e.decodeQuantum(dst[out:], src, si, base)
+		out += n
+		si = nsi
+		if err != nil {
+			return out, err
 		}
 	}
 	return out, nil
 }
 
-// decodeQuad writes the decoded bytes of one quartet into dst. | decodeQuad 把一个四元组的解码结果写入 dst。
-func (e *Encoding) decodeQuad(dst []byte, quad [4]uint8, real int) (int, bool) {
-	switch real {
-	case 2:
-		if len(dst) < 1 {
-			return 0, false
+// decodeQuantum decodes up to one four-character quantum starting at si, mirroring
+// encoding/base64's decoder so that padding, CR/LF, strict trailing-bit checks and error
+// positions all agree with the standard library. | decodeQuantum 从 si 开始解码至多一个四字符
+// 组，逐条对齐 encoding/base64 的解码器，使填充、CR/LF、strict 尾部比特校验与错误位置都与标准库
+// 一致。
+func (e *Encoding) decodeQuantum(dst, src []byte, si, base int) (nsi, n int, err error) {
+	var dbuf [4]uint8
+	dlen := 4
+	for j := 0; j < 4; j++ {
+		if len(src) == si {
+			switch {
+			case j == 0:
+				return si, 0, nil
+			case j == 1, !e.raw:
+				return si, 0, e.corrupt(base + si - j)
+			}
+			dlen = j
+			break
 		}
-		dst[0] = quad[0]<<2 | quad[1]>>4
-		return 1, true
-	case 3:
-		if len(dst) < 2 {
-			return 0, false
+		in := src[si]
+		si++
+		out := e.decode[in]
+		if out != 0xFF {
+			dbuf[j] = out
+			continue
 		}
-		dst[0] = quad[0]<<2 | quad[1]>>4
-		dst[1] = quad[1]<<4 | quad[2]>>2
-		return 2, true
-	case 4:
-		if len(dst) < 3 {
-			return 0, false
+		if in == 13 || in == 10 {
+			j--
+			continue
 		}
-		dst[0] = quad[0]<<2 | quad[1]>>4
-		dst[1] = quad[1]<<4 | quad[2]>>2
-		dst[2] = quad[2]<<6 | quad[3]
-		return 3, true
-	default:
-		return 0, false
+		if e.raw || in != e.pad {
+			return si, 0, e.corrupt(base + si - 1)
+		}
+		switch j {
+		case 0, 1:
+			return si, 0, e.corrupt(base + si - 1)
+		case 2:
+			for si < len(src) && (src[si] == 13 || src[si] == 10) {
+				si++
+			}
+			if si == len(src) {
+				return si, 0, e.corrupt(base + len(src))
+			}
+			if src[si] != e.pad {
+				return si, 0, e.corrupt(base + si - 1)
+			}
+			si++
+		}
+		for si < len(src) && (src[si] == 13 || src[si] == 10) {
+			si++
+		}
+		if si < len(src) {
+			err = e.corrupt(base + si)
+		}
+		dlen = j
+		break
 	}
+	val := uint(dbuf[0])<<18 | uint(dbuf[1])<<12 | uint(dbuf[2])<<6 | uint(dbuf[3])
+	dbuf[2], dbuf[1], dbuf[0] = byte(val), byte(val>>8), byte(val>>16)
+	switch dlen {
+	case 4:
+		dst[2] = dbuf[2]
+		dbuf[2] = 0
+		fallthrough
+	case 3:
+		dst[1] = dbuf[1]
+		if e.strict && dbuf[2] != 0 {
+			return si, 0, e.corrupt(base + si - 1)
+		}
+		dbuf[1] = 0
+		fallthrough
+	case 2:
+		dst[0] = dbuf[0]
+		if e.strict && (dbuf[1] != 0 || dbuf[2] != 0) {
+			return si, 0, e.corrupt(base + si - 2)
+		}
+	}
+	return si, dlen - 1, err
 }
 
-// DecodeString returns the decoded bytes of Base64 text s. | DecodeString 返回 Base64 文本 s 的解码字节。
+// DecodeString returns the decoded bytes of Base64 text s; on failure it returns the partial
+// result together with the error, exactly like encoding/base64. | DecodeString 返回 Base64
+// 文本 s 的解码字节；失败时连同错误一起返回部分结果，与 encoding/base64 完全一致。
 func (e *Encoding) DecodeString(s string) ([]byte, error) {
 	if len(s) == 0 {
 		return []byte{}, nil
 	}
 	out := make([]byte, e.DecodedLen(len(s)))
 	n, err := e.Decode(out, unsafe.Slice(unsafe.StringData(s), len(s)))
-	if err != nil {
-		return nil, err
-	}
-	return out[:n], nil
+	return out[:n], err
 }
 
 // AppendDecodeString appends the decoded bytes of the Base64 text s to dst without converting s to a
@@ -631,7 +684,9 @@ func (e *Encoding) AppendDecodeString(dst []byte, s string) ([]byte, error) {
 	return e.AppendDecode(dst, unsafe.Slice(unsafe.StringData(s), len(s)))
 }
 
-// AppendDecode appends the decoded bytes of src to dst. | AppendDecode 把 src 的解码结果追加到 dst。
+// AppendDecode appends the decoded bytes of src to dst; on failure it returns dst extended by
+// the partial result together with the error, exactly like encoding/base64. | AppendDecode 把
+// src 的解码结果追加到 dst；失败时返回追加了部分结果的 dst 与错误，与 encoding/base64 完全一致。
 func (e *Encoding) AppendDecode(dst, src []byte) ([]byte, error) {
 	if len(src) == 0 {
 		return dst, nil
@@ -642,15 +697,9 @@ func (e *Encoding) AppendDecode(dst, src []byte) ([]byte, error) {
 		buf := make([]byte, old+need)
 		copy(buf, dst)
 		n, err := e.Decode(buf[old:], src)
-		if err != nil {
-			return dst, err
-		}
-		return buf[:old+n], nil
+		return buf[:old+n], err
 	}
 	grown := dst[:old+need]
 	n, err := e.Decode(grown[old:], src)
-	if err != nil {
-		return dst, err
-	}
-	return grown[:old+n], nil
+	return grown[:old+n], err
 }
