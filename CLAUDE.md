@@ -40,8 +40,9 @@ ydx 是 yd 全栈框架的可复用组件仓库；组件源码以本仓库为唯
   依赖方向仍为 yd → ydx，不得让 `waf` 反向依赖 `yd` 或重新引入 Coraza 引擎。
 - `openapi` 是独立模块：核心只接受 `openapi.Route` 并提供标准 `net/http` 处理器，
   **不得** import `ydx/router`；路由适配（`FromRouter` / `Handler`）只在 `openapi/ydrouter`。
-- 基准模块（16 个）：`benchmarks/{base64,buffpool,cache,compress,cron,crypto,json,jwt,log,middleware,regexpx,router,sse,template,websocket,workflow}`。
-  `benchmarks/cache/compare` 是 `cache` 模块内的对比子包。yd 仓库不再保留基准，所有最终结果以本仓为准。
+- 基准模块（17 个）：`benchmarks/{base64,buffpool,cache,compress,cron,crypto,json,jwt,log,middleware,regexpx,router,sse,template,websocket,workflow,xml}`。
+  `benchmarks/cache/compare` 是 `cache` 模块内的对比子包。`benchmarks/xml` 以 `xml/v0.1.0`
+  子目录标签发布为运行门禁，标签发布前通过仓库外临时 `go.work` 运行。yd 仓库不再保留基准，所有最终结果以本仓为准。
 - 守卫模块：`repotest`。
 
 ## 3. 依赖与版本（强制）

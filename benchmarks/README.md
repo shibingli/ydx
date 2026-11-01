@@ -1,6 +1,8 @@
 # ydx 基准与主流实现对比
 
-本目录是 ydx 的基准模块集合，共 **16 个独立 Go 模块**。原 yd 仓 `benchmarks/` 的独有场景
+本目录是 ydx 的基准模块集合，共 **17 个独立 Go 模块**（其中 `benchmarks/xml` 以
+`xml/v0.1.0` 子目录标签发布为门禁，标签发布前需通过仓库外临时 `go.work` 运行）。原 yd 仓
+`benchmarks/` 的独有场景
 已全部并入本目录（json 的 7 字段载荷、base64 的 32 B/1 MiB、jwt 的 cristal/jwt 与
 kataras/jwt、log 的 prebound 场景、router 的 echo/fiber、websocket 的 gobwas/gws、
 cache 的 TTL/命中率轨迹，以及 compress/crypto/template 整模块；render 的微基准已并入
@@ -40,6 +42,7 @@ template 模块，避免同一引擎在两处重复对比），yd 仓不再保�
 | `benchmarks/template` | `html/template`、`text/template`、Jet、Pongo2、Liquid、Raymond、Mustache、quicktemplate、templ | [template/README.md](template/README.md) |
 | `benchmarks/websocket` | `gorilla/websocket`、`coder/websocket`、`gobwas/ws`、`lxzan/gws` | [websocket/README.md](websocket/README.md) |
 | `benchmarks/workflow` | 无同类可比实现（BPMN 引擎语义差异过大），给出 SQLite 回归基线 | [workflow/README.md](workflow/README.md) |
+| `benchmarks/xml` | `encoding/xml`、`beevik/etree`、`antchfx/xmlquery`、`clbanning/mxj/v2` | [xml/README.md](xml/README.md) |
 
 ## 关键结果速览
 
