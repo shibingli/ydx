@@ -246,8 +246,9 @@ func TestErrorTypesMatchStdlib(t *testing.T) {
 		ydxTE.Value != stdTE.Value || ydxTE.Offset != stdTE.Offset || ydxTE.Field != stdTE.Field || ydxTE.Type != stdTE.Type {
 		t.Fatalf("UnmarshalTypeError = %+v want %+v", ydxTE, stdTE)
 	}
-	ydxErr = ydxjson.Unmarshal([]byte("1"), nil)
-	stdErr = stdjson.Unmarshal([]byte("1"), nil)
+	var nilTarget any // vet flags an untyped nil literal passed to Unmarshal | vet 会标记直接传入的 nil 字面量
+	ydxErr = ydxjson.Unmarshal([]byte("1"), nilTarget)
+	stdErr = stdjson.Unmarshal([]byte("1"), nilTarget)
 	var ydxIE, stdIE *stdjson.InvalidUnmarshalError
 	if !errors.As(ydxErr, &ydxIE) || !errors.As(stdErr, &stdIE) || ydxIE.Type != stdIE.Type {
 		t.Fatalf("InvalidUnmarshalError = %v want %v", ydxErr, stdErr)
