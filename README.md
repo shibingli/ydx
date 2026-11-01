@@ -22,9 +22,9 @@
 | `github.com/shibingli/ydx/buffpool` | `buffpool` | 按尺寸分级的字节缓冲池 |
 | `github.com/shibingli/ydx/protocol` | `protocol` | HTTP 协议判定（extended CONNECT 等） |
 | `github.com/shibingli/ydx/nodeid` | `nodeid` | 稳定节点身份：显式配置、持久身份文件、平台种子、容器策略与唯一性 Claim |
-| `github.com/shibingli/ydx/base64` | `base64` | 硬件自适应 Base64 |
-| `github.com/shibingli/ydx/json` | `json` | 硬件自适应 JSON |
-| `github.com/shibingli/ydx/xml` | `xml` | 硬件自适应 XML 编解码、零拷贝 DOM、编译式路径与流式解析 |
+| `github.com/shibingli/ydx/base64` | `base64` | 硬件自适应 Base64（兼容 `encoding/base64` 全量 API） |
+| `github.com/shibingli/ydx/json` | `json` | 硬件自适应 JSON（兼容 `encoding/json` v1 全量 API） |
+| `github.com/shibingli/ydx/xml` | `xml` | 硬件自适应 XML 编解码、零拷贝 DOM、编译式路径与流式解析（兼容 `encoding/xml` 全量 API） |
 | `github.com/shibingli/ydx/afs` | `afs` | afero 之上的文件系统门面（OS / 内存 / embed） |
 | `github.com/shibingli/ydx/config` | `config` | 多源分层配置（flags > env > file > defaults） |
 | `github.com/shibingli/ydx/log` | `log` | 零拷贝结构化日志 |
