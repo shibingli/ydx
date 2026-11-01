@@ -1,7 +1,7 @@
 package workflow
 
 import (
-	"encoding/xml"
+	"github.com/shibingli/ydx/xml"
 	"io"
 	"strconv"
 	"strings"

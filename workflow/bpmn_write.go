@@ -2,7 +2,7 @@ package workflow
 
 import (
 	"bytes"
-	"encoding/xml"
+	"github.com/shibingli/ydx/xml"
 	"strconv"
 	"strings"
 	"time"
