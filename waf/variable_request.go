@@ -2,7 +2,7 @@ package waf
 
 import (
 	"bytes"
-	"encoding/xml"
+	"github.com/shibingli/ydx/xml"
 	"io"
 	"mime"
 	"mime/multipart"
