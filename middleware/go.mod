@@ -26,7 +26,7 @@ require (
 	github.com/sagikazarmark/locafero v0.12.0 // indirect
 	github.com/shibingli/ydx/afs v0.1.6 // indirect
 	github.com/shibingli/ydx/base64 v0.1.13 // indirect
-	github.com/shibingli/ydx/buffpool v0.1.4 // indirect
+	github.com/shibingli/ydx/buffpool v0.1.5 // indirect
 	github.com/shibingli/ydx/config v0.1.8 // indirect
 	github.com/shibingli/ydx/errs v0.1.4 // indirect
 	github.com/shibingli/ydx/json v0.1.15 // indirect

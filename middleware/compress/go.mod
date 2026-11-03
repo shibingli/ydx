@@ -5,7 +5,7 @@ go 1.27.3
 require (
 	github.com/andybalholm/brotli v1.2.7
 	github.com/klauspost/compress v1.20.3
-	github.com/shibingli/ydx/buffpool v0.1.4
+	github.com/shibingli/ydx/buffpool v0.1.5
 	github.com/shibingli/ydx/errs v0.1.4
 	github.com/shibingli/ydx/middleware/reqlog v0.1.12
 	github.com/shibingli/ydx/router v0.1.12

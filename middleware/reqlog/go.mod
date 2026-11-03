@@ -3,7 +3,7 @@ module github.com/shibingli/ydx/middleware/reqlog
 go 1.27.3
 
 require (
-	github.com/shibingli/ydx/buffpool v0.1.4
+	github.com/shibingli/ydx/buffpool v0.1.5
 	github.com/shibingli/ydx/router v0.1.12
 )
 

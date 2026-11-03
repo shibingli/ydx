@@ -16,7 +16,7 @@ require (
 require (
 	github.com/shibingli/ydx/afs v0.1.6 // indirect
 	github.com/shibingli/ydx/base64 v0.1.13 // indirect
-	github.com/shibingli/ydx/buffpool v0.1.4 // indirect
+	github.com/shibingli/ydx/buffpool v0.1.5 // indirect
 	github.com/shibingli/ydx/protocol v0.1.5 // indirect
 	github.com/shibingli/ydx/regexpx v0.1.13 // indirect
 	github.com/spf13/afero v1.15.0 // indirect

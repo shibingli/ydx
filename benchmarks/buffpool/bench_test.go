@@ -3,6 +3,7 @@ package buffpool
 import (
 	"sync"
 	"testing"
+	"unsafe"
 
 	"github.com/valyala/bytebufferpool"
 
@@ -15,9 +16,13 @@ var benchSizes = []struct {
 	size int
 }{
 	{name: "1KiB", size: 1 << 10},
+	{name: "2KiB", size: 2 << 10},
 	{name: "4KiB", size: 4 << 10},
+	{name: "8KiB", size: 8 << 10},
 	{name: "16KiB", size: 16 << 10},
+	{name: "32KiB", size: 32 << 10},
 	{name: "64KiB", size: 64 << 10},
+	{name: "128KiB", size: 128 << 10},
 	{name: "256KiB", size: 256 << 10},
 }
 
@@ -36,7 +41,7 @@ func BenchmarkGetPut(b *testing.B) {
 		ydxbuffpool.Put(ydxbuffpool.Get(tc.size))
 		pool := sync.Pool{New: func() any {
 			buf := make([]byte, tc.size)
-			return &buf
+			return unsafe.SliceData(buf)
 		}}
 		pool.Put(pool.Get())
 		bytebufferpool.Put(bytebufferpool.Get())
@@ -54,9 +59,9 @@ func BenchmarkGetPut(b *testing.B) {
 			b.ReportAllocs()
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
-				p := pool.Get().(*[]byte)
-				benchSink = (*p)[:0]
-				pool.Put(p)
+				p := unsafe.Slice(pool.Get().(*byte), tc.size)[:0]
+				benchSink = p
+				pool.Put(unsafe.SliceData(p))
 			}
 		})
 		b.Run(tc.name+"/bytebufferpool", func(b *testing.B) {
@@ -80,7 +85,7 @@ func BenchmarkGetPutParallel(b *testing.B) {
 	ydxbuffpool.Put(ydxbuffpool.Get(size))
 	pool := sync.Pool{New: func() any {
 		buf := make([]byte, size)
-		return &buf
+		return unsafe.SliceData(buf)
 	}}
 	pool.Put(pool.Get())
 	bytebufferpool.Put(bytebufferpool.Get())
@@ -100,8 +105,67 @@ func BenchmarkGetPutParallel(b *testing.B) {
 		b.ResetTimer()
 		b.RunParallel(func(pb *testing.PB) {
 			for pb.Next() {
-				p := pool.Get().(*[]byte)
-				pool.Put(p)
+				p := unsafe.Slice(pool.Get().(*byte), size)[:0]
+				pool.Put(unsafe.SliceData(p))
+			}
+		})
+	})
+	b.Run("bytebufferpool", func(b *testing.B) {
+		b.ReportAllocs()
+		b.ResetTimer()
+		b.RunParallel(func(pb *testing.PB) {
+			for pb.Next() {
+				p := bytebufferpool.Get()
+				p.Reset()
+				bytebufferpool.Put(p)
+			}
+		})
+	})
+}
+
+// BenchmarkGetPutMixedParallel cycles through every size class from many
+// goroutines. It exposes false sharing between adjacent class slots and the
+// cost of class selection when several classes are hot at once. |
+// BenchmarkGetPutMixedParallel 从多个 goroutine 轮换所有尺寸分级，暴露相邻分级槽位
+// 之间的伪共享以及多个分级同时活跃时的选择成本。
+func BenchmarkGetPutMixedParallel(b *testing.B) {
+	for _, tc := range benchSizes {
+		ydxbuffpool.Put(ydxbuffpool.Get(tc.size))
+	}
+	pools := make([]sync.Pool, len(benchSizes))
+	for i, tc := range benchSizes {
+		size := tc.size
+		pools[i] = sync.Pool{New: func() any {
+			buf := make([]byte, size)
+			return unsafe.SliceData(buf)
+		}}
+		pools[i].Put(pools[i].Get())
+	}
+	bytebufferpool.Put(bytebufferpool.Get())
+
+	b.Run("ydx", func(b *testing.B) {
+		b.ReportAllocs()
+		b.ResetTimer()
+		b.RunParallel(func(pb *testing.PB) {
+			i := 0
+			for pb.Next() {
+				size := benchSizes[i%len(benchSizes)].size
+				p := ydxbuffpool.Get(size)
+				ydxbuffpool.Put(p)
+				i++
+			}
+		})
+	})
+	b.Run("syncpool", func(b *testing.B) {
+		b.ReportAllocs()
+		b.ResetTimer()
+		b.RunParallel(func(pb *testing.PB) {
+			i := 0
+			for pb.Next() {
+				tc := benchSizes[i%len(benchSizes)]
+				p := unsafe.Slice(pools[i%len(pools)].Get().(*byte), tc.size)[:0]
+				pools[i%len(pools)].Put(unsafe.SliceData(p))
+				i++
 			}
 		})
 	})

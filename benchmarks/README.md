@@ -60,7 +60,7 @@ README 与 [optimization-report.md](optimization-report.md)。
 | base64 | `Decode` 32 B | 10.42 ns | cloudwego 11.67 ns / cristalhq 12.51 ns / stdlib 20.14 ns |
 | base64 | `Encode` 1 MiB | 56.1 GB/s | cloudwego 25.6 GB/s / cristalhq 5.04 GB/s / stdlib 2.39 GB/s |
 | base64 | `Decode` 1 MiB | 41.3 GB/s | cloudwego 20.5 GB/s / cristalhq 3.75 GB/s / stdlib 2.30 GB/s |
-| buffpool | 4 KiB `Get`/`Put` | 9.94 ns | `sync.Pool` 7.23 ns / bytebufferpool 9.49 ns |
+| buffpool | 4 KiB `Get`/`Put` | 9.96 ns | `sync.Pool` 7.38 ns / bytebufferpool 9.78 ns |
 | cache | L1 `Get` 命中（防御性副本） | 45.1 ns | ristretto 35.7 ns / `sync.Map` 13.4 ns |
 | cache | L1 `GetAppend` / `View`（零拷贝） | 38.3 / 36.6 ns | ristretto 35.7 ns |
 | cache | L1 `Set` | **49.07 ns** | freecache 75.5 ns / bigcache 95.8 ns |
