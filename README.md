@@ -20,6 +20,7 @@
 | `github.com/shibingli/ydx/sysinfo` | `sysinfo` | GOMAXPROCS / cgroup / 主机内存探测 |
 | `github.com/shibingli/ydx/gc` | `gc` | 空闲期 GC 调度：负载与空闲窗口门控、堆下限、内存压力强制执行、自适应退避 |
 | `github.com/shibingli/ydx/buffpool` | `buffpool` | 按尺寸分级的字节缓冲池 |
+| `github.com/shibingli/ydx/pool` | `pool` | 超低延迟分片协程池：无锁 MPMC 环、工作窃取、同步/异步/批量、panic 安全 |
 | `github.com/shibingli/ydx/protocol` | `protocol` | HTTP 协议判定（extended CONNECT 等） |
 | `github.com/shibingli/ydx/nodeid` | `nodeid` | 稳定节点身份：显式配置、持久身份文件、平台种子、容器策略与唯一性 Claim |
 | `github.com/shibingli/ydx/base64` | `base64` | 硬件自适应 Base64（兼容 `encoding/base64` 全量 API） |
@@ -115,11 +116,14 @@ ydx 的组件实例默认**不共享 Go 内存状态**：同一个进程里创�
 | `benchmarks/jwt` | `golang-jwt/jwt`、`jwx`、`go-jose`、`cristalhq/jwt`、`kataras/jwt` | [jwt](benchmarks/jwt/README.md) |
 | `benchmarks/log` | `zap`、`zerolog`、`slog`、`logrus` | [log](benchmarks/log/README.md) |
 | `benchmarks/middleware` | `rs/cors`、`chi`、`gzhttp`、`x/time/rate` | [middleware](benchmarks/middleware/README.md) |
+| `benchmarks/pool` | `ants/v2`、`pond/v2`、`gammazero/workerpool`、`sourcegraph/conc`、裸 goroutine | [pool](benchmarks/pool/README.md) |
 | `benchmarks/regexpx` | 标准库 `regexp`、`grafana/regexp`、`regexp2`、`go-re2` | [regexpx](benchmarks/regexpx/README.md) |
 | `benchmarks/router` | `net/http.ServeMux`、`httprouter`、`chi`、`gin`、`echo`、`fiber` | [router](benchmarks/router/README.md) |
 | `benchmarks/sse` | `gin-contrib/sse`、手写 `fmt.Fprintf` 基线 | [sse](benchmarks/sse/README.md) |
 | `benchmarks/template` | `html/template`、`text/template`、Jet、Pongo2、Liquid、Raymond、Mustache、quicktemplate、templ | [template](benchmarks/template/README.md) |
+| `benchmarks/waf` | Coraza v3.8.1（OWASP CRS 4.29.0） | [waf](benchmarks/waf/README.md) |
 | `benchmarks/websocket` | `gorilla/websocket`、`coder/websocket`、`gobwas/ws`、`lxzan/gws` | [websocket](benchmarks/websocket/README.md) |
+| `benchmarks/xml` | `encoding/xml`、`beevik/etree`、`antchfx/xmlquery`、`clbanning/mxj` | [xml](benchmarks/xml/README.md) |
 | `benchmarks/workflow` | 无同类可比实现（BPMN 引擎语义差异过大），给出 SQLite 回归基线 | [workflow](benchmarks/workflow/README.md) |
 
 > 目录名、模块名与包名三者一致；每个带实现代码的包还必须有一个与包同名的 `<package>.go`
@@ -210,6 +214,9 @@ done
 - `router`：静态路由 8.40 ns，httprouter 12.86 ns、gin 33.17 ns、`ServeMux` 60.15 ns。
 - `template`：渲染微基准（原 render 模块，现已并入 template）带绑定 253.7 ns，
   `html/template` 3.43 µs、`text/template` 2.12 µs。
+- `pool`（远程 host-01，Linux AMD Ryzen AI MAX+ 395，`GOMAXPROCS=32`）：空任务 98.2 ns，
+  ants 198.3 ns、pond 506.1 ns、workerpool 294.3 ns、conc 191.1 ns、裸 goroutine
+  200.7 ns；64 任务 `GoBatch` 1821 ns（28.5 ns/任务）。
 
 这些数字只用于同机相对比较，不是跨硬件或跨轮次承诺；CPU 频率/温度会让同一份代码在
 不同轮次的绝对 ns/op 漂移数十个百分点。每个模块的完整表格、语义差异与

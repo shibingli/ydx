@@ -1,7 +1,8 @@
 # ydx 基准与主流实现对比
 
-本目录是 ydx 的基准模块集合，共 **17 个独立 Go 模块**（`benchmarks/xml` 依赖已发布的
-`xml/v0.1.1` 子目录标签；联调未发布改动时可在仓库外使用临时 `go.work`，不得提交）。原 yd 仓
+本目录是 ydx 的基准模块集合，共 **19 个独立 Go 模块**（`benchmarks/xml` 依赖已发布的
+`xml/v0.1.1` 子目录标签；`benchmarks/pool` 依赖 `pool/v0.1.0`，该标签发布前同样使用
+仓库外临时 `go.work`，不得提交）。原 yd 仓
 `benchmarks/` 的独有场景
 已全部并入本目录（json 的 7 字段载荷、base64 的 32 B/1 MiB、jwt 的 cristal/jwt 与
 kataras/jwt、log 的 prebound 场景、router 的 echo/fiber、websocket 的 gobwas/gws、
@@ -37,10 +38,12 @@ template 模块，避免同一引擎在两处重复对比），yd 仓不再保�
 | `benchmarks/jwt` | `golang-jwt/jwt/v5`、`lestrrat-go/jwx/v4`、`go-jose/v4`、`cristalhq/jwt/v5`、`kataras/jwt` | [jwt/README.md](jwt/README.md) |
 | `benchmarks/log` | `zap`、`zerolog`、`slog`、`logrus` | [log/README.md](log/README.md) |
 | `benchmarks/middleware` | `rs/cors`、`chi`、`klauspost/compress/gzhttp`、`x/time/rate` | [middleware/README.md](middleware/README.md) |
+| `benchmarks/pool` | `ants/v2`、`pond/v2`、`gammazero/workerpool`、`sourcegraph/conc`、裸 goroutine | [pool/README.md](pool/README.md) |
 | `benchmarks/regexpx` | 标准库 `regexp`、`grafana/regexp`、`regexp2`、`go-re2` | [regexpx/README.md](regexpx/README.md) |
 | `benchmarks/router` | `net/http.ServeMux`、`httprouter`、`chi`、`gin`、`echo`、`fiber` | [router/README.md](router/README.md) |
 | `benchmarks/sse` | `gin-contrib/sse`、手写 `fmt.Fprintf` 基线 | [sse/README.md](sse/README.md) |
 | `benchmarks/template` | `html/template`、`text/template`、Jet、Pongo2、Liquid、Raymond、Mustache、quicktemplate、templ | [template/README.md](template/README.md) |
+| `benchmarks/waf` | Coraza v3.8.1（OWASP CRS 4.29.0） | [waf/README.md](waf/README.md) |
 | `benchmarks/websocket` | `gorilla/websocket`、`coder/websocket`、`gobwas/ws`、`lxzan/gws` | [websocket/README.md](websocket/README.md) |
 | `benchmarks/workflow` | 无同类可比实现（BPMN 引擎语义差异过大），给出 SQLite 回归基线 | [workflow/README.md](workflow/README.md) |
 | `benchmarks/xml` | `encoding/xml`、`beevik/etree`、`antchfx/xmlquery`、`clbanning/mxj/v2` | [xml/README.md](xml/README.md) |
@@ -78,6 +81,7 @@ README 与 [optimization-report.md](optimization-report.md)。
 | middleware | CORS GET | **36.7 ns** | rs/cors 53.2 ns |
 | middleware | 恢复（无 panic） | **7.85 ns** | chi 8.62 ns |
 | middleware | 限流放行 | 136.5 ns | `x/time/rate` 59.92 ns（全局、不写头）；+headers 127.8 ns；按 IP + headers 139.0 ns |
+| pool | `Go` 空任务 | **98.2 ns** | ants 198.3 ns / pond 506.1 ns / workerpool 294.3 ns / conc 191.1 ns / goroutine 200.7 ns |
 | regexpx | `FindAll/email` | **94.98 µs** | go-re2 732.3 µs / stdlib 5.679 ms |
 | router | 静态路由（`GETRaw`） | **16.75 ns** | httprouter 23.81 ns / stdlib 147.8 ns |
 | router | 参数 / 通配 / 未命中 | **52.4 / 44.1 / 60.1 ns** | httprouter 74.9 / 74.1 / 380.2 ns；gin 65.4 / 59.8 / 65.6 ns |
@@ -90,7 +94,9 @@ README 与 [optimization-report.md](optimization-report.md)。
 | xml | Parse 1.7 MB DOM | **22.55 ms** / 71.3 MB/s | etree 28.09 ms / xmlquery 29.15 ms / mxj 34.60 ms |
 | xml | Marshal 8000 条记录 | **3.76 ms** | mxj 5.69 ms / stdlib 6.36 ms / etree 2.94 ms¹ |
 
-> 说明：xml 的 etree 行序列化的是已解析树，`Marshal` 与 ydx/stdlib 的结构体反射编组不是同一
+> 说明：pool 行于远程 host-01（AMD Ryzen AI MAX+ 395，16 核 32 线程，`GOMAXPROCS=32`）
+> 采集，与主表同一参考环境，见 [pool/README.md](pool/README.md)。
+> xml 的 etree 行序列化的是已解析树，`Marshal` 与 ydx/stdlib 的结构体反射编组不是同一
 > 操作（见 [xml/README.md](xml/README.md) 脚注）；`base64` 的 cloudwego/base64x 对照已并入上表（Linux Zen 5，与 ydx 同一轮采集）；
 > [base64/README.md](base64/README.md) 另给出 Windows AVX2 的 cloudwego 同机对照，两台
 > 主机的绝对数字不可跨机比较。
@@ -178,7 +184,9 @@ benchstat result.txt
 ## 复现最终主表
 
 基准模块的 `go.mod` 已锁定到本次发布的 ydx 子目录标签，`GOWORK=off` 即可直接复现本文
-数字，无需任何工作区。若刚修改了组件源码、尚未打新标签，可在**两个仓库之外**临时创建
+数字，无需任何工作区。`benchmarks/pool` 在 `pool/v0.1.0` 标签发布前是例外：需按
+[pool/README.md](pool/README.md) 使用仓库外临时 `go.work` 或临时 `replace`，标签发布后
+`GOWORK=off` 即可直接运行。若刚修改了组件源码、尚未打新标签，可在**两个仓库之外**临时创建
 `go.work` 指向本地模块；`go.work` 与本地 `replace` 都不得提交。
 
 ## 目录约定
