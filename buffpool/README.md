@@ -15,8 +15,10 @@
 
 - `Get(n int) []byte`：返回长度为 0、容量不小于 `n` 的切片。
 - `Put(p []byte)`：归还缓冲；只接纳容量恰好等于某一分级且不超过 `MaxSize` 的切片。
-- 五个尺寸分级：1 KiB、4 KiB、16 KiB、64 KiB、256 KiB。
+- 九个尺寸分级：1、2、4、8、16、32、64、128、256 KiB（2× 间隔，最坏容量浪费 ≤2×）。
 - 每级独立 `sync.Pool`，池内存放指向块首的 `*byte`，避免把切片头装箱进接口。
+- 2× 分级同时简化查找：`classForSize` 只需 `bits.Len(n-1)-10`，
+  `classForCapacity` 只需 `bits.TrailingZeros(cap)-10`。
 
 ## 特性
 
@@ -68,27 +70,41 @@ defer buffpool.Put(buf)
 
 ## 性能指标
 
-基准模块：[`benchmarks/buffpool`](../benchmarks/buffpool/README.md)。测试环境为
-AMD Ryzen AI MAX+ 395（Zen 5，`GOMAXPROCS=32`）、Go 1.27.3、Linux，`-count=5`
-`-benchtime=500ms` 中位数。
+基准模块：[`benchmarks/buffpool`](../benchmarks/buffpool/README.md)。测试环境为远程
+host-01，AMD Ryzen AI MAX+ 395（Zen 5，16 核 32 线程，`GOMAXPROCS=32`）、Go 1.27.3、
+Linux，`-count=5 -benchtime=1s` 中位数。
 
 | 场景 | ydx/buffpool | `sync.Pool` | `bytebufferpool` |
 |---|---:|---:|---:|
-| 1 KiB Get/Put | 9.27 ns | 7.09 ns | 9.40 ns |
-| 4 KiB Get/Put | 9.94 ns | 7.23 ns | 9.49 ns |
-| 16 KiB Get/Put | 9.78 ns | 7.26 ns | 9.50 ns |
-| 64 KiB Get/Put | 9.79 ns | 7.24 ns | 9.53 ns |
-| 256 KiB Get/Put | 9.96 ns | 7.15 ns | 9.57 ns |
-| 4 KiB 并发 Get/Put | **0.58 ns** | 0.42 ns | 30.36 ns |
+| 1 KiB Get/Put | 9.37 ns | 7.04 ns | 9.39 ns |
+| 2 KiB Get/Put | 9.79 ns | 7.12 ns | 9.38 ns |
+| 4 KiB Get/Put | 9.96 ns | 7.38 ns | 9.78 ns |
+| 8 KiB Get/Put | 9.96 ns | 7.19 ns | 9.54 ns |
+| 16 KiB Get/Put | 9.66 ns | 7.22 ns | 9.38 ns |
+| 32 KiB Get/Put | 9.96 ns | 7.62 ns | 9.77 ns |
+| 64 KiB Get/Put | 9.96 ns | 7.49 ns | 9.81 ns |
+| 128 KiB Get/Put | 10.15 ns | 7.51 ns | 9.39 ns |
+| 256 KiB Get/Put | 9.74 ns | 7.17 ns | 9.49 ns |
+| 4 KiB 并发 Get/Put | 0.58 ns | 0.43 ns | 29.58 ns |
+| 混合九级并发 | 0.65 ns | 0.45 ns | 27.05 ns |
 
-- 串行路径比裸 `sync.Pool` 多约 2.2–2.7 ns，来自尺寸分级查找、边界检查与 `*byte` 到
-  `[]byte` 的转换；与 `bytebufferpool` 的差异在 5% 噪声阈值内，视为持平。
-- 并发路径把竞争分散到 5 个池，4 KiB 并发为 0.58 ns；单一全局池的 `bytebufferpool`
-  为 30.36 ns。
-- 所有 Get/Put 路径预热后均为 0 B/op、0 allocs/op。
+- **公平基线**：`sync.Pool` 基线也存放 `*byte` 并用 `unsafe.Slice` 重建切片，与 ydx
+  的存储方式一致；因此两者差值就是尺寸分级选择、边界检查与 `*byte` 转换的成本。
+- 串行路径比裸 `sync.Pool` 多约 **2.3–2.6 ns**；与 `bytebufferpool` 在 9.4–10.2 ns
+  区间基本持平。分级查找是缓冲池提供的真正增值：调用方无需自己维护每个尺寸的池。
+- 并发路径把竞争分散到九个池：4 KiB 并发 0.58 ns，混合九级并发 0.65 ns，仅比裸
+  `sync.Pool` 多约 0.2 ns；单一全局池的 `bytebufferpool` 为 27–30 ns。
+- 所有 Get/Put 路径预热后均为 **0 B/op、0 allocs/op**。
+- **2× 分级**把最坏容量浪费从接近 4× 降到 ≤2×；`middleware/reqlog` 的 32 KiB 请求
+  从 64 KiB 类降到 32 KiB 类，单请求缓冲减半。
+- 曾尝试为九个池槽做缓存行隔离；混合分级并行 A/B 无收益（中位数约 3.93 ns vs
+  3.60 ns，在噪声范围内），因此最终版本不引入 padding，减少常驻内存与缓存占用。
 
 > `sync.Pool` 基线没有尺寸分级与“只回收恰好分级容量”的约束，其数字是无策略上限；
 > 同一轮内小于约 5% 的差异视为噪声，跨轮次绝对值会随 CPU 频率/温度漂移。
+>
+> **v0.1.5 行为变更**：`Get(n)` 的 cap 可能与 v0.1.4 不同（例如 1 KiB+1 从 4 KiB 变为
+> 2 KiB），但始终满足 `cap >= n`；升级下游时需复核是否依赖具体 cap。
 
 ## 第三方依赖与鸣谢
 

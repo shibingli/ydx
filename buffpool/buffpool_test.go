@@ -7,7 +7,7 @@ import (
 )
 
 // tierCapacities mirrors the internal size classes for test assertions. | tierCapacities 镜像内部尺寸分级，供测试断言使用。
-var tierCapacities = []int{1 << 10, 4 << 10, 16 << 10, 64 << 10, 256 << 10}
+var tierCapacities = []int{1 << 10, 2 << 10, 4 << 10, 8 << 10, 16 << 10, 32 << 10, 64 << 10, 128 << 10, 256 << 10}
 
 // drainClasses empties every size class so a test observes only its own Put calls.
 // | drainClasses 清空所有分级，使测试只观察到自己的 Put 调用。
@@ -28,10 +28,16 @@ func TestGetSizeClasses(t *testing.T) {
 		{"零取最小分级", 0, 1 << 10},
 		{"小于最小分级", 1, 1 << 10},
 		{"恰好最小分级", 1 << 10, 1 << 10},
-		{"最小分级加一", 1<<10 + 1, 4 << 10},
+		{"最小分级加一", 1<<10 + 1, 2 << 10},
+		{"恰好 2 KiB", 2 << 10, 2 << 10},
+		{"2 KiB 加一", 2<<10 + 1, 4 << 10},
 		{"恰好 4 KiB", 4 << 10, 4 << 10},
+		{"4 KiB 加一", 4<<10 + 1, 8 << 10},
+		{"恰好 8 KiB", 8 << 10, 8 << 10},
 		{"恰好 16 KiB", 16 << 10, 16 << 10},
+		{"恰好 32 KiB", 32 << 10, 32 << 10},
 		{"恰好 64 KiB", 64 << 10, 64 << 10},
+		{"恰好 128 KiB", 128 << 10, 128 << 10},
 		{"恰好 256 KiB", 256 << 10, 256 << 10},
 		{"超过上限按需分配", 256<<10 + 1, 256<<10 + 1},
 		{"超大请求按需分配", 4 << 20, 4 << 20},
@@ -57,7 +63,8 @@ func TestPutDropsOversizedAndOddCapacities(t *testing.T) {
 	drainClasses()
 	Put(make([]byte, 0, MaxSize+8))
 	Put(make([]byte, 0, 3))
-	Put(make([]byte, 0, 2<<10))
+	Put(make([]byte, 0, 3<<10))
+	Put(make([]byte, 0, 3<<20))
 	Put(nil)
 	for i := range pools {
 		if v := pools[i].Get(); v != nil {
@@ -161,4 +168,18 @@ func TestGetPutConcurrent(t *testing.T) {
 		}(w)
 	}
 	wg.Wait()
+}
+
+// TestPutAcceptsEveryClass verifies that every published class capacity maps to
+// its own slot and is accepted by Put. sync.Pool may drop items on GC, so the
+// test checks the mapping rather than expecting a specific item to survive. |
+// TestPutAcceptsEveryClass 验证每个公开分级容量映射到对应槽位并被 Put 接纳。
+// sync.Pool 可能在 GC 时丢弃条目，因此测试检查映射而不是要求某个条目必然存活。
+func TestPutAcceptsEveryClass(t *testing.T) {
+	for i, size := range tierCapacities {
+		if got := classForCapacity(size); got != i {
+			t.Fatalf("classForCapacity(%d) = %d, 期望 %d | got %d, want %d", size, got, i, got, i)
+		}
+		Put(make([]byte, 0, size))
+	}
 }

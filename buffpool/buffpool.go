@@ -10,11 +10,24 @@ import (
 // 按升序排列。
 var tierSizes = [...]int{
 	1 << 10,   // 1 KiB | 1 KiB
+	2 << 10,   // 2 KiB | 2 KiB
 	4 << 10,   // 4 KiB | 4 KiB
+	8 << 10,   // 8 KiB | 8 KiB
 	16 << 10,  // 16 KiB | 16 KiB
+	32 << 10,  // 32 KiB | 32 KiB
 	64 << 10,  // 64 KiB | 64 KiB
+	128 << 10, // 128 KiB | 128 KiB
 	256 << 10, // 256 KiB | 256 KiB
 }
+
+// minSize is the smallest pooled class and classShift is its power-of-two
+// exponent. Every class is a power of two from 2^classShift to 2^(classShift+8).
+// | minSize 是最小分级，classShift 是其 2 的幂指数；分级覆盖从 2^classShift 到
+// 2^(classShift+8) 的所有 2 的幂。
+const (
+	minSize    = 1 << 10
+	classShift = 10
+)
 
 // MaxSize is the largest capacity the pool retains. | MaxSize 是池保留的最大容量。
 // A Put with a larger capacity drops the buffer. | Put 传入更大容量时直接丢弃该缓冲。
@@ -66,30 +79,26 @@ func Put(p []byte) {
 // or -1 when n exceeds MaxSize. | classForSize 返回容量不小于 n 的最小分级下标；
 // n 超过 MaxSize 时返回 -1。
 func classForSize(n int) int {
-	// The classes are powers of two at 2^10, 2^12, 2^14, 2^16 and 2^18. bits.Len gives the
-	// exponent of the next power of two in one instruction; the class index is then a shift. |
-	// 分级是 2^10、2^12、2^14、2^16、2^18 的幂次。bits.Len 用一条指令给出下一个 2 的幂指数，
-	// 分级下标只是一次移位。
-	if n <= tierSizes[0] {
+	// Classes are powers of two at 1 KiB, 2 KiB, ..., 256 KiB. bits.Len gives
+	// the exponent of the next power of two in one instruction; the class index
+	// is then a shift. | 分级是 1 KiB、2 KiB … 256 KiB 的 2 的幂。bits.Len 用一条
+	// 指令给出下一个 2 的幂指数，分级下标只是一次移位。
+	if n <= minSize {
 		return 0
 	}
-	if n > tierSizes[len(tierSizes)-1] {
+	if n > MaxSize {
 		return -1
 	}
-	return (bits.Len(uint(n-1)) - 9) >> 1
+	return bits.Len(uint(n-1)) - classShift
 }
 
 // classForCapacity returns the index of the class whose size equals capacity,
 // or -1 when no class matches. | classForCapacity 返回尺寸恰好等于 capacity 的分级
 // 下标；没有匹配时返回 -1。
 func classForCapacity(capacity int) int {
-	if capacity < tierSizes[0] || capacity > tierSizes[len(tierSizes)-1] ||
+	if capacity < minSize || capacity > MaxSize ||
 		capacity&(capacity-1) != 0 {
 		return -1
 	}
-	exponent := bits.TrailingZeros(uint(capacity))
-	if exponent&1 != 0 {
-		return -1
-	}
-	return (exponent - 10) >> 1
+	return bits.TrailingZeros(uint(capacity)) - classShift
 }

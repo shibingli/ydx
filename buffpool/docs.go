@@ -3,9 +3,12 @@
 //
 // Buffers are grouped into fixed size classes, one sync.Pool per class, so a
 // request for a few hundred bytes never occupies a quarter-megabyte block and
-// a large response never forces small allocations to follow it. | 缓冲按固定尺寸
-// 分级，每级一个 sync.Pool；因此几百字节的请求不会占用 256 KiB 的大块，大响应也
-// 不会迫使小分配跟随它迁移。
+// a large response never forces small allocations to follow it. The nine
+// classes are 1, 2, 4, 8, 16, 32, 64, 128 and 256 KiB (2x spacing), so the
+// worst-case capacity waste is at most 2x. | 缓冲按固定尺寸分级，每级一个
+// sync.Pool；因此几百字节的请求不会占用 256 KiB 的大块，大响应也不会迫使小分配跟随它
+// 迁移。九个分级为 1、2、4、8、16、32、64、128、256 KiB（2× 间隔），最坏容量浪费不超过
+// 2 倍。
 //
 // Get returns a slice whose length is zero and whose capacity is at least the
 // requested size, so appending within that capacity never reallocates. | Get 返回
