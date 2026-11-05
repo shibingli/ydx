@@ -149,7 +149,16 @@ tmpfs 上 fsync 是空操作，NoSync 与 fsync 均约 2.0 µs/128 条（4.1 GB/
 RDMA 为可选构建，本轮主线优化不以它为目标；历史对比（verbs 64 B 同步 RTT
 19.7 µs、4 KiB 729 MB/s）保留在仓库历史与 `raft/README.md` 的说明中。
 
-## 5. 复现
+## 5. 故障恢复实测（3 节点 TCP，NoSync）
+
+- 领导者节点 2 上已提交 `fo=before`（index 3）。
+- `kill -9` 领导者进程；节点 3/4 在 **517 ms** 内选出新领导者（节点 4，term 3）。
+- 新领导者提交 `fo=after`（index 5），两个存活节点均读取到 `after`。
+- 以同一 `FileStorage` 目录重启节点 2；它作为 follower 追平到 commit/applied
+  index 5，读取到 `after`。
+- 同一轮 `go test -race` 覆盖分区、Check-Quorum、领导者转移、快照追赶与重启。
+
+## 6. 复现
 
 ```bash
 cd benchmarks/raft
