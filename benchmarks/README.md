@@ -1,8 +1,8 @@
 # ydx 基准与主流实现对比
 
-本目录是 ydx 的基准模块集合，共 **19 个独立 Go 模块**（`benchmarks/xml` 依赖已发布的
-`xml/v0.1.1` 子目录标签；`benchmarks/pool` 依赖 `pool/v0.1.0`，该标签发布前同样使用
-仓库外临时 `go.work`，不得提交）。原 yd 仓
+本目录是 ydx 的基准模块集合，共 **21 个独立 Go 模块**（`benchmarks/xml` 依赖已发布的
+`xml/v0.1.1` 子目录标签；`benchmarks/pool` 依赖 `pool/v0.1.0`；`benchmarks/raft`
+依赖 `raft/v0.1.0`；`benchmarks/rdma` 依赖 `rdma/v0.1.0`，这些标签发布前同样使用仓库外临时 `go.work`，不得提交）。原 yd 仓
 `benchmarks/` 的独有场景
 已全部并入本目录（json 的 7 字段载荷、base64 的 32 B/1 MiB、jwt 的 cristal/jwt 与
 kataras/jwt、log 的 prebound 场景、router 的 echo/fiber、websocket 的 gobwas/gws、
@@ -39,6 +39,8 @@ template 模块，避免同一引擎在两处重复对比），yd 仓不再保�
 | `benchmarks/log` | `zap`、`zerolog`、`slog`、`logrus` | [log/README.md](log/README.md) |
 | `benchmarks/middleware` | `rs/cors`、`chi`、`klauspost/compress/gzhttp`、`x/time/rate` | [middleware/README.md](middleware/README.md) |
 | `benchmarks/pool` | `ants/v2`、`pond/v2`、`gammazero/workerpool`、`sourcegraph/conc`、裸 goroutine | [pool/README.md](pool/README.md) |
+| `benchmarks/raft` | Dragonboat v4、etcd raft v3.7.0、hashicorp/raft v1.8.0；并发/多组、FileStorage WAL、跨主机 TCP | [raft/README.md](raft/README.md) |
+| `benchmarks/rdma` | gordma v0.3.0、perftest（跨主机往返延迟与 4 KiB SEND 带宽） | [rdma/README.md](rdma/README.md) |
 | `benchmarks/regexpx` | 标准库 `regexp`、`grafana/regexp`、`regexp2`、`go-re2` | [regexpx/README.md](regexpx/README.md) |
 | `benchmarks/router` | `net/http.ServeMux`、`httprouter`、`chi`、`gin`、`echo`、`fiber` | [router/README.md](router/README.md) |
 | `benchmarks/sse` | `gin-contrib/sse`、手写 `fmt.Fprintf` 基线 | [sse/README.md](sse/README.md) |

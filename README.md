@@ -31,6 +31,9 @@
 | `github.com/shibingli/ydx/log` | `log` | 零拷贝结构化日志 |
 | `github.com/shibingli/ydx/regexpx` | `regexpx` | 自研正则引擎（线性 NFA + 惰性 DFA + 回溯 + SIMD 预过滤 + 启动预热 + 调用方缓冲区 API） |
 | `github.com/shibingli/ydx/router` | `router` | 基数树路由 + 原生 http 适配 |
+| `github.com/shibingli/ydx/raft` | `raft` | 高性能强一致 Raft：单组 Node + 多组 NodeHost、联合共识、ReadIndex、快照、WAL、TCP/HTTP/RDMA 传输 |
+| `github.com/shibingli/ydx/raft/ydrouter` | `ydrouter` | Raft HTTP 传输的 YD 路由适配（YD 路由优先，兼容原生 net/http） |
+| `github.com/shibingli/ydx/rdma` | `rdma` | 纯 Go 零拷贝 RDMA：purego 运行时加载 libibverbs（无 cgo）、RoCE v1/v2/IB、RC/UC/UD、批量提交、预注册大页池与零拷贝消息连接 |
 | `github.com/shibingli/ydx/gorm` | `gorm` | GORM 装配、连接串预置与自动建库（MySQL / PostgreSQL / SQLite / 达梦 DM8）；四方言用法见 [yd 的方言指南](https://github.com/shibingli/yd/blob/main/docs/gorm-dialects.md) |
 | `github.com/shibingli/ydx/redis` | `redis` | go-redis 通用客户端、探活与读透缓存 |
 | `github.com/shibingli/ydx/asynq` | `asynq` | 基于 asynq 的异步任务层（注册表、客户端、服务端） |
@@ -117,6 +120,8 @@ ydx 的组件实例默认**不共享 Go 内存状态**：同一个进程里创�
 | `benchmarks/log` | `zap`、`zerolog`、`slog`、`logrus` | [log](benchmarks/log/README.md) |
 | `benchmarks/middleware` | `rs/cors`、`chi`、`gzhttp`、`x/time/rate` | [middleware](benchmarks/middleware/README.md) |
 | `benchmarks/pool` | `ants/v2`、`pond/v2`、`gammazero/workerpool`、`sourcegraph/conc`、裸 goroutine | [pool](benchmarks/pool/README.md) |
+| `benchmarks/raft` | Dragonboat v4、etcd raft v3.7、hashicorp/raft v1.8、并发/多组、FileStorage WAL、TCP | [raft](benchmarks/raft/README.md) |
+| `benchmarks/rdma` | gordma v0.3.0、perftest（跨主机延迟与 4 KiB SEND 带宽） | [rdma](benchmarks/rdma/README.md) |
 | `benchmarks/regexpx` | 标准库 `regexp`、`grafana/regexp`、`regexp2`、`go-re2` | [regexpx](benchmarks/regexpx/README.md) |
 | `benchmarks/router` | `net/http.ServeMux`、`httprouter`、`chi`、`gin`、`echo`、`fiber` | [router](benchmarks/router/README.md) |
 | `benchmarks/sse` | `gin-contrib/sse`、手写 `fmt.Fprintf` 基线 | [sse](benchmarks/sse/README.md) |

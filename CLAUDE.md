@@ -32,7 +32,7 @@ ydx 是 yd 全栈框架的可复用组件仓库；组件源码以本仓库为唯
 - 产品模块：`errs`、`sysinfo`、`gc`、`buffpool`、`pool`、`protocol`、`nodeid`、`base64`、`json`、`xml`、`afs`、
   `config`、`log`、`regexpx`、`router`、`gorm`、`redis`、`asynq`、`cron`、`cache`、`sse`、`websocket`、
   `webtransport`、`realtime`、`render`、`i18n`、`openapi`、`openapi/ydrouter`、`jwt`、`captcha`、`guomi`、
-  `workflow`、`waf`、`middleware` 及
+  `workflow`、`waf`、`raft`、`raft/ydrouter`、`rdma`、`middleware` 及
   `middleware/{accesslog,asyncafter,compress,cors,ratelimit,recovery,requestid,reqlog}`。
 - `waf`（根目录）是唯一的 WAF 实现：自研 SecLang 引擎，原生支持 `router` 与 `net/http`，
   带热更新、钩子、原生/WASM 插件与报警；热路径使用必需字面量/字节集/最小长度预过滤与
@@ -40,7 +40,7 @@ ydx 是 yd 全栈框架的可复用组件仓库；组件源码以本仓库为唯
   依赖方向仍为 yd → ydx，不得让 `waf` 反向依赖 `yd` 或重新引入 Coraza 引擎。
 - `openapi` 是独立模块：核心只接受 `openapi.Route` 并提供标准 `net/http` 处理器，
   **不得** import `ydx/router`；路由适配（`FromRouter` / `Handler`）只在 `openapi/ydrouter`。
-- 基准模块（19 个）：`benchmarks/{base64,buffpool,cache,compress,cron,crypto,json,jwt,log,middleware,pool,regexpx,router,sse,template,waf,websocket,workflow,xml}`。
+- 基准模块（21 个）：`benchmarks/{base64,buffpool,cache,compress,cron,crypto,json,jwt,log,middleware,pool,raft,rdma,regexpx,router,sse,template,waf,websocket,workflow,xml}`。
   `benchmarks/cache/compare` 是 `cache` 模块内的对比子包。`benchmarks/xml` 以 `xml/v0.1.0`
   子目录标签发布为运行门禁，标签发布前通过仓库外临时 `go.work` 运行。yd 仓库不再保留基准，所有最终结果以本仓为准。
 - 守卫模块：`repotest`。
@@ -58,6 +58,17 @@ ydx 是 yd 全栈框架的可复用组件仓库；组件源码以本仓库为唯
   SQLi/XSS 检测）与 `github.com/tetratelabs/wazero`（Apache-2.0，纯 Go WASM 运行时，无 cgo）。
   两者版本由 `waf/go.mod` 锁定；升级需同步 `waf/README.md` 与 `waf/WASM.md`。`waf` 不并入
   `middleware` 聚合门面，未使用 WAF 的服务不承担其依赖与编译成本。
+- `raft` 默认纯 Go；RDMA 传输仅在 Linux + cgo + `-tags rdma` 下编译，使用
+  `github.com/smallnest/gordma`（Apache-2.0，librdmacm/libibverbs），默认构建不链接
+  cgo。`raft` 核心不依赖 `ydx/router`，YD 路由适配只在 `raft/ydrouter`。
+- `rdma` 是独立的纯 Go RDMA 传输模块：经 `github.com/ebitengine/purego`（Apache-2.0）
+  在运行时加载 `libibverbs`，**不使用 cgo**；Linux + 64 位 + `-tags rdma` 编译，
+  没有标签时为返回 `ErrUnsupported` 的桩实现。支持 RoCE v1/v2 与 InfiniBand、
+  RC/UC/UD、SEND/RECV、RDMA WRITE/READ、原子操作、SRQ/AH、批量提交与零拷贝大页
+  内存池；热路径直接调用 `ibv_context_ops` 函数指针。`Config.VerbsLibrary` 可覆盖
+  发行版库路径，默认自动查找 soname 与 Debian/Ubuntu、RHEL/Fedora、SUSE、OFED
+  路径。`rdma` 不得 import `yd`，也不并入 `middleware`；`raft` 当前的 gordma 传输
+  暂保持不变。
 - `repotest` 会扫描本地 `replace`、旧包前缀、yd 依赖、标准库编解码直引、`fmt.Errorf`、
   直接 `panic`、外键、cgo SQLite 与基准位置。
 
