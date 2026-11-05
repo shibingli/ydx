@@ -147,8 +147,8 @@ tmpfs 上 fsync 是空操作，NoSync 与 fsync 均约 2.0 µs/128 条（4.1 GB/
 | TCP over RoCE NIC / fsync | 57.1k ops/s（2 轮 50.5k–57.1k） | 2.01 ms | 3.62 ms |
 
 RDMA 传输已由 gordma 切换到 `ydx/rdma`（purego 加载 libibverbs，无 cgo）。同一
-3 节点环境、NoSync、20,000 提案 / 128 并发：**384k ops/s**，p50 **272 µs**，
-p99 **882 µs**，无错误；256 KiB 提案经自动分块/重组提交成功，SIGTERM 可优雅关闭。
+3 节点环境、NoSync、20,000 提案 / 128 并发：**409k ops/s**，p50 **282 µs**，
+p99 **718 µs**，无错误；256 KiB 提案经自动分块/重组提交成功，SIGTERM 可优雅关闭。
 RDMA 数据面为 libibverbs SEND/RECV，TCP 仅用于队列对参数交换。历史 gordma 数据
 （verbs 64 B 同步 RTT 19.7 µs、4 KiB 729 MB/s）保留在仓库历史中。
 
