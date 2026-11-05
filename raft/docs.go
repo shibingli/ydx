@@ -77,22 +77,25 @@
 //
 // # RDMA transport | RDMA 传输
 //
-// Real RDMA is an optional build: Linux, CGO_ENABLED=1, -tags rdma, and
-// rdma-core development headers. The default pure-Go build stays cgo-free and
-// returns ErrUnsupported when RDMA is requested. When the build supports it,
-// enable RDMA with the transport switch: | 真实 RDMA 是可选取构建：Linux、
-// CGO_ENABLED=1、-tags rdma 与 rdma-core 开发头文件。默认纯 Go 构建保持无 cgo，
-// 请求 RDMA 时返回 ErrUnsupported。构建支持时通过传输开关启用：
+// Real RDMA is an optional build on Linux/amd64 or Linux/arm64 with -tags rdma.
+// It uses ydx/rdma, which loads libibverbs through purego at run time and does
+// not require cgo; libibverbs.so.1 must be installed. The default pure-Go stub
+// returns ErrUnsupported when RDMA is requested. Frames larger than one
+// registered slot are chunked, so snapshots and large batches do not need
+// oversized slot registrations. | 真实 RDMA 是 Linux/amd64 或 Linux/arm64 下的
+// 可选构建，使用 -tags rdma。它依赖 ydx/rdma，经 purego 在运行时加载
+// libibverbs，不需要 cgo；系统需安装 libibverbs.so.1。默认纯 Go 桩在请求 RDMA
+// 时返回 ErrUnsupported。大于一个注册槽位的帧会被分块，因此快照与大日志批次无需
+// 注册超大槽位。
 //
 //	cfg.RDMA = true
 //	cfg.RDMAOptions = raft.RDMATransportOptions{
 //		ListenAddr: "192.168.2.2:22102",
-//		BusyPoll:   true,
 //	}
 //
 // Build with: | 构建命令：
 //
-//	CGO_ENABLED=1 go build -tags rdma ./...
+//	CGO_ENABLED=0 go build -tags rdma ./...
 //
 // An explicit Config.Transport always wins over Config.RDMA. RDMA is reliable,
 // not encrypted; use IPsec/MACsec or the TLS-enabled TCP/HTTP transports for

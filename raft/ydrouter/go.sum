@@ -1,3 +1,5 @@
+github.com/ebitengine/purego v0.11.3 h1:OB+JLpdm7ioymhyA+6s5kbb/uOuYycAgL8NNTFc5MLg=
+github.com/ebitengine/purego v0.11.3/go.mod h1:DCHPP08djqhNSoTfImcnHYQRZmd0qhakvrozqaEYhGQ=
 github.com/shibingli/ydx/afs v0.1.5 h1:y1RHXGKWcrxKnV7IGDhCbrepae7hqWn5pi9uLdhVv8s=
 github.com/shibingli/ydx/afs v0.1.5/go.mod h1:NTyA2McUo1Qze38hf6+Md0zPjOosBbZBL3vm3zBppmY=
 github.com/shibingli/ydx/base64 v0.1.12 h1:xUjtX6yZ/UMDb5DBwvE1a70FVZnX9gQVBgdlEzQ45KY=
@@ -10,14 +12,14 @@ github.com/shibingli/ydx/log v0.1.11 h1:6b8LbcyuIuLAJNLj3GdfKA8hDH8I/PM5+T0/g9MI
 github.com/shibingli/ydx/log v0.1.11/go.mod h1:5/gnsfDGe6vjDyOKXBUC+w5pwsrye0KcM+e9P2c76ac=
 github.com/shibingli/ydx/protocol v0.1.5 h1:+rXZJY3eb5lsArppW0H0T1TLCVO9qCVxJ9juOPvnvyI=
 github.com/shibingli/ydx/protocol v0.1.5/go.mod h1:eKLAtgDa8Cf4Sg0eMYzf4srW8SW7+T3ceTGV73E1nZ0=
-github.com/shibingli/ydx/raft v0.1.0 h1:UBeYvidVG+ZQZyhKsiYUzZ0bq5/kQEgjI9GQOXB1gGY=
-github.com/shibingli/ydx/raft v0.1.0/go.mod h1:GJrbrq159bU4rDhu16pk3GkV73aX9NSIerld/1wjifY=
+github.com/shibingli/ydx/raft v0.1.1 h1:3DVSMH/4YQXUsteCMCT5oLz9LbmWMKuOL0cT6R5VgAc=
+github.com/shibingli/ydx/raft v0.1.1/go.mod h1:WO/JrNVhz4UryZDsy3NjXPbRh/jy31sdfb6ONCpTZ7w=
+github.com/shibingli/ydx/rdma v0.1.0 h1:ei8TsevAY3PNsNMcFGeiCJ4UFXu/JzmoNO5oWJda6rg=
+github.com/shibingli/ydx/rdma v0.1.0/go.mod h1:jl+JUt93pw8GQfQfoY2O/2LhXGeChGNnBdnvGjp0Hqc=
 github.com/shibingli/ydx/router v0.1.12 h1:So1LEnykINSkfwlcJeX4AmyTkTogS7VeievVMZ7GBqE=
 github.com/shibingli/ydx/router v0.1.12/go.mod h1:xOV2qf9nKtimo6P7zjgXFmlYHJ30nB1NHEjWZuPLFM8=
 github.com/shibingli/ydx/sysinfo v0.1.4 h1:tskX01rpXsDkEmCCz+2s7FnSQqrQCY8SQUeWstPQhMk=
 github.com/shibingli/ydx/sysinfo v0.1.4/go.mod h1:31V/9KavYTLUNJwAsgCHuN6z2wvRpS20En5em99nmqE=
-github.com/smallnest/gordma v0.3.0 h1:9C0QrMK5noKzY58TaaHKcjTD1mVASlwuchDutWJK5PE=
-github.com/smallnest/gordma v0.3.0/go.mod h1:fmwIk6y0xfrFNepUmyH89jIka0/sI3NrMq2vh8838cA=
 github.com/spf13/afero v1.15.0 h1:b/YBCLWAJdFWJTN9cLhiXXcD7mzKn9Dm86dNnfyQw1I=
 github.com/spf13/afero v1.15.0/go.mod h1:NC2ByUVxtQs4b3sIUphxK0NioZnmxgyCrfzeuq8lxMg=
 golang.org/x/text v0.43.0 h1:1QivrlhwAsnMOcqgOdl9my7s9OyZl8O5/UGUTJVXoWc=

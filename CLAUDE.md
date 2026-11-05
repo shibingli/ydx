@@ -58,17 +58,20 @@ ydx 是 yd 全栈框架的可复用组件仓库；组件源码以本仓库为唯
   SQLi/XSS 检测）与 `github.com/tetratelabs/wazero`（Apache-2.0，纯 Go WASM 运行时，无 cgo）。
   两者版本由 `waf/go.mod` 锁定；升级需同步 `waf/README.md` 与 `waf/WASM.md`。`waf` 不并入
   `middleware` 聚合门面，未使用 WAF 的服务不承担其依赖与编译成本。
-- `raft` 默认纯 Go；RDMA 传输仅在 Linux + cgo + `-tags rdma` 下编译，使用
-  `github.com/smallnest/gordma`（Apache-2.0，librdmacm/libibverbs），默认构建不链接
-  cgo。`raft` 核心不依赖 `ydx/router`，YD 路由适配只在 `raft/ydrouter`。
+- `raft` 默认纯 Go；RDMA 传输仅在 Linux/amd64 或 Linux/arm64 + `-tags rdma` 下
+  编译，使用本仓 `github.com/shibingli/ydx/rdma`（经 purego 运行时加载
+  `libibverbs`，**不使用 cgo**），默认构建为返回 `ErrUnsupported` 的桩。`raft` 的
+  RDMA 传输按注册槽位对流帧分块/重组，快照与大日志批次不要求超大槽位。`raft`
+  核心不依赖 `ydx/router`，YD 路由适配只在 `raft/ydrouter`。
 - `rdma` 是独立的纯 Go RDMA 传输模块：经 `github.com/ebitengine/purego`（Apache-2.0）
   在运行时加载 `libibverbs`，**不使用 cgo**；Linux + 64 位 + `-tags rdma` 编译，
   没有标签时为返回 `ErrUnsupported` 的桩实现。支持 RoCE v1/v2 与 InfiniBand、
   RC/UC/UD、SEND/RECV、RDMA WRITE/READ、原子操作、SRQ/AH、批量提交与零拷贝大页
   内存池；热路径直接调用 `ibv_context_ops` 函数指针。`Config.VerbsLibrary` 可覆盖
   发行版库路径，默认自动查找 soname 与 Debian/Ubuntu、RHEL/Fedora、SUSE、OFED
-  路径。`rdma` 不得 import `yd`，也不并入 `middleware`；`raft` 当前的 gordma 传输
-  暂保持不变。
+  路径。`rdma` 不得 import `yd`，也不并入 `middleware`；`raft` 的可选 RDMA 传输
+  已由 gordma 切换到 `ydx/rdma`，两端均为纯 Go。`raft/go.mod` 当前锁定
+  `rdma/v0.1.0`；rdma 发布新标签时同步升级并重新生成 `go.sum`。
 - `repotest` 会扫描本地 `replace`、旧包前缀、yd 依赖、标准库编解码直引、`fmt.Errorf`、
   直接 `panic`、外键、cgo SQLite 与基准位置。
 

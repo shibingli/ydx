@@ -115,12 +115,13 @@ http.Handle("/raft/message", tr.Handler())
 
 ### RDMA（可选）
 
-真实 RDMA 只在 Linux + cgo + `rdma` 构建标签下编译；默认纯 Go 构建请求 RDMA 会
-返回 `raft.ErrUnsupported`。
+真实 RDMA 在 Linux/amd64 或 Linux/arm64 + `rdma` 构建标签下编译，使用
+[`ydx/rdma`](../rdma)：经 purego 在运行时加载 `libibverbs`，**不需要 cgo**；系统
+需安装 `libibverbs.so.1`。默认纯 Go 构建请求 RDMA 会返回 `raft.ErrUnsupported`。
+大于一个注册槽位的流帧会自动分块，快照和大批次无需注册超大槽位。
 
 ```bash
-# 依赖 rdma-core 开发包：libibverbs-dev、librdmacm-dev
-CGO_ENABLED=1 go build -tags rdma ./...
+CGO_ENABLED=0 go build -tags rdma ./...
 ```
 
 ```go
@@ -128,13 +129,15 @@ cfg.RDMA = true
 cfg.RDMAOptions = raft.RDMATransportOptions{
     ListenAddr:   "192.168.2.2:22102",
     Device:       "mlx5_0", // 可选，空则自动选择
-    BusyPoll:     true,     // 最低延迟；会占用一个核心
+    BufferSize:   64 << 10, // 分块/注册槽位，默认 64 KiB
     SharedSecret: sharedSecret,
 }
 ```
 
-`Config.Transport` 显式设置时优先于 `Config.RDMA`。RDMA 链路本身不加密；需要
-保密性时使用 IPsec/MACsec，或改用启用 TLS 的 TCP/HTTP 传输。
+`Config.Transport` 显式设置时优先于 `Config.RDMA`。同一集群的所有对端必须使用
+相同的 `BufferSize`，并保证 `QueueDepth` 能容纳一个发送批次（32 个分块）；RDMA
+消息不能超过接收方注册的槽位。RDMA 链路本身不加密；需要保密性时使用
+IPsec/MACsec，或改用启用 TLS 的 TCP/HTTP 传输。
 
 ## 一致性语义
 
@@ -304,15 +307,16 @@ res, err := host.Propose(ctx, 10, []byte("set key=value"))
 - FSM 的 `Apply`/`Snapshot`/`Restore` 串行执行；慢 FSM 会增加 apply 延迟与内存
   占用，但不会阻塞心跳。
 - 错误与日志文案不泄露口令、DSN、密钥或完整请求体。
-- 快照整体作为一个帧传输；默认单帧上限 64 MiB（HTTP/TCP/RDMA 可配置）。超大状态
-  机应调大 `MaxFrameBytes`/`MaxBodyBytes` 或实现分块快照传输。
+- 快照编码为一个帧；RDMA 传输会按 `BufferSize` 自动分块重组，TCP/HTTP 受单帧
+  上限约束（默认 64 MiB，可配置 `MaxFrameBytes`/`MaxBodyBytes`）。超大状态机在
+  TCP/HTTP 上应调大上限或自行分块。
 
 ## 依赖与鸣谢
 
 - `github.com/shibingli/ydx/errs`：哨兵错误与上下文包装。
 - `github.com/shibingli/ydx/log`：结构化日志（可选注入）。
-- `github.com/smallnest/gordma`（仅 `-tags rdma`）：RDMA verbs 的 Go 封装，
-  Apache-2.0；默认构建不链接 cgo。
+- `github.com/shibingli/ydx/rdma`（仅 `-tags rdma`）：纯 Go RDMA verbs 传输，
+  经 purego 运行时加载 `libibverbs`；默认构建不启用、不需要 cgo。
 - 设计参考：Ongaro & Ousterhout, *In Search of an Understandable Consensus
   Algorithm*；etcd raft、hashicorp/raft 的公开接口与测试实践。
 

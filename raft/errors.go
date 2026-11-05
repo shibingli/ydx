@@ -64,6 +64,10 @@ var (
 	// 存储失败。观察到该错误的节点会停止，继续运行可能破坏 Raft 安全性。
 	ErrStorage = errs.New("raft: storage failure | raft：存储失败")
 
+	// ErrNetwork reports a transport connection or I/O failure. | ErrNetwork
+	// 表示传输连接或 I/O 故障。
+	ErrNetwork = errs.New("raft: network failure | raft：网络故障")
+
 	// ErrCorrupt reports malformed wire data or a damaged WAL record.
 	// | ErrCorrupt 表示网络数据格式错误或 WAL 记录损坏。
 	ErrCorrupt = errs.New("raft: corrupt data | raft：数据损坏")
