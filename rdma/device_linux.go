@@ -11,6 +11,13 @@ import (
 	"github.com/shibingli/ydx/errs"
 )
 
+// inlineProbeHints lists the inline payload sizes tried when the device limit
+// is unknown, largest first. Providers round requests up, so 256 also covers
+// the common 128 and 64 byte capabilities. | inlineProbeHints 列出设备内联上限
+// 未知时依次尝试的内联负载大小（从大到小）。提供方会向上取整，256 字节也覆盖
+// 常见的 128 与 64 字节能力。
+var inlineProbeHints = [...]int{256, 128, 64, 32, 16, 0}
+
 const (
 	// hugePageSize is the 2 MiB huge page size. | hugePageSize 是 2 MiB 大页大小。
 	hugePageSize = 2 << 20
@@ -75,6 +82,16 @@ func Open(cfg Config) (*Device, error) {
 		info:  info,
 		gid:   gid,
 		port:  port.Port,
+	}
+	d.state.ops = deviceOps{
+		postSend:    opsFn(ctx, opPostSend),
+		postRecv:    opsFn(ctx, opPostRecv),
+		pollCQ:      opsFn(ctx, opPollCQ),
+		postSRQRecv: opsFn(ctx, opPostSRQRecv),
+	}
+	if d.state.ops.postSend == 0 || d.state.ops.postRecv == 0 || d.state.ops.pollCQ == 0 {
+		d.Close()
+		return nil, errs.Detail(ErrUnsupported, "libibverbs context has no send/receive operations | libibverbs 上下文缺少收发操作")
 	}
 	var da ibvDeviceAttr
 	if rc := api.queryDev(ctx, &da); rc != 0 {
@@ -264,7 +281,7 @@ func (d *Device) NewCQ(depth int) (*CQ, error) {
 	}
 	return &CQ{
 		dev:   d,
-		state: &cqState{cq: cq, scratch: make([]ibvWC, 64)},
+		state: &cqState{cq: cq, scratch: make([]ibvWC, 64), pollFn: d.state.ops.pollCQ},
 		depth: depth,
 	}, nil
 }
@@ -346,24 +363,37 @@ func (d *Device) NewQP(cfg QPConfig) (*QP, error) {
 		case hint < 0:
 			inline = 0
 		default:
-			inline = 64
+			inline = inlineProbeHints[0]
 		}
 	}
 	q, rc, granted := d.createQP(cfg, maxSend, maxRecv, sendSGE, recvSGE, inline)
 	if q == nil && probe && inline > 0 {
-		q, rc, granted = d.createQP(cfg, maxSend, maxRecv, sendSGE, recvSGE, 0)
-		if q != nil {
-			d.inlineMax.Store(-1)
-			inline = 0
+		// Walk from the largest hint below the failed request down to zero so
+		// providers with smaller inline limits, or none, still get a queue pair.
+		// | 从失败请求以下的最大提示依次尝试到零，使内联上限较小或不支持内联的
+		// 提供方也能创建可用的队列对。
+		for _, cand := range inlineProbeHints {
+			if cand >= inline {
+				continue
+			}
+			q, rc, granted = d.createQP(cfg, maxSend, maxRecv, sendSGE, recvSGE, cand)
+			if q != nil {
+				inline = cand
+				break
+			}
 		}
 	}
 	if q == nil {
 		return nil, errnoError("create queue pair", rc)
 	}
-	if inline > 0 {
-		d.inlineMax.Store(int32(inline))
+	if probe {
+		if granted > 0 {
+			d.inlineMax.Store(int32(granted))
+		} else {
+			d.inlineMax.Store(-1)
+		}
 	}
-	st := &qpState{qp: q, scap: maxSend, rcap: maxRecv}
+	st := &qpState{qp: q, scap: maxSend, rcap: maxRecv, sendFn: d.state.ops.postSend, recvFn: d.state.ops.postRecv}
 	if maxSend > 0 {
 		st.swr = make([]ibvSendWR, maxSend)
 		st.ssge = make([]ibvSGE, maxSend*MaxSGE)
@@ -426,7 +456,7 @@ func (d *Device) NewSRQ(cfg SRQConfig) (*SRQ, error) {
 	if rc != 0 {
 		return nil, errnoError("create shared receive queue", rc)
 	}
-	st := &srqState{srq: srq, cap: maxWR}
+	st := &srqState{srq: srq, cap: maxWR, recvFn: d.state.ops.postSRQRecv}
 	if maxWR > 0 {
 		st.rwr = make([]ibvRecvWR, maxWR)
 		st.rsge = make([]ibvSGE, maxWR*MaxSGE)
@@ -442,6 +472,20 @@ func (d *Device) NewAH(attr AHAttr) (*AH, error) {
 	}
 	if attr.Port == 0 {
 		attr.Port = uint8(d.port)
+	}
+	// Infer the routing mode when the caller leaves it at the zero value:
+	// InfiniBand peers addressed by LID use local routing, Ethernet peers must
+	// use the GRH. | 调用方保持零值时推断路由方式：用 LID 寻址的 InfiniBand
+	// 对端使用本地路由，以太网对端必须使用 GRH。
+	switch d.portAttr.LinkLayer {
+	case LinkLayerInfiniBand:
+		if attr.DLID != 0 && attr.GID == ([16]byte{}) {
+			attr.IsGlobal = false
+		}
+	case LinkLayerEthernet:
+		if attr.GID != ([16]byte{}) {
+			attr.IsGlobal = true
+		}
 	}
 	var a ibvAHAttr
 	a.IsGlobal = boolByte(attr.IsGlobal)

@@ -121,6 +121,41 @@ func TestListDevicesParsesSysfs(t *testing.T) {
 	}
 }
 
+// TestReadGIDsInfersTypeWhenSysfsMissing proves GID types are derived from the
+// link layer and address when the kernel does not expose gid_attrs/types, as
+// on older or non-Mellanox providers. | TestReadGIDsInfersTypeWhenSysfsMissing
+// 证明内核未提供 gid_attrs/types（旧版或非 Mellanox 驱动）时，GID 类型可由
+// 链路层与地址推断。
+func TestReadGIDsInfersTypeWhenSysfsMissing(t *testing.T) {
+	ethPort := filepath.Join(t.TempDir(), "eth0", "ports", "1")
+	writeSysfsFile(t, filepath.Join(ethPort, "state"), "4: ACTIVE\n")
+	writeSysfsFile(t, filepath.Join(ethPort, "link_layer"), "Ethernet\n")
+	writeSysfsFile(t, filepath.Join(ethPort, "gids", "0"), "fe80:0000:0000:0000:ba59:9fff:fe01:1150\n")
+	writeSysfsFile(t, filepath.Join(ethPort, "gids", "1"), "0000:0000:0000:0000:0000:ffff:c0a8:0202\n")
+	p := readPort(ethPort, 1)
+	if len(p.GIDs) != 2 {
+		t.Fatalf("ethernet GIDs = %d, want 2 | 以太网 GID 数量应为 2", len(p.GIDs))
+	}
+	if p.GIDs[0].Type != GIDTypeRoCEv1 {
+		t.Fatalf("link-local type = %v, want RoCE v1 | 链路本地 GID 应为 RoCE v1", p.GIDs[0].Type)
+	}
+	if p.GIDs[1].Type != GIDTypeRoCEv2 {
+		t.Fatalf("global type = %v, want RoCE v2 | 全局 GID 应为 RoCE v2", p.GIDs[1].Type)
+	}
+
+	ibPort := filepath.Join(t.TempDir(), "ib0", "ports", "1")
+	writeSysfsFile(t, filepath.Join(ibPort, "state"), "4: ACTIVE\n")
+	writeSysfsFile(t, filepath.Join(ibPort, "link_layer"), "InfiniBand\n")
+	writeSysfsFile(t, filepath.Join(ibPort, "gids", "0"), "fe80:0000:0000:0000:0002:c903:00ef:4a3e\n")
+	p = readPort(ibPort, 1)
+	if len(p.GIDs) != 1 {
+		t.Fatalf("IB GIDs = %d, want 1 | IB GID 数量应为 1", len(p.GIDs))
+	}
+	if p.GIDs[0].Type != GIDTypeInfiniBand {
+		t.Fatalf("IB type = %v, want InfiniBand | IB GID 类型应为 InfiniBand", p.GIDs[0].Type)
+	}
+}
+
 // TestListDevicesMissingRoot proves a host without /sys/class/infiniband
 // reports ErrNoDevice. | TestListDevicesMissingRoot 证明没有
 // /sys/class/infiniband 的主机会返回 ErrNoDevice。

@@ -24,7 +24,7 @@ func (c *CQ) Poll(events []Completion) (int, error) {
 		if batch > len(c.state.scratch) {
 			batch = len(c.state.scratch)
 		}
-		n := int(c.dev.state.api.poll(c.dev.state.ctx, c.state.cq, int32(batch), &c.state.scratch[0]))
+		n := int(c.dev.state.api.poll(c.state.pollFn, c.state.cq, int32(batch), &c.state.scratch[0]))
 		if n < 0 {
 			return total, errs.WrapDetail(errnoOf(-n), ErrDevice, "poll completion queue | 轮询完成队列")
 		}

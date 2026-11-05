@@ -5,13 +5,14 @@ import (
 	"testing"
 )
 
-// TestDefaultConfigSelectsRoCEv2 proves the default configuration targets RoCE
-// v2 and leaves the GID index to automatic selection. | TestDefaultConfigSelectsRoCEv2
-// 证明默认配置面向 RoCE v2，且 GID 索引保持自动选择。
-func TestDefaultConfigSelectsRoCEv2(t *testing.T) {
+// TestDefaultConfigAutoSelectsGID proves the default configuration leaves the
+// GID type and index to automatic selection so RoCE and InfiniBand hardware
+// both work. | TestDefaultConfigAutoSelectsGID 证明默认配置把 GID 类型与索引
+// 都交给自动选择，从而同时支持 RoCE 与 InfiniBand 硬件。
+func TestDefaultConfigAutoSelectsGID(t *testing.T) {
 	cfg := DefaultConfig()
-	if cfg.GIDType != GIDTypeRoCEv2 {
-		t.Fatalf("GIDType = %v, want RoCE v2 | GIDType 应为 RoCE v2", cfg.GIDType)
+	if cfg.GIDType != GIDTypeUnknown {
+		t.Fatalf("GIDType = %v, want automatic | GIDType 应为自动", cfg.GIDType)
 	}
 	if cfg.GIDIndex != AutoGIDIndex {
 		t.Fatalf("GIDIndex = %d, want %d | GIDIndex 应为自动", cfg.GIDIndex, AutoGIDIndex)
@@ -98,6 +99,33 @@ func TestSelectGIDPrefersRoCEv2IPv4(t *testing.T) {
 	}
 	if idx != 3 {
 		t.Fatalf("selectGID = %d, want 3 | 应选择 RoCE v2 IPv4 表项", idx)
+	}
+}
+
+// TestSelectGIDAutodetectsInfiniBand proves automatic selection prefers RoCE
+// v2 when present but still selects a native InfiniBand GID on IB-only
+// hardware. | TestSelectGIDAutodetectsInfiniBand 证明自动选择在存在 RoCE v2 时
+// 优先选择它，在仅支持 InfiniBand 的硬件上仍能选中原生 IB GID。
+func TestSelectGIDAutodetectsInfiniBand(t *testing.T) {
+	mixed := []GID{
+		{Index: 0, Addr: parseGIDForTest(t, "fe80::1"), Type: GIDTypeInfiniBand},
+		{Index: 1, Addr: parseGIDForTest(t, "::ffff:192.168.2.2"), Type: GIDTypeRoCEv2},
+	}
+	cfg := DefaultConfig()
+	idx, err := cfg.selectGID(mixed)
+	if err != nil {
+		t.Fatalf("selectGID(mixed) = %v | 混合 GID 自动选择失败", err)
+	}
+	if idx != 1 {
+		t.Fatalf("selectGID(mixed) = %d, want 1 | 应优先选择 RoCE v2", idx)
+	}
+	ibOnly := mixed[:1]
+	idx, err = cfg.selectGID(ibOnly)
+	if err != nil {
+		t.Fatalf("selectGID(ib) = %v | 仅 IB GID 时应能自动选择", err)
+	}
+	if idx != 0 {
+		t.Fatalf("selectGID(ib) = %d, want 0 | 应回退到原生 InfiniBand GID", idx)
 	}
 }
 

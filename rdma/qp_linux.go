@@ -81,7 +81,7 @@ func (q *QP) postSend(wrs []SendWR, ah *AH) (int, error) {
 			s.Next = &q.state.swr[i+1]
 		}
 	}
-	rc, bad := q.dev.state.api.send(q.dev.state.ctx, q.state.qp, &q.state.swr[0])
+	rc, bad := q.dev.state.api.send(q.state.sendFn, q.state.qp, &q.state.swr[0])
 	if rc != 0 {
 		idx := 0
 		if bad != nil {
@@ -130,7 +130,7 @@ func (q *QP) PostRecv(wrs []RecvWR) (int, error) {
 			s.Next = &q.state.rwr[i+1]
 		}
 	}
-	rc, bad := q.dev.state.api.recv(q.dev.state.ctx, q.state.qp, &q.state.rwr[0])
+	rc, bad := q.dev.state.api.recv(q.state.recvFn, q.state.qp, &q.state.rwr[0])
 	if rc != 0 {
 		idx := 0
 		if bad != nil {
@@ -191,10 +191,10 @@ func (q *QP) Connect(local, remote ConnectInfo) error {
 	if err := q.Modify(initAttr); err != nil {
 		return errs.WrapDetail(err, ErrInvalidConfig, "INIT | INIT")
 	}
-	ah := AHAttr{
-		IsGlobal: true, GID: remote.GID, DLID: remote.LID,
-		SGIDIndex: uint8(d.cfg.GIDIndex), HopLimit: 0xff, Port: port,
-	}
+	// Native InfiniBand peers addressed by LID use local routing; RoCE and
+	// GID-addressed peers use the GRH. | 用 LID 寻址的原生 InfiniBand 对端使用
+	// 本地路由；RoCE 与用 GID 寻址的对端使用 GRH。
+	ah := peerAH(d.portAttr.LinkLayer, &d.cfg, d.port, remote)
 	if q.typ == QPTypeUD {
 		// UD sends carry their address handle per work request, so RTR only
 		// needs the state transition; an address vector is rejected here. |

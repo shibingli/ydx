@@ -13,7 +13,7 @@ import (
 func testConnConfig(t *testing.T) ConnConfig {
 	t.Helper()
 	cfg := DefaultConnConfig()
-	cfg.Device = "mlx5_0"
+	cfg.Config = testConfig(t)
 	cfg.Slots = 64
 	cfg.SlotSize = 4096
 	cfg.SendTimeout = 3 * time.Second
@@ -127,5 +127,85 @@ func TestConnBatch(t *testing.T) {
 		if !bytes.Equal(got, msgs[i]) {
 			t.Fatalf("message %d = %v, want %v | 消息不符", i, got, msgs[i])
 		}
+	}
+}
+
+// TestConnInlineReuse stresses the inline send path: the transmit buffer is
+// recycled by SendBuffer as soon as ibv_post_send returns. | TestConnInlineReuse
+// 压测内联发送路径：SendBuffer 在 ibv_post_send 返回后立即回收发送缓冲区。
+func TestConnInlineReuse(t *testing.T) {
+	client, server := dialPair(t, testConnConfig(t))
+	const messages = 2000
+	errCh := make(chan error, 1)
+	go func() {
+		for i := 0; i < messages; i++ {
+			b, n, err := server.RecvBuffer()
+			if err != nil {
+				errCh <- err
+				return
+			}
+			tb, err := server.Alloc(n)
+			if err != nil {
+				errCh <- err
+				return
+			}
+			copy(tb.Bytes(), b.Bytes()[:n])
+			if err := server.SendBuffer(tb, n); err != nil {
+				errCh <- err
+				return
+			}
+			if err := server.Release(b); err != nil {
+				errCh <- err
+				return
+			}
+		}
+		errCh <- nil
+	}()
+	for i := 0; i < messages; i++ {
+		msg := []byte{byte(i), byte(i >> 8), 0xaa, 0x55}
+		if err := client.Send(msg); err != nil {
+			t.Fatalf("Send #%d = %v | 发送失败", i, err)
+		}
+		got, err := client.Recv()
+		if err != nil {
+			t.Fatalf("Recv #%d = %v | 接收失败", i, err)
+		}
+		if !bytes.Equal(got, msg) {
+			t.Fatalf("message #%d = %v, want %v | 消息不符", i, got, msg)
+		}
+	}
+	if err := <-errCh; err != nil {
+		t.Fatalf("server echo = %v | 服务端回显失败", err)
+	}
+}
+
+// TestConnLargeMessage proves non-inline sends are signaled and their buffers
+// are recycled by completions. | TestConnLargeMessage 证明非内联发送会请求
+// 完成事件，并由完成事件回收缓冲区。
+func TestConnLargeMessage(t *testing.T) {
+	client, server := dialPair(t, testConnConfig(t))
+	msg := bytes.Repeat([]byte("payload-"), 256)
+	if len(msg) <= client.QP().MaxInline() {
+		t.Fatalf("message %d is inline, want non-inline | 消息应走非内联路径", len(msg))
+	}
+	if err := client.Send(msg); err != nil {
+		t.Fatalf("Send = %v | 发送失败", err)
+	}
+	got, err := server.Recv()
+	if err != nil {
+		t.Fatalf("Recv = %v | 接收失败", err)
+	}
+	if !bytes.Equal(got, msg) {
+		t.Fatalf("payload length = %d, want %d | 负载不符", len(got), len(msg))
+	}
+	if err := server.Send(msg); err != nil {
+		t.Fatalf("echo = %v | 回显失败", err)
+	}
+	got, err = client.Recv()
+	if err != nil {
+		t.Fatalf("Recv echo = %v | 接收回显失败", err)
+	}
+	if !bytes.Equal(got, msg) {
+		t.Fatalf("echo length = %d, want %d | 回显不符", len(got), len(msg))
 	}
 }

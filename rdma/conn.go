@@ -129,8 +129,10 @@ type Conn struct {
 	remoteAddr net.Addr
 
 	closed atomic.Bool
-	errMu  sync.Mutex
-	err    error
+	err    atomic.Pointer[error]
+
+	sendSeq     uint64
+	signalEvery uint64
 }
 
 // Listener accepts RDMA message connections over a TCP control channel. |
@@ -277,7 +279,7 @@ func newConn(dev *Device, tcp net.Conn, cfg ConnConfig, ownsDevice bool) (c *Con
 		Type: QPTypeRC, SendCQ: cq, RecvCQ: cq,
 		MaxSendWR: slots, MaxRecvWR: slots,
 		MaxSendSGE: 1, MaxRecvSGE: 1,
-		MaxInline: cfg.MaxInline, SignalAll: true,
+		MaxInline: cfg.MaxInline, SignalAll: false,
 	})
 	if err != nil {
 		_ = rx.Close()
@@ -285,12 +287,16 @@ func newConn(dev *Device, tcp net.Conn, cfg ConnConfig, ownsDevice bool) (c *Con
 		_ = cq.Close()
 		return nil, err
 	}
+	signalEvery := uint64(slots / 2)
+	if signalEvery < 1 {
+		signalEvery = 1
+	}
 	conn := &Conn{
 		dev: dev, qp: qp, cq: cq, tx: tx, rx: rx, tcp: tcp, cfg: cfg,
 		txBufs: tx.Buffers(), rxBufs: make([]*Buffer, slots),
 		ring: newRxRing(slots), events: make([]Completion, 256),
-		ownsDevice: ownsDevice,
-		localAddr:  tcp.LocalAddr(), remoteAddr: tcp.RemoteAddr(),
+		ownsDevice: ownsDevice, signalEvery: signalEvery,
+		localAddr: tcp.LocalAddr(), remoteAddr: tcp.RemoteAddr(),
 	}
 	success := false
 	defer func() {
@@ -403,18 +409,16 @@ func (c *Conn) setErr(err error) {
 	if err == nil {
 		return
 	}
-	c.errMu.Lock()
-	if c.err == nil {
-		c.err = err
-	}
-	c.errMu.Unlock()
+	ptr := &err
+	c.err.CompareAndSwap(nil, ptr)
 }
 
 // lastErr returns the recorded fatal error. | lastErr 返回记录的致命错误。
 func (c *Conn) lastErr() error {
-	c.errMu.Lock()
-	defer c.errMu.Unlock()
-	return c.err
+	if p := c.err.Load(); p != nil {
+		return *p
+	}
+	return nil
 }
 
 // check reports whether the connection is usable. | check 报告连接是否可用。
@@ -499,10 +503,11 @@ func (c *Conn) Alloc(size int) (*Buffer, error) {
 		if _, err := c.Process(c.cfg.MaxBatch); err != nil {
 			return nil, err
 		}
-		if !deadline.IsZero() && time.Now().After(deadline) {
+		spins++
+		if spins&1023 == 0 && !deadline.IsZero() && time.Now().After(deadline) {
 			return nil, ErrTimeout
 		}
-		if spins++; spins >= 4096 {
+		if spins >= 4096 {
 			spins = 0
 			runtime.Gosched()
 		}
@@ -534,9 +539,19 @@ func (c *Conn) SendBuffer(b *Buffer, n int) error {
 	if n < 0 || n > b.Len() {
 		return errs.Detail(ErrMessageTooLarge, "length %d | 长度 %d", n, n)
 	}
-	flags := SendSignaled
-	if n <= c.qp.MaxInline() {
+	inline := n <= c.qp.MaxInline()
+	signaled := !inline || c.sendSeq%c.signalEvery == 0
+	flags := SendFlags(0)
+	if inline {
+		// Inline payloads are copied into the work request, so the buffer can
+		// be recycled as soon as ibv_post_send returns. Periodic signaling is
+		// still required so the provider can reclaim send queue space. |
+		// 内联负载会复制进工作请求，ibv_post_send 返回后即可回收缓冲区；仍需
+		// 周期性请求完成事件，以便提供方回收发送队列空间。
 		flags |= SendInline
+	}
+	if signaled {
+		flags |= SendSignaled
 	}
 	c.oneSend[0] = SendWR{
 		WRID: txBit | uint64(b.index), Addr: b.Addr(), Length: uint32(n),
@@ -547,6 +562,10 @@ func (c *Conn) SendBuffer(b *Buffer, n int) error {
 	for {
 		posted, err := c.qp.PostSend(c.oneSend[:])
 		if err == nil {
+			c.sendSeq++
+			if inline && !signaled {
+				c.tx.Release(b)
+			}
 			return nil
 		}
 		if !errors.Is(err, ErrQueueFull) || posted != 0 {
@@ -558,11 +577,12 @@ func (c *Conn) SendBuffer(b *Buffer, n int) error {
 			c.tx.Release(b)
 			return perr
 		}
-		if !deadline.IsZero() && time.Now().After(deadline) {
+		spins++
+		if spins&1023 == 0 && !deadline.IsZero() && time.Now().After(deadline) {
 			c.tx.Release(b)
 			return ErrTimeout
 		}
-		if spins++; spins >= 4096 {
+		if spins >= 4096 {
 			spins = 0
 			runtime.Gosched()
 		}
@@ -617,17 +637,35 @@ func (c *Conn) SendBatchBuffers(bufs []*Buffer, lens []int) (int, error) {
 		wrs := c.scratch[:remaining]
 		for i := 0; i < remaining; i++ {
 			b, n := bufs[total+i], lens[total+i]
-			flags := SendSignaled
-			if n <= c.qp.MaxInline() {
+			inline := n <= c.qp.MaxInline()
+			signaled := !inline || (c.sendSeq+uint64(i))%c.signalEvery == 0
+			flags := SendFlags(0)
+			if inline {
 				flags |= SendInline
+			}
+			if signaled {
+				flags |= SendSignaled
 			}
 			wrs[i] = SendWR{
 				WRID: txBit | uint64(b.index), Addr: b.Addr(), Length: uint32(n),
 				LKey: b.LKey(), Opcode: OpSend, Flags: flags,
 			}
 		}
+		oldTotal := total
 		posted, err := c.qp.PostSend(wrs)
 		total += posted
+		c.sendSeq += uint64(posted)
+		// Inline buffers posted without a completion request are already copied
+		// into their work requests and can be recycled now; the periodically
+		// signaled ones and non-inline buffers stay in flight until their
+		// completions arrive. | 未请求完成事件的内联缓冲区已复制进工作请求，
+		// 可立即回收；周期性信号的内联缓冲区与非内联缓冲区保持到完成事件到达。
+		for i := oldTotal; i < total; i++ {
+			w := &wrs[i-oldTotal]
+			if w.Flags&SendInline != 0 && w.Flags&SendSignaled == 0 {
+				c.tx.Release(bufs[i])
+			}
+		}
 		if err == nil {
 			return total, nil
 		}
@@ -642,15 +680,19 @@ func (c *Conn) SendBatchBuffers(bufs []*Buffer, lens []int) (int, error) {
 		// and the suffix is retried after draining completions. | 背压下部分提交
 		// 属正常：前缀已在途，排空完成事件后重试后缀。
 		if _, perr := c.Process(c.cfg.MaxBatch); perr != nil {
+			for i := total; i < len(bufs); i++ {
+				c.tx.Release(bufs[i])
+			}
 			return total, perr
 		}
-		if !deadline.IsZero() && time.Now().After(deadline) {
+		spins++
+		if spins&1023 == 0 && !deadline.IsZero() && time.Now().After(deadline) {
 			for i := total; i < len(bufs); i++ {
 				c.tx.Release(bufs[i])
 			}
 			return total, ErrTimeout
 		}
-		if spins++; spins >= 4096 {
+		if spins >= 4096 {
 			spins = 0
 			runtime.Gosched()
 		}
@@ -705,10 +747,11 @@ func (c *Conn) RecvBuffer() (*Buffer, int, error) {
 		if _, err := c.Process(c.cfg.MaxBatch); err != nil {
 			return nil, 0, err
 		}
-		if !deadline.IsZero() && time.Now().After(deadline) {
+		spins++
+		if spins&1023 == 0 && !deadline.IsZero() && time.Now().After(deadline) {
 			return nil, 0, ErrTimeout
 		}
-		if spins++; spins >= 4096 {
+		if spins >= 4096 {
 			spins = 0
 			runtime.Gosched()
 		}

@@ -251,6 +251,9 @@ func readGIDs(portDir string, link LinkLayer) []GID {
 		}
 		typeText := readTrim(filepath.Join(portDir, "gid_attrs", "types", entry.Name()))
 		g.Type = gidTypeFromSysfs(typeText, link)
+		if g.Type == GIDTypeUnknown {
+			g.Type = inferGIDType(g, link)
+		}
 		g.NetDev = readTrim(filepath.Join(portDir, "gid_attrs", "ndevs", entry.Name()))
 		gids = append(gids, g)
 	}

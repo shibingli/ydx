@@ -12,16 +12,23 @@
 //   - SEND/RECV、RDMA WRITE/READ、WRITE_WITH_IMM、比较交换与取加原子操作 |
 //     SEND/RECV, RDMA WRITE/READ, WRITE_WITH_IMM, compare-and-swap and
 //     fetch-and-add atomics
-//   - RoCE v1、RoCE v2 与原生 InfiniBand；默认自动选择可路由的 RoCE v2 GID |
-//     RoCE v1, RoCE v2 and native InfiniBand; routable RoCE v2 GIDs by default
+//   - RoCE v1、RoCE v2 与原生 InfiniBand；默认自动选择最佳 GID（RoCE v2 >
+//     RoCE v1 > IB），IB 对端提供 LID 时使用本地路由 | RoCE v1, RoCE v2 and
+//     native InfiniBand; the best GID is selected automatically (RoCE v2 over
+//     RoCE v1 over IB), and InfiniBand peers with a LID use local routing
+//   - 不绑定厂商：支持任意 libibverbs 提供方，自动发现设备与活动端口，sysfs
+//     缺少 GID 类型时按链路层与地址推断 | Vendor neutral: any libibverbs
+//     provider, automatic device and active-port discovery, and GID type
+//     inference when sysfs omits it
 //   - 批量提交与批量轮询：一次调用提交整条工作请求链，一次调用取回多个完成事件 |
 //     Batch posting and polling: one call posts a work request chain, one call
 //     reaps several completions
 //   - 预注册大页内存池、零拷贝发送、零拷贝接收与批量回收 | Pre-registered huge
 //     page pools, zero-copy send, zero-copy receive and batch recycling
-//   - 直接调用 ibv_context_ops 热路径函数指针，不经 libibverbs 的 inline 包装 |
-//     Hot paths call ibv_context_ops function pointers directly, without the
-//     libibverbs inline wrappers
+//   - 直接调用 ibv_context_ops 热路径函数指针，不经 libibverbs 的 inline 包装；
+//     amd64/arm64 使用最小汇编调用桩 | Hot paths call ibv_context_ops function
+//     pointers directly, without the libibverbs inline wrappers; amd64 and arm64
+//     use minimal assembly call stubs
 //   - 可通过 Config.VerbsLibrary 指定任意发行版的 libibverbs 路径 | Config.
 //     VerbsLibrary selects any distribution's libibverbs path
 //

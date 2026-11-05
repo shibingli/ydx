@@ -46,7 +46,7 @@ func (s *SRQ) PostRecv(wrs []RecvWR) (int, error) {
 			r.Next = &s.state.rwr[i+1]
 		}
 	}
-	rc, bad := s.dev.state.api.srqRecv(s.dev.state.ctx, s.state.srq, &s.state.rwr[0])
+	rc, bad := s.dev.state.api.srqRecv(s.state.recvFn, s.state.srq, &s.state.rwr[0])
 	if rc != 0 {
 		idx := 0
 		if bad != nil {

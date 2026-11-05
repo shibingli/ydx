@@ -148,6 +148,25 @@ func gidTypeFromSysfs(s string, link LinkLayer) GIDType {
 	}
 }
 
+// inferGIDType classifies a GID when sysfs omits gid_attrs/types. Native
+// InfiniBand links yield InfiniBand GIDs; Ethernet links yield RoCE v1 for
+// link-local addresses and RoCE v2 otherwise. | inferGIDType 在 sysfs 未提供
+// gid_attrs/types 时判定 GID 类型。原生 InfiniBand 链路为 InfiniBand GID；
+// 以太网链路本地地址为 RoCE v1，其余为 RoCE v2。
+func inferGIDType(g GID, link LinkLayer) GIDType {
+	switch link {
+	case LinkLayerInfiniBand:
+		return GIDTypeInfiniBand
+	case LinkLayerEthernet:
+		if g.IsLinkLocal() {
+			return GIDTypeRoCEv1
+		}
+		return GIDTypeRoCEv2
+	default:
+		return GIDTypeUnknown
+	}
+}
+
 // parseDecimal parses a base-10 sysfs integer. | parseDecimal 解析十进制 sysfs 整数。
 func parseDecimal(s string) (uint64, bool) {
 	v, err := strconv.ParseUint(s, 10, 64)

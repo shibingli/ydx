@@ -31,9 +31,11 @@ const (
 )
 
 // Config configures one opened RDMA device and its queue pair defaults. The
-// zero value is valid; DefaultConfig supplies tuned defaults for RoCE v2. |
+// zero value is valid; DefaultConfig supplies tuned defaults with automatic
+// GID selection, preferring RoCE v2 over RoCE v1 and native InfiniBand. |
 // Config 配置一个已打开的 RDMA 设备及其队列对默认值。零值可用；
-// DefaultConfig 提供面向 RoCE v2 的调优默认值。
+// DefaultConfig 提供自动选择 GID 的调优默认值，优先 RoCE v2，其次 RoCE v1，
+// 最后原生 InfiniBand。
 type Config struct {
 	// VerbsLibrary overrides the libibverbs shared object path. Empty tries the
 	// portable soname, then the common Debian, Ubuntu, RHEL, Fedora, SUSE and
@@ -102,13 +104,15 @@ type Config struct {
 	CQDepth int
 }
 
-// DefaultConfig returns a configuration tuned for RoCE v2 with automatic GID
-// selection. | DefaultConfig 返回面向 RoCE v2 自动选择 GID 的调优配置。
+// DefaultConfig returns a configuration tuned for RDMA transports with
+// automatic GID selection, so the same defaults work on RoCE and InfiniBand
+// hardware. | DefaultConfig 返回面向 RDMA 传输的调优配置并自动选择 GID，
+// 使同一默认值可同时用于 RoCE 与 InfiniBand 硬件。
 func DefaultConfig() Config {
 	return Config{
 		Port:             DefaultPort,
 		GIDIndex:         AutoGIDIndex,
-		GIDType:          GIDTypeRoCEv2,
+		GIDType:          GIDTypeUnknown,
 		HopLimit:         DefaultHopLimit,
 		Timeout:          DefaultTimeout,
 		RetryCount:       DefaultRetryCount,

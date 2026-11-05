@@ -307,39 +307,35 @@ func opsFn(ctx *ibvContext, off uintptr) uintptr {
 
 // send posts a send work request chain through the provider op. |
 // send 通过提供方操作提交发送工作请求链。
-func (v *verbsAPI) send(ctx *ibvContext, qp *ibvQP, wr *ibvSendWR) (int, *ibvSendWR) {
-	fn := opsFn(ctx, opPostSend)
+func (v *verbsAPI) send(fn uintptr, qp *ibvQP, wr *ibvSendWR) (int, *ibvSendWR) {
 	var bad *ibvSendWR
 	if fn == 0 {
 		return 5, bad
 	}
-	r, _, _ := purego.SyscallN(fn, uintptr(unsafe.Pointer(qp)), uintptr(unsafe.Pointer(wr)),
+	r := callFn(fn, uintptr(unsafe.Pointer(qp)), uintptr(unsafe.Pointer(wr)),
 		uintptr(unsafe.Pointer(&bad)))
 	return int(int32(r)), bad
 }
 
 // recv posts a receive work request chain through the provider op. |
 // recv 通过提供方操作提交接收工作请求链。
-func (v *verbsAPI) recv(ctx *ibvContext, qp *ibvQP, wr *ibvRecvWR) (int, *ibvRecvWR) {
-	fn := opsFn(ctx, opPostRecv)
+func (v *verbsAPI) recv(fn uintptr, qp *ibvQP, wr *ibvRecvWR) (int, *ibvRecvWR) {
 	var bad *ibvRecvWR
 	if fn == 0 {
 		return 5, bad
 	}
-	r, _, _ := purego.SyscallN(fn, uintptr(unsafe.Pointer(qp)), uintptr(unsafe.Pointer(wr)),
+	r := callFn(fn, uintptr(unsafe.Pointer(qp)), uintptr(unsafe.Pointer(wr)),
 		uintptr(unsafe.Pointer(&bad)))
 	return int(int32(r)), bad
 }
 
 // poll polls the completion queue through the provider op. | poll 通过提供方
 // 操作轮询完成队列。
-func (v *verbsAPI) poll(ctx *ibvContext, cq *ibvCQ, max int32, wc *ibvWC) int32 {
-	fn := opsFn(ctx, opPollCQ)
+func (v *verbsAPI) poll(fn uintptr, cq *ibvCQ, max int32, wc *ibvWC) int32 {
 	if fn == 0 {
 		return -5
 	}
-	r, _, _ := purego.SyscallN(fn, uintptr(unsafe.Pointer(cq)), uintptr(max), uintptr(unsafe.Pointer(wc)))
-	return int32(r)
+	return int32(callFn(fn, uintptr(unsafe.Pointer(cq)), uintptr(max), uintptr(unsafe.Pointer(wc))))
 }
 
 // createSRQ creates a shared receive queue. | createSRQ 创建共享接收队列。
@@ -359,13 +355,12 @@ func (v *verbsAPI) removeSRQ(srq *ibvSRQ) int {
 
 // srqRecv posts a receive chain to a shared receive queue. | srqRecv 向共享
 // 接收队列提交接收链。
-func (v *verbsAPI) srqRecv(ctx *ibvContext, srq *ibvSRQ, wr *ibvRecvWR) (int, *ibvRecvWR) {
-	fn := opsFn(ctx, opPostSRQRecv)
+func (v *verbsAPI) srqRecv(fn uintptr, srq *ibvSRQ, wr *ibvRecvWR) (int, *ibvRecvWR) {
 	var bad *ibvRecvWR
 	if fn == 0 {
 		return 5, bad
 	}
-	r, _, _ := purego.SyscallN(fn, uintptr(unsafe.Pointer(srq)), uintptr(unsafe.Pointer(wr)),
+	r := callFn(fn, uintptr(unsafe.Pointer(srq)), uintptr(unsafe.Pointer(wr)),
 		uintptr(unsafe.Pointer(&bad)))
 	return int(int32(r)), bad
 }

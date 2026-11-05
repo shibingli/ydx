@@ -21,11 +21,27 @@ inline 包装的实际路径），并用 purego 的 `SyscallN` 调用，避免�
 
 | 指标 | ydx/rdma | gordma v0.3.0 | perftest |
 |---|---|---|---|
-| 往返延迟（p50 / min） | **6.8 µs / 5.7 µs** | 11.0 µs | 2.59 µs（工具报告值） |
-| 4 KiB SEND 带宽 | **55.3 Gb/s** | 32.6 Gb/s | 54.7 Gb/s |
+| 往返延迟（p50 / min） | **5.5 µs / 5.4 µs** | 11.0 µs | 2.59 µs（单程；等价往返约 5.18 µs） |
+| 4 KiB SEND 带宽 | **55.1 Gb/s** | 32.6 Gb/s | 54.7 Gb/s |
 
-> 三台测试机的 PCIe 链路为 x4，带宽上限约 55 Gb/s，因此 100 GbE 链路无法
-> 跑满；55 Gb/s 已与 perftest 原生 C 实现持平。
+> perftest 的 `t_avg` 对 SEND 按"往返 / 2"报告，本表 ydx/rdma 为完整往返；
+> 因此 5.5 µs 往返约等于 perftest 的 2.59 µs 单程值。三台测试机的 PCIe 链路
+> 为 x4，带宽上限约 55 Gb/s，100 GbE 链路无法跑满；55.1 Gb/s 已与 perftest
+> 原生 C 实现持平。
+
+## 性能实现要点
+
+- **内联发送 + 周期性信号**：小于等于 QP 授予的 `max_inline_data` 的消息使用
+  `IBV_SEND_INLINE`，`ibv_post_send` 返回后立即回收发送缓冲区；每 `SQ 深度/2`
+  条发送周期性请求一次完成事件，确保 mlx5 等提供方能够回收发送队列空间。
+  设备内联上限未知时按 `256 → 128 → 64 → 32 → 16 → 0` 逐个探测并缓存授予值。
+- **热路径直调**：`ibv_post_send`、`ibv_post_recv`、`ibv_poll_cq`、`ibv_post_srq_recv`
+  直接调用 `ibv_context_ops` 函数指针；amd64 与 arm64 各有一个最小汇编调用桩
+  （SysV / AAPCS64，动态对齐栈、无 cgo 桥接），控制面仍走 purego。
+- **批量回收**：接收侧使用 `RecvBuffers` + `ReleaseBatch` 批量补给 RQ，避免每条
+  消息一次门铃；发送侧 `SendBatchBuffers` 一次门铃提交整批。
+- **原子错误状态与低频时钟检查**：连接错误用原子指针记录；自旋循环每 1024 次
+  才读取一次时钟，降低热路径开销。
 
 ## 功能
 
@@ -35,11 +51,12 @@ inline 包装的实际路径），并用 purego 的 `SyscallN` 调用，避免�
 | 完成队列 | 批量 Poll、共享 CQ、SRQ |
 | 内存 | 预注册大页内存池、库拥有 MR、调用方内存注册（`runtime.Pinner`） |
 | 发送 | SEND / SEND_WITH_IMM / RDMA WRITE / WRITE_WITH_IMM / RDMA READ / 原子操作 |
-| 寻址 | RoCE v1、RoCE v2、原生 InfiniBand；默认优选可路由的 RoCE v2 GID |
+| 寻址 | RoCE v1、RoCE v2、原生 InfiniBand；默认自动选择 GID（RoCE v2 > RoCE v1 > IB），IB 提供 LID 时使用本地路由 |
 | 批量 | `PostSend` / `PostRecv` 一次提交整链；`CQ.Poll` 一次取回多个完成 |
 | 零拷贝 | `Alloc` + `SendBuffer`、`RecvBuffer` + `Release`、`SendBatchBuffers`、`RecvBuffers` + `ReleaseBatch` |
 | 连接层 | `Listen` / `Dial`：TCP 控制通道交换 QPN/PSN/GID/RKey，数据面纯 RDMA |
 | 发行版 | 自动查找 `libibverbs.so.1`/`.so` 与 Debian、Ubuntu、RHEL、SUSE、OFED 常见路径；`Config.VerbsLibrary` 可覆盖 |
+| 硬件 | 不绑定厂商：按 sysfs 自动发现设备与活动端口；GID 类型缺失时按链路层与地址推断；支持 Mellanox、Broadcom、Intel、Marvell 等标准 ibverbs 提供方 |
 | 无 cgo | `CGO_ENABLED=0` 可构建、可运行 |
 
 ## 构建
@@ -173,6 +190,23 @@ YDX_RDMA_ROLE=client YDX_RDMA_ADDR=192.168.2.2:19555 go test -tags rdma -run Tes
 
 `TestConnCrossHost`、`TestConnBandwidthCrossHost` 与 `TestRawLatencyCrossHost`
 在未设置 `YDX_RDMA_ROLE`/`YDX_RDMA_ADDR` 时自动跳过。
+
+集成测试与基准支持以下可选环境变量，用于在任意厂商硬件上指定设备；全部未设置
+时自动发现第一个带活动端口的设备，并自动选择最佳 GID：
+
+| 变量 | 作用 |
+|---|---|
+| `YDX_RDMA_DEVICE` | 设备名，如 `mlx5_0`、`bnxt_re0`、`irdma0` |
+| `YDX_RDMA_PORT` | 端口号，默认 1 |
+| `YDX_RDMA_NETDEV` | RoCE 网卡名过滤，如 `enp101s0f0np0` |
+| `YDX_RDMA_GID_INDEX` | 显式 GID 表索引；默认自动 |
+| `YDX_RDMA_GID_TYPE` | `auto`（默认）/ `ib` / `rocev1` / `rocev2` |
+| `YDX_RDMA_VERBS` | libibverbs 共享库路径覆盖 |
+
+```bash
+GOWORK=off CGO_ENABLED=0 go test -tags rdma ./...
+YDX_RDMA_DEVICE=bnxt_re0 GOWORK=off CGO_ENABLED=0 go test -tags rdma ./...
+```
 
 ## 平台与限制
 

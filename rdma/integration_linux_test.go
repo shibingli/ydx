@@ -11,13 +11,14 @@ import (
 	"unsafe"
 )
 
-// openTestDevice opens mlx5_0 with RoCE v2 defaults. | openTestDevice 以
-// RoCE v2 默认配置打开 mlx5_0。
+// openTestDevice opens the configured device with vendor-neutral defaults.
+// YDX_RDMA_DEVICE and the other YDX_RDMA_* variables target specific hardware;
+// without them the first active port and its best GID are selected. |
+// openTestDevice 以厂商中立的默认配置打开设备。YDX_RDMA_DEVICE 等变量可用
+// 于指定硬件；未设置时选择第一个活动端口及其最佳 GID。
 func openTestDevice(t *testing.T) *Device {
 	t.Helper()
-	cfg := DefaultConfig()
-	cfg.Device = "mlx5_0"
-	cfg.Port = 1
+	cfg := testConfig(t)
 	d, err := Open(cfg)
 	if err != nil {
 		t.Fatalf("Open = %v | 打开设备失败", err)
@@ -96,11 +97,17 @@ func pollUntil(t *testing.T, cq *CQ, want int, deadline time.Duration) []Complet
 // 绑定读取。
 func TestOpenDevice(t *testing.T) {
 	d := openTestDevice(t)
-	if d.Name() != "mlx5_0" {
-		t.Fatalf("Name = %q | 设备名不符", d.Name())
+	if d.Name() == "" {
+		t.Fatal("Name is empty | 设备名为空")
 	}
-	if d.GID().Type != GIDTypeRoCEv2 {
-		t.Fatalf("GID type = %v, want RoCE v2 | GID 类型应为 RoCE v2", d.GID().Type)
+	if d.GID().IsZero() {
+		t.Fatal("selected GID is zero | 选中的 GID 为空")
+	}
+	if d.GID().Type == GIDTypeUnknown {
+		// Some providers omit gid_attrs/types and use an unrecognised link
+		// layer; the GID is still usable, so only log it. | 部分提供方缺少
+		// gid_attrs/types 且链路层无法识别；GID 仍可用，仅记录。
+		t.Logf("GID type is unknown | GID 类型未知")
 	}
 	if !d.PortAttr().State.Active() {
 		t.Fatalf("port state = %v | 端口应为活动", d.PortAttr().State)
@@ -118,8 +125,7 @@ func TestOpenDevice(t *testing.T) {
 // TestOpenRejectsMissingVerbsLibrary 证明 Config.VerbsLibrary 覆盖自动查找，
 // 并在库缺失时返回 ErrUnsupported。
 func TestOpenRejectsMissingVerbsLibrary(t *testing.T) {
-	cfg := DefaultConfig()
-	cfg.Device = "mlx5_0"
+	cfg := testConfig(t)
 	cfg.VerbsLibrary = "/nonexistent/libibverbs.so.1"
 	_, err := Open(cfg)
 	if !errors.Is(err, ErrUnsupported) {
@@ -227,6 +233,64 @@ func TestRCLoopbackSendRecv(t *testing.T) {
 	}
 	if !sawSend || !sawRecv {
 		t.Fatalf("send/recv = %v/%v | 缺少完成事件", sawSend, sawRecv)
+	}
+}
+
+// TestInlineSendAtGrantedLimit proves a payload exactly at the provider-granted
+// inline limit can be posted inline and received, so the automatic probe never
+// over-estimates a vendor's limit. | TestInlineSendAtGrantedLimit 证明等于
+// 提供方授予内联上限的负载可以内联提交并被接收，自动探测不会高估厂商上限。
+func TestInlineSendAtGrantedLimit(t *testing.T) {
+	d := openTestDevice(t)
+	cq, qa, qb := newRCPair(t, d, 8)
+	limit := qa.MaxInline()
+	if limit <= 0 {
+		t.Skip("provider grants no inline data | 提供方未授予内联能力")
+	}
+	pool, err := d.NewPool(PoolConfig{Slots: 4, SlotSize: 4096, HugePages: true})
+	if err != nil {
+		t.Fatalf("NewPool = %v | 创建内存池失败", err)
+	}
+	defer pool.Close()
+
+	rx, ok := pool.Acquire()
+	if !ok {
+		t.Fatal("Acquire recv failed | 获取接收槽位失败")
+	}
+	if n, err := qb.PostRecv([]RecvWR{{
+		WRID: 7, Addr: rx.Addr(), Length: uint32(rx.Len()), LKey: rx.LKey(),
+	}}); err != nil || n != 1 {
+		t.Fatalf("PostRecv = %d/%v | 提交接收失败", n, err)
+	}
+	tx, ok := pool.Acquire()
+	if !ok {
+		t.Fatal("Acquire tx failed | 获取发送槽位失败")
+	}
+	payload := tx.Bytes()[:limit]
+	for i := range payload {
+		payload[i] = byte(i * 7)
+	}
+	if n, err := qa.PostSend([]SendWR{{
+		WRID: 8, Addr: tx.Addr(), Length: uint32(limit), LKey: tx.LKey(),
+		Opcode: OpSend, Flags: SendSignaled | SendInline,
+	}}); err != nil || n != 1 {
+		t.Fatalf("PostSend inline = %d/%v | 提交内联发送失败", n, err)
+	}
+	comps := pollUntil(t, cq, 2, 5*time.Second)
+	var sawSend, sawRecv bool
+	for _, c := range comps {
+		switch {
+		case c.WRID == 8 && c.Opcode == CompSend:
+			sawSend = true
+		case c.WRID == 7 && c.Opcode.IsRecv():
+			sawRecv = true
+			if c.Bytes != uint32(limit) || !bytes.Equal(rx.Bytes()[:c.Bytes], payload) {
+				t.Fatalf("recv = %d bytes | 内联接收负载不符", c.Bytes)
+			}
+		}
+	}
+	if !sawSend || !sawRecv {
+		t.Fatalf("inline send/recv = %v/%v | 缺少内联完成事件", sawSend, sawRecv)
 	}
 }
 
