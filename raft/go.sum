@@ -1,0 +1,12 @@
+github.com/shibingli/ydx/base64 v0.1.12 h1:xUjtX6yZ/UMDb5DBwvE1a70FVZnX9gQVBgdlEzQ45KY=
+github.com/shibingli/ydx/base64 v0.1.12/go.mod h1:PaROcW7ashuUWtpu30D3TfA28lDCBop8D39ZrHuK/eE=
+github.com/shibingli/ydx/errs v0.1.4 h1:/hexB5eDFA/wWhRof5yxWEVeVlHn1P7IZmys9U4h1iA=
+github.com/shibingli/ydx/errs v0.1.4/go.mod h1:N6GNQq5eustT11WTdXOip9bXcIwrFd4c9UWG0gIDuwU=
+github.com/shibingli/ydx/json v0.1.12 h1:R3gry4+UXrKMmTNSkgvLiDgxRse9m4sX5d03eVNFNM0=
+github.com/shibingli/ydx/json v0.1.12/go.mod h1:aAIQPJx/JqDHjNwgS8XEI5KxJ0QMJbkNGvr8IC2y6Ow=
+github.com/shibingli/ydx/log v0.1.11 h1:6b8LbcyuIuLAJNLj3GdfKA8hDH8I/PM5+T0/g9MIU60=
+github.com/shibingli/ydx/log v0.1.11/go.mod h1:5/gnsfDGe6vjDyOKXBUC+w5pwsrye0KcM+e9P2c76ac=
+github.com/shibingli/ydx/sysinfo v0.1.4 h1:tskX01rpXsDkEmCCz+2s7FnSQqrQCY8SQUeWstPQhMk=
+github.com/shibingli/ydx/sysinfo v0.1.4/go.mod h1:31V/9KavYTLUNJwAsgCHuN6z2wvRpS20En5em99nmqE=
+github.com/smallnest/gordma v0.3.0 h1:9C0QrMK5noKzY58TaaHKcjTD1mVASlwuchDutWJK5PE=
+github.com/smallnest/gordma v0.3.0/go.mod h1:fmwIk6y0xfrFNepUmyH89jIka0/sI3NrMq2vh8838cA=
