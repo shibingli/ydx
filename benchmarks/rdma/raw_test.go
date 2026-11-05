@@ -109,8 +109,7 @@ func TestRawLatencyCrossHost(t *testing.T) {
 	if role == "" || addr == "" {
 		t.Skip("set YDX_RDMA_ROLE and YDX_RDMA_ADDR | 未设置跨主机测试变量")
 	}
-	cfg := ydx.DefaultConfig()
-	cfg.Device = "mlx5_0"
+	cfg := benchConfig(t)
 	d, err := ydx.Open(cfg)
 	if err != nil {
 		t.Fatalf("Open = %v | 打开设备失败", err)

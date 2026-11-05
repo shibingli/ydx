@@ -15,10 +15,11 @@ import (
 
 // benchConnConfig returns a small connection configuration for the latency
 // benchmark. | benchConnConfig 返回延迟基准使用的小型连接配置。
-func benchConnConfig() ydx.ConnConfig {
+func benchConnConfig(t *testing.T) ydx.ConnConfig {
+	t.Helper()
 	cfg := ydx.DefaultConnConfig()
-	cfg.Device = "mlx5_0"
-	cfg.Slots = 2
+	cfg.Config = benchConfig(t)
+	cfg.Slots = 64
 	cfg.SlotSize = 4096
 	cfg.HandshakeTimeout = 30 * time.Second
 	cfg.SendTimeout = 30 * time.Second
@@ -34,7 +35,7 @@ func TestConnCrossHost(t *testing.T) {
 	if role == "" || addr == "" {
 		t.Skip("set YDX_RDMA_ROLE and YDX_RDMA_ADDR | 未设置跨主机测试变量")
 	}
-	cfg := benchConnConfig()
+	cfg := benchConnConfig(t)
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
 	const rounds = 1000
@@ -52,6 +53,16 @@ func TestConnCrossHost(t *testing.T) {
 		defer c.Close()
 		t.Logf("server inline=%d slot=%d", c.QP().MaxInline(), cfg.SlotSize)
 		var recvNS, sendNS int64
+		pending := make([]*ydx.Buffer, 0, 32)
+		flush := func() {
+			if len(pending) == 0 {
+				return
+			}
+			if err := c.ReleaseBatch(pending); err != nil {
+				t.Fatalf("ReleaseBatch = %v | 批量释放失败", err)
+			}
+			pending = pending[:0]
+		}
 		for i := 0; i < rounds; i++ {
 			t0 := time.Now()
 			rb, n, rerr := c.RecvBuffer()
@@ -64,14 +75,18 @@ func TestConnCrossHost(t *testing.T) {
 				t.Fatalf("Alloc #%d = %v | 获取发送槽位失败", i, aerr)
 			}
 			copy(tb.Bytes(), rb.Bytes()[:n])
-			_ = c.Release(rb)
 			if serr := c.SendBuffer(tb, n); serr != nil {
 				t.Fatalf("SendBuffer #%d = %v | 回显失败", i, serr)
 			}
 			t2 := time.Now()
 			recvNS += int64(t1.Sub(t0))
 			sendNS += int64(t2.Sub(t1))
+			pending = append(pending, rb)
+			if len(pending) == cap(pending) {
+				flush()
+			}
 		}
+		flush()
 		t.Logf("server recv=%v send=%v | 服务端耗时",
 			time.Duration(recvNS/rounds), time.Duration(sendNS/rounds))
 	case "client":
@@ -84,6 +99,16 @@ func TestConnCrossHost(t *testing.T) {
 		msg := []byte("cross-host payload")
 		var sendNS, waitNS int64
 		durs := make([]time.Duration, 0, rounds)
+		pending := make([]*ydx.Buffer, 0, 32)
+		flush := func() {
+			if len(pending) == 0 {
+				return
+			}
+			if err := c.ReleaseBatch(pending); err != nil {
+				t.Fatalf("ReleaseBatch = %v | 批量释放失败", err)
+			}
+			pending = pending[:0]
+		}
 		for i := 0; i < rounds; i++ {
 			t0 := time.Now()
 			b, aerr := c.Alloc(len(msg))
@@ -106,10 +131,12 @@ func TestConnCrossHost(t *testing.T) {
 			if !bytes.Equal(rb.Bytes()[:n], msg) {
 				t.Fatalf("echo #%d = %q | 回显不符", i, rb.Bytes()[:n])
 			}
-			if rerr := c.Release(rb); rerr != nil {
-				t.Fatalf("Release #%d = %v | 释放失败", i, rerr)
+			pending = append(pending, rb)
+			if len(pending) == cap(pending) {
+				flush()
 			}
 		}
+		flush()
 		sort.Slice(durs, func(i, j int) bool { return durs[i] < durs[j] })
 		var sum time.Duration
 		for _, d := range durs {
@@ -132,7 +159,7 @@ func TestConnBandwidthCrossHost(t *testing.T) {
 		t.Skip("set YDX_RDMA_ROLE and YDX_RDMA_ADDR | 未设置跨主机测试变量")
 	}
 	cfg := ydx.DefaultConnConfig()
-	cfg.Device = "mlx5_0"
+	cfg.Config = benchConfig(t)
 	cfg.Slots = 1024
 	cfg.SlotSize = 4096
 	cfg.MaxBatch = 64

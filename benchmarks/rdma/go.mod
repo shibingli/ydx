@@ -2,7 +2,7 @@ module github.com/shibingli/ydx/benchmarks/rdma
 
 go 1.27.3
 
-require github.com/shibingli/ydx/rdma v0.1.0
+require github.com/shibingli/ydx/rdma v0.1.1
 
 require (
 	github.com/ebitengine/purego v0.11.3 // indirect
