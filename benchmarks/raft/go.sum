@@ -299,7 +299,7 @@ github.com/shibingli/ydx/json v0.1.12 h1:R3gry4+UXrKMmTNSkgvLiDgxRse9m4sX5d03eVN
 github.com/shibingli/ydx/json v0.1.12/go.mod h1:aAIQPJx/JqDHjNwgS8XEI5KxJ0QMJbkNGvr8IC2y6Ow=
 github.com/shibingli/ydx/log v0.1.11 h1:6b8LbcyuIuLAJNLj3GdfKA8hDH8I/PM5+T0/g9MIU60=
 github.com/shibingli/ydx/log v0.1.11/go.mod h1:5/gnsfDGe6vjDyOKXBUC+w5pwsrye0KcM+e9P2c76ac=
-github.com/shibingli/ydx/raft v0.1.1 h1:3DVSMH/4YQXUsteCMCT5oLz9LbmWMKuOL0cT6R5VgAc=
+github.com/shibingli/ydx/raft v0.1.1 h1:4kltuKRP38AXwMEje6sk48QYBhS/8QU7yfJ6ygVuj3E=
 github.com/shibingli/ydx/raft v0.1.1/go.mod h1:WO/JrNVhz4UryZDsy3NjXPbRh/jy31sdfb6ONCpTZ7w=
 github.com/shibingli/ydx/rdma v0.1.0 h1:ei8TsevAY3PNsNMcFGeiCJ4UFXu/JzmoNO5oWJda6rg=
 github.com/shibingli/ydx/rdma v0.1.0/go.mod h1:jl+JUt93pw8GQfQfoY2O/2LhXGeChGNnBdnvGjp0Hqc=
