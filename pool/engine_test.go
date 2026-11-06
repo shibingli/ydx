@@ -163,8 +163,18 @@ func TestEngineCloseDiscard(t *testing.T) {
 			t.Fatalf("submit %d: %v | 提交失败", i+1, err)
 		}
 	}
+	closed := make(chan struct{})
+	go func() {
+		e.close(false)
+		close(closed)
+	}()
+	// Close must be observed before the blocked worker can dequeue the ten queued
+	// jobs; otherwise that worker may legitimately run them before close starts.
+	// | 必须先让 worker 观察到关闭，再解除阻塞；否则它可能在关闭开始前合法地执行排队的
+	// 十个任务。
+	waitFor(t, "engine close starts", func() bool { return e.closed.Load() })
 	close(release)
-	e.close(false)
+	<-closed
 
 	if got := ran.Load(); got != 1 {
 		t.Fatalf("ran = %d, want 1 | 执行数量不符", got)
