@@ -247,17 +247,25 @@ func (q *QP) Connect(local, remote ConnectInfo) error {
 	if max := int(d.attr.MaxQPInitRdAtomic); max > 0 && int(destAtomic) > max {
 		destAtomic = uint8(max)
 	}
+	// UC accepts the address vector and path fields but rejects RC-only RNR and
+	// outstanding-read attributes at RTR. | UC 接受地址向量与路径字段，但在 RTR
+	// 拒绝仅适用于 RC 的 RNR 与在途读属性。
+	rtrMask := QPAttrState | QPAttrPathMTU | QPAttrDestQPN | QPAttrRQPSN | QPAttrAV
+	if q.typ == QPTypeRC {
+		rtrMask |= QPAttrMinRNRTimer | QPAttrMaxDestRDAtomic
+	}
 	if err := q.Modify(QPAttr{
-		Mask: QPAttrState | QPAttrPathMTU | QPAttrDestQPN | QPAttrRQPSN |
-			QPAttrAV | QPAttrMinRNRTimer | QPAttrMaxDestRDAtomic,
+		Mask:  rtrMask,
 		State: QPStateRTR, PathMTU: mtu, DestQPN: remote.QPN, RQPSN: remote.PSN,
 		MinRNRTimer: d.cfg.MinRNRTimer, MaxDestRDMAtomic: destAtomic, AH: ah,
 	}); err != nil {
 		return errs.WrapDetail(err, ErrInvalidConfig, "RTR | RTR")
 	}
-	mask := QPAttrState | QPAttrSQPSN | QPAttrTimeout | QPAttrRetryCount | QPAttrRNRRetry
+	// UC is unreliable-connected: retransmission and RNR attributes are only
+	// valid for RC. | UC 是不可靠连接：重传与 RNR 属性仅对 RC 有效。
+	mask := QPAttrState | QPAttrSQPSN
 	if q.typ == QPTypeRC {
-		mask |= QPAttrMaxQPRDAtomic
+		mask |= QPAttrTimeout | QPAttrRetryCount | QPAttrRNRRetry | QPAttrMaxQPRDAtomic
 	}
 	if err := q.Modify(QPAttr{
 		Mask: mask, State: QPStateRTS, SQPSN: local.PSN,
