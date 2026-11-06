@@ -169,13 +169,12 @@ func (n *Node) handleAppend(m Message) {
 	}
 	// A leader retries AppendEntries when its acknowledgement is delayed. If the
 	// follower already queued persistence for the same or a newer log range, a
-	// duplicate request would only consume persistCh; once that channel fills,
-	// the event loop blocks and can no longer answer heartbeats or run elections
-	// while a snapshot image is being written. The queued request already sends
-	// the cumulative acknowledgement, so retries covered by it can be dropped. |
-	// leader 在确认延迟时会重试 AppendEntries。若跟随者已为相同或更新的日志区间排队
-	// 持久化，重复请求只会占用 persistCh；通道满时事件循环会在快照镜像写入期间阻塞，
-	// 无法应答心跳或推进选举。已有请求会发送累计确认，因此被它覆盖的重试可以丢弃。
+	// duplicate request would only add a redundant durable write and delay
+	// acknowledgements behind a slow snapshot write. The queued request already
+	// sends the cumulative acknowledgement, so retries covered by it can be
+	// dropped. | leader 在确认延迟时会重试 AppendEntries。若跟随者已为相同或更新的
+	// 日志区间排队持久化，重复请求只会增加一次多余的持久写入，并让确认排在慢速快照
+	// 写之后。已有请求会发送累计确认，因此被它覆盖的重试可以丢弃。
 	if !termChanged && truncatedAt == 0 {
 		if lastNew <= n.persistedIndex {
 			n.send(Message{Type: MsgAppResp, To: m.From, Term: n.term, Index: lastNew})

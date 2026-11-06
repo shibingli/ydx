@@ -115,11 +115,10 @@ type Node struct {
 	persistedIndex uint64
 	// persistPendingIndex is the highest log index covered by an append
 	// persistence request already queued for the persist loop. A leader retries
-	// an append when its acknowledgement is delayed; those retries must not fill
-	// persistCh and block the event loop behind a slow snapshot write. |
+	// an append when its acknowledgement is delayed; those retries are already
+	// covered by the queued write and must not enqueue duplicate durable writes. |
 	// persistPendingIndex 是已排入持久化队列的追加请求覆盖的最高日志索引。确认被
-	// 延迟时 leader 会重试追加；这些重试不得塞满 persistCh，让事件循环阻塞在慢速快照
-	// 写入之后。
+	// 延迟时 leader 会重试追加；这些重试已被排队写入覆盖，不得重复排入持久化写。
 	persistPendingIndex uint64
 	confBaseIndex       uint64
 	jointIndex          uint64
