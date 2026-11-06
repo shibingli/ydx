@@ -4,10 +4,11 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/binary"
-	"encoding/json"
 	"errors"
 	"io"
 	"time"
+
+	"github.com/shibingli/ydx/json"
 )
 
 // Ring errors. | Ring 错误。
