@@ -124,6 +124,8 @@ type engine[J any] struct {
 	handoff  chan J
 	stop     chan struct{}
 	stopOnce sync.Once
+	sealOnce sync.Once
+	sealCh   chan struct{}
 
 	// Hot counters live on separate cache lines: producers read sleepers,
 	// workers read spaceWaiters, and every submission writes pending. |
@@ -231,6 +233,7 @@ func newEngine[J any](cfg engineConfig, run func(*workerState, J), discard func(
 	e.wake = make(chan struct{}, wakeCap)
 	e.handoff = make(chan J, wakeCap)
 	e.stop = make(chan struct{})
+	e.sealCh = make(chan struct{})
 	e.spaceCond = sync.NewCond(&e.spaceMu)
 	e.waitCond = sync.NewCond(&e.waitMu)
 
@@ -255,9 +258,21 @@ func newEngine[J any](cfg engineConfig, run func(*workerState, J), discard func(
 // 除非引擎为非阻塞模式，否则在无空位时阻塞。
 func (e *engine[J]) submit(j J) error {
 	if e.closed.Load() {
+		e.rejected.Add(1)
 		return ErrPoolClosed
 	}
+	// pending is published before the decisive closed check. A close therefore
+	// either observes this submission and waits for it to finish, or this check
+	// observes the close and aborts before publishing; a job can never be left
+	// behind in a queue after the last worker exits. | pending 在决定性的 closed
+	// 检查之前发布。因此关闭要么观察到本次提交并等待其结束，要么本次检查观察到关闭并在
+	// 发布前中止；最后一个 worker 退出后不会再有作业滞留在队列中。
 	e.pending.Add(1)
+	if e.closed.Load() {
+		e.rejected.Add(1)
+		e.pendingDone()
+		return ErrPoolClosed
+	}
 	start := e.next.v.Add(1) & e.shardMask
 	// Direct handoff is used only when the whole pool is idle: it transfers the
 	// job and wakes a worker in one channel operation. Saturated paths stay on
@@ -319,6 +334,38 @@ func (e *engine[J]) submit(j J) error {
 		e.spaceCond.Wait()
 		e.spaceMu.Unlock()
 		e.spaceWaiters.Add(-1)
+	}
+}
+
+// sealSubmissions closes the seal channel exactly once. Once pending is zero
+// after a close, no submission can publish work: every future submission
+// increments pending before checking closed and aborts on the closed state.
+// Draining workers may then exit as soon as the rings and handoff channel are
+// empty. | sealSubmissions 只关闭一次封闭通道。关闭后 pending 归零时不再有提交能发布
+// 作业：所有后续提交都会在检查 closed 前递增 pending，并在观察到关闭后中止。排空的
+// worker 随后可在环与 handoff 通道为空时退出。
+func (e *engine[J]) sealSubmissions() {
+	e.sealOnce.Do(func() { close(e.sealCh) })
+}
+
+// sealIfClosed seals the queues when a close is in progress. It is called on the
+// pending-zero transition, which is the only point after close at which
+// publication becomes impossible. | sealIfClosed 在关闭进行中且 pending 归零时封闭
+// 队列。关闭后只有该转换点能保证不再有提交发布作业。
+func (e *engine[J]) sealIfClosed() {
+	if e.closed.Load() {
+		e.sealSubmissions()
+	}
+}
+
+// submissionsSealed reports whether close has stopped all further publication. |
+// submissionsSealed 报告关闭是否已阻止所有后续发布。
+func (e *engine[J]) submissionsSealed() bool {
+	select {
+	case <-e.sealCh:
+		return true
+	default:
+		return false
 	}
 }
 
@@ -397,6 +444,7 @@ func (e *engine[J]) spaceSignal() {
 func (e *engine[J]) pendingDone() {
 	if e.pending.Add(-1) == 0 {
 		e.signalWait()
+		e.sealIfClosed()
 	}
 }
 
@@ -419,6 +467,7 @@ func (e *engine[J]) flushLocalDone(w *workerState) {
 	w.localDone = 0
 	if e.pending.Add(-int64(n)) == 0 {
 		e.signalWait()
+		e.sealIfClosed()
 	}
 }
 

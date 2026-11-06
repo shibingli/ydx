@@ -115,21 +115,26 @@ func (e *engine[J]) work(w *workerState, home uint64) {
 	}
 }
 
-// finishClosed drains the queues after close, running or discarding according to mode.
-// | finishClosed 在关闭后排空队列，按关闭模式执行或丢弃。
-func (e *engine[J]) finishClosed(w *workerState, home uint64) {
-	graceful := e.graceful.Load()
+// handleClosedJob runs or discards one job dequeued after close. | handleClosedJob
+// 在关闭后执行或丢弃一个出队作业。
+func (e *engine[J]) handleClosedJob(w *workerState, j J, graceful bool) {
+	e.spaceSignal()
+	if graceful {
+		e.process(w, j)
+		return
+	}
+	e.discard(j)
+	e.discardedN.Add(1)
+	e.pendingDone()
+}
+
+// drainClosed empties the handoff channel and every ring. | drainClosed 清空 handoff
+// 通道与所有环。
+func (e *engine[J]) drainClosed(w *workerState, home uint64, graceful bool) {
 	for {
 		select {
 		case j := <-e.handoff:
-			e.spaceSignal()
-			if graceful {
-				e.process(w, j)
-			} else {
-				e.discard(j)
-				e.discardedN.Add(1)
-				e.pendingDone()
-			}
+			e.handleClosedJob(w, j, graceful)
 			continue
 		default:
 		}
@@ -137,14 +142,60 @@ func (e *engine[J]) finishClosed(w *workerState, home uint64) {
 		if !ok {
 			return
 		}
-		e.spaceSignal()
-		if graceful {
-			e.process(w, j)
+		e.handleClosedJob(w, j, graceful)
+	}
+}
+
+// finishClosed drains the queues after close, running or discarding according to mode.
+// Workers stay available until submissions are sealed, so a submitter that was
+// admitted just before close can still publish its job to a worker. | finishClosed
+// 在关闭后排空队列，按关闭模式执行或丢弃。worker 会一直可用到提交封闭，因此刚好在关闭
+// 前获准的提交仍能把作业发布给 worker。
+func (e *engine[J]) finishClosed(w *workerState, home uint64) {
+	graceful := e.graceful.Load()
+	for {
+		e.drainClosed(w, home, graceful)
+		// Publish accumulated completions before deciding whether the drain is
+		// finished: the pending-zero transition is what seals the queues. | 在判断
+		// 排空是否结束前发布累计完成数：封闭队列依赖 pending 归零的转换。
+		e.flushLocalDone(w)
+		if e.submissionsSealed() {
+			// No submission can publish after the seal. Drain once more to catch
+			// work published before it but missed by the scan above, then exit.
+			// | 封闭后不再有提交能发布作业。再排空一次以捕获封闭前发布但未被上面的扫描
+			// 看到的作业，然后退出。
+			e.drainClosed(w, home, graceful)
+			return
+		}
+		// Register as sleeping before rechecking so a concurrent publish either
+		// becomes visible to the scan below or leaves a wake token. | 先登记休眠再复查，
+		// 使并发发布要么被下面的扫描看到，要么留下唤醒令牌。
+		e.sleepers.Add(1)
+		select {
+		case j := <-e.handoff:
+			e.sleepers.Add(-1)
+			e.handleClosedJob(w, j, graceful)
+			continue
+		default:
+		}
+		if j, ok := e.findAny(home); ok {
+			e.sleepers.Add(-1)
+			e.handleClosedJob(w, j, graceful)
 			continue
 		}
-		e.discard(j)
-		e.discardedN.Add(1)
-		e.pendingDone()
+		if e.submissionsSealed() {
+			e.sleepers.Add(-1)
+			continue
+		}
+		select {
+		case j := <-e.handoff:
+			e.sleepers.Add(-1)
+			e.handleClosedJob(w, j, graceful)
+		case <-e.wake:
+			e.sleepers.Add(-1)
+		case <-e.sealCh:
+			e.sleepers.Add(-1)
+		}
 	}
 }
 
@@ -245,15 +296,21 @@ func (e *engine[J]) resize(n int) error {
 }
 
 // beginClose starts closing exactly once. The graceful flag is stored before the
-// closed flag so workers observing closed also observe the correct mode. |
-// beginClose 只启动一次关闭。graceful 在 closed 之前写入，使观察到 closed 的 worker 也能
-// 观察到正确的模式。
+// closed flag so workers observing closed also observe the correct mode. When no
+// task or submission is pending the queues are sealed immediately; otherwise the
+// transition to zero pending seals them, because a close then forbids any new
+// publication. | beginClose 只启动一次关闭。graceful 在 closed 之前写入，使观察到
+// closed 的 worker 也能观察到正确的模式。若没有待处理任务或在途提交，立即封闭队列；
+// 否则由 pending 归零的转换封闭队列，因为此时关闭已禁止任何新的发布。
 func (e *engine[J]) beginClose(graceful bool) {
 	if !e.closing.CompareAndSwap(false, true) {
 		return
 	}
 	e.graceful.Store(graceful)
 	e.closed.Store(true)
+	if e.pending.Load() == 0 {
+		e.sealSubmissions()
+	}
 	e.stopOnce.Do(func() { close(e.stop) })
 	e.spaceMu.Lock()
 	e.spaceCond.Broadcast()
