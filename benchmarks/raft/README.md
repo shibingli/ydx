@@ -171,11 +171,23 @@ tmpfs 上 fsync 是空操作，NoSync 与 fsync 均约 2.0 µs/128 条（4.1 GB/
 | TCP over RoCE NIC / NoSync | 516k ops/s（3 轮 446k–603k） | 190 µs | 0.95 ms |
 | TCP over RoCE NIC / fsync | 57.1k ops/s（2 轮 50.5k–57.1k） | 2.01 ms | 3.62 ms |
 
-RDMA 传输已由 gordma 切换到 `ydx/rdma`（purego 加载 libibverbs，无 cgo）。同一
-3 节点环境、NoSync、20,000 提案 / 128 并发：**409k ops/s**，p50 **282 µs**，
-p99 **718 µs**，无错误；256 KiB 提案经自动分块/重组提交成功，SIGTERM 可优雅关闭。
-RDMA 数据面为 libibverbs SEND/RECV，TCP 仅用于队列对参数交换。历史 gordma 数据
-（verbs 64 B 同步 RTT 19.7 µs、4 KiB 729 MB/s）保留在仓库历史中。
+RDMA 传输已由 gordma 切换到 `ydx/rdma`（purego 加载 libibverbs，无 cgo）。早期
+3 节点、NoSync、20,000 提案 / 128 并发测得 **409k ops/s**，p50 **282 µs**，
+p99 **718 µs**。
+
+2026-11-06 使用 `ydx/raft v0.1.7` + `ydx/rdma v0.1.5` 在 c02–c04 三节点复测
+（ConnectX-5，RoCE v2，MemStorage NoSync，32 B 负载，128 并发，8 s）：
+
+| 负载 / 并发 | 吞吐 | p50 | p99 | 错误 |
+|---|---:|---:|---:|---:|
+| 32 B / 128 | **390,969 ops/s**（3,127,827 提案） | 299 µs | 538 µs | 0 |
+| 256 KiB / 16 | 133 ops/s（约 34 MB/s） | 119 ms | 159 ms | 0 |
+
+256 KiB 提案经 RDMA 槽位自动分块/重组提交成功；大负载路径的延迟主要来自分块与
+三副本复制，不以低延迟为目标。RDMA 数据面为 libibverbs SEND/RECV，TCP 仅用于
+队列对参数交换。历史 gordma 数据（verbs 64 B 同步 RTT 19.7 µs、4 KiB 729 MB/s）
+保留在仓库历史中，`ydx/rdma v0.1.5` 的 Conn/裸 verbs 复测见
+[`benchmarks/rdma`](../rdma/README.md)。
 
 ## 5. 故障恢复实测（3 节点 TCP，NoSync）
 

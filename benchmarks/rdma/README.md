@@ -72,8 +72,21 @@ YDX_RDMA_ROLE=client YDX_RDMA_ADDR=192.168.2.2:19555 /tmp/rdma-bench.test -test.
   `retry-exceeded`，perftest 同样无法完成；1024 路径 MTU 稳定。提高 MTU 需要
   整条交换路径支持 jumbo frame。
 
+### 2026-11-06 v0.1.5 复测
+
+同一 c02–c03 主机、ConnectX-5、RoCE v2、GID 自动选择、MTU 1024：
+
+| 测试 | 结果 |
+|---|---|
+| `TestConnCrossHost` | 客户端往返 avg **6.37 µs**、p50 **5.71 µs**、p99 **7.74 µs**；服务端 recv **5.55 µs**、send **0.61 µs** |
+| `TestConnBandwidthCrossHost` | 4 KiB SEND **52.0–55.3 Gb/s**（两轮） |
+| `TestRawLatencyCrossHost` | 裸 verbs 往返 **7.71 µs**（2000 次） |
+
+本轮同时修复了 UC 队列对在 mlx5 上的 RTR/RTS 属性掩码问题；`go test -tags rdma`
+的全部 RC/UC/UD、SRQ、原子与 Ring 帧测试在 c02 硬件上通过。
+
 ## 说明
 
 - 本模块是基准专用模块，产品模块不得导入。
-- `go.mod` 依赖 `github.com/shibingli/ydx/rdma v0.1.0`；标签发布前使用仓库外的
+- `go.mod` 依赖 `github.com/shibingli/ydx/rdma v0.1.5`；标签发布前使用仓库外的
   临时 `go.work` 联调，不提交 `replace`。
