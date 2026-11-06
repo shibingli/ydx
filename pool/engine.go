@@ -124,8 +124,6 @@ type engine[J any] struct {
 	handoff  chan J
 	stop     chan struct{}
 	stopOnce sync.Once
-	sealOnce sync.Once
-	sealCh   chan struct{}
 
 	// Hot counters live on separate cache lines: producers read sleepers,
 	// workers read spaceWaiters, and every submission writes pending. |
@@ -154,6 +152,12 @@ type engine[J any] struct {
 
 	done chan struct{}
 	wg   sync.WaitGroup
+
+	// sealCh closes once close is in progress and pending reaches zero. Workers
+	// draining after close wait on it before exiting. | sealCh 在关闭进行中且
+	// pending 归零时关闭一次。关闭后排空的 worker 等待它后再退出。
+	sealOnce sync.Once
+	sealCh   chan struct{}
 
 	totalProcessed atomic.Uint64
 	totalFailed    atomic.Uint64
