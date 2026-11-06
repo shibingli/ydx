@@ -250,11 +250,17 @@ node.TransferLeader(ctx, 2)
 
 ```text
 <dir>/
+  HARDSTATE
   wal/00000000000000000001.wal
   snapshots/00000000000000001234-00000000000000000009.snap
 ```
 
 `SnapshotDir` 非空时，快照文件写入该目录，WAL 仍在 `<dir>/wal`。
+
+- `HARDSTATE` 独立保存 term/vote/commit，恢复时与 WAL 硬状态合并取最高任期与
+  对应选票。它使跟随者在安装大型快照镜像期间仍能持久化并应答选票，避免旧 leader
+  被杀死后整个快照 fsync 期间无 leader。文件带 CRC，采用临时文件 + fsync +
+  rename + 目录 fsync 原子更新。
 
 - WAL 记录带长度、CRC32C、类型；尾部撕裂写会被安全截断。Unix 上大日志项批次
   可通过 `writev` 从条目切片直接写出，避免先复制进 WAL 缓冲；Windows 等平台

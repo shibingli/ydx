@@ -81,10 +81,13 @@ type FileStorage struct {
 	segmentSize      int64
 	snapshotKeep     int
 	snapshotChecksum SnapshotChecksum
+	hsPath           string
 	mu               sync.Mutex
+	hsMu             sync.Mutex
 	noSync           bool
 	loaded           bool
 	closed           bool
+	hsClosed         bool
 }
 
 // NewFileStorage creates the directory layout. | NewFileStorage 创建目录布局。
@@ -110,6 +113,7 @@ func NewFileStorage(opts FileStorageOptions) (*FileStorage, error) {
 		dir:              opts.Dir,
 		walDir:           filepath.Join(opts.Dir, "wal"),
 		snapDir:          snapDir,
+		hsPath:           filepath.Join(opts.Dir, "HARDSTATE"),
 		noSync:           opts.NoSync,
 		segmentSize:      opts.SegmentSize,
 		snapshotKeep:     opts.SnapshotKeep,
@@ -135,6 +139,7 @@ func NewFileStorage(opts FileStorageOptions) (*FileStorage, error) {
 	// by a process that crashed mid-write. | 目录锁使清理崩溃进程遗留的临时快照
 	// 文件变得安全。
 	cleanupSnapshotTemps(s.snapDir)
+	_ = os.Remove(s.hsPath + ".tmp")
 	return s, nil
 }
 
@@ -189,6 +194,10 @@ func (s *FileStorage) loadLocked() (Recovery, error) {
 				"snapshot file %d/%d does not match marker %d/%d",
 				snap.Index, snap.Term, marker.index, marker.term)
 		}
+	}
+	if err := s.mergeHardStateFile(&rec.hs); err != nil {
+		_ = w.close()
+		return Recovery{}, err
 	}
 	s.wal = w
 	s.snapshot = snap
@@ -296,6 +305,9 @@ func (s *FileStorage) Close() error {
 		return nil
 	}
 	s.closed = true
+	s.hsMu.Lock()
+	s.hsClosed = true
+	s.hsMu.Unlock()
 	var err error
 	if s.wal != nil {
 		err = s.wal.close()

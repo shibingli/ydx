@@ -106,6 +106,21 @@ func (n *Node) persist(batch PersistBatch, compact uint64, fn func(error)) uint6
 // 与提交索引。
 func (n *Node) persistHardState() uint64 {
 	hs := n.hardState()
+	// A dedicated hard-state store keeps term/vote off the WAL queue. This is
+	// critical while a follower is installing a large snapshot: otherwise the
+	// vote would wait behind the image fsync and the group could stay leaderless
+	// for the whole write. | 专用硬状态存储让 term/vote 绕过 WAL 队列。跟随者安装
+	// 大快照时尤其关键：否则选票会排在镜像 fsync 之后，组可能在整个写入期间无
+	// leader。
+	if store, ok := n.storage.(HardStateStorage); ok {
+		if err := store.PersistHardState(&hs); err != nil {
+			n.metrics.persistErrors.Add(1)
+			n.fatal(errs.Wrap(err, ErrStorage))
+			return 0
+		}
+		n.metrics.persistBatches.Add(1)
+		return 0
+	}
 	return n.persist(PersistBatch{HardState: &hs}, 0, nil)
 }
 

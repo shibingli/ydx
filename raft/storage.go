@@ -40,6 +40,22 @@ type localSnapshotFileStorage interface {
 	PersistLocalSnapshotMarkerBatch(snap *Snapshot, batch PersistBatch) error
 }
 
+// HardStateStorage is an optional storage extension that persists term, vote and
+// commit independently of the batch writer. It lets a vote be answered while a
+// large snapshot image write is in progress, instead of waiting behind it in the
+// WAL queue. Implementations must make the state durable before returning and
+// must be safe to call concurrently with Persist. Recovery must merge this state
+// with the hard state replayed from the WAL, keeping the highest term and a
+// non-zero vote for that term. | HardStateStorage 是可选存储扩展，独立于批次写
+// 协程持久化任期、选票与提交索引。它使跟随者能在大型快照镜像写入期间应答选票，
+// 而不是在 WAL 队列中等待。实现必须在返回前使状态持久化，并保证可与 Persist
+// 并发调用。恢复时必须将该状态与 WAL 重放出的硬状态合并，取最高任期及该任期内的
+// 非零选票。
+type HardStateStorage interface {
+	Storage
+	PersistHardState(hs *HardState) error
+}
+
 // ImmediateStorage is an optional optimization for in-memory or otherwise
 // O(1) stores. When PersistImmediate reports true, the Raft event loop calls
 // Persist directly instead of handing the batch to the writer goroutine. The

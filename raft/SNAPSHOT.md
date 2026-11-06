@@ -108,7 +108,20 @@ type StreamingFSM interface {
 - 接收端一次性重组完整镜像，因此协议总上限仍为 256 MiB；分块解除的是传输帧上限。
 - 分块消息是显式扩展，要求所有对端支持；默认 `SnapshotChunkBytes=0` 保持旧线格式。
 
-### 3.8 独立快照目录
+### 3.8 安装快照期间的选票持久化
+
+FileStorage 新增独立 `HARDSTATE` 文件，保存 term/vote/commit：
+
+- term/vote 的持久化不再排队在 WAL 批次之后；跟随者安装大型快照时，镜像文件写入
+  占用持久化协程，选票仍能直接落盘并立即应答。
+- 恢复时把 HARDSTATE 与 WAL 中的硬状态合并：取最高任期，同任期保留非零选票；
+  提交索引取较大值。
+- 文件带 CRC，使用临时文件 + `fdatasync` + rename + 目录 fsync 原子更新；损坏
+  会让恢复返回 `ErrCorrupt`，不会静默回退到更旧任期。
+- 回归测试 `TestSnapshotInstallDoesNotBlockVotePersist` 在快照持久化被阻塞时
+  杀死旧 leader，要求剩余节点仍能选出新 leader；修复前该测试会一直无 leader。
+
+### 3.9 独立快照目录
 
 `FileStorageOptions.SnapshotDir` 可把镜像放到与 WAL 不同的卷：
 
@@ -117,7 +130,7 @@ type StreamingFSM interface {
 - 恢复仍通过 WAL 标记找到镜像；目录不同不影响关联。
 - `SnapshotDir` 应由单个存储实例独占（锁不覆盖该目录）。
 
-### 3.9 自适应组提交窗口
+### 3.10 自适应组提交窗口
 
 `PersistBatchDelay` 现在是基础窗口而非固定值。`persistWindow` 根据：
 
@@ -127,7 +140,7 @@ type StreamingFSM interface {
 自适应扩大窗口，并限制在 `[base, min(8*base, 5ms)]`。零值仍完全关闭额外等待。
 它只影响提交确认延迟，不阻塞事件循环。
 
-### 3.10 WAL 向量写
+### 3.11 WAL 向量写
 
 Linux、Darwin、OpenBSD、illumos 上，大日志项批次使用 `writev` 从条目切片直接
 写出：
@@ -137,7 +150,7 @@ Linux、Darwin、OpenBSD、illumos 上，大日志项批次使用 `writev` 从�
 - Windows 等平台自动回退到原路径。
 - 记录字节与旧编码逐字节一致，由 `TestWALRecordPartsMatchContiguous` 校验。
 
-### 3.11 快照校验策略
+### 3.12 快照校验策略
 
 `FileStorageOptions.SnapshotChecksum`：
 

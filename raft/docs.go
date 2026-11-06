@@ -99,8 +99,14 @@
 // Committed entries are applied only after the local WAL persist completes, so a
 // crash cannot expose effects of an entry that was never durable locally. WAL
 // group commit keeps the encoding contiguous even when append retries overlap.
-// | 已提交日志项只会在本地 WAL 持久化完成后应用，因此崩溃不会暴露本地从未持久化
-// 日志项的副作用。即使追加重试重叠，WAL 组提交仍保持编码区间连续。
+// FileStorage keeps term/vote/commit in a dedicated HARDSTATE file; recovery
+// merges it with the WAL hard state. A follower can therefore vote while a large
+// snapshot image is being written, instead of leaving the group leaderless until
+// the snapshot fsync finishes. | 已提交日志项只会在本地 WAL 持久化完成后应用，因此
+// 崩溃不会暴露本地从未持久化日志项的副作用。即使追加重试重叠，WAL 组提交仍保持
+// 编码区间连续。FileStorage 将 term/vote/commit 保存在独立的 HARDSTATE 文件中，
+// 恢复时与 WAL 硬状态合并；跟随者因此能在大型快照镜像写入期间应答选票，而不是让
+// 组一直无 leader 到快照 fsync 结束。
 //
 // # Snapshots | 快照
 //
