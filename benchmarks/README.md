@@ -1,8 +1,9 @@
 # ydx 基准与主流实现对比
 
-本目录是 ydx 的基准模块集合，共 **21 个独立 Go 模块**（`benchmarks/xml` 依赖已发布的
+本目录是 ydx 的基准模块集合，共 **22 个独立 Go 模块**（`benchmarks/xml` 依赖已发布的
 `xml/v0.1.1` 子目录标签；`benchmarks/pool` 依赖 `pool/v0.1.1`；`benchmarks/raft`
-依赖 `raft/v0.1.6`；`benchmarks/rdma` 依赖 `rdma/v0.1.4`，这些标签发布前同样使用仓库外临时 `go.work`，不得提交）。原 yd 仓
+依赖 `raft/v0.1.6`；`benchmarks/rdma` 依赖 `rdma/v0.1.4`；`benchmarks/wal` 依赖
+`wal/v0.1.0`，这些标签发布前同样使用仓库外临时 `go.work`，不得提交）。原 yd 仓
 `benchmarks/` 的独有场景
 已全部并入本目录（json 的 7 字段载荷、base64 的 32 B/1 MiB、jwt 的 cristal/jwt 与
 kataras/jwt、log 的 prebound 场景、router 的 echo/fiber、websocket 的 gobwas/gws、
@@ -46,6 +47,7 @@ template 模块，避免同一引擎在两处重复对比），yd 仓不再保�
 | `benchmarks/sse` | `gin-contrib/sse`、手写 `fmt.Fprintf` 基线 | [sse/README.md](sse/README.md) |
 | `benchmarks/template` | `html/template`、`text/template`、Jet、Pongo2、Liquid、Raymond、Mustache、quicktemplate、templ | [template/README.md](template/README.md) |
 | `benchmarks/waf` | Coraza v3.8.1（OWASP CRS 4.29.0） | [waf/README.md](waf/README.md) |
+| `benchmarks/wal` | `tidwall/wal` v1.2.1、`rosedblabs/wal` v1.3.8 | [wal/README.md](wal/README.md) |
 | `benchmarks/websocket` | `gorilla/websocket`、`coder/websocket`、`gobwas/ws`、`lxzan/gws` | [websocket/README.md](websocket/README.md) |
 | `benchmarks/workflow` | 无同类可比实现（BPMN 引擎语义差异过大），给出 SQLite 回归基线 | [workflow/README.md](workflow/README.md) |
 | `benchmarks/xml` | `encoding/xml`、`beevik/etree`、`antchfx/xmlquery`、`clbanning/mxj/v2` | [xml/README.md](xml/README.md) |
@@ -89,6 +91,9 @@ README 与 [optimization-report.md](optimization-report.md)。
 | router | 参数 / 通配 / 未命中 | **52.4 / 44.1 / 60.1 ns** | httprouter 74.9 / 74.1 / 380.2 ns；gin 65.4 / 59.8 / 65.6 ns |
 | sse | 32 B / 4 KiB `WriteData` | 14.1 ns / 63.7 ns | gin-contrib 47.5 ns / 1.45 µs；手写 33.6 ns / 52.3 ns |
 | template | 100 行页面（物化） | **18.78 µs** | quicktemplate 21.46 µs / html/template 473.2 µs |
+| wal | 批量 512×256 B（每批一次 fsync） | 1122 µs / 117 MB/s | tidwall 1139 µs / rosedb 1055 µs |
+| wal | 随机读 / 顺序扫描 10000 条 | **7.46 µs / 2.32 ms** | rosedb 9.28 µs / 72.5 ms；tidwall 整段内存命中 |
+| wal | 打开+关闭（1000 条） | 1.21 ms | tidwall 1.07 ms / rosedb 0.33 ms |
 | template | 绑定渲染微基准（`BenchmarkRender`） | **253.7 ns** | html/template 3.43 µs / text/template 2.12 µs |
 | websocket | 32 B 回显往返 | **4.07 µs** | gorilla 4.26 µs / gobwas 4.34 µs / coder 5.59 µs |
 | websocket | 64×1 KiB 批量写 | **14.06 µs** | coder 73.7 µs / gorilla 124.3 µs |
@@ -98,6 +103,9 @@ README 与 [optimization-report.md](optimization-report.md)。
 
 > 说明：pool 行于远程 host-01（AMD Ryzen AI MAX+ 395，16 核 32 线程，`GOMAXPROCS=32`）
 > 采集，与主表同一参考环境，见 [pool/README.md](pool/README.md)。
+> wal 行于 2026-11-07 在 Windows 11 + i9-10980HK 采集（该模块当前只做了本机验证），
+> 绝对值受 NTFS `FlushFileBuffers` 影响明显，跨平台不可直接混比，见
+> [wal/README.md](wal/README.md)。
 > xml 的 etree 行序列化的是已解析树，`Marshal` 与 ydx/stdlib 的结构体反射编组不是同一
 > 操作（见 [xml/README.md](xml/README.md) 脚注）；`base64` 的 cloudwego/base64x 对照已并入上表（Linux Zen 5，与 ydx 同一轮采集）；
 > [base64/README.md](base64/README.md) 另给出 Windows AVX2 的 cloudwego 同机对照，两台

@@ -1,0 +1,136 @@
+package wal
+
+import (
+	"io"
+	"os"
+	"sync/atomic"
+
+	"github.com/shibingli/ydx/errs"
+)
+
+// defaultEngine is the portable positional I/O engine. | defaultEngine 是可移植的位置写 I/O 引擎。
+type defaultEngine struct {
+	fastPath       FastPathOptions
+	macFullFsync   bool
+	dirSyncDurable bool
+	pwritev2       atomic.Bool
+}
+
+// defaultIOEngine builds the platform engine. | defaultIOEngine 构建平台引擎。
+func defaultIOEngine(o *options) *defaultEngine {
+	e := &defaultEngine{fastPath: o.fastPath, macFullFsync: o.macFullFsync}
+	e.initPlatform()
+	return e
+}
+
+// ReadAt reads exactly len(dst) bytes unless the file ends first. | ReadAt 精确读取 len(dst) 字节，除非文件提前结束。
+func (e *defaultEngine) ReadAt(f *os.File, dst []byte, off int64) (int, error) {
+	total := 0
+	for total < len(dst) {
+		n, err := readAtOnce(f, dst[total:], off+int64(total))
+		total += n
+		if err != nil {
+			if err == io.EOF && total == len(dst) {
+				return total, nil
+			}
+			return total, err
+		}
+		if n == 0 {
+			return total, io.ErrNoProgress
+		}
+	}
+	return total, nil
+}
+
+// Sync synchronizes data through the engine. | Sync 通过引擎同步数据。
+func (e *defaultEngine) Sync(f *os.File) error {
+	return syncDataFile(f, e.macFullFsync)
+}
+
+// Close releases engine resources. | Close 释放引擎资源。
+func (e *defaultEngine) Close() error { return nil }
+
+// readAtFull is the shared exact-read helper used by recovery and readers. | readAtFull
+// 是恢复与读取共用的精确读取辅助函数。
+func readAtFull(f *os.File, dst []byte, off int64) error {
+	return readFullAt(f, dst, off)
+}
+
+// writePartsSequential writes parts with WriteAt and no batching. | writePartsSequential
+// 使用 WriteAt 顺序写入各分片而不合并。
+func writePartsSequential(f *os.File, parts [][]byte, off int64) error {
+	for _, p := range parts {
+		if len(p) == 0 {
+			continue
+		}
+		if err := writeFullAt(f, p, off); err != nil {
+			return err
+		}
+		off += int64(len(p))
+	}
+	return nil
+}
+
+// totalParts returns the total byte count and iovec count. | totalParts 返回总字节数与分片数。
+func totalParts(parts [][]byte) (int64, int) {
+	var total int64
+	var count int
+	for _, p := range parts {
+		if len(p) > 0 {
+			total += int64(len(p))
+			count++
+		}
+	}
+	return total, count
+}
+
+// wrapStorage annotates an I/O failure with ErrStorage. | wrapStorage 用 ErrStorage 注解 I/O 失败。
+func wrapStorage(op string, err error) error {
+	return errs.WrapDetail(err, ErrStorage, "%s | %s 失败", op, op)
+}
+
+// compactParts drops zero-length parts, returning the input slice when possible. | compactParts
+// 去掉零长度分片；可能时直接复用输入切片。
+func compactParts(parts [][]byte) [][]byte {
+	hasEmpty := false
+	for _, p := range parts {
+		if len(p) == 0 {
+			hasEmpty = true
+			break
+		}
+	}
+	if !hasEmpty {
+		return parts
+	}
+	out := make([][]byte, 0, len(parts))
+	for _, p := range parts {
+		if len(p) > 0 {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// lenParts returns the total byte count. | lenParts 返回总字节数。
+func lenParts(parts [][]byte) int {
+	total := 0
+	for _, p := range parts {
+		total += len(p)
+	}
+	return total
+}
+
+// advanceParts removes n written bytes from the front of parts. | advanceParts
+// 从 parts 头部移除已写入的 n 字节。
+func advanceParts(parts [][]byte, n int) [][]byte {
+	for n > 0 && len(parts) > 0 {
+		if n >= len(parts[0]) {
+			n -= len(parts[0])
+			parts = parts[1:]
+			continue
+		}
+		parts[0] = parts[0][n:]
+		n = 0
+	}
+	return parts
+}

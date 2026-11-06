@@ -1,0 +1,16 @@
+github.com/emmansun/gmsm v0.45.1 h1:S77WOluBZ9JH2wh701H2QR03eQYNGLeN8IUkdhgGpRA=
+github.com/emmansun/gmsm v0.45.1/go.mod h1:RfnfrzyB9XbDi73nF1NHbJeqJj+a6pg/pXr5lrZKMok=
+github.com/shibingli/ydx/base64 v0.1.12 h1:xUjtX6yZ/UMDb5DBwvE1a70FVZnX9gQVBgdlEzQ45KY=
+github.com/shibingli/ydx/base64 v0.1.12/go.mod h1:PaROcW7ashuUWtpu30D3TfA28lDCBop8D39ZrHuK/eE=
+github.com/shibingli/ydx/buffpool v0.1.5 h1:aKmsDwLkYoZKRPi1ZkuyvPFrsfdFaK7I1cd5nvGXBLs=
+github.com/shibingli/ydx/buffpool v0.1.5/go.mod h1:1PYC8bCUvgsvXzeFHDVo2wqy62bNYps+c1yZGCK4o/Y=
+github.com/shibingli/ydx/errs v0.1.4 h1:/hexB5eDFA/wWhRof5yxWEVeVlHn1P7IZmys9U4h1iA=
+github.com/shibingli/ydx/errs v0.1.4/go.mod h1:N6GNQq5eustT11WTdXOip9bXcIwrFd4c9UWG0gIDuwU=
+github.com/shibingli/ydx/guomi v0.1.2 h1:3oOMJ2poGpqBMgTk5tlaIdSRQuXBeRrjDEJSL2DXS2c=
+github.com/shibingli/ydx/guomi v0.1.2/go.mod h1:4jBKXYmM3vkchqfvyEKVa1O/hc6olEzEsRJc/ZCeoiw=
+github.com/shibingli/ydx/sysinfo v0.1.4 h1:tskX01rpXsDkEmCCz+2s7FnSQqrQCY8SQUeWstPQhMk=
+github.com/shibingli/ydx/sysinfo v0.1.4/go.mod h1:31V/9KavYTLUNJwAsgCHuN6z2wvRpS20En5em99nmqE=
+golang.org/x/crypto v0.58.0 h1:COkYLr4k7nDI4r6QtMML2AfzeIswWHAJthLS6K/M/54=
+golang.org/x/crypto v0.58.0/go.mod h1:Xh+kl5A+M0gMiWDytH2Hhr5Z7WbNCpv/eB/EFgfSk+w=
+golang.org/x/sys v0.49.0 h1:XbzkgYJHdqh/8m2Uu0W/dQv8nktxx4BFHp1M0gROTXA=
+golang.org/x/sys v0.49.0/go.mod h1:hNLxWAXmnKAxqDtdwIYC4bM9oQPEecfsnNMuSxOs3og=
