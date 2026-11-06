@@ -31,9 +31,20 @@ func persistBytes(req *persistRequest) int {
 // persistRequest is one durable batch queued for the writer goroutine. | persistRequest
 // 是排队给写协程的一个持久批次。
 type persistRequest struct {
-	batch   PersistBatch
-	seq     uint64
-	compact uint64
+	batch      PersistBatch
+	seq        uint64
+	compact    uint64
+	markerOnly bool
+}
+
+// snapshotFileResult reports the completion of an asynchronous local snapshot
+// file write. The event loop then queues only the small WAL marker. |
+// snapshotFileResult 报告异步本地快照文件写入完成。事件循环随后只排队小型 WAL
+// 标记。
+type snapshotFileResult struct {
+	snap *Snapshot
+	fn   func(error)
+	err  error
 }
 
 // persistAck releases deferred protocol work after a durable write. maxSeq is
@@ -110,8 +121,59 @@ func (n *Node) persistEntries(entries []Entry, truncate uint64) uint64 {
 // | persistSnapshot 记录快照镜像并压缩到该索引。replacesLog 标记整段旧日志都已
 // 失效的 InstallSnapshot。
 func (n *Node) persistSnapshot(snap *Snapshot, replacesLog bool, fn func(error)) uint64 {
+	// A local image can be written and fsynced independently while WAL appends
+	// continue. Only the small marker is queued afterwards. InstallSnapshot
+	// stays synchronous because its marker resets the entire prior log and must
+	// not race entries persisted after the image. | 本地镜像可独立写入并 fsync，
+	// 同时 WAL 继续追加；随后只排队小型标记。InstallSnapshot 保持同步，因为其标记
+	// 会重置此前整段日志，不能与镜像之后持久化的日志项竞争。
+	if !replacesLog {
+		if writer, ok := n.storage.(localSnapshotFileStorage); ok && !n.immediateStore {
+			n.wg.Add(1)
+			go func() {
+				defer n.wg.Done()
+				err := writer.WriteSnapshotFile(snap)
+				select {
+				case n.snapshotFileCh <- snapshotFileResult{snap: snap, fn: fn, err: err}:
+				case <-n.stopCh:
+				}
+			}()
+			return 0
+		}
+	}
 	hs := n.hardState()
 	return n.persist(PersistBatch{HardState: &hs, Snapshot: snap, SnapshotReplacesLog: replacesLog}, snap.Index, fn)
+}
+
+// handleSnapshotFileResult queues the WAL marker after an asynchronous local
+// image write. The marker receives a new sequence number only now, so it cannot
+// overtake WAL requests created while the image was being written. |
+// handleSnapshotFileResult 在异步本地镜像写入后排队 WAL 标记。标记此时才分配新
+// 序号，因此不会越过镜像写入期间产生的 WAL 请求。
+func (n *Node) handleSnapshotFileResult(result snapshotFileResult) {
+	if result.err != nil {
+		n.fatal(errs.Wrap(result.err, ErrStorage))
+		return
+	}
+	n.persistSeq++
+	seq := n.persistSeq
+	if result.fn != nil {
+		n.pending = append(n.pending, deferredAction{seq: seq, fn: result.fn})
+	}
+	hs := n.hardState()
+	req := &persistRequest{
+		seq:        seq,
+		compact:    result.snap.Index,
+		markerOnly: true,
+		batch: PersistBatch{
+			HardState: &hs,
+			Snapshot:  &Snapshot{Index: result.snap.Index, Term: result.snap.Term},
+		},
+	}
+	select {
+	case n.persistCh <- req:
+	case <-n.stopCh:
+	}
 }
 
 // deferAction schedules fn after seq is durable. A zero sequence runs
@@ -261,7 +323,17 @@ func (n *Node) processPersistReqs(reqs []*persistRequest) {
 // entries ignorable. | persistOne 写入一个快照请求并随后压缩。压缩失败只记录日志
 // 而不致命，因为持久标记已使被覆盖的日志项可忽略。
 func (n *Node) persistOne(req *persistRequest) {
-	err := n.storage.Persist(req.batch)
+	var err error
+	if req.markerOnly {
+		writer, ok := n.storage.(localSnapshotFileStorage)
+		if !ok {
+			err = errs.Detail(ErrUnsupported, "storage does not support deferred snapshot markers | 存储不支持延迟快照标记")
+		} else {
+			err = writer.PersistLocalSnapshotMarker(req.batch.Snapshot, req.batch.HardState)
+		}
+	} else {
+		err = n.storage.Persist(req.batch)
+	}
 	if err == nil && req.compact > 0 {
 		if cerr := n.storage.Compact(req.compact); cerr != nil {
 			n.logf("warn", "raft storage compact failed | raft 存储压缩失败",

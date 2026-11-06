@@ -57,6 +57,8 @@ func (n *Node) run() {
 			n.handleSnapshotRequest(req)
 		case ready := <-n.snapshotReadyCh:
 			n.handleSnapshotReady(ready)
+		case result := <-n.snapshotFileCh:
+			n.handleSnapshotFileResult(result)
 		case ack := <-n.persistAckCh:
 			n.handlePersistAck(ack)
 		case err := <-n.fatalCh:

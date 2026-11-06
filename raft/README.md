@@ -200,6 +200,13 @@ node.TransferLeader(ctx, 2)
   配置后停止竞选。
 - 学习者不参与投票，可用于预热/只读副本；提升时自动走联合共识。
 
+## 整状态快照与 fsync
+
+本地全量快照的镜像写入与 fsync 已移出 WAL persist 协程，镜像落盘期间提案/追加仍可
+继续进行；随后只排队一条小型 WAL 标记。快照写入一次遍历计算 CRC32C/SHA-256，
+读取流式校验。完整路径、fsync 盘点、实测数据与后续方向见
+[`SNAPSHOT.md`](SNAPSHOT.md)。
+
 ## 持久化与恢复
 
 `FileStorage` 目录布局：

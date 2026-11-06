@@ -71,6 +71,77 @@ func TestLeaseReadRequiresPreVoteAndNoTransfer(t *testing.T) {
 	}
 }
 
+// blockingSnapshotStorage blocks the snapshot file writer so a test can prove
+// WAL proposals continue while the image fsync is in flight. |
+// blockingSnapshotStorage 阻塞快照文件写入，用于证明镜像 fsync 期间 WAL 提案仍可
+// 继续。
+type blockingSnapshotStorage struct {
+	*FileStorage
+	started chan struct{}
+	release chan struct{}
+}
+
+func (s *blockingSnapshotStorage) WriteSnapshotFile(snap *Snapshot) error {
+	close(s.started)
+	<-s.release
+	return s.FileStorage.WriteSnapshotFile(snap)
+}
+
+// TestAsyncSnapshotDoesNotBlockProposals verifies a local snapshot file write is
+// off the WAL persist path. | TestAsyncSnapshotDoesNotBlockProposals 验证本地快照
+// 文件写入不在 WAL 持久化关键路径上。
+func TestAsyncSnapshotDoesNotBlockProposals(t *testing.T) {
+	fs, err := NewFileStorage(FileStorageOptions{Dir: t.TempDir(), NoSync: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	gate := &blockingSnapshotStorage{
+		FileStorage: fs,
+		started:     make(chan struct{}),
+		release:     make(chan struct{}),
+	}
+	node, err := New(Config{
+		ID: 1, Peers: []Peer{{ID: 1}}, Storage: gate, FSM: newKVFSM(),
+		TickInterval: time.Millisecond, HeartbeatTicks: 1, ElectionTicks: 8,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer node.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := node.WaitReady(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := node.Propose(ctx, []byte("a=1")); err != nil {
+		t.Fatal(err)
+	}
+	snapshotDone := make(chan error, 1)
+	go func() { snapshotDone <- node.Snapshot(ctx) }()
+	select {
+	case <-gate.started:
+	case <-ctx.Done():
+		t.Fatal("snapshot file writer did not start")
+	}
+	// WAL persistence must still make progress while the image is blocked.
+	res, err := node.Propose(ctx, []byte("b=2"))
+	if err != nil {
+		t.Fatalf("propose during snapshot: %v", err)
+	}
+	if err := node.WaitApplied(ctx, res.Index); err != nil {
+		t.Fatalf("apply during snapshot: %v", err)
+	}
+	close(gate.release)
+	select {
+	case err := <-snapshotDone:
+		if err != nil {
+			t.Fatalf("snapshot: %v", err)
+		}
+	case <-ctx.Done():
+		t.Fatal("snapshot did not finish")
+	}
+}
+
 // gateStorage delegates to MemStorage and blocks selected Persist calls after
 // the in-memory write, simulating a slow fsync without changing durability.
 // | gateStorage 委托 MemStorage，并在内存写入后阻塞指定的 Persist 调用，模拟慢

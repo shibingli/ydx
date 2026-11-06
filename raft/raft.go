@@ -41,6 +41,7 @@ type Node struct {
 	persistCh       chan *persistRequest
 	persistAckCh    chan persistAck
 	snapshotReadyCh chan snapshotReady
+	snapshotFileCh  chan snapshotFileResult
 	snapshotCh      chan *snapshotRequest
 	campaignCh      chan *campaignRequest
 	transferCh      chan *transferRequest
@@ -320,6 +321,7 @@ func New(cfg Config) (*Node, error) {
 		persistCh:        make(chan *persistRequest, 128),
 		persistAckCh:     make(chan persistAck, 256),
 		snapshotReadyCh:  make(chan snapshotReady, 16),
+		snapshotFileCh:   make(chan snapshotFileResult, 16),
 		snapshotCh:       make(chan *snapshotRequest, 16),
 		campaignCh:       make(chan *campaignRequest, 16),
 		transferCh:       make(chan *transferRequest, 16),

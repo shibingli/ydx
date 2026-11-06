@@ -25,6 +25,16 @@ type PersistBatch struct {
 	SnapshotReplacesLog bool
 }
 
+// localSnapshotFileStorage is implemented by storages that can write a local
+// (non-InstallSnapshot) image independently, then append its WAL marker later.
+// This lets a large snapshot fsync overlap ongoing WAL group commits.
+// | localSnapshotFileStorage 由能够独立写入本地（非 InstallSnapshot）镜像、随后
+// 追加 WAL 标记的存储实现。这样大快照的 fsync 可以与持续的 WAL 组提交重叠。
+type localSnapshotFileStorage interface {
+	WriteSnapshotFile(snap *Snapshot) error
+	PersistLocalSnapshotMarker(snap *Snapshot, hs *HardState) error
+}
+
 // ImmediateStorage is an optional optimization for in-memory or otherwise
 // O(1) stores. When PersistImmediate reports true, the Raft event loop calls
 // Persist directly instead of handing the batch to the writer goroutine. The

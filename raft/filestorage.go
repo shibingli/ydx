@@ -190,7 +190,7 @@ func (s *FileStorage) Persist(batch PersistBatch) error {
 	// durable. Recovery only trusts snapshots named by a marker, so a crash
 	// before the marker leaves the previous log intact. | 顺序：先写快照文件，再持久化
 	// WAL 标记。恢复只信任带标记的快照，因此标记前的崩溃会保留旧日志。
-	if err := s.writeSnapshotFile(batch.Snapshot); err != nil {
+	if err := s.writeSnapshotFile(batch.Snapshot, s.noSync); err != nil {
 		return err
 	}
 	// A local compaction snapshot can share the current segment: entries after
@@ -278,9 +278,74 @@ func (s *FileStorage) snapshotPath(index, term uint64) string {
 	return filepath.Join(s.snapDir, fmt.Sprintf("%020d-%020d.snap", index, term))
 }
 
+// WriteSnapshotFile writes and fsyncs one local snapshot image without touching
+// the WAL. The caller must later call PersistLocalSnapshotMarker to make the
+// image trusted by recovery. It is safe to run while WAL appends continue. |
+// WriteSnapshotFile 写入并 fsync 一个本地快照镜像，不接触 WAL。调用方随后必须调用
+// PersistLocalSnapshotMarker 使恢复信任该镜像。它可以与 WAL 追加并发执行。
+func (s *FileStorage) WriteSnapshotFile(snap *Snapshot) error {
+	if snap == nil {
+		return errs.Detail(ErrInvalidConfig, "nil snapshot")
+	}
+	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		return ErrStopped
+	}
+	if !s.loaded {
+		if _, err := s.loadLocked(); err != nil {
+			s.mu.Unlock()
+			return err
+		}
+	}
+	noSync := s.noSync
+	s.mu.Unlock()
+	// The image is uniquely named and independent of the WAL. Do not hold the
+	// storage mutex across the large fsync; WAL appends must continue. | 镜像名
+	// 唯一且与 WAL 独立，不在大 fsync 期间持有存储锁，WAL 追加可以继续。
+	return s.writeSnapshotFile(snap, noSync)
+}
+
+// PersistLocalSnapshotMarker appends the WAL marker for a local image written
+// by WriteSnapshotFile. It is serialized with WAL appends and ignores an image
+// older than the current snapshot base. | PersistLocalSnapshotMarker 为
+// WriteSnapshotFile 写好的本地镜像追加 WAL 标记。它与 WAL 追加串行，并忽略比当前
+// 快照基点更旧的镜像。
+func (s *FileStorage) PersistLocalSnapshotMarker(snap *Snapshot, hs *HardState) error {
+	if snap == nil {
+		return errs.Detail(ErrInvalidConfig, "nil snapshot")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return ErrStopped
+	}
+	if !s.loaded {
+		if _, err := s.loadLocked(); err != nil {
+			return err
+		}
+	}
+	if s.snapshot != nil && snap.Index <= s.snapshot.Index {
+		if hs != nil {
+			return s.wal.append(PersistBatch{HardState: hs})
+		}
+		return nil
+	}
+	marker := PersistBatch{
+		HardState: hs,
+		Snapshot:  &Snapshot{Index: snap.Index, Term: snap.Term},
+	}
+	if err := s.wal.append(marker); err != nil {
+		return err
+	}
+	s.snapshot = &Snapshot{Index: snap.Index, Term: snap.Term}
+	s.pruneSnapshotsLocked()
+	return nil
+}
+
 // writeSnapshotFile atomically writes one snapshot image. | writeSnapshotFile 原子
 // 写入一个快照镜像。
-func (s *FileStorage) writeSnapshotFile(snap *Snapshot) error {
+func (s *FileStorage) writeSnapshotFile(snap *Snapshot, noSync bool) error {
 	conf := appendConfState(nil, snap.ConfState)
 	if len(conf) > maxConfBytes {
 		return errs.Detail(ErrTooLarge, "snapshot conf state %d bytes", len(conf))
@@ -330,7 +395,7 @@ func (s *FileStorage) writeSnapshotFile(snap *Snapshot) error {
 	if _, err := tmp.Write(header); err != nil {
 		return errs.Wrap(err, ErrStorage)
 	}
-	if !s.noSync {
+	if !noSync {
 		if err := syncFile(tmp); err != nil {
 			return errs.Wrap(err, ErrStorage)
 		}
@@ -349,7 +414,7 @@ func (s *FileStorage) writeSnapshotFile(snap *Snapshot) error {
 		return errs.Wrap(err, ErrStorage)
 	}
 	cleanup = false
-	if !s.noSync {
+	if !noSync {
 		if err := syncDir(s.snapDir); err != nil {
 			return errs.Wrap(err, ErrStorage)
 		}
