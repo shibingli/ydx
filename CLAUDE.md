@@ -77,7 +77,7 @@ ydx 是 yd 全栈框架的可复用组件仓库；组件源码以本仓库为唯
   发行版库路径，默认自动查找 soname 与 Debian/Ubuntu、RHEL/Fedora、SUSE、OFED
   路径。`rdma` 不得 import `yd`，也不并入 `middleware`；`raft` 的可选 RDMA 传输
   已由 gordma 切换到 `ydx/rdma`，两端均为纯 Go。`raft/go.mod` 当前锁定
-  `rdma/v0.1.1`；rdma 发布新标签时同步升级并重新生成 `go.sum`。
+  `rdma/v0.1.4`；rdma 发布新标签时同步升级并重新生成 `go.sum`。
 - `repotest` 会扫描本地 `replace`、旧包前缀、yd 依赖、标准库编解码直引、`fmt.Errorf`、
   直接 `panic`、外键、cgo SQLite 与基准位置。
 

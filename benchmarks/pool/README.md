@@ -140,7 +140,7 @@ ants 与 conc 没有同步提交 API，不参与该组。`Call` 是经过 worker
 
 ## 复现
 
-`pool/v0.1.0` 子目录标签发布后：
+`pool/v0.1.1` 子目录标签发布后：
 
 ```bash
 cd benchmarks/pool

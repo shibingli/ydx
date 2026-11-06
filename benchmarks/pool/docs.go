@@ -14,7 +14,7 @@
 //	cd benchmarks/pool
 //	GOWORK=off go test -run '^$' -bench . -benchmem -count 5 -benchtime 1s
 //
-// The pool/v0.1.0 sub-directory tag must exist for GOWORK=off runs; before it is
+// The pool/v0.1.1 sub-directory tag must exist for GOWORK=off runs; before it is
 // published, use a temporary go.work outside the repository. | GOWORK=off 运行要求
-// pool/v0.1.0 子目录标签已存在；发布前请在仓库外使用临时 go.work。
+// pool/v0.1.1 子目录标签已存在；发布前请在仓库外使用临时 go.work。
 package pool

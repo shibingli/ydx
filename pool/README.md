@@ -262,5 +262,5 @@ cd ../benchmarks/pool
 GOWORK=off go test -run '^$' -bench . -benchmem -count 5 -benchtime 1s
 ```
 
-基准模块在 `pool/v0.1.0` 子目录标签发布前，需在仓库外创建指向本地 `pool` 模块的临时
+基准模块在 `pool/v0.1.1` 子目录标签发布前，需在仓库外创建指向本地 `pool` 模块的临时
 `go.work`（或临时 `replace`，不得提交）。
