@@ -132,7 +132,7 @@ func TestSnapshotMarkerDoesNotMergeAcrossGap(t *testing.T) {
 // 关闭。
 func TestAdaptivePersistWindow(t *testing.T) {
 	n := &Node{cfg: Config{PersistBatchDelay: 100 * time.Microsecond},
-		persistCh: make(chan *persistRequest, 64)}
+		persistNotify: make(chan struct{}, 1)}
 	if got := n.persistWindow(); got != 100*time.Microsecond {
 		t.Fatalf("base window = %v, want 100us", got)
 	}
@@ -141,25 +141,25 @@ func TestAdaptivePersistWindow(t *testing.T) {
 		t.Fatalf("latency-adaptive window = %v, want >= 400us", got)
 	}
 	for i := 0; i < 10; i++ {
-		n.persistCh <- &persistRequest{seq: uint64(i + 1)}
+		n.enqueuePersist(&persistRequest{seq: uint64(i + 1)})
 	}
 	withDepth := n.persistWindow()
 	if withDepth <= 400*time.Microsecond || withDepth > 5*time.Millisecond {
 		t.Fatalf("queue-adaptive window = %v", withDepth)
 	}
 	for i := 0; i < 40; i++ {
-		n.persistCh <- &persistRequest{seq: uint64(i + 100)}
+		n.enqueuePersist(&persistRequest{seq: uint64(i + 100)})
 	}
 	if got := n.persistWindow(); got < withDepth || got > 5*time.Millisecond {
 		t.Fatalf("deep queue window = %v, want between %v and 5ms", got, withDepth)
 	}
-	disabled := &Node{cfg: Config{}, persistCh: make(chan *persistRequest, 1)}
+	disabled := &Node{cfg: Config{}, persistNotify: make(chan struct{}, 1)}
 	disabled.persistLatency.Store(int64(time.Millisecond))
 	if got := disabled.persistWindow(); got != 0 {
 		t.Fatalf("disabled window = %v, want 0", got)
 	}
 	largeBase := &Node{cfg: Config{PersistBatchDelay: 10 * time.Millisecond},
-		persistCh: make(chan *persistRequest, 1)}
+		persistNotify: make(chan struct{}, 1)}
 	largeBase.persistLatency.Store(int64(time.Millisecond))
 	if got := largeBase.persistWindow(); got != 10*time.Millisecond {
 		t.Fatalf("large base window = %v, want 10ms", got)

@@ -68,6 +68,49 @@ func (n *Node) hardState() HardState {
 	return HardState{Term: n.term, Vote: n.vote, Commit: n.committed}
 }
 
+// enqueuePersist appends a request to the ordered persist queue without ever
+// blocking the Raft event loop. A bounded channel would let a slow snapshot
+// write fill the queue; the event loop would then stop processing heartbeats
+// and elections. The queue is consumed by the single persist goroutine in
+// sequence order. | enqueuePersist 以永不阻塞 Raft 事件循环的方式把请求追加到有序
+// 持久化队列。有界通道会在慢速快照写入时被填满，使事件循环停止处理心跳与选举。队列
+// 由唯一的持久化协程按序号顺序消费。
+func (n *Node) enqueuePersist(req *persistRequest) {
+	n.persistMu.Lock()
+	n.persistQueue = append(n.persistQueue, req)
+	n.persistMu.Unlock()
+	select {
+	case n.persistNotify <- struct{}{}:
+	default:
+	}
+}
+
+// popPersist removes the oldest queued request. | popPersist 取出最旧的排队请求。
+func (n *Node) popPersist() *persistRequest {
+	n.persistMu.Lock()
+	if len(n.persistQueue) == 0 {
+		n.persistMu.Unlock()
+		return nil
+	}
+	req := n.persistQueue[0]
+	n.persistQueue[0] = nil
+	n.persistQueue = n.persistQueue[1:]
+	if len(n.persistQueue) == 0 {
+		n.persistQueue = nil
+	}
+	n.persistMu.Unlock()
+	return req
+}
+
+// persistDepth reports the number of queued persistence requests. | persistDepth
+// 返回排队中的持久化请求数量。
+func (n *Node) persistDepth() int {
+	n.persistMu.Lock()
+	depth := len(n.persistQueue)
+	n.persistMu.Unlock()
+	return depth
+}
+
 // persist queues a batch. compact, when non-zero, releases entries through that
 // index after the batch is durable and reports failures without stopping the
 // node: the snapshot marker already makes older entries ignorable. | persist
@@ -95,10 +138,7 @@ func (n *Node) persist(batch PersistBatch, compact uint64, fn func(error)) uint6
 		n.pending = append(n.pending, deferredAction{seq: seq, fn: fn})
 	}
 	req := &persistRequest{seq: seq, batch: batch, compact: compact}
-	select {
-	case n.persistCh <- req:
-	case <-n.stopCh:
-	}
+	n.enqueuePersist(req)
 	return seq
 }
 
@@ -216,10 +256,7 @@ func (n *Node) handleSnapshotFileResult(result snapshotFileResult) {
 			Snapshot:  &Snapshot{Index: result.snap.Index, Term: result.snap.Term},
 		},
 	}
-	select {
-	case n.persistCh <- req:
-	case <-n.stopCh:
-	}
+	n.enqueuePersist(req)
 }
 
 // deferAction schedules fn after seq is durable. A zero sequence runs
@@ -245,26 +282,30 @@ func (n *Node) persistLoop() {
 	defer n.wg.Done()
 	var buf [64]*persistRequest
 	for {
-		select {
-		case <-n.stopCh:
-			return
-		case first := <-n.persistCh:
-			reqs := n.collectPersist(first, buf[:0])
-			measure := true
-			for _, req := range reqs {
-				if req.batch.Snapshot != nil && !req.markerOnly {
-					measure = false
-					break
-				}
+		first := n.popPersist()
+		if first == nil {
+			select {
+			case <-n.stopCh:
+				return
+			case <-n.persistNotify:
+				continue
 			}
-			start := time.Now()
-			n.processPersistReqs(reqs)
-			if measure {
-				n.recordPersistLatency(time.Since(start))
+		}
+		reqs := n.collectPersist(first, buf[:0])
+		measure := true
+		for _, req := range reqs {
+			if req.batch.Snapshot != nil && !req.markerOnly {
+				measure = false
+				break
 			}
-			for i := range reqs {
-				reqs[i] = nil
-			}
+		}
+		start := time.Now()
+		n.processPersistReqs(reqs)
+		if measure {
+			n.recordPersistLatency(time.Since(start))
+		}
+		for i := range reqs {
+			reqs[i] = nil
 		}
 	}
 }
@@ -301,7 +342,7 @@ func (n *Node) persistWindow() time.Duration {
 			window = target
 		}
 	}
-	depth := len(n.persistCh)
+	depth := n.persistDepth()
 	switch {
 	case depth >= 32:
 		window *= 4
@@ -338,9 +379,18 @@ func (n *Node) collectPersist(first *persistRequest, reqs []*persistRequest) []*
 	if delay := n.persistWindow(); delay > 0 && first.batch.Snapshot == nil {
 		timer := time.NewTimer(delay)
 		for len(reqs) < 64 {
-			select {
-			case req := <-n.persistCh:
+			for {
+				req := n.popPersist()
+				if req == nil {
+					break
+				}
 				reqs = append(reqs, req)
+			}
+			if len(reqs) >= 64 {
+				break
+			}
+			select {
+			case <-n.persistNotify:
 			case <-timer.C:
 				timer.Stop()
 				return reqs
@@ -352,12 +402,11 @@ func (n *Node) collectPersist(first *persistRequest, reqs []*persistRequest) []*
 		timer.Stop()
 	}
 	for len(reqs) < 64 {
-		select {
-		case req := <-n.persistCh:
-			reqs = append(reqs, req)
-		default:
+		req := n.popPersist()
+		if req == nil {
 			return reqs
 		}
+		reqs = append(reqs, req)
 	}
 	return reqs
 }

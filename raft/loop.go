@@ -361,6 +361,20 @@ func (n *Node) step(m Message) {
 // tick advances the logical clock. | tick 推进逻辑时钟。
 func (n *Node) tick() {
 	n.tickCount++
+	// The wall-clock election timer is the primary trigger. A timer event can be
+	// lost when a rapid heartbeat stream repeatedly stops and resets the same
+	// timer; without this safety net the follower would then stay leaderless
+	// forever while its deadline is already in the past. The tick check bounds
+	// that liveness gap to one tick interval. | 墙钟选举定时器是主触发器。在密集心跳
+	// 不断停止并重置同一计时器时，定时器事件可能丢失；若没有该兜底，跟随者的截止时间
+	// 已过却会永久无 leader。tick 检查把该活性缺口限制在一个 tick 周期内。
+	if n.state != StateLeader && !n.stopped.Load() && !n.electionDeadline.After(time.Now()) {
+		n.logf("warn", "raft election deadline overdue | raft 选举截止时间已过",
+			ydlog.Uint64("node", uint64(n.id)), ydlog.Uint64("state", uint64(n.state)),
+			ydlog.Uint64("term", n.term), ydlog.Uint64("leader", uint64(n.leader)),
+			ydlog.Int64("late_ms", time.Since(n.electionDeadline).Milliseconds()))
+		n.handleElectionTimer()
+	}
 	switch n.state {
 	case StateLeader:
 		n.tickLeader()

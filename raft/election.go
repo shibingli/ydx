@@ -30,6 +30,8 @@ func (n *Node) startPreVote() {
 	n.incomingSnapshot = nil
 	n.selfVoteDurable = false
 	n.resetElection()
+	n.logf("info", "raft pre-vote started | raft 预投票开始",
+		ydlog.Uint64("node", uint64(n.id)), ydlog.Uint64("term", n.term))
 	n.preVotes = make(map[NodeID]bool, len(n.conf.voters)+1)
 	n.preVotes[n.id] = true
 	n.preVoteSent = make(map[NodeID]struct{}, len(n.conf.voters)+1)
@@ -168,6 +170,8 @@ func (n *Node) startVote() {
 	n.setLeader(0)
 	n.incomingSnapshot = nil
 	n.resetElection()
+	n.logf("info", "raft election started | raft 选举开始",
+		ydlog.Uint64("node", uint64(n.id)), ydlog.Uint64("term", n.term))
 	n.votes = make(map[NodeID]bool, len(n.conf.voters)+1)
 	n.preVotes = make(map[NodeID]bool)
 	n.preVoteSent = nil

@@ -53,6 +53,10 @@ func (n *Node) handleSnapshot(m Message) {
 	if n.persistedIndex > snap.Index {
 		n.persistedIndex = snap.Index
 	}
+	// The restored image makes every entry up to snap.Index durable locally, so
+	// retries for that range can be acknowledged without another persist. |
+	// 恢复镜像使 snap.Index 之前的日志项在本地持久化，因此该区间的重试可直接确认。
+	n.persistPendingIndex = snap.Index
 	// Keep the newest image if a concurrent local snapshot already completed at a
 	// higher index. | 若并发本地快照已在更高索引完成，保留最新镜像。
 	if n.latestSnapshot == nil || snap.Index > n.latestSnapshot.Index {

@@ -340,7 +340,7 @@ func TestTruncationLowersPersistedIndex(t *testing.T) {
 		futures:        newFutureStore(),
 		remoteReads:    newRemoteReadStore(),
 		applyQueue:     newApplyQueue(),
-		persistCh:      make(chan *persistRequest, 4),
+		persistNotify:  make(chan struct{}, 1),
 		stopCh:         make(chan struct{}),
 	}
 	n.handleAppend(Message{
@@ -358,7 +358,7 @@ func TestTruncationLowersPersistedIndex(t *testing.T) {
 	if !ok || len(task.entries) != 1 || task.entries[0].Index != 2 {
 		t.Fatalf("apply task = %+v, want entry 2 only", task)
 	}
-	if len(n.persistCh) != 1 {
-		t.Fatalf("persist requests = %d, want 1", len(n.persistCh))
+	if n.persistDepth() != 1 {
+		t.Fatalf("persist requests = %d, want 1", n.persistDepth())
 	}
 }

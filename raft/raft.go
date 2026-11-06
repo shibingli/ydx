@@ -39,7 +39,9 @@ type Node struct {
 	readCh          chan *readRequest
 	tickCh          chan struct{}
 	outCh           chan outboundBatch
-	persistCh       chan *persistRequest
+	persistMu       sync.Mutex
+	persistQueue    []*persistRequest
+	persistNotify   chan struct{}
 	persistAckCh    chan persistAck
 	snapshotReadyCh chan snapshotReady
 	snapshotFileCh  chan snapshotFileResult
@@ -96,35 +98,43 @@ type Node struct {
 	preVoteExpandTick uint64
 	pendingReadLimit  int
 
-	id               NodeID
-	group            GroupID
-	termAtomic       atomic.Uint64
-	leaderAtomic     atomic.Uint64
-	commitAtomic     atomic.Uint64
-	applied          atomic.Uint64
-	lastSnapshot     atomic.Uint64
-	remoteReadSeq    atomic.Uint64
-	remoteEpoch      uint64
-	term             uint64
-	vote             NodeID
-	leader           NodeID
-	committed        uint64
-	sentApplied      uint64
-	persistedIndex   uint64
-	confBaseIndex    uint64
-	jointIndex       uint64
-	electionElapsed  int
-	heartbeatElapsed int
-	electionTimeout  int
-	leadTransferee   NodeID
-	transferElapsed  int
-	leaveIndex       uint64
-	readSeq          uint64
-	tickCount        uint64
-	termStartIndex   uint64
-	appliedTerm      uint64
-	persistSeq       uint64
-	outControls      int
+	id             NodeID
+	group          GroupID
+	termAtomic     atomic.Uint64
+	leaderAtomic   atomic.Uint64
+	commitAtomic   atomic.Uint64
+	applied        atomic.Uint64
+	lastSnapshot   atomic.Uint64
+	remoteReadSeq  atomic.Uint64
+	remoteEpoch    uint64
+	term           uint64
+	vote           NodeID
+	leader         NodeID
+	committed      uint64
+	sentApplied    uint64
+	persistedIndex uint64
+	// persistPendingIndex is the highest log index covered by an append
+	// persistence request already queued for the persist loop. A leader retries
+	// an append when its acknowledgement is delayed; those retries must not fill
+	// persistCh and block the event loop behind a slow snapshot write. |
+	// persistPendingIndex 是已排入持久化队列的追加请求覆盖的最高日志索引。确认被
+	// 延迟时 leader 会重试追加；这些重试不得塞满 persistCh，让事件循环阻塞在慢速快照
+	// 写入之后。
+	persistPendingIndex uint64
+	confBaseIndex       uint64
+	jointIndex          uint64
+	electionElapsed     int
+	heartbeatElapsed    int
+	electionTimeout     int
+	leadTransferee      NodeID
+	transferElapsed     int
+	leaveIndex          uint64
+	readSeq             uint64
+	tickCount           uint64
+	termStartIndex      uint64
+	appliedTerm         uint64
+	persistSeq          uint64
+	outControls         int
 
 	// Config-derived hot fields. | 由配置导出的热字段。
 	tickInterval       time.Duration
@@ -325,7 +335,7 @@ func New(cfg Config) (*Node, error) {
 		readCh:             make(chan *readRequest, 256),
 		tickCh:             make(chan struct{}, 1),
 		outCh:              make(chan outboundBatch, cfg.OutboundQueue),
-		persistCh:          make(chan *persistRequest, 128),
+		persistNotify:      make(chan struct{}, 1),
 		persistAckCh:       make(chan persistAck, 256),
 		snapshotReadyCh:    make(chan snapshotReady, 16),
 		snapshotFileCh:     make(chan snapshotFileResult, 16),
@@ -485,6 +495,7 @@ func (n *Node) recover(rec Recovery) error {
 	n.lastSnapshot.Store(applied)
 	n.sentApplied = applied
 	n.persistedIndex = l.lastIndex
+	n.persistPendingIndex = n.persistedIndex
 	if snap != nil {
 		n.appliedTerm = snap.Term
 	}
@@ -533,6 +544,7 @@ func (n *Node) bootstrap() error {
 	n.lastSnapshot.Store(0)
 	n.sentApplied = 0
 	n.persistedIndex = 1
+	n.persistPendingIndex = n.persistedIndex
 	n.state = StateFollower
 	n.stateAtomic.Store(uint32(StateFollower))
 	n.resetElection()
@@ -854,6 +866,7 @@ func (n *Node) logf(level string, msg string, fields ...ydlog.Field) {
 	if n.logger == nil {
 		return
 	}
+	fields = append(fields, ydlog.Uint64("group", uint64(n.group)))
 	switch level {
 	case "warn":
 		n.logger.Warn(msg, fields...)
@@ -870,6 +883,8 @@ func (n *Node) fatal(err error) {
 	if err == nil {
 		return
 	}
+	n.logf("error", "raft unrecoverable error | raft 不可恢复错误",
+		ydlog.Uint64("node", uint64(n.id)), ydlog.Err(err))
 	n.fatalMu.Lock()
 	if n.fatalErr == nil {
 		n.fatalErr = err
