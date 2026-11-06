@@ -120,6 +120,8 @@ FileStorage 新增独立 `HARDSTATE` 文件，保存 term/vote/commit：
   会让恢复返回 `ErrCorrupt`，不会静默回退到更旧任期。
 - 回归测试 `TestSnapshotInstallDoesNotBlockVotePersist` 在快照持久化被阻塞时
   杀死旧 leader，要求剩余节点仍能选出新 leader；修复前该测试会一直无 leader。
+- 兼容性：`HARDSTATE` 自 `raft/v0.1.8` 起参与恢复。升级后不得回退到不读取该文件
+  的旧版本，否则可能只加载 WAL 中更旧的 term/vote；必须回退时需保留目录并单独评估。
 
 ### 3.9 独立快照目录
 

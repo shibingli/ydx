@@ -261,6 +261,9 @@ node.TransferLeader(ctx, 2)
   对应选票。它使跟随者在安装大型快照镜像期间仍能持久化并应答选票，避免旧 leader
   被杀死后整个快照 fsync 期间无 leader。文件带 CRC，采用临时文件 + fsync +
   rename + 目录 fsync 原子更新。
+- `HARDSTATE` 自 `raft/v0.1.8` 起是恢复的权威硬状态之一。升级后不要回退到不读取
+  该文件的旧版本：旧版本可能只看到 WAL 中更旧的 term/vote，从而破坏选票安全。
+  需要回退时必须保留目录备份并由维护者评估，不能直接在原目录上启动旧版本。
 
 - WAL 记录带长度、CRC32C、类型；尾部撕裂写会被安全截断。Unix 上大日志项批次
   可通过 `writev` 从条目切片直接写出，避免先复制进 WAL 缓冲；Windows 等平台
