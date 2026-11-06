@@ -14,7 +14,10 @@ while IFS= read -r gomod; do
     os="${target%/*}"
     arch="${target#*/}"
     printf '==> %s %s\n' "$rel" "$target"
-    if ! (cd "$dir" && GOWORK=off CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" go build ./...); then
+    # vet also type-checks _test.go files, which a plain build does not. | vet
+    # 同时类型检查 _test.go 文件，而普通 build 不会。
+    if ! (cd "$dir" && GOWORK=off CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" go build ./... &&
+      GOWORK=off CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" go vet ./...); then
       failed+=("$rel $target")
     fi
   done
