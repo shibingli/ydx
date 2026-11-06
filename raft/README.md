@@ -178,6 +178,21 @@ IPsec/MACsec，或改用启用 TLS 的 TCP/HTTP 传输。
   回退内存快照基点或配置基点。
 - 默认关闭“任意本地读”；`ReadIndex`/`Barrier` 是唯一的线性一致读入口。
 
+## 可观测性与 JSON
+
+`Status` 与 `Stats` 实现了 `MarshalJSON`，内部统一使用 `ydx/json`，输出稳定的
+snake_case 字段；`state` 输出 `follower`/`pre-candidate`/`candidate`/`leader`/
+`shutdown`，空列表输出 `[]` 而不是 `null`：
+
+```go
+status := node.Status()
+raw, err := ydxjson.Marshal(status)
+
+rawStats, err := ydxjson.Marshal(node.Stats())
+```
+
+`Status` 由事件循环组装，最多等待 1 秒；不要在 Raft 事件循环回调中调用。
+
 ## 选主算法与故障转移
 
 选举采用细粒度墙钟 timer + 随机化超时 + pre-vote + 每任期一票；候选人自投票

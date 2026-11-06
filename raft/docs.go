@@ -226,9 +226,12 @@
 //
 // # Observability and lifecycle | 可观测性与生命周期
 //
-// Stats returns lock-free counters. Status is assembled by the event loop.
-// Close stops the node and closes its Storage and Transport; callers must not
-// call Close from an event-loop callback. | Stats 返回无锁计数器。Status 由事件
-// 循环组装。Close 停止节点并关闭其 Storage 与 Transport；调用方不得在事件循环回调
-// 中调用 Close。
+// Stats returns lock-free counters. Status is assembled by the event loop. Both
+// implement MarshalJSON through ydx/json with stable snake_case fields and a
+// named state, suitable for admin HTTP APIs. Close stops the node and closes its
+// Storage and Transport; callers must not call Close from an event-loop
+// callback. | Stats 返回无锁计数器。Status 由事件循环组装。两者都通过 ydx/json
+// 实现 MarshalJSON，使用稳定的 snake_case 字段与名称化状态，适合管理 HTTP API。
+// Close 停止节点并关闭其 Storage 与 Transport；调用方不得在事件循环回调中调用
+// Close。
 package raft
