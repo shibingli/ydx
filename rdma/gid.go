@@ -44,6 +44,9 @@ func (t GIDType) String() string {
 
 // GID is one entry of a port GID table. | GID 是端口 GID 表中的一个表项。
 type GID struct {
+	// NetDev is the backing Ethernet netdev for RoCE entries. | NetDev 是 RoCE
+	// 表项对应的以太网设备。
+	NetDev string
 	// Index is the GID table index used by ibv_modify_qp. | Index 是
 	// ibv_modify_qp 使用的 GID 表索引。
 	Index int
@@ -51,9 +54,6 @@ type GID struct {
 	Addr [16]byte
 	// Type classifies the entry. | Type 标识表项类型。
 	Type GIDType
-	// NetDev is the backing Ethernet netdev for RoCE entries. | NetDev 是 RoCE
-	// 表项对应的以太网设备。
-	NetDev string
 }
 
 // ParseGID parses a textual IPv6 or IPv4-mapped address into a GID with the
@@ -85,10 +85,27 @@ func (g GID) IsZero() bool {
 	return true
 }
 
-// IsLinkLocal reports whether the GID is in fe80::/10. | IsLinkLocal 报告 GID
-// 是否位于 fe80::/10。
+// IsLinkLocal reports whether the GID is an IPv6 fe80::/10 address or carries
+// an IPv4 link-local (169.254/16) address. IPv4-mapped APIPA addresses are a
+// common result of a netdev losing DHCP and must not outrank a routable GID. |
+// IsLinkLocal 报告 GID 是 IPv6 fe80::/10 地址，还是携带 IPv4 链路本地
+// （169.254/16）地址。IPv4 映射的 APIPA 地址常出现在网卡丢失 DHCP 时，不得排在
+// 可路由 GID 之前。
 func (g GID) IsLinkLocal() bool {
-	return g.Addr[0] == 0xfe && g.Addr[1]&0xc0 == 0x80
+	if g.Addr[0] == 0xfe && g.Addr[1]&0xc0 == 0x80 {
+		return true
+	}
+	for i := 0; i < 10; i++ {
+		if g.Addr[i] != 0 {
+			return false
+		}
+	}
+	mapped := g.Addr[10] == 0xff && g.Addr[11] == 0xff
+	compatible := g.Addr[10] == 0 && g.Addr[11] == 0
+	if !mapped && !compatible {
+		return false
+	}
+	return g.Addr[12] == 169 && g.Addr[13] == 254
 }
 
 // IPv4 returns the IPv4 address carried by an IPv4-mapped or IPv4-compatible

@@ -11,15 +11,23 @@ import (
 // PostRecv posts a batch of receive requests to the shared receive queue. |
 // PostRecv 向共享接收队列提交一批接收请求。
 func (s *SRQ) PostRecv(wrs []RecvWR) (int, error) {
-	if s == nil || s.closed.Load() {
+	if s == nil || s.closed.Load() || s.state == nil {
 		return 0, ErrClosed
 	}
 	if len(wrs) == 0 {
 		return 0, nil
 	}
 	if len(wrs) > s.state.cap {
-		return 0, errs.Detail(ErrQueueFull, "batch %d exceeds shared receive queue %d | 批量 %d 超过共享接收队列 %d",
+		// The batch can never fit; retrying the same call cannot succeed. |
+		// 该批次永远无法容纳；重试同一调用不可能成功。
+		return 0, errs.Detail(ErrInvalidConfig, "batch %d exceeds shared receive queue %d | 批量 %d 超过共享接收队列 %d",
 			len(wrs), s.state.cap, len(wrs), s.state.cap)
+	}
+	for i := range wrs {
+		if int(wrs[i].NumSGE) > MaxSGE {
+			return 0, errs.Detail(ErrInvalidConfig, "sge count %d exceeds %d | SGE 数量 %d 超过 %d",
+				wrs[i].NumSGE, MaxSGE, wrs[i].NumSGE, MaxSGE)
+		}
 	}
 	for i := range wrs {
 		w := &wrs[i]
@@ -59,12 +67,24 @@ func (s *SRQ) PostRecv(wrs []RecvWR) (int, error) {
 
 // Close destroys the shared receive queue. | Close 销毁共享接收队列。
 func (s *SRQ) Close() error {
-	if s == nil || !s.closed.CompareAndSwap(false, true) {
+	if s == nil {
 		return nil
 	}
+	s.closeMu.Lock()
+	defer s.closeMu.Unlock()
+	if s.closed.Load() {
+		return s.closeErr
+	}
+	s.closed.Store(true)
 	if s.state != nil && s.state.srq != nil {
-		s.dev.state.api.removeSRQ(s.state.srq)
+		if rc := s.dev.state.api.removeSRQ(s.state.srq); rc != 0 {
+			s.closed.Store(false)
+			s.closeErr = errnoError("destroy shared receive queue", rc)
+			return s.closeErr
+		}
 		s.state.srq = nil
 	}
+	s.closeErr = nil
+	s.dev.releaseChild()
 	return nil
 }

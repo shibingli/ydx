@@ -125,6 +125,21 @@ func exchangeQPInfo(conn net.Conn, local qpInfo, timeout time.Duration) (qpInfo,
 	if remote.QPN == 0 {
 		return qpInfo{}, errs.Detail(ErrHandshake, "remote qpn is zero | 远端 QPN 为零")
 	}
+	if remote.SlotSize == 0 || remote.Slots == 0 {
+		return qpInfo{}, errs.Detail(ErrHandshake, "remote slot geometry %d x %d | 远端槽位参数 %d x %d",
+			remote.SlotSize, remote.Slots, remote.SlotSize, remote.Slots)
+	}
+	switch remote.MTU {
+	case 256, 512, 1024, 2048, 4096:
+	default:
+		return qpInfo{}, errs.Detail(ErrHandshake, "remote MTU %d | 远端 MTU %d", remote.MTU, remote.MTU)
+	}
+	// RQPSN is a 24-bit field; reject values that cannot be represented rather
+	// than silently truncating them in the provider. | RQPSN 是 24 位字段；拒绝
+	// 无法表示的值，而不是由提供方静默截断。
+	if remote.PSN > 0xffffff {
+		return qpInfo{}, errs.Detail(ErrHandshake, "remote PSN %#x | 远端 PSN %#x", remote.PSN, remote.PSN)
+	}
 	return remote, nil
 }
 

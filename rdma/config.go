@@ -30,12 +30,14 @@ const (
 	DefaultMaxRDMAtomic = 16
 )
 
-// Config configures one opened RDMA device and its queue pair defaults. The
-// zero value is valid; DefaultConfig supplies tuned defaults with automatic
-// GID selection, preferring RoCE v2 over RoCE v1 and native InfiniBand. |
-// Config 配置一个已打开的 RDMA 设备及其队列对默认值。零值可用；
-// DefaultConfig 提供自动选择 GID 的调优默认值，优先 RoCE v2，其次 RoCE v1，
-// 最后原生 InfiniBand。
+// Config configures one opened RDMA device and its queue pair defaults.
+// DefaultConfig supplies tuned defaults with automatic GID selection,
+// preferring RoCE v2 over RoCE v1 and native InfiniBand. A zero Config is
+// usable but selects GID table index 0 and uses zero timer/retry exponents;
+// most callers should start from DefaultConfig. | Config 配置一个已打开的 RDMA
+// 设备及其队列对默认值。DefaultConfig 提供自动选择 GID 的调优默认值，优先
+// RoCE v2，其次 RoCE v1，最后原生 InfiniBand。零值 Config 可用，但会选择 GID
+// 表索引 0 且定时/重试指数为零；多数调用方应从 DefaultConfig 开始。
 type Config struct {
 	// VerbsLibrary overrides the libibverbs shared object path. Empty tries the
 	// portable soname, then the common Debian, Ubuntu, RHEL, Fedora, SUSE and
@@ -46,22 +48,35 @@ type Config struct {
 	// with an active port. | Device 选择设备，例如 "mlx5_0"；为空时选择第一个
 	// 存在活动端口的设备。
 	Device string
+	// NetDev restricts automatic GID selection to one Ethernet netdev. |
+	// NetDev 将自动 GID 选择限制为一个以太网设备。
+	NetDev string
 	// Port selects the device port. Zero means DefaultPort. | Port 选择设备
 	// 端口；零表示 DefaultPort。
 	Port int
 	// GIDIndex selects a GID table entry. AutoGIDIndex picks automatically. |
 	// GIDIndex 选择 GID 表项；AutoGIDIndex 表示自动选择。
 	GIDIndex int
-	// GIDType restricts automatic GID selection to one type. | GIDType 将自动
-	// GID 选择限制为一种类型。
-	GIDType GIDType
-	// NetDev restricts automatic GID selection to one Ethernet netdev. |
-	// NetDev 将自动 GID 选择限制为一个以太网设备。
-	NetDev string
 	// MTU is the path MTU: 256, 512, 1024, 2048 or 4096. Zero uses the port's
 	// active MTU. | MTU 是路径 MTU：256、512、1024、2048 或 4096；零使用端口
 	// 当前活动 MTU。
 	MTU int
+	// MaxInline is the maximum inline payload in bytes. Zero uses the device
+	// maximum. | MaxInline 是最大内联负载字节数；零使用设备上限。
+	MaxInline int
+	// QueueDepth is the send and receive queue depth. Zero means
+	// DefaultQueueDepth. | QueueDepth 是发送与接收队列深度；零表示
+	// DefaultQueueDepth。
+	QueueDepth int
+	// CQDepth is the completion queue depth. Zero means twice QueueDepth. |
+	// CQDepth 是完成队列深度；零表示 QueueDepth 的两倍。
+	CQDepth int
+	// PSN is the initial send packet sequence number. Zero picks a random
+	// value. | PSN 是初始发送报文序列号；零表示随机值。
+	PSN uint32
+	// GIDType restricts automatic GID selection to one type. | GIDType 将自动
+	// GID 选择限制为一种类型。
+	GIDType GIDType
 	// TrafficClass is the RoCE v2 IPv6 traffic class. | TrafficClass 是 RoCE v2
 	// IPv6 流量类别。
 	TrafficClass uint8
@@ -71,9 +86,6 @@ type Config struct {
 	// HopLimit is the RoCE v2 IPv6 hop limit. Zero means DefaultHopLimit. |
 	// HopLimit 是 RoCE v2 IPv6 跳数限制；零表示 DefaultHopLimit。
 	HopLimit uint8
-	// PSN is the initial send packet sequence number. Zero picks a random
-	// value. | PSN 是初始发送报文序列号；零表示随机值。
-	PSN uint32
 	// Timeout is the local ACK timeout exponent (0-31). | Timeout 是本地 ACK
 	// 超时指数（0-31）。
 	Timeout uint8
@@ -92,16 +104,6 @@ type Config struct {
 	// MaxDestRDMAtomic is the remote outstanding RDMA read and atomic count
 	// (0-31). | MaxDestRDMAtomic 是远端在途 RDMA 读与原子操作数（0-31）。
 	MaxDestRDMAtomic uint8
-	// MaxInline is the maximum inline payload in bytes. Zero uses the device
-	// maximum. | MaxInline 是最大内联负载字节数；零使用设备上限。
-	MaxInline int
-	// QueueDepth is the send and receive queue depth. Zero means
-	// DefaultQueueDepth. | QueueDepth 是发送与接收队列深度；零表示
-	// DefaultQueueDepth。
-	QueueDepth int
-	// CQDepth is the completion queue depth. Zero means twice QueueDepth. |
-	// CQDepth 是完成队列深度；零表示 QueueDepth 的两倍。
-	CQDepth int
 }
 
 // DefaultConfig returns a configuration tuned for RDMA transports with
@@ -135,6 +137,10 @@ func (c *Config) normalize() error {
 	}
 	if c.GIDIndex < AutoGIDIndex {
 		return errs.Detail(ErrInvalidConfig, "gid index %d | GID 索引 %d", c.GIDIndex, c.GIDIndex)
+	}
+	if c.GIDIndex > 255 {
+		// The AH carries SGIDIndex as uint8. | AH 的 SGIDIndex 是 uint8。
+		return errs.Detail(ErrInvalidConfig, "gid index %d exceeds 255 | GID 索引 %d 超过 255", c.GIDIndex, c.GIDIndex)
 	}
 	if c.GIDType > GIDTypeRoCEv2 {
 		return errs.Detail(ErrInvalidConfig, "gid type %d | GID 类型 %d", c.GIDType, c.GIDType)

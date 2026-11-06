@@ -3,16 +3,17 @@
 package rdma
 
 import (
+	"syscall"
 	"testing"
 	"unsafe"
 
 	"github.com/ebitengine/purego"
 )
 
-// TestCallFnABI proves the assembly call stub follows the platform C ABI for
-// integer arguments, pointer arguments, pointer results and out-parameters. |
-// TestCallFnABI 证明汇编调用桩在整数参数、指针参数、指针返回值与输出参数上
-// 遵循平台 C ABI。
+// TestCallFnABI proves the purego-backed trampoline follows the platform C ABI
+// for integer arguments, pointer arguments, pointer results and out-parameters.
+// | TestCallFnABI 证明 purego 调用跳板在整数参数、指针参数、指针返回值与输出参数
+// 上遵循平台 C ABI。
 func TestCallFnABI(t *testing.T) {
 	libc, err := purego.Dlopen("libc.so.6", purego.RTLD_NOW|purego.RTLD_GLOBAL)
 	if err != nil {
@@ -37,6 +38,27 @@ func TestCallFnABI(t *testing.T) {
 	}
 	if string(a) != "abcdef" || string(b) != "abcxef" {
 		t.Fatal("callFn(memcmp) modified its input | memcmp 修改了输入")
+	}
+
+	// purego clears the errno slot on Linux. Verify the control-plane helper
+	// captures the thread-local errno from a NULL-returning libc call. | purego
+	// 在 Linux 上会清零 errno 槽位。验证控制面辅助函数能从返回 NULL 的 libc 调用
+	// 捕获线程局部 errno。
+	fopen, err := purego.Dlsym(libc, "fopen")
+	if err != nil {
+		t.Fatalf("Dlsym(fopen) = %v", err)
+	}
+	errnoLoc, err := purego.Dlsym(libc, "__errno_location")
+	if err != nil {
+		t.Fatalf("Dlsym(__errno_location) = %v", err)
+	}
+	v := &verbsAPI{errnoLoc: errnoLoc}
+	missing := []byte("/nonexistent-ydx-errno-test\x00")
+	mode := []byte("r\x00")
+	p, errno := v.callControl(fopen, uintptr(unsafe.Pointer(&missing[0])),
+		uintptr(unsafe.Pointer(&mode[0])))
+	if p != 0 || errno != int(syscall.ENOENT) {
+		t.Fatalf("callControl(fopen) = %#x, errno %d, want 0, ENOENT", p, errno)
 	}
 
 	verbs, err := purego.Dlopen("libibverbs.so.1", purego.RTLD_NOW|purego.RTLD_GLOBAL)

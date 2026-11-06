@@ -26,9 +26,10 @@
 //   - 预注册大页内存池、零拷贝发送、零拷贝接收与批量回收 | Pre-registered huge
 //     page pools, zero-copy send, zero-copy receive and batch recycling
 //   - 直接调用 ibv_context_ops 热路径函数指针，不经 libibverbs 的 inline 包装；
-//     amd64/arm64 使用最小汇编调用桩 | Hot paths call ibv_context_ops function
-//     pointers directly, without the libibverbs inline wrappers; amd64 and arm64
-//     use minimal assembly call stubs
+//     C 调用经 purego 系统栈跳板完成，避免在 goroutine 小栈上直接执行提供方代码 |
+//     Hot paths call ibv_context_ops function pointers directly, without the
+//     libibverbs inline wrappers; C calls use purego's system-stack trampoline so
+//     provider code never runs on a goroutine's small stack
 //   - 可通过 Config.VerbsLibrary 指定任意发行版的 libibverbs 路径 | Config.
 //     VerbsLibrary selects any distribution's libibverbs path
 //
@@ -154,9 +155,15 @@
 // # 并发与生命周期 | Concurrency and lifetime
 //
 // Device 拥有 PD；CQ、QP、MR、Pool 必须在 Device.Close 之前关闭。QP 的投递与
-// Poll 不应并发调用。Conn 的热路径是单协程模型。 | A Device owns its PD; CQ,
-// QP, MR and Pool must be closed before Device.Close. QP posting and polling
-// must not be called concurrently. Conn's hot path is single-goroutine.
+// Poll 不应并发调用，且 QP/CQ/SRQ/AH 的 Close 不得与同一对象上的数据面调用并发；
+// 只有 Conn 会把 Close 与在途操作串行化。Conn 的热路径是单协程模型。 | A Device
+// owns its PD; CQ, QP, MR and Pool must be closed before Device.Close. QP
+// posting and polling must not be called concurrently, and Close on a
+// QP/CQ/SRQ/AH must not race data-plane calls on that object; only Conn
+// serializes Close against its in-flight operations. Conn's hot path is
+// single-goroutine. The post-handshake send window is capped by the peer's
+// advertised receive slots; the receiver must release buffers promptly or the
+// sender sees RNR retries.
 //
 // # 错误 | Errors
 //

@@ -19,23 +19,39 @@ func (q *QP) PostSend(wrs []SendWR) (int, error) { return q.postSend(wrs, nil) }
 // PostSendUD posts unreliable datagram work requests to the peer described by
 // ah. | PostSendUD 向 ah 描述的对端提交不可靠数据报工作请求。
 func (q *QP) PostSendUD(wrs []SendWR, ah *AH) (int, error) {
-	if ah == nil || ah.closed.Load() || ah.state == nil || ah.state.ah == nil {
-		return 0, errs.Detail(ErrInvalidConfig, "address handle is required | 必须提供地址句柄")
+	if q == nil || q.typ != QPTypeUD {
+		return 0, errs.Detail(ErrInvalidConfig, "PostSendUD requires a UD queue pair | PostSendUD 需要 UD 队列对")
+	}
+	if ah == nil || ah.closed.Load() || ah.state == nil || ah.state.ah == nil || ah.dev != q.dev {
+		return 0, errs.Detail(ErrInvalidConfig, "address handle is missing or belongs to another device | 地址句柄缺失或属于其它设备")
 	}
 	return q.postSend(wrs, ah)
 }
 
 // postSend encodes and posts one batch. | postSend 编码并提交一批请求。
 func (q *QP) postSend(wrs []SendWR, ah *AH) (int, error) {
-	if q == nil || q.closed.Load() {
+	if q == nil || q.closed.Load() || q.state == nil {
 		return 0, ErrClosed
 	}
 	if len(wrs) == 0 {
 		return 0, nil
 	}
 	if len(wrs) > q.state.scap {
-		return 0, errs.Detail(ErrQueueFull, "batch %d exceeds send queue %d | 批量 %d 超过发送队列 %d",
+		return 0, errs.Detail(ErrInvalidConfig, "batch %d exceeds send queue %d | 批量 %d 超过发送队列 %d",
 			len(wrs), q.state.scap, len(wrs), q.state.scap)
+	}
+	// UD sends require an address handle per request; RC/UC sends must not use
+	// one. Passing a UD WR without an AH crashes provider send paths. | UD 发送
+	// 每个请求都需要地址句柄；RC/UC 发送不得携带。缺少 AH 的 UD WR 会让提供方
+	// 发送路径崩溃。
+	if (q.typ == QPTypeUD) != (ah != nil) {
+		return 0, errs.Detail(ErrInvalidConfig, "queue pair type and address handle disagree | 队列对类型与地址句柄不匹配")
+	}
+	for i := range wrs {
+		if int(wrs[i].NumSGE) > MaxSGE {
+			return 0, errs.Detail(ErrInvalidConfig, "sge count %d exceeds %d | SGE 数量 %d 超过 %d",
+				wrs[i].NumSGE, MaxSGE, wrs[i].NumSGE, MaxSGE)
+		}
 	}
 	for i := range wrs {
 		w := &wrs[i]
@@ -95,15 +111,21 @@ func (q *QP) postSend(wrs []SendWR, ah *AH) (int, error) {
 // PostRecv posts a batch of receive work requests with one call into
 // ibv_post_recv. | PostRecv 以一次 ibv_post_recv 调用提交一批接收工作请求。
 func (q *QP) PostRecv(wrs []RecvWR) (int, error) {
-	if q == nil || q.closed.Load() {
+	if q == nil || q.closed.Load() || q.state == nil {
 		return 0, ErrClosed
 	}
 	if len(wrs) == 0 {
 		return 0, nil
 	}
 	if len(wrs) > q.state.rcap {
-		return 0, errs.Detail(ErrQueueFull, "batch %d exceeds receive queue %d | 批量 %d 超过接收队列 %d",
+		return 0, errs.Detail(ErrInvalidConfig, "batch %d exceeds receive queue %d | 批量 %d 超过接收队列 %d",
 			len(wrs), q.state.rcap, len(wrs), q.state.rcap)
+	}
+	for i := range wrs {
+		if int(wrs[i].NumSGE) > MaxSGE {
+			return 0, errs.Detail(ErrInvalidConfig, "sge count %d exceeds %d | SGE 数量 %d 超过 %d",
+				wrs[i].NumSGE, MaxSGE, wrs[i].NumSGE, MaxSGE)
+		}
 	}
 	for i := range wrs {
 		w := &wrs[i]
@@ -161,10 +183,21 @@ func (q *QP) LocalInfo(psn uint32) ConnectInfo {
 // remote parameters. The remote MTU caps the path MTU. | Connect 使用本地与
 // 远端参数将队列对推进到 INIT、RTR 与 RTS。远端 MTU 限制路径 MTU。
 func (q *QP) Connect(local, remote ConnectInfo) error {
-	if q == nil || q.closed.Load() {
+	if q == nil || q.closed.Load() || q.state == nil || q.dev == nil || q.dev.state == nil {
 		return ErrClosed
 	}
 	d := q.dev
+	if remote.QPN == 0 {
+		return errs.Detail(ErrInvalidConfig, "remote qpn is zero | 远端 QPN 为零")
+	}
+	if remote.PSN > 0xffffff || local.PSN > 0xffffff {
+		return errs.Detail(ErrInvalidConfig, "PSN exceeds 24 bits | PSN 超过 24 位")
+	}
+	switch remote.MTU {
+	case 0, 256, 512, 1024, 2048, 4096:
+	default:
+		return errs.Detail(ErrInvalidConfig, "remote MTU %d | 远端 MTU %d", remote.MTU, remote.MTU)
+	}
 	port := uint8(d.port)
 	mtu := remote.MTU
 	if mtu <= 0 {
@@ -179,7 +212,7 @@ func (q *QP) Connect(local, remote ConnectInfo) error {
 	}
 	initAttr := QPAttr{
 		Mask:  QPAttrState | QPAttrPKeyIndex | QPAttrPort | QPAttrAccessFlags,
-		State: QPStateInit, PKeyIndex: 0, Port: port, Access: AccessDefault,
+		State: QPStateInit, PKeyIndex: 0, Port: port, Access: q.access,
 	}
 	if q.typ == QPTypeUD {
 		// Unreliable datagram queue pairs reject access flags at INIT and use a
@@ -210,11 +243,15 @@ func (q *QP) Connect(local, remote ConnectInfo) error {
 		}
 		return nil
 	}
+	destAtomic := d.cfg.MaxDestRDMAtomic
+	if max := int(d.attr.MaxQPInitRdAtomic); max > 0 && int(destAtomic) > max {
+		destAtomic = uint8(max)
+	}
 	if err := q.Modify(QPAttr{
 		Mask: QPAttrState | QPAttrPathMTU | QPAttrDestQPN | QPAttrRQPSN |
 			QPAttrAV | QPAttrMinRNRTimer | QPAttrMaxDestRDAtomic,
 		State: QPStateRTR, PathMTU: mtu, DestQPN: remote.QPN, RQPSN: remote.PSN,
-		MinRNRTimer: 12, MaxDestRDMAtomic: 16, AH: ah,
+		MinRNRTimer: d.cfg.MinRNRTimer, MaxDestRDMAtomic: destAtomic, AH: ah,
 	}); err != nil {
 		return errs.WrapDetail(err, ErrInvalidConfig, "RTR | RTR")
 	}
@@ -236,6 +273,15 @@ func (q *QP) Connect(local, remote ConnectInfo) error {
 func (q *QP) Modify(attr QPAttr) error {
 	if q == nil || q.closed.Load() {
 		return ErrClosed
+	}
+	if attr.Mask&QPAttrPathMTU != 0 {
+		switch attr.PathMTU {
+		case 256, 512, 1024, 2048, 4096:
+		default:
+			return errs.Detail(ErrInvalidConfig,
+				"path mtu %d is not 256/512/1024/2048/4096 | 路径 MTU %d 非法",
+				attr.PathMTU, attr.PathMTU)
+		}
 	}
 	var a ibvQPAttr
 	a.QPState = uint32(attr.State)
@@ -273,9 +319,27 @@ func (q *QP) Modify(attr QPAttr) error {
 	return nil
 }
 
+// SendQueueDepth returns the provider-granted send queue depth. | SendQueueDepth
+// 返回提供方实际授予的发送队列深度。
+func (q *QP) SendQueueDepth() int {
+	if q == nil || q.state == nil {
+		return 0
+	}
+	return q.state.scap
+}
+
+// RecvQueueDepth returns the provider-granted receive queue depth. | RecvQueueDepth
+// 返回提供方实际授予的接收队列深度。
+func (q *QP) RecvQueueDepth() int {
+	if q == nil || q.state == nil {
+		return 0
+	}
+	return q.state.rcap
+}
+
 // State returns the current queue pair state. | State 返回当前队列对状态。
 func (q *QP) State() (QPState, error) {
-	if q == nil || q.closed.Load() {
+	if q == nil || q.closed.Load() || q.state == nil {
 		return QPStateErr, ErrClosed
 	}
 	state, rc := q.dev.state.api.state(q.state.qp)
@@ -288,12 +352,24 @@ func (q *QP) State() (QPState, error) {
 // Close destroys the queue pair. Completion queues and memory regions must be
 // closed after it. | Close 销毁队列对。完成队列与内存区必须在其后关闭。
 func (q *QP) Close() error {
-	if q == nil || !q.closed.CompareAndSwap(false, true) {
+	if q == nil {
 		return nil
 	}
+	q.closeMu.Lock()
+	defer q.closeMu.Unlock()
+	if q.closed.Load() {
+		return q.closeErr
+	}
+	q.closed.Store(true)
 	if q.state != nil && q.state.qp != nil {
-		q.dev.state.api.removeQP(q.state.qp)
+		if rc := q.dev.state.api.removeQP(q.state.qp); rc != 0 {
+			q.closed.Store(false)
+			q.closeErr = errnoError("destroy queue pair", rc)
+			return q.closeErr
+		}
 		q.state.qp = nil
 	}
+	q.closeErr = nil
+	q.dev.releaseChild()
 	return nil
 }

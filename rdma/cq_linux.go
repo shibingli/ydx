@@ -12,7 +12,7 @@ import (
 // number written. It returns zero when the queue is empty. | Poll 以 64 为批
 // 取出至多 len(events) 个完成事件并返回写入数量。队列为空时返回零。
 func (c *CQ) Poll(events []Completion) (int, error) {
-	if c == nil || c.closed.Load() {
+	if c == nil || c.closed.Load() || c.state == nil {
 		return 0, ErrClosed
 	}
 	if len(events) == 0 {
@@ -54,12 +54,24 @@ func (c *CQ) Poll(events []Completion) (int, error) {
 // Close destroys the completion queue. Queue pairs using it must be closed
 // first. | Close 销毁完成队列。使用它的队列对必须先关闭。
 func (c *CQ) Close() error {
-	if c == nil || !c.closed.CompareAndSwap(false, true) {
+	if c == nil {
 		return nil
 	}
+	c.closeMu.Lock()
+	defer c.closeMu.Unlock()
+	if c.closed.Load() {
+		return c.closeErr
+	}
+	c.closed.Store(true)
 	if c.state != nil && c.state.cq != nil {
-		c.dev.state.api.removeCQ(c.state.cq)
+		if rc := c.dev.state.api.removeCQ(c.state.cq); rc != 0 {
+			c.closed.Store(false)
+			c.closeErr = errnoError("destroy completion queue", rc)
+			return c.closeErr
+		}
 		c.state.cq = nil
 	}
+	c.closeErr = nil
+	c.dev.releaseChild()
 	return nil
 }

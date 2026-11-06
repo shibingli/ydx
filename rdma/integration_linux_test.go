@@ -31,12 +31,20 @@ func openTestDevice(t *testing.T) *Device {
 // 在同一设备上创建两个可靠连接队列对。
 func newRCPair(t *testing.T, d *Device, depth int) (*CQ, *QP, *QP) {
 	t.Helper()
+	return newQPPair(t, d, depth, QPTypeRC)
+}
+
+// newQPPair creates and connects two queue pairs of the requested type. |
+// newQPPair 创建并连接指定类型的两个队列对。
+func newQPPair(t *testing.T, d *Device, depth int, typ QPType) (*CQ, *QP, *QP) {
+	t.Helper()
 	cq, err := d.NewCQ(depth * 2)
 	if err != nil {
 		t.Fatalf("NewCQ = %v | 创建 CQ 失败", err)
 	}
 	t.Cleanup(func() { _ = cq.Close() })
 	cfg := DefaultQPConfig(cq)
+	cfg.Type = typ
 	cfg.MaxSendWR = depth
 	cfg.MaxRecvWR = depth
 	a, err := d.NewQP(cfg)
@@ -176,8 +184,19 @@ func TestMemoryPool(t *testing.T) {
 // TestRCLoopbackSendRecv proves a zero-copy send/recv round trip completes on
 // one device. | TestRCLoopbackSendRecv 证明单设备上的零拷贝收发往返可完成。
 func TestRCLoopbackSendRecv(t *testing.T) {
+	testLoopbackSendRecv(t, QPTypeRC)
+}
+
+// TestUCLoopbackSendRecv covers the unreliable-connected Connect path. |
+// TestUCLoopbackSendRecv 覆盖不可靠连接类型的 Connect 路径。
+func TestUCLoopbackSendRecv(t *testing.T) {
+	testLoopbackSendRecv(t, QPTypeUC)
+}
+
+func testLoopbackSendRecv(t *testing.T, typ QPType) {
+	t.Helper()
 	d := openTestDevice(t)
-	cq, qa, qb := newRCPair(t, d, 16)
+	cq, qa, qb := newQPPair(t, d, 16, typ)
 	pool, err := d.NewPool(PoolConfig{Slots: 16, SlotSize: 4096, HugePages: true})
 	if err != nil {
 		t.Fatalf("NewPool = %v | 创建内存池失败", err)

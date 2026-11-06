@@ -87,30 +87,30 @@ func (s PortState) String() string {
 // | PortInfo 描述通过 sysfs 发现的一个设备端口。MTU 由 Device.Info 从
 // ibv_query_port 填充；sysfs 本身不暴露 MTU。
 type PortInfo struct {
-	// Port is the one-based port number. | Port 是 1 起始的端口号。
-	Port int
-	// State is the current port state. | State 是当前端口状态。
-	State PortState
 	// PhysicalState is the raw sysfs physical state text. | PhysicalState 是
 	// sysfs 的物理状态原文。
 	PhysicalState string
-	// LinkLayer is the port link layer. | LinkLayer 是端口链路层。
-	LinkLayer LinkLayer
+	// GIDs lists the port GID table ordered by index. | GIDs 按索引顺序列出
+	// 端口 GID 表。
+	GIDs []GID
+	// Port is the one-based port number. | Port 是 1 起始的端口号。
+	Port int
 	// RateGbps is the negotiated link rate in gigabits per second. | RateGbps 是
 	// 协商链路速率（Gb/s）。
 	RateGbps uint64
-	// LID is the InfiniBand local identifier; zero on Ethernet links. | LID 是
-	// InfiniBand 本地标识；以太网链路为零。
-	LID uint16
 	// ActiveMTU is the current path MTU in bytes; zero until Device.Info runs.
 	// | ActiveMTU 是当前路径 MTU（字节）；Device.Info 运行前为零。
 	ActiveMTU int
 	// MaxMTU is the maximum path MTU in bytes; zero until Device.Info runs. |
 	// MaxMTU 是最大路径 MTU（字节）；Device.Info 运行前为零。
 	MaxMTU int
-	// GIDs lists the port GID table ordered by index. | GIDs 按索引顺序列出
-	// 端口 GID 表。
-	GIDs []GID
+	// LID is the InfiniBand local identifier; zero on Ethernet links. | LID 是
+	// InfiniBand 本地标识；以太网链路为零。
+	LID uint16
+	// State is the current port state. | State 是当前端口状态。
+	State PortState
+	// LinkLayer is the port link layer. | LinkLayer 是端口链路层。
+	LinkLayer LinkLayer
 }
 
 // Active reports whether the port state can carry traffic. | Active 报告端口
@@ -139,14 +139,14 @@ type DeviceInfo struct {
 	// Name is the kernel device name, for example "mlx5_0". | Name 是内核设备名，
 	// 例如 "mlx5_0"。
 	Name string
-	// NodeGUID identifies the node. | NodeGUID 标识节点。
-	NodeGUID uint64
-	// SysImageGUID identifies the system image. | SysImageGUID 标识系统镜像。
-	SysImageGUID uint64
 	// Firmware is the firmware version string. | Firmware 是固件版本字符串。
 	Firmware string
 	// Ports lists the device ports ordered by port number. | Ports 按端口号排序。
 	Ports []PortInfo
+	// NodeGUID identifies the node. | NodeGUID 标识节点。
+	NodeGUID uint64
+	// SysImageGUID identifies the system image. | SysImageGUID 标识系统镜像。
+	SysImageGUID uint64
 }
 
 // Port returns the port with the given number. | Port 返回指定端口号的端口。
@@ -171,6 +171,7 @@ func listDevices(root string) ([]DeviceInfo, error) {
 		return nil, errs.WrapDetail(err, ErrNoDevice, "%s", root)
 	}
 	devices := make([]DeviceInfo, 0, len(entries))
+	var firstErr error
 	for _, entry := range entries {
 		// /sys/class/infiniband entries are symlinks to device directories;
 		// DirEntry.IsDir reports false for them. | /sys/class/infiniband 的
@@ -180,11 +181,20 @@ func listDevices(root string) ([]DeviceInfo, error) {
 		}
 		dev, err := readDevice(filepath.Join(root, entry.Name()), entry.Name())
 		if err != nil {
-			return nil, err
+			// One unreadable or partially initialized device must not hide
+			// other usable devices. | 单个不可读或未初始化完成的设备不得遮蔽其它
+			// 可用设备。
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
 		}
 		devices = append(devices, dev)
 	}
 	if len(devices) == 0 {
+		if firstErr != nil {
+			return nil, firstErr
+		}
 		return nil, errs.Detail(ErrNoDevice, "no devices under %s | %s 下没有设备", root, root)
 	}
 	sort.Slice(devices, func(i, j int) bool { return devices[i].Name < devices[j].Name })

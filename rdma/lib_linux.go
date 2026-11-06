@@ -3,6 +3,7 @@
 package rdma
 
 import (
+	"runtime"
 	"sync"
 	"unsafe"
 
@@ -10,10 +11,11 @@ import (
 	"github.com/shibingli/ydx/errs"
 )
 
-// verbsAPI holds the resolved libibverbs entry points. Calls go straight to
-// the function pointers through purego, so no cgo transition is paid. |
-// verbsAPI 保存解析后的 libibverbs 入口。调用经 purego 直接到达函数指针，不支付
-// cgo 切换开销。
+// verbsAPI holds the resolved libibverbs entry points. Hot-path ops call the
+// context function pointers through purego's system-stack trampoline; control
+// calls use purego.SyscallN directly. | verbsAPI 保存解析后的 libibverbs 入口。
+// 热路径经 purego 的系统栈跳板调用上下文函数指针；控制面直接使用
+// purego.SyscallN。
 type verbsAPI struct {
 	lib            uintptr
 	path           string
@@ -38,6 +40,7 @@ type verbsAPI struct {
 	destroySRQ     uintptr
 	createAH       uintptr
 	destroyAH      uintptr
+	errnoLoc       uintptr
 }
 
 // defaultVerbsLibraries lists portable sonames first, then distribution
@@ -137,11 +140,47 @@ func openVerbs(path string) (*verbsAPI, error) {
 	for _, s := range symbols {
 		sym, err := purego.Dlsym(lib, s.name)
 		if err != nil {
+			_ = purego.Dlclose(lib)
 			return nil, errs.WrapDetail(err, ErrUnsupported, "resolve %s | 解析 %s", s.name, s.name)
 		}
 		*s.out = sym
 	}
+	// purego clears the errno slot on Linux, so NULL-returning verbs need the
+	// thread-local errno read explicitly. Resolve the libc accessor through the
+	// already-loaded library; providers link libc. | purego 在 Linux 上会清零 errno
+	// 槽位，因此返回 NULL 的 verbs 需要显式读取线程局部 errno。通过已加载的库解析
+	// libc 访问器；提供方均链接 libc。
+	if sym, err := purego.Dlsym(lib, "__errno_location"); err == nil {
+		api.errnoLoc = sym
+	} else if libc, lerr := purego.Dlopen("libc.so.6", purego.RTLD_NOW|purego.RTLD_GLOBAL); lerr == nil {
+		if sym, serr := purego.Dlsym(libc, "__errno_location"); serr == nil {
+			api.errnoLoc = sym
+		}
+	}
 	return api, nil
+}
+
+// callControl invokes a NULL-returning control call and captures errno on the
+// same OS thread. Locking the thread is required because the C call and the
+// __errno_location read must observe the same thread-local errno. | callControl
+// 调用返回 NULL 的控制面函数，并在同一 OS 线程读取 errno。必须锁定线程，因为 C
+// 调用与 __errno_location 读取必须看到同一个线程局部 errno。
+func (v *verbsAPI) callControl(fn uintptr, args ...uintptr) (uintptr, int) {
+	if fn == 0 {
+		return 0, 5 // EIO
+	}
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+	r, _, _ := purego.SyscallN(fn, args...)
+	if r == 0 && v.errnoLoc != 0 {
+		p, _, _ := purego.SyscallN(v.errnoLoc)
+		if p != 0 {
+			if errno := int(*(*int32)(ptrFromUintptr(p))); errno != 0 {
+				return 0, errno
+			}
+		}
+	}
+	return r, 0
 }
 
 // ptrFromUintptr converts an address returned by libibverbs into a pointer
@@ -151,12 +190,12 @@ func ptrFromUintptr(u uintptr) unsafe.Pointer {
 	return *(*unsafe.Pointer)(unsafe.Pointer(&u))
 }
 
-// errnoOfResult maps the third SyscallN result to an errno, falling back to
-// EIO when the provider did not report one. | errnoOfResult 将 SyscallN 的第三
-// 个返回值映射为 errno，提供方未报告时回退 EIO。
-func errnoOfResult(err uintptr) int {
-	if err != 0 {
-		return int(err)
+// errnoOfResult maps a captured thread-local errno to an errno, falling back to
+// EIO when the provider did not report one. | errnoOfResult 将捕获的线程局部
+// errno 映射为 errno，提供方未报告时回退 EIO。
+func errnoOfResult(errno int) int {
+	if errno != 0 {
+		return errno
 	}
 	return 5 // EIO
 }
@@ -195,9 +234,9 @@ func goStringZ(p *byte) string {
 
 // openDevice opens one device. | openDevice 打开一个设备。
 func (v *verbsAPI) open(dev *ibvDevice) (*ibvContext, int) {
-	r, _, e := purego.SyscallN(v.openDevice, uintptr(unsafe.Pointer(dev)))
+	r, errno := v.callControl(v.openDevice, uintptr(unsafe.Pointer(dev)))
 	if r == 0 {
-		return nil, errnoOfResult(e)
+		return nil, errnoOfResult(errno)
 	}
 	return (*ibvContext)(ptrFromUintptr(r)), 0
 }
@@ -222,9 +261,9 @@ func (v *verbsAPI) queryP(ctx *ibvContext, port uint8, out *ibvPortAttr) int {
 
 // allocPD allocates a protection domain. | allocPD 分配保护域。
 func (v *verbsAPI) allocProtectionDomain(ctx *ibvContext) (*ibvPD, int) {
-	r, _, e := purego.SyscallN(v.allocPD, uintptr(unsafe.Pointer(ctx)))
+	r, errno := v.callControl(v.allocPD, uintptr(unsafe.Pointer(ctx)))
 	if r == 0 {
-		return nil, errnoOfResult(e)
+		return nil, errnoOfResult(errno)
 	}
 	return (*ibvPD)(ptrFromUintptr(r)), 0
 }
@@ -237,9 +276,9 @@ func (v *verbsAPI) deallocProtectionDomain(pd *ibvPD) int {
 
 // createCQ creates a completion queue. | createCQ 创建完成队列。
 func (v *verbsAPI) makeCQ(ctx *ibvContext, depth int32) (*ibvCQ, int) {
-	r, _, e := purego.SyscallN(v.createCQ, uintptr(unsafe.Pointer(ctx)), uintptr(depth), 0, 0, 0)
+	r, errno := v.callControl(v.createCQ, uintptr(unsafe.Pointer(ctx)), uintptr(depth), 0, 0, 0)
 	if r == 0 {
-		return nil, errnoOfResult(e)
+		return nil, errnoOfResult(errno)
 	}
 	return (*ibvCQ)(ptrFromUintptr(r)), 0
 }
@@ -252,9 +291,10 @@ func (v *verbsAPI) removeCQ(cq *ibvCQ) int {
 
 // regMR registers memory. | regMR 注册内存。
 func (v *verbsAPI) registerMR(pd *ibvPD, addr unsafe.Pointer, length int, access Access) (*ibvMR, int) {
-	r, _, e := purego.SyscallN(v.regMR, uintptr(unsafe.Pointer(pd)), uintptr(addr), uintptr(length), uintptr(access))
+	r, errno := v.callControl(v.regMR,
+		uintptr(unsafe.Pointer(pd)), uintptr(addr), uintptr(length), uintptr(access))
 	if r == 0 {
-		return nil, errnoOfResult(e)
+		return nil, errnoOfResult(errno)
 	}
 	return (*ibvMR)(ptrFromUintptr(r)), 0
 }
@@ -267,9 +307,9 @@ func (v *verbsAPI) deregisterMR(mr *ibvMR) int {
 
 // createQP creates a queue pair. | createQP 创建队列对。
 func (v *verbsAPI) makeQP(pd *ibvPD, attr *ibvQPInitAttr) (*ibvQP, int) {
-	r, _, e := purego.SyscallN(v.createQP, uintptr(unsafe.Pointer(pd)), uintptr(unsafe.Pointer(attr)))
+	r, errno := v.callControl(v.createQP, uintptr(unsafe.Pointer(pd)), uintptr(unsafe.Pointer(attr)))
 	if r == 0 {
-		return nil, errnoOfResult(e)
+		return nil, errnoOfResult(errno)
 	}
 	return (*ibvQP)(ptrFromUintptr(r)), 0
 }
@@ -284,6 +324,19 @@ func (v *verbsAPI) removeQP(qp *ibvQP) int {
 func (v *verbsAPI) modify(qp *ibvQP, attr *ibvQPAttr, mask QPAttrMask) int {
 	r, _, _ := purego.SyscallN(v.modifyQP, uintptr(unsafe.Pointer(qp)), uintptr(unsafe.Pointer(attr)), uintptr(mask))
 	return int(int32(r))
+}
+
+// qpCap reports the provider-granted send and receive queue depths. |
+// qpCap 返回提供方实际授予的发送与接收队列深度。
+func (v *verbsAPI) qpCap(qp *ibvQP) (int, int, int) {
+	var attr ibvQPAttr
+	var init ibvQPInitAttr
+	r, _, _ := purego.SyscallN(v.queryQP, uintptr(unsafe.Pointer(qp)),
+		uintptr(unsafe.Pointer(&attr)), 0, uintptr(unsafe.Pointer(&init)))
+	if int(int32(r)) != 0 {
+		return 0, 0, int(int32(r))
+	}
+	return int(attr.Cap.MaxSendWR), int(attr.Cap.MaxRecvWR), 0
 }
 
 // queryQPState reads the current queue pair state. | queryQPState 读取当前
@@ -340,9 +393,9 @@ func (v *verbsAPI) poll(fn uintptr, cq *ibvCQ, max int32, wc *ibvWC) int32 {
 
 // createSRQ creates a shared receive queue. | createSRQ 创建共享接收队列。
 func (v *verbsAPI) makeSRQ(pd *ibvPD, attr *ibvSRQInitAttr) (*ibvSRQ, int) {
-	r, _, e := purego.SyscallN(v.createSRQ, uintptr(unsafe.Pointer(pd)), uintptr(unsafe.Pointer(attr)))
+	r, errno := v.callControl(v.createSRQ, uintptr(unsafe.Pointer(pd)), uintptr(unsafe.Pointer(attr)))
 	if r == 0 {
-		return nil, errnoOfResult(e)
+		return nil, errnoOfResult(errno)
 	}
 	return (*ibvSRQ)(ptrFromUintptr(r)), 0
 }
@@ -367,9 +420,9 @@ func (v *verbsAPI) srqRecv(fn uintptr, srq *ibvSRQ, wr *ibvRecvWR) (int, *ibvRec
 
 // createAH creates an address handle. | createAH 创建地址句柄。
 func (v *verbsAPI) makeAH(pd *ibvPD, attr *ibvAHAttr) (*ibvAH, int) {
-	r, _, e := purego.SyscallN(v.createAH, uintptr(unsafe.Pointer(pd)), uintptr(unsafe.Pointer(attr)))
+	r, errno := v.callControl(v.createAH, uintptr(unsafe.Pointer(pd)), uintptr(unsafe.Pointer(attr)))
 	if r == 0 {
-		return nil, errnoOfResult(e)
+		return nil, errnoOfResult(errno)
 	}
 	return (*ibvAH)(ptrFromUintptr(r)), 0
 }

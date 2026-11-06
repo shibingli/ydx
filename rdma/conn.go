@@ -1,10 +1,9 @@
 package rdma
 
 import (
-	"errors"
+	"math"
 	"math/rand/v2"
 	"net"
-	"runtime"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -25,8 +24,12 @@ type ConnConfig struct {
 	// SlotSize is the zero-copy message slot size in bytes. Zero means 4096.
 	// | SlotSize 是零拷贝消息槽位字节数；零表示 4096。
 	SlotSize int
-	// Slots is the number of send and receive slots. Zero means 1024. |
-	// Slots 是发送与接收槽位数量；零表示 1024。
+	// Slots is the requested send and receive slots. Zero means 1024. The
+	// provider's granted depth and the completion-queue limit may reduce the
+	// effective receive slots, and the send window is also capped by the peer's
+	// advertised receive slots. | Slots 是请求的发送与接收槽位数量；零表示 1024。
+	// 提供方授予的深度与完成队列上限可能降低有效接收槽位；发送窗口还受对端公布的
+	// 接收槽位数限制。
 	Slots int
 	// HugePages prefers 2 MiB huge pages for the registered pools. | HugePages
 	// 让注册内存池优先使用 2 MiB 大页。
@@ -74,6 +77,15 @@ func (c *ConnConfig) normalize() error {
 	if c.SlotSize < 64 || c.SlotSize%64 != 0 {
 		return errs.Detail(ErrInvalidConfig, "slot size %d must be a multiple of 64 | 槽位大小 %d 必须是 64 的倍数", c.SlotSize, c.SlotSize)
 	}
+	// RC message lengths are at most 2^31-1; larger slots would silently wrap
+	// in the ibv_sge length field. | RC 消息长度最大为 2^31-1；更大的槽位会在
+	// ibv_sge 长度字段中静默回绕。
+	if c.SlotSize > math.MaxInt32 {
+		return errs.Detail(ErrInvalidConfig, "slot size %d exceeds message limit | 槽位大小 %d 超过消息上限", c.SlotSize, c.SlotSize)
+	}
+	if c.Slots > (math.MaxInt-16)/2 {
+		return errs.Detail(ErrInvalidConfig, "slots %d overflow completion queue depth | 槽位数 %d 导致完成队列深度溢出", c.Slots, c.Slots)
+	}
 	if c.Slots == 0 {
 		c.Slots = 1024
 	}
@@ -102,48 +114,65 @@ func (c *ConnConfig) normalize() error {
 }
 
 // Conn is a zero-copy reliable connected message endpoint. A Conn must not be
-// used from two goroutines at once; create one Conn per worker. | Conn 是零拷贝
-// 可靠连接消息端点。同一个 Conn 不得被两个协程同时使用；每个工作协程使用独立
-// Conn。
+// used from two goroutines at once; create one Conn per worker. Close is the
+// exception: it may be called concurrently with an operation and waits for the
+// operation to observe the closed state before releasing resources. | Conn 是
+// 零拷贝可靠连接消息端点。同一个 Conn 不得被两个协程同时使用；每个工作协程使用
+// 独立 Conn。Close 是例外：它可以与操作并发调用，并在释放资源前等待操作观察到
+// 关闭状态。
 type Conn struct {
-	dev         *Device
-	qp          *QP
-	cq          *CQ
-	tx          *Pool
-	rx          *Pool
-	tcp         net.Conn
-	cfg         ConnConfig
-	txBufs      []*Buffer
-	rxBufs      []*Buffer
-	ring        *rxRing
-	events      []Completion
-	scratch     []SendWR
-	scratchRecv []RecvWR
-	oneSend     [1]SendWR
-	oneRecv     [1]RecvWR
-
-	ownsDevice bool
-	listener   *Listener
+	tcp net.Conn
 
 	localAddr  net.Addr
 	remoteAddr net.Addr
 
-	closed atomic.Bool
-	err    atomic.Pointer[error]
+	closeErr error
+
+	dev      *Device
+	qp       *QP
+	cq       *CQ
+	tx       *Pool
+	rx       *Pool
+	ring     *rxRing
+	listener *Listener
+
+	err     atomic.Pointer[error]
+	opsCond *sync.Cond
+
+	closeDone chan struct{}
+
+	txBufs      []*Buffer
+	rxBufs      []*Buffer
+	events      []Completion
+	scratch     []SendWR
+	scratchRecv []RecvWR
+	cfg         ConnConfig
+	oneSend     [1]SendWR
+	oneRecv     [1]RecvWR
+
+	ops atomic.Int64
 
 	sendSeq     uint64
 	signalEvery uint64
+	opsMu       sync.Mutex
+
+	closed atomic.Bool
+
+	ownsDevice bool
 }
 
 // Listener accepts RDMA message connections over a TCP control channel. |
 // Listener 通过 TCP 控制通道接受 RDMA 消息连接。
 type Listener struct {
-	ln     net.Listener
-	dev    *Device
-	cfg    ConnConfig
-	mu     sync.Mutex
-	conns  map[*Conn]struct{}
-	closed atomic.Bool
+	ln        net.Listener
+	closeErr  error
+	dev       *Device
+	conns     map[*Conn]struct{}
+	closeDone chan struct{}
+	cfg       ConnConfig
+	acceptWG  sync.WaitGroup
+	mu        sync.Mutex
+	closed    atomic.Bool
 }
 
 // Listen binds a TCP control listener and opens the RDMA device. The RDMA
@@ -162,7 +191,8 @@ func Listen(addr string, cfg ConnConfig) (*Listener, error) {
 		_ = dev.Close()
 		return nil, errs.Wrap(err, ErrNetwork)
 	}
-	return &Listener{ln: ln, dev: dev, cfg: cfg, conns: make(map[*Conn]struct{})}, nil
+	return &Listener{ln: ln, dev: dev, cfg: cfg, conns: make(map[*Conn]struct{}),
+		closeDone: make(chan struct{})}, nil
 }
 
 // Addr returns the TCP control address. | Addr 返回 TCP 控制地址。
@@ -176,9 +206,17 @@ func (l *Listener) Addr() net.Addr {
 // Accept waits for one peer and returns a connected RDMA endpoint. | Accept
 // 等待一个对端并返回已连接的 RDMA 端点。
 func (l *Listener) Accept() (*Conn, error) {
-	if l == nil || l.closed.Load() {
+	if l == nil {
 		return nil, ErrClosed
 	}
+	l.mu.Lock()
+	if l.ln == nil || l.closed.Load() {
+		l.mu.Unlock()
+		return nil, ErrClosed
+	}
+	l.acceptWG.Add(1)
+	l.mu.Unlock()
+	defer l.acceptWG.Done()
 	tcp, err := l.ln.Accept()
 	if err != nil {
 		if l.closed.Load() {
@@ -191,8 +229,13 @@ func (l *Listener) Accept() (*Conn, error) {
 		_ = tcp.Close()
 		return nil, err
 	}
-	c.listener = l
 	l.mu.Lock()
+	if l.closed.Load() {
+		l.mu.Unlock()
+		_ = c.Close()
+		return nil, ErrClosed
+	}
+	c.listener = l
 	l.conns[c] = struct{}{}
 	l.mu.Unlock()
 	return c, nil
@@ -201,20 +244,51 @@ func (l *Listener) Accept() (*Conn, error) {
 // Close closes the listener and every connection it accepted, then releases
 // the device. | Close 关闭监听及其接受的所有连接，然后释放设备。
 func (l *Listener) Close() error {
-	if l == nil || !l.closed.CompareAndSwap(false, true) {
+	if l == nil {
 		return nil
 	}
-	_ = l.ln.Close()
+	l.mu.Lock()
+	if l.closed.Load() {
+		done := l.closeDone
+		l.mu.Unlock()
+		if done != nil {
+			<-done
+		}
+		return l.closeErr
+	}
+	l.closed.Store(true)
+	if l.ln != nil {
+		_ = l.ln.Close()
+	}
+	l.mu.Unlock()
+	// In-flight Accepts may still be creating a Conn on l.dev. Wait for them
+	// before snapshotting connections and destroying the device. | 进行中的 Accept
+	// 可能仍在 l.dev 上创建 Conn；在快照连接并销毁设备前等待它们结束。
+	l.acceptWG.Wait()
 	l.mu.Lock()
 	conns := make([]*Conn, 0, len(l.conns))
 	for c := range l.conns {
 		conns = append(conns, c)
 	}
 	l.mu.Unlock()
+	var first error
 	for _, c := range conns {
-		_ = c.Close()
+		if err := c.Close(); err != nil && first == nil {
+			first = err
+		}
 	}
-	return l.dev.Close()
+	if l.dev != nil {
+		if err := l.dev.Close(); err != nil && first == nil {
+			first = err
+		}
+	}
+	l.mu.Lock()
+	l.closeErr = first
+	if l.closeDone != nil {
+		close(l.closeDone)
+	}
+	l.mu.Unlock()
+	return first
 }
 
 // remove drops a closed connection from the listener. | remove 从监听中移除
@@ -264,14 +338,22 @@ func newConn(dev *Device, tcp net.Conn, cfg ConnConfig, ownsDevice bool) (c *Con
 	if err != nil {
 		return nil, err
 	}
-	tx, err := dev.NewPool(PoolConfig{Slots: slots, SlotSize: cfg.SlotSize, HugePages: cfg.HugePages, Access: AccessDefault})
-	if err != nil {
-		_ = cq.Close()
-		return nil, err
+	// NewCQ may clamp to the device's MaxCQE. Keep the pools and both queue
+	// directions small enough that receive WRs plus in-flight sends cannot
+	// overflow the CQ, which would drop completions and stall the connection.
+	// | NewCQ 可能按设备 MaxCQE 截断。让内存池与收发队列足够小，确保接收 WR 加上
+	// 在途发送不会溢出 CQ，否则完成事件会丢失并卡死连接。
+	if depth := cq.Depth(); depth > 0 {
+		if maxSlots := (depth - 16) / 2; slots > maxSlots {
+			slots = maxSlots
+		}
 	}
-	rx, err := dev.NewPool(PoolConfig{Slots: slots, SlotSize: cfg.SlotSize, HugePages: cfg.HugePages, Access: AccessDefault})
+	if slots < 2 {
+		_ = cq.Close()
+		return nil, errs.Detail(ErrInvalidConfig, "completion queue too small | 完成队列过小")
+	}
+	rx, err := dev.NewPool(PoolConfig{Slots: slots, SlotSize: cfg.SlotSize, HugePages: cfg.HugePages, Access: AccessLocalWrite})
 	if err != nil {
-		_ = tx.Close()
 		_ = cq.Close()
 		return nil, err
 	}
@@ -279,53 +361,104 @@ func newConn(dev *Device, tcp net.Conn, cfg ConnConfig, ownsDevice bool) (c *Con
 		Type: QPTypeRC, SendCQ: cq, RecvCQ: cq,
 		MaxSendWR: slots, MaxRecvWR: slots,
 		MaxSendSGE: 1, MaxRecvSGE: 1,
-		MaxInline: cfg.MaxInline, SignalAll: false,
+		MaxInline: cfg.MaxInline, SignalAll: false, Access: AccessLocalWrite,
 	})
 	if err != nil {
 		_ = rx.Close()
-		_ = tx.Close()
 		_ = cq.Close()
 		return nil, err
 	}
-	signalEvery := uint64(slots / 2)
-	if signalEvery < 1 {
-		signalEvery = 1
+	recvSlots := slots
+	if granted := qp.RecvQueueDepth(); granted > 0 && granted < recvSlots {
+		recvSlots = granted
 	}
 	conn := &Conn{
-		dev: dev, qp: qp, cq: cq, tx: tx, rx: rx, tcp: tcp, cfg: cfg,
-		txBufs: tx.Buffers(), rxBufs: make([]*Buffer, slots),
-		ring: newRxRing(slots), events: make([]Completion, 256),
-		ownsDevice: ownsDevice, signalEvery: signalEvery,
-		localAddr: tcp.LocalAddr(), remoteAddr: tcp.RemoteAddr(),
+		dev: dev, qp: qp, cq: cq, rx: rx, tcp: tcp, cfg: cfg,
+		rxBufs: make([]*Buffer, recvSlots),
+		ring:   newRxRing(recvSlots), events: make([]Completion, 256),
+		ownsDevice: ownsDevice,
+		localAddr:  tcp.LocalAddr(), remoteAddr: tcp.RemoteAddr(),
 	}
+	conn.opsCond = sync.NewCond(&conn.opsMu)
+	conn.closeDone = make(chan struct{})
 	success := false
 	defer func() {
 		if !success {
 			_ = conn.closeResources()
 		}
 	}()
-	recvs := make([]RecvWR, slots)
-	for i := 0; i < slots; i++ {
+	if recvSlots < 2 {
+		return nil, errs.Detail(ErrInvalidConfig,
+			"provider granted %d receive slots, need at least 2 | 提供方仅授予 %d 个接收槽位，至少需要 2 个",
+			recvSlots, recvSlots)
+	}
+	recvs := make([]RecvWR, recvSlots)
+	for i := 0; i < recvSlots; i++ {
 		b, ok := rx.Acquire()
 		if !ok {
 			return nil, errs.Detail(ErrNoBuffer, "acquire receive slot %d | 获取接收槽位 %d 失败", i, i)
 		}
 		conn.rxBufs[i] = b
+		b.rx = true
+		b.posted.Store(true)
 		recvs[i] = RecvWR{WRID: uint64(i), Addr: b.Addr(), Length: uint32(b.Len()), LKey: b.LKey()}
 	}
-	psn := rand.Uint32() & 0xffffff
+	psn := cfg.PSN & 0xffffff
 	if psn == 0 {
-		psn = 1
+		psn = rand.Uint32() & 0xffffff
+		if psn == 0 {
+			psn = 1
+		}
 	}
 	local := qp.LocalInfo(psn)
 	info := qpInfo{
 		QPN: local.QPN, PSN: local.PSN, GID: local.GID, LID: local.LID, MTU: uint16(local.MTU),
-		MaxInline: uint32(qp.MaxInline()), RKey: rx.MR().RKey(), Addr: uint64(rx.MR().Addr()),
-		SlotSize: uint32(rx.SlotSize()), Slots: uint32(slots),
+		MaxInline: uint32(qp.MaxInline()),
+		// The Conn data path is SEND/RECV only; its pools are registered with
+		// local-write access and no remote key is advertised. | Conn 数据路径只
+		// 使用 SEND/RECV；其内存池仅注册本地写权限，不公布远端密钥。
+		SlotSize: uint32(rx.SlotSize()), Slots: uint32(recvSlots),
 	}
 	remote, err := exchangeQPInfo(tcp, info, cfg.HandshakeTimeout)
 	if err != nil {
 		return nil, err
+	}
+	// SEND cannot exceed the receiver's posted slot length. A mismatched slot
+	// size would make every large message fail at the remote end after the
+	// handshake, so reject it before connecting. | SEND 不能超过接收方已提交的槽位
+	// 长度。槽位大小不一致会让每条大消息在握手后于远端失败，因此应在连接前拒绝。
+	if remote.SlotSize != uint32(conn.rx.SlotSize()) {
+		return nil, errs.Detail(ErrInvalidConfig,
+			"remote slot size %d differs from local %d | 远端槽位大小 %d 与本地 %d 不一致",
+			remote.SlotSize, conn.rx.SlotSize(), remote.SlotSize, conn.rx.SlotSize())
+	}
+	if remote.Slots < 2 {
+		return nil, errs.Detail(ErrHandshake, "remote slots %d | 远端槽位数 %d", remote.Slots, remote.Slots)
+	}
+	if remote.MTU > 4096 {
+		return nil, errs.Detail(ErrHandshake, "remote MTU %d | 远端 MTU %d", remote.MTU, remote.MTU)
+	}
+	// Bound outstanding SENDs by the peer's posted receive queue. Without this,
+	// an asymmetric configuration lets the sender outrun the receiver and turns
+	// every excess message into RNR retries or a fatal RNR-exhaustion error.
+	// | 按对端已提交的接收队列限制在途 SEND。否则不对称配置会让发送方超过接收方，
+	// 把每条多余消息变成 RNR 重试，甚至触发 RNR 耗尽错误。
+	txSlots := slots
+	if int(remote.Slots) < txSlots {
+		txSlots = int(remote.Slots)
+	}
+	if granted := qp.SendQueueDepth(); granted > 0 && granted < txSlots {
+		txSlots = granted
+	}
+	tx, err := dev.NewPool(PoolConfig{Slots: txSlots, SlotSize: cfg.SlotSize, HugePages: cfg.HugePages, Access: AccessLocalWrite})
+	if err != nil {
+		return nil, err
+	}
+	conn.tx = tx
+	conn.txBufs = tx.Buffers()
+	conn.signalEvery = uint64(txSlots / 2)
+	if conn.signalEvery < 1 {
+		conn.signalEvery = 1
 	}
 	remoteInfo := ConnectInfo{
 		QPN: remote.QPN, PSN: remote.PSN, GID: remote.GID, LID: remote.LID,
@@ -339,8 +472,9 @@ func newConn(dev *Device, tcp net.Conn, cfg ConnConfig, ownsDevice bool) (c *Con
 	}
 	// Receive requests are only accepted once the queue pair leaves RESET. |
 	// 队列对离开 RESET 后才接受接收请求。
-	if n, perr := qp.PostRecv(recvs); perr != nil || n != slots {
-		return nil, errs.Detail(ErrDevice, "post receive slots %d/%d: %v | 提交接收槽位 %d/%d 失败", n, slots, perr, n, slots)
+	if n, perr := qp.PostRecv(recvs); perr != nil || n != recvSlots {
+		return nil, errs.Detail(ErrDevice, "post receive slots %d/%d: %v | 提交接收槽位 %d/%d 失败",
+			n, recvSlots, perr, n, recvSlots)
 	}
 	success = true
 	return conn, nil
@@ -423,461 +557,69 @@ func (c *Conn) lastErr() error {
 
 // check reports whether the connection is usable. | check 报告连接是否可用。
 func (c *Conn) check() error {
-	if c == nil || c.closed.Load() {
+	if c == nil || c.closed.Load() || c.qp == nil || c.cq == nil || c.tx == nil || c.rx == nil || c.ring == nil {
 		return ErrClosed
 	}
 	return c.lastErr()
 }
 
-// Process polls up to budget completions, releases completed send buffers and
-// queues received buffers. | Process 轮询至多 budget 个完成事件，释放已完成的
-// 发送缓冲区并将接收缓冲区入队。
-func (c *Conn) Process(budget int) (int, error) {
-	if err := c.check(); err != nil {
-		return 0, err
+// enter registers one public operation so Close cannot free resources while it
+// runs. | enter 登记一个公共操作，避免 Close 在操作运行期间释放资源。
+func (c *Conn) enter() bool {
+	if c == nil || c.closed.Load() {
+		return false
 	}
-	if budget <= 0 {
-		budget = c.cfg.MaxBatch
+	c.ops.Add(1)
+	if c.closed.Load() {
+		c.leave()
+		return false
 	}
-	if budget > len(c.events) {
-		budget = len(c.events)
-	}
-	n, err := c.cq.Poll(c.events[:budget])
-	if err != nil {
-		c.setErr(err)
-		return 0, err
-	}
-	var firstErr error
-	for i := 0; i < n; i++ {
-		wc := c.events[i]
-		if wc.IsError() {
-			if firstErr == nil {
-				firstErr = errs.Detail(ErrConnReset, "completion %s status %s | 完成 %s 状态 %s",
-					wc.Opcode, wc.Status, wc.Opcode, wc.Status)
-			}
-			continue
-		}
-		if wc.WRID&txBit != 0 {
-			idx := int(wc.WRID &^ txBit)
-			if idx >= 0 && idx < len(c.txBufs) {
-				c.tx.Release(c.txBufs[idx])
-			}
-			continue
-		}
-		idx := int(wc.WRID)
-		if idx < 0 || idx >= len(c.rxBufs) {
-			if firstErr == nil {
-				firstErr = errs.Detail(ErrDevice, "invalid receive wrid %d | 接收 WRID %d 非法", idx, idx)
-			}
-			continue
-		}
-		if !c.ring.push(c.rxBufs[idx], int(wc.Bytes)) {
-			if firstErr == nil {
-				firstErr = errs.Detail(ErrQueueFull, "receive ring full | 接收环已满")
-			}
-		}
-	}
-	if firstErr != nil {
-		c.setErr(firstErr)
-	}
-	return n, firstErr
+	return true
 }
 
-// Alloc acquires one zero-copy send slot. The caller writes into Bytes and
-// passes the buffer to SendBuffer. | Alloc 获取一个零拷贝发送槽位。调用方写入
-// Bytes 后将缓冲区交给 SendBuffer。
-func (c *Conn) Alloc(size int) (*Buffer, error) {
-	if err := c.check(); err != nil {
-		return nil, err
-	}
-	if size < 0 || size > c.rx.SlotSize() {
-		return nil, errs.Detail(ErrMessageTooLarge, "size %d exceeds slot %d | 大小 %d 超过槽位 %d",
-			size, c.rx.SlotSize(), size, c.rx.SlotSize())
-	}
-	deadline := c.deadline(c.cfg.SendTimeout)
-	spins := 0
-	for {
-		if b, ok := c.tx.Acquire(); ok {
-			return b, nil
-		}
-		if _, err := c.Process(c.cfg.MaxBatch); err != nil {
-			return nil, err
-		}
-		spins++
-		if spins&1023 == 0 && !deadline.IsZero() && time.Now().After(deadline) {
-			return nil, ErrTimeout
-		}
-		if spins >= 4096 {
-			spins = 0
-			runtime.Gosched()
-		}
+// leave completes one public operation and wakes a waiting Close. | leave 结束
+// 一个公共操作并唤醒等待中的 Close。
+func (c *Conn) leave() {
+	if c.ops.Add(-1) == 0 && c.opsCond != nil {
+		c.opsMu.Lock()
+		c.opsCond.Broadcast()
+		c.opsMu.Unlock()
 	}
 }
 
-// deadline converts a timeout to an absolute deadline; zero means no limit. |
-// deadline 将超时转换为绝对截止时间；零表示不限。
-func (c *Conn) deadline(timeout time.Duration) time.Time {
-	if timeout < 0 {
-		return time.Time{}
-	}
-	if timeout == 0 {
-		return time.Now()
-	}
-	return time.Now().Add(timeout)
-}
-
-// SendBuffer posts a zero-copy send of the first n bytes of b. The buffer is
-// released by Process when the completion arrives. | SendBuffer 零拷贝发送 b
-// 的前 n 字节。完成事件到达后由 Process 释放缓冲区。
-func (c *Conn) SendBuffer(b *Buffer, n int) error {
-	if err := c.check(); err != nil {
-		return err
-	}
-	if b == nil || b.owner != c.tx {
-		return errs.Detail(ErrInvalidConfig, "buffer does not belong to the send pool | 缓冲区不属于发送池")
-	}
-	if n < 0 || n > b.Len() {
-		return errs.Detail(ErrMessageTooLarge, "length %d | 长度 %d", n, n)
-	}
-	inline := n <= c.qp.MaxInline()
-	signaled := !inline || c.sendSeq%c.signalEvery == 0
-	flags := SendFlags(0)
-	if inline {
-		// Inline payloads are copied into the work request, so the buffer can
-		// be recycled as soon as ibv_post_send returns. Periodic signaling is
-		// still required so the provider can reclaim send queue space. |
-		// 内联负载会复制进工作请求，ibv_post_send 返回后即可回收缓冲区；仍需
-		// 周期性请求完成事件，以便提供方回收发送队列空间。
-		flags |= SendInline
-	}
-	if signaled {
-		flags |= SendSignaled
-	}
-	c.oneSend[0] = SendWR{
-		WRID: txBit | uint64(b.index), Addr: b.Addr(), Length: uint32(n),
-		LKey: b.LKey(), Opcode: OpSend, Flags: flags,
-	}
-	deadline := c.deadline(c.cfg.SendTimeout)
-	spins := 0
-	for {
-		posted, err := c.qp.PostSend(c.oneSend[:])
-		if err == nil {
-			c.sendSeq++
-			if inline && !signaled {
-				c.tx.Release(b)
-			}
-			return nil
-		}
-		if !errors.Is(err, ErrQueueFull) || posted != 0 {
-			c.tx.Release(b)
-			c.setErr(err)
-			return err
-		}
-		if _, perr := c.Process(c.cfg.MaxBatch); perr != nil {
-			c.tx.Release(b)
-			return perr
-		}
-		spins++
-		if spins&1023 == 0 && !deadline.IsZero() && time.Now().After(deadline) {
-			c.tx.Release(b)
-			return ErrTimeout
-		}
-		if spins >= 4096 {
-			spins = 0
-			runtime.Gosched()
-		}
-	}
-}
-
-// Send copies msg into a send slot and posts it. | Send 将 msg 复制到发送槽位
-// 并提交。
-func (c *Conn) Send(msg []byte) error {
-	b, err := c.Alloc(len(msg))
-	if err != nil {
-		return err
-	}
-	copy(b.Bytes(), msg)
-	if err := c.SendBuffer(b, len(msg)); err != nil {
-		b.Release()
-		return err
-	}
-	return nil
-}
-
-// SendBatchBuffers posts several zero-copy buffers in one doorbell. It returns
-// the number posted. Buffers after the posted prefix are released on failure.
-// | SendBatchBuffers 以一次门铃提交多个零拷贝缓冲区，返回提交数量。失败时
-// 会释放未提交的后续缓冲区。
-func (c *Conn) SendBatchBuffers(bufs []*Buffer, lens []int) (int, error) {
-	if err := c.check(); err != nil {
-		return 0, err
-	}
-	if len(bufs) == 0 {
-		return 0, nil
-	}
-	if len(lens) != len(bufs) {
-		return 0, errs.Detail(ErrInvalidConfig, "buffer/length count mismatch | 缓冲区与长度数量不一致")
-	}
-	for i, b := range bufs {
-		if b == nil || b.owner != c.tx || lens[i] < 0 || lens[i] > b.Len() {
-			return 0, errs.Detail(ErrInvalidConfig, "invalid buffer at %d | 第 %d 个缓冲区非法", i, i)
-		}
-	}
-	deadline := c.deadline(c.cfg.SendTimeout)
-	spins := 0
-	total := 0
-	for total < len(bufs) {
-		remaining := len(bufs) - total
-		if remaining > c.cfg.MaxBatch {
-			remaining = c.cfg.MaxBatch
-		}
-		if cap(c.scratch) < remaining {
-			c.scratch = make([]SendWR, remaining)
-		}
-		wrs := c.scratch[:remaining]
-		for i := 0; i < remaining; i++ {
-			b, n := bufs[total+i], lens[total+i]
-			inline := n <= c.qp.MaxInline()
-			signaled := !inline || (c.sendSeq+uint64(i))%c.signalEvery == 0
-			flags := SendFlags(0)
-			if inline {
-				flags |= SendInline
-			}
-			if signaled {
-				flags |= SendSignaled
-			}
-			wrs[i] = SendWR{
-				WRID: txBit | uint64(b.index), Addr: b.Addr(), Length: uint32(n),
-				LKey: b.LKey(), Opcode: OpSend, Flags: flags,
-			}
-		}
-		oldTotal := total
-		posted, err := c.qp.PostSend(wrs)
-		total += posted
-		c.sendSeq += uint64(posted)
-		// Inline buffers posted without a completion request are already copied
-		// into their work requests and can be recycled now; the periodically
-		// signaled ones and non-inline buffers stay in flight until their
-		// completions arrive. | 未请求完成事件的内联缓冲区已复制进工作请求，
-		// 可立即回收；周期性信号的内联缓冲区与非内联缓冲区保持到完成事件到达。
-		for i := oldTotal; i < total; i++ {
-			w := &wrs[i-oldTotal]
-			if w.Flags&SendInline != 0 && w.Flags&SendSignaled == 0 {
-				c.tx.Release(bufs[i])
-			}
-		}
-		if err == nil {
-			return total, nil
-		}
-		if !errors.Is(err, ErrQueueFull) {
-			for i := total; i < len(bufs); i++ {
-				c.tx.Release(bufs[i])
-			}
-			c.setErr(err)
-			return total, err
-		}
-		// A partial post is normal under backpressure: the prefix is in flight
-		// and the suffix is retried after draining completions. | 背压下部分提交
-		// 属正常：前缀已在途，排空完成事件后重试后缀。
-		if _, perr := c.Process(c.cfg.MaxBatch); perr != nil {
-			for i := total; i < len(bufs); i++ {
-				c.tx.Release(bufs[i])
-			}
-			return total, perr
-		}
-		spins++
-		if spins&1023 == 0 && !deadline.IsZero() && time.Now().After(deadline) {
-			for i := total; i < len(bufs); i++ {
-				c.tx.Release(bufs[i])
-			}
-			return total, ErrTimeout
-		}
-		if spins >= 4096 {
-			spins = 0
-			runtime.Gosched()
-		}
-	}
-	return total, nil
-}
-
-// SendBatch copies and posts several messages in one doorbell. | SendBatch
-// 以一次门铃复制并提交多条消息。
-func (c *Conn) SendBatch(msgs [][]byte) (int, error) {
-	if err := c.check(); err != nil {
-		return 0, err
-	}
-	if len(msgs) == 0 {
-		return 0, nil
-	}
-	limit := c.cfg.MaxBatch
-	if len(msgs) < limit {
-		limit = len(msgs)
-	}
-	bufs := make([]*Buffer, 0, limit)
-	lens := make([]int, 0, limit)
-	for i := 0; i < limit; i++ {
-		b, err := c.Alloc(len(msgs[i]))
-		if err != nil {
-			for _, held := range bufs {
-				held.Release()
-			}
-			return 0, err
-		}
-		copy(b.Bytes(), msgs[i])
-		bufs = append(bufs, b)
-		lens = append(lens, len(msgs[i]))
-	}
-	return c.SendBatchBuffers(bufs, lens)
-}
-
-// RecvBuffer waits for one received buffer and its length. The caller must
-// call Release when done; zero-copy consumers use it directly. | RecvBuffer
-// 等待一个接收缓冲区及其长度。调用方完成后必须调用 Release；零拷贝消费方直接
-// 使用该缓冲区。
-func (c *Conn) RecvBuffer() (*Buffer, int, error) {
-	if err := c.check(); err != nil {
-		return nil, 0, err
-	}
-	deadline := c.deadline(c.cfg.RecvTimeout)
-	spins := 0
-	for {
-		if b, n, ok := c.ring.pop(); ok {
-			return b, n, nil
-		}
-		if _, err := c.Process(c.cfg.MaxBatch); err != nil {
-			return nil, 0, err
-		}
-		spins++
-		if spins&1023 == 0 && !deadline.IsZero() && time.Now().After(deadline) {
-			return nil, 0, ErrTimeout
-		}
-		if spins >= 4096 {
-			spins = 0
-			runtime.Gosched()
-		}
-	}
-}
-
-// Recv waits for one message and copies it out. | Recv 等待一条消息并复制出来。
-func (c *Conn) Recv() ([]byte, error) {
-	b, n, err := c.RecvBuffer()
-	if err != nil {
-		return nil, err
-	}
-	out := make([]byte, n)
-	copy(out, b.Bytes()[:n])
-	if rerr := c.Release(b); rerr != nil {
-		return nil, rerr
-	}
-	return out, nil
-}
-
-// RecvInto copies one message into dst and releases the receive buffer. | RecvInto
-// 将一条消息复制到 dst 并释放接收缓冲区。
-func (c *Conn) RecvInto(dst []byte) (int, error) {
-	b, n, err := c.RecvBuffer()
-	if err != nil {
-		return 0, err
-	}
-	copied := copy(dst, b.Bytes()[:n])
-	if rerr := c.Release(b); rerr != nil {
-		return copied, rerr
-	}
-	if copied < n {
-		return copied, errs.Detail(ErrMessageTooLarge, "destination %d < message %d | 目标 %d 小于消息 %d", len(dst), n, len(dst), n)
-	}
-	return copied, nil
-}
-
-// RecvBuffers drains up to len(dst) received buffers. When the receive ring is
-// empty it polls once and then returns what is available; it never waits for a
-// full batch. | RecvBuffers 取出至多 len(dst) 个接收缓冲区。接收环为空时先轮询
-// 一次，然后返回可用数量；不会等待凑满一批。
-func (c *Conn) RecvBuffers(dst []*Buffer, lens []int) (int, error) {
-	if err := c.check(); err != nil {
-		return 0, err
-	}
-	if len(dst) == 0 {
-		return 0, nil
-	}
-	if len(lens) < len(dst) {
-		return 0, errs.Detail(ErrInvalidConfig, "length slice too short | 长度切片过短")
-	}
-	n := 0
-	for n < len(dst) {
-		b, l, ok := c.ring.pop()
-		if !ok {
-			break
-		}
-		dst[n], lens[n] = b, l
-		n++
-	}
-	if n > 0 {
-		return n, nil
-	}
-	if _, err := c.Process(c.cfg.MaxBatch); err != nil {
-		return 0, err
-	}
-	for n < len(dst) {
-		b, l, ok := c.ring.pop()
-		if !ok {
-			break
-		}
-		dst[n], lens[n] = b, l
-		n++
-	}
-	return n, nil
-}
-
-// ReleaseBatch re-posts several received buffers with one doorbell. | ReleaseBatch
-// 以一次门铃重新提交多个接收缓冲区。
-func (c *Conn) ReleaseBatch(bufs []*Buffer) error {
-	if err := c.check(); err != nil {
-		return err
-	}
-	if len(bufs) == 0 {
-		return nil
-	}
-	if cap(c.scratchRecv) < len(bufs) {
-		c.scratchRecv = make([]RecvWR, len(bufs))
-	}
-	wrs := c.scratchRecv[:len(bufs)]
-	for i, b := range bufs {
-		if b == nil || b.owner != c.rx {
-			return errs.Detail(ErrInvalidConfig, "buffer %d does not belong to the receive pool | 第 %d 个缓冲区不属于接收池", i, i)
-		}
-		wrs[i] = RecvWR{WRID: uint64(b.index), Addr: b.Addr(), Length: uint32(b.Len()), LKey: b.LKey()}
-	}
-	if _, err := c.qp.PostRecv(wrs); err != nil {
-		c.setErr(err)
-		return err
-	}
-	return nil
-}
-
-// Release re-posts a received buffer to the receive queue. | Release 将接收
-// 缓冲区重新提交到接收队列。
-func (c *Conn) Release(b *Buffer) error {
-	if err := c.check(); err != nil {
-		return err
-	}
-	if b == nil || b.owner != c.rx {
-		return errs.Detail(ErrInvalidConfig, "buffer does not belong to the receive pool | 缓冲区不属于接收池")
-	}
-	c.oneRecv[0] = RecvWR{WRID: uint64(b.index), Addr: b.Addr(), Length: uint32(b.Len()), LKey: b.LKey()}
-	if _, err := c.qp.PostRecv(c.oneRecv[:]); err != nil {
-		c.setErr(err)
-		return err
-	}
-	return nil
-}
-
-// Close tears down the connection and its resources. | Close 拆除连接及其资源。
+// Close tears down the connection and its resources. It waits for in-flight
+// operations, but buffers already returned to the caller become invalid; the
+// caller must finish consuming them and call Release before Close. | Close 拆除
+// 连接及其资源。它会等待在途操作，但已返回给调用方的缓冲区会失效；调用方必须在
+// Close 前消费完毕并调用 Release。
 func (c *Conn) Close() error {
-	if c == nil || !c.closed.CompareAndSwap(false, true) {
+	if c == nil {
 		return nil
 	}
-	return c.closeResources()
+	if !c.closed.CompareAndSwap(false, true) {
+		// A concurrent second Close (for example Listener.Close racing the
+		// owning goroutine) must wait for the first one to finish before the
+		// device can be destroyed. | 并发的第二次 Close（例如 Listener.Close
+		// 与属主协程竞争）必须等待第一次完成，之后设备才能销毁。
+		if c.closeDone != nil {
+			<-c.closeDone
+		}
+		return c.closeErr
+	}
+	// Wait for operations that entered before the flag was set. Their loops
+	// observe closed and return quickly; destroying QP/CQ/MRs underneath them
+	// would be a use-after-free. | 等待在标志置位前进入的操作结束。它们的循环会
+	// 观察到 closed 并快速返回；在其下方销毁 QP/CQ/MR 会造成释放后使用。
+	c.opsMu.Lock()
+	for c.ops.Load() != 0 && c.opsCond != nil {
+		c.opsCond.Wait()
+	}
+	c.opsMu.Unlock()
+	c.closeErr = c.closeResources()
+	if c.closeDone != nil {
+		close(c.closeDone)
+	}
+	return c.closeErr
 }
 
 // closeResources releases the queue pair, completion queue, pools, TCP control
@@ -887,26 +629,32 @@ func (c *Conn) closeResources() error {
 	if c == nil {
 		return nil
 	}
+	var first error
+	record := func(err error) {
+		if err != nil && first == nil {
+			first = err
+		}
+	}
 	if c.qp != nil {
-		_ = c.qp.Close()
+		record(c.qp.Close())
 	}
 	if c.cq != nil {
-		_ = c.cq.Close()
+		record(c.cq.Close())
 	}
 	if c.tx != nil {
-		_ = c.tx.Close()
+		record(c.tx.Close())
 	}
 	if c.rx != nil {
-		_ = c.rx.Close()
+		record(c.rx.Close())
 	}
 	if c.tcp != nil {
-		_ = c.tcp.Close()
+		record(c.tcp.Close())
 	}
 	if c.listener != nil {
 		c.listener.remove(c)
 	}
 	if c.ownsDevice && c.dev != nil {
-		return c.dev.Close()
+		record(c.dev.Close())
 	}
-	return nil
+	return first
 }

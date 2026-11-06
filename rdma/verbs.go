@@ -2,6 +2,7 @@ package rdma
 
 import (
 	"fmt"
+	"sync"
 	"sync/atomic"
 )
 
@@ -168,8 +169,8 @@ const (
 	SendInline SendFlags = 1 << 3
 )
 
-// SGE is one scatter/gather entry. Its layout matches the bridge structure.
-// | SGE 是一个分散/聚集项，布局与桥接结构一致。
+// SGE is one scatter/gather entry. Its layout matches the provider ABI.
+// | SGE 是一个分散/聚集项，布局与提供方 ABI 一致。
 type SGE struct {
 	// Addr is the local virtual address. | Addr 是本地虚拟地址。
 	Addr uintptr
@@ -181,9 +182,9 @@ type SGE struct {
 
 // SendWR is one send work request. When NumSGE is zero, Addr, Length and LKey
 // form a single SGE. Otherwise SGEs[:NumSGE] is used. The layout matches the
-// bridge structure, so batches cross cgo without conversion. | SendWR 是一个
+// provider layout, so batches are encoded without a cgo conversion. | SendWR 是一个
 // 发送工作请求。NumSGE 为零时由 Addr、Length、LKey 组成单个 SGE；否则使用
-// SGEs[:NumSGE]。布局与桥接结构一致，批量提交无需转换。
+// SGEs[:NumSGE]。布局与提供方 ABI 一致，批量提交无需 cgo 转换。
 type SendWR struct {
 	// WRID is echoed back in the completion. | WRID 会在完成事件中原样返回。
 	WRID uint64
@@ -550,14 +551,16 @@ type AHAttr struct {
 // unless their mask bit is set. | QPAttr 携带 Modify 使用的队列对属性。未设置
 // 掩码位的零值字段会被忽略。
 type QPAttr struct {
+	// PathMTU is the path MTU in bytes. | PathMTU 是路径 MTU（字节）。
+	PathMTU int
+	// AH is the address vector. | AH 是地址向量。
+	AH AHAttr
 	// Mask selects the fields to apply. | Mask 选择要应用的字段。
 	Mask QPAttrMask
 	// State is the target state. | State 是目标状态。
 	State QPState
 	// CurState is the current state. | CurState 是当前状态。
 	CurState QPState
-	// PathMTU is the path MTU in bytes. | PathMTU 是路径 MTU（字节）。
-	PathMTU int
 	// PathMigState is the path migration state. | PathMigState 是路径迁移状态。
 	PathMigState uint32
 	// QKey is the queue key. | QKey 是队列键。
@@ -594,44 +597,41 @@ type QPAttr struct {
 	// RNRRetry is the receiver-not-ready retry count. | RNRRetry 是接收端未就绪
 	// 重试次数。
 	RNRRetry uint8
-	// AH is the address vector. | AH 是地址向量。
-	AH AHAttr
 }
 
 // ConnectInfo carries the queue pair parameters exchanged before two peers
 // become usable. | ConnectInfo 携带两个对端可用前交换的队列对参数。
 type ConnectInfo struct {
+	// MTU is the path MTU in bytes. | MTU 是路径 MTU（字节）。
+	MTU int
 	// QPN is the queue pair number. | QPN 是队列对号。
 	QPN uint32
 	// PSN is the send packet sequence number. | PSN 是发送报文序列号。
 	PSN uint32
-	// GID is the GID used by RDMA-aware transports. | GID 是 RDMA 传输使用的 GID。
-	GID [16]byte
+	// QKey is the unreliable datagram queue key. | QKey 是不可靠数据报队列键。
+	QKey uint32
 	// LID is the InfiniBand local identifier; zero on RoCE. | LID 是 InfiniBand
 	// 本地标识；RoCE 上为零。
 	LID uint16
-	// MTU is the path MTU in bytes. | MTU 是路径 MTU（字节）。
-	MTU int
-	// QKey is the unreliable datagram queue key. | QKey 是不可靠数据报队列键。
-	QKey uint32
+	// GID is the GID used by RDMA-aware transports. | GID 是 RDMA 传输使用的 GID。
+	GID [16]byte
 }
 
 // QPConfig configures a new queue pair. | QPConfig 配置新队列对。
 type QPConfig struct {
-	// Type selects the transport service. Zero means QPTypeRC. | Type 选择传输
-	// 服务；零表示 QPTypeRC。
-	Type QPType
 	// SendCQ receives send completions. It is required. | SendCQ 接收发送完成
 	// 事件，必填。
 	SendCQ *CQ
 	// RecvCQ receives receive completions. When nil, SendCQ is used. | RecvCQ
 	// 接收接收完成事件；为空时使用 SendCQ。
 	RecvCQ *CQ
-	// MaxSendWR is the send queue depth; zero uses the device default. |
-	// MaxSendWR 是发送队列深度；零使用设备默认值。
+	// SRQ optionally shares a receive queue. | SRQ 可选地共享接收队列。
+	SRQ *SRQ
+	// MaxSendWR is the send queue depth; zero uses Config.QueueDepth. |
+	// MaxSendWR 是发送队列深度；零使用 Config.QueueDepth。
 	MaxSendWR int
-	// MaxRecvWR is the receive queue depth; zero uses the device default. |
-	// MaxRecvWR 是接收队列深度；零使用设备默认值。
+	// MaxRecvWR is the receive queue depth; zero uses Config.QueueDepth. |
+	// MaxRecvWR 是接收队列深度；零使用 Config.QueueDepth。
 	MaxRecvWR int
 	// MaxSendSGE is the send scatter/gather limit; zero means 1. |
 	// MaxSendSGE 是发送分散/聚集上限；零表示 1。
@@ -642,8 +642,14 @@ type QPConfig struct {
 	// MaxInline is the inline payload limit; zero uses the device maximum. |
 	// MaxInline 是内联负载上限；零使用设备上限。
 	MaxInline int
-	// SRQ optionally shares a receive queue. | SRQ 可选地共享接收队列。
-	SRQ *SRQ
+	// Type selects the transport service. Zero means QPTypeRC. | Type 选择传输
+	// 服务；零表示 QPTypeRC。
+	Type QPType
+	// Access is the remote access permission granted to the peer. Zero means
+	// AccessDefault; the Conn SEND/RECV path uses AccessLocalWrite. | Access 是
+	// 授予对端的远端访问权限；零表示 AccessDefault，Conn 的 SEND/RECV 路径使用
+	// AccessLocalWrite。
+	Access Access
 	// SignalAll requests a completion for every send. | SignalAll 为每次发送
 	// 请求完成事件。
 	SignalAll bool
@@ -667,14 +673,23 @@ type SRQConfig struct {
 // DeviceAttr reports device capabilities used to validate configurations. |
 // DeviceAttr 报告用于校验配置的设备能力。
 type DeviceAttr struct {
+	// Firmware is the firmware version. | Firmware 是固件版本。
+	Firmware string
+	// MaxMRSize is the maximum memory region size. | MaxMRSize 是最大内存区大小。
+	MaxMRSize uint64
 	// MaxQPWR is the maximum queue pair depth. | MaxQPWR 是最大队列对深度。
 	MaxQPWR uint32
+	// MaxSRQWR is the maximum shared receive queue depth. | MaxSRQWR 是最大共享
+	// 接收队列深度。
+	MaxSRQWR uint32
 	// MaxSGE is the maximum scatter/gather entries per request. | MaxSGE 是
 	// 单请求最大分散/聚集项数。
 	MaxSGE uint32
 	// MaxCQE is the maximum completion queue depth. | MaxCQE 是最大完成队列深度。
 	MaxCQE uint32
-	// MaxInline is the maximum inline payload. | MaxInline 是最大内联负载。
+	// MaxInline is deprecated and always zero. Inline limits are negotiated
+	// per queue pair; use QP.MaxInline. | MaxInline 已弃用且始终为零。内联上限
+	// 按队列对协商；请使用 QP.MaxInline。
 	MaxInline uint32
 	// MaxQPRdAtomic is the maximum outstanding RDMA reads. | MaxQPRdAtomic 是
 	// 最大在途 RDMA 读数量。
@@ -682,12 +697,8 @@ type DeviceAttr struct {
 	// MaxQPInitRdAtomic is the maximum initial outstanding RDMA reads. |
 	// MaxQPInitRdAtomic 是最大初始在途 RDMA 读数量。
 	MaxQPInitRdAtomic uint32
-	// MaxMRSize is the maximum memory region size. | MaxMRSize 是最大内存区大小。
-	MaxMRSize uint64
 	// VendorPartID is the vendor part identifier. | VendorPartID 是厂商部件号。
 	VendorPartID uint32
-	// Firmware is the firmware version. | Firmware 是固件版本。
-	Firmware string
 }
 
 // PortAttr reports the runtime attributes of one port. | PortAttr 报告一个端口
@@ -695,18 +706,18 @@ type DeviceAttr struct {
 type PortAttr struct {
 	// Port is the one-based port number. | Port 是 1 起始的端口号。
 	Port int
-	// State is the port state. | State 是端口状态。
-	State PortState
 	// MaxMTU is the maximum path MTU in bytes. | MaxMTU 是最大路径 MTU（字节）。
 	MaxMTU int
 	// ActiveMTU is the active path MTU in bytes. | ActiveMTU 是当前路径 MTU（字节）。
 	ActiveMTU int
-	// LID is the InfiniBand local identifier. | LID 是 InfiniBand 本地标识。
-	LID uint16
-	// LinkLayer is the link layer. | LinkLayer 是链路层。
-	LinkLayer LinkLayer
 	// GIDTableLen is the GID table length. | GIDTableLen 是 GID 表长度。
 	GIDTableLen int
+	// LID is the InfiniBand local identifier. | LID 是 InfiniBand 本地标识。
+	LID uint16
+	// State is the port state. | State 是端口状态。
+	State PortState
+	// LinkLayer is the link layer. | LinkLayer 是链路层。
+	LinkLayer LinkLayer
 }
 
 // PoolConfig configures a registered memory pool. | PoolConfig 配置注册内存池。
@@ -730,45 +741,86 @@ type PoolConfig struct {
 // Device is an opened RDMA device with one protection domain. | Device 是已
 // 打开并带有一个保护域的 RDMA 设备。
 type Device struct {
+	closeErr  error
 	state     *deviceState
-	cfg       Config
+	closeDone chan struct{}
 	info      DeviceInfo
 	gid       GID
-	port      int
 	attr      DeviceAttr
+	cfg       Config
 	portAttr  PortAttr
+	port      int
+	children  int
+	mu        sync.Mutex
 	inlineMax atomic.Int32 // 0 unknown, >0 supported, <0 unsupported | 0 未知，>0 支持，<0 不支持
 	closed    atomic.Bool
 }
 
+// acquireChild reserves the device for one new child object. | acquireChild 为
+// 新子对象占用设备。
+func (d *Device) acquireChild() bool {
+	if d == nil {
+		return false
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.state == nil || d.closed.Load() {
+		return false
+	}
+	d.children++
+	return true
+}
+
+// releaseChild drops one child reservation. | releaseChild 释放一个子对象占用。
+func (d *Device) releaseChild() {
+	if d == nil {
+		return
+	}
+	d.mu.Lock()
+	if d.children > 0 {
+		d.children--
+	}
+	d.mu.Unlock()
+}
+
 // CQ is a completion queue. | CQ 是完成队列。
 type CQ struct {
-	dev    *Device
-	state  *cqState
-	depth  int
-	closed atomic.Bool
+	closeErr error
+	dev      *Device
+	state    *cqState
+	depth    int
+	closeMu  sync.Mutex
+	closed   atomic.Bool
 }
 
 // QP is a queue pair. | QP 是队列对。
 type QP struct {
-	dev    *Device
-	state  *qpState
-	typ    QPType
-	qpn    uint32
-	inline uint32
-	closed atomic.Bool
+	closeErr error
+	dev      *Device
+	state    *qpState
+	closeMu  sync.Mutex
+	typ      QPType
+	qpn      uint32
+	inline   uint32
+	access   Access
+	closed   atomic.Bool
 }
 
 // SRQ is a shared receive queue. | SRQ 是共享接收队列。
 type SRQ struct {
-	dev    *Device
-	state  *srqState
-	closed atomic.Bool
+	dev      *Device
+	state    *srqState
+	closeErr error
+	closeMu  sync.Mutex
+	closed   atomic.Bool
 }
 
 // AH is an address handle used by unreliable datagram queue pairs. | AH 是
 // 不可靠数据报队列对使用的地址句柄。
 type AH struct {
-	state  *ahState
-	closed atomic.Bool
+	dev      *Device
+	state    *ahState
+	closeErr error
+	closeMu  sync.Mutex
+	closed   atomic.Bool
 }

@@ -7,7 +7,7 @@ import "github.com/shibingli/ydx/errs"
 var (
 	// ErrUnsupported reports that this build has no RDMA provider. | ErrUnsupported
 	// 表示当前构建没有 RDMA 实现。
-	ErrUnsupported = errs.New("rdma: unsupported build, need linux + cgo + -tags rdma | rdma: 当前构建不支持，需 linux + cgo + -tags rdma")
+	ErrUnsupported = errs.New("rdma: unsupported build, need linux + -tags rdma + libibverbs (no cgo) | rdma: 当前构建不支持，需 linux + -tags rdma + libibverbs（不需要 cgo）")
 	// ErrInvalidConfig reports an invalid configuration value. | ErrInvalidConfig
 	// 表示配置值非法。
 	ErrInvalidConfig = errs.New("rdma: invalid configuration | rdma: 配置非法")
@@ -50,4 +50,8 @@ var (
 	// ErrNetwork reports a failed TCP listener, dial or control exchange. |
 	// ErrNetwork 表示 TCP 监听、拨号或控制交换失败。
 	ErrNetwork = errs.New("rdma: network error | rdma: 网络错误")
+	// ErrBusy reports that a device still owns live queue pairs, completion
+	// queues, shared receive queues, address handles or memory regions. |
+	// ErrBusy 表示设备仍拥有活动的队列对、完成队列、共享接收队列、地址句柄或内存区。
+	ErrBusy = errs.New("rdma: device has live resources | rdma: 设备仍有活动资源")
 )

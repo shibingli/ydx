@@ -28,6 +28,10 @@ inline 包装的实际路径），并用 purego 的 `SyscallN` 调用，避免�
 > 因此 5.5 µs 往返约等于 perftest 的 2.59 µs 单程值。三台测试机的 PCIe 链路
 > 为 x4，带宽上限约 55 Gb/s，100 GbE 链路无法跑满；55.1 Gb/s 已与 perftest
 > 原生 C 实现持平。
+>
+> 表中数据在早期直接汇编跳板版本测得。为避免在 goroutine 小栈上执行提供方 C
+> 代码，当前热路径改为 purego 系统栈跳板；固定调用开销略有增加，部署前应在目标
+> 硬件复测。
 
 ## 性能实现要点
 
@@ -36,10 +40,11 @@ inline 包装的实际路径），并用 purego 的 `SyscallN` 调用，避免�
   条发送周期性请求一次完成事件，确保 mlx5 等提供方能够回收发送队列空间。
   设备内联上限未知时按 `256 → 128 → 64 → 32 → 16 → 0` 逐个探测并缓存授予值。
 - **热路径直调**：`ibv_post_send`、`ibv_post_recv`、`ibv_poll_cq`、`ibv_post_srq_recv`
-  直接调用 `ibv_context_ops` 函数指针；amd64 与 arm64 各有一个最小汇编调用桩
-  （SysV / AAPCS64，动态对齐栈、无 cgo 桥接），控制面仍走 purego。
+  直接调用 `ibv_context_ops` 函数指针；C 调用统一经 purego 的系统栈跳板完成，
+  避免在 goroutine 的小栈上直接执行提供方代码。
 - **批量回收**：接收侧使用 `RecvBuffers` + `ReleaseBatch` 批量补给 RQ，避免每条
-  消息一次门铃；发送侧 `SendBatchBuffers` 一次门铃提交整批。
+  消息一次门铃；发送侧 `SendBatchBuffers` 按 `MaxBatch`/队列深度分次门铃提交
+  整批，超过发送池时仍会全部提交。
 - **原子错误状态与低频时钟检查**：连接错误用原子指针记录；自旋循环每 1024 次
   才读取一次时钟，降低热路径开销。
 
@@ -49,12 +54,12 @@ inline 包装的实际路径），并用 purego 的 `SyscallN` 调用，避免�
 |---|---|
 | 队列对 | RC / UC / UD，含 `Connect` 状态机（INIT → RTR → RTS） |
 | 完成队列 | 批量 Poll、共享 CQ、SRQ |
-| 内存 | 预注册大页内存池、库拥有 MR、调用方内存注册（`runtime.Pinner`） |
+| 内存 | 预注册大页内存池、库拥有 MR、调用方内存注册（MR 持有切片，不使用 Pinner） |
 | 发送 | SEND / SEND_WITH_IMM / RDMA WRITE / WRITE_WITH_IMM / RDMA READ / 原子操作 |
 | 寻址 | RoCE v1、RoCE v2、原生 InfiniBand；默认自动选择 GID（RoCE v2 > RoCE v1 > IB），IB 提供 LID 时使用本地路由 |
 | 批量 | `PostSend` / `PostRecv` 一次提交整链；`CQ.Poll` 一次取回多个完成 |
 | 零拷贝 | `Alloc` + `SendBuffer`、`RecvBuffer` + `Release`、`SendBatchBuffers`、`RecvBuffers` + `ReleaseBatch` |
-| 连接层 | `Listen` / `Dial`：TCP 控制通道交换 QPN/PSN/GID/RKey，数据面纯 RDMA |
+| 连接层 | `Listen` / `Dial`：TCP 控制通道交换 QPN/PSN/GID/MTU 与槽位参数，数据面纯 RDMA；不公布远端 RKey |
 | 发行版 | 自动查找 `libibverbs.so.1`/`.so` 与 Debian、Ubuntu、RHEL、SUSE、OFED 常见路径；`Config.VerbsLibrary` 可覆盖 |
 | 硬件 | 不绑定厂商：按 sysfs 自动发现设备与活动端口；GID 类型缺失时按链路层与地址推断；支持 Mellanox、Broadcom、Intel、Marvell 等标准 ibverbs 提供方 |
 | 无 cgo | `CGO_ENABLED=0` 可构建、可运行 |
@@ -183,13 +188,15 @@ GOWORK=off go test ./...
 # 设备集成测试（Linux + rdma 标签 + 真实设备）
 GOWORK=off CGO_ENABLED=0 go test -tags rdma ./...
 
-# 跨主机延迟 / 带宽（在两台主机分别执行）
+# 跨主机延迟 / 带宽在 benchmarks/rdma 模块中（两台主机分别执行）
+cd benchmarks/rdma
 YDX_RDMA_ROLE=server YDX_RDMA_ADDR=192.168.2.2:19555 go test -tags rdma -run TestConnCrossHost -v
 YDX_RDMA_ROLE=client YDX_RDMA_ADDR=192.168.2.2:19555 go test -tags rdma -run TestConnCrossHost -v
 ```
 
 `TestConnCrossHost`、`TestConnBandwidthCrossHost` 与 `TestRawLatencyCrossHost`
-在未设置 `YDX_RDMA_ROLE`/`YDX_RDMA_ADDR` 时自动跳过。
+位于 `benchmarks/rdma`，未设置 `YDX_RDMA_ROLE`/`YDX_RDMA_ADDR` 时自动跳过。
+本模块的 `-tags rdma` 集成测试需要真实 RDMA 设备；没有设备时不要使用该标签运行。
 
 集成测试与基准支持以下可选环境变量，用于在任意厂商硬件上指定设备；全部未设置
 时自动发现第一个带活动端口的设备，并自动选择最佳 GID：
@@ -212,6 +219,20 @@ YDX_RDMA_DEVICE=bnxt_re0 GOWORK=off CGO_ENABLED=0 go test -tags rdma ./...
 
 - 仅 Linux、64 位（amd64/arm64）；其它平台编译桩实现。
 - 运行时需要可用的 RDMA 设备与 `libibverbs`；`Supported()` 检查加载结果。
+- 未指定 `Config.Device` 时按设备名排序选择第一个带活动端口的设备；同时存在
+  IB 与 RoCE 网卡的混合主机应显式设置 `Device`/`NetDev`。
 - `MaxSGE` 为 4；更大分散聚集请求需拆分为多个工作请求。
 - 单条消息上限为连接配置的 `SlotSize`；大消息请增大 `SlotSize` 或使用 RDMA
-  WRITE/READ 直接读写对端注册内存。
+  WRITE/READ 直接读写对端注册内存。`Conn.Close` 可与阻塞中的收发并发调用，其余
+  数据面方法仍须单协程串行使用；已交给调用方的零拷贝缓冲区必须在 Close 前消费并
+  释放。`QP`/`CQ`/`SRQ`/`AH` 的 `Close` 不得与同一对象上的投递或轮询并发调用。
+- 握手后发送窗口会按对端公布的接收槽位数收缩，避免在途 SEND 超过对端 RQ。
+  接收应用仍须及时 `Release`/`ReleaseBatch`；否则对端会收到 RNR NAK。默认
+  `RNRRetry=7` 表示无限重试，长时间不释放会表现为延迟升高或发送超时。
+- `Listen`/`Dial` 的 TCP 控制握手不提供认证或加密，控制面参数可被伪造导致拒绝
+  服务；数据面内存池仅授予本地写权限，不公布 RKey。不可信网络应使用
+  IPsec/MACsec 或受保护的隧道。
+- `Device.Close` 在仍有 QP/CQ/SRQ/AH/MR/Pool 时会返回 `ErrBusy`；请按
+  QP → CQ/SRQ/AH → MR/Pool → Device 的顺序关闭。
+- `Listener.Close` 会关闭所有已接受的 Conn；调用方必须先停止使用这些 Conn 及
+  其已取出的零拷贝缓冲区，再关闭监听器。

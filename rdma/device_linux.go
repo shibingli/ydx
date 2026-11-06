@@ -4,7 +4,6 @@ package rdma
 
 import (
 	"math"
-	"runtime"
 	"syscall"
 	"unsafe"
 
@@ -77,11 +76,12 @@ func Open(cfg Config) (*Device, error) {
 		return nil, errnoError("allocate protection domain", rc)
 	}
 	d := &Device{
-		state: &deviceState{api: api, ctx: ctx, pd: pd},
-		cfg:   cfg,
-		info:  info,
-		gid:   gid,
-		port:  port.Port,
+		state:     &deviceState{api: api, ctx: ctx, pd: pd},
+		cfg:       cfg,
+		info:      info,
+		gid:       gid,
+		port:      port.Port,
+		closeDone: make(chan struct{}),
 	}
 	d.state.ops = deviceOps{
 		postSend:    opsFn(ctx, opPostSend),
@@ -100,6 +100,7 @@ func Open(cfg Config) (*Device, error) {
 	}
 	d.attr = DeviceAttr{
 		MaxQPWR:           uint32(da.MaxQPWR),
+		MaxSRQWR:          uint32(da.MaxSRQWR),
 		MaxSGE:            uint32(da.MaxSGE),
 		MaxCQE:            uint32(da.MaxCQE),
 		MaxQPRdAtomic:     uint32(da.MaxQPRdAtom),
@@ -243,21 +244,47 @@ func mtuEnum(v int) uint32 {
 // queues, memory regions and pools must be closed first. | Close 释放保护域
 // 与设备。必须先关闭队列对、完成队列、内存区与内存池。
 func (d *Device) Close() error {
-	if d == nil || !d.closed.CompareAndSwap(false, true) {
+	if d == nil {
 		return nil
 	}
-	if d.state == nil {
-		return nil
+	d.mu.Lock()
+	if d.closed.Load() {
+		done := d.closeDone
+		d.mu.Unlock()
+		if done != nil {
+			<-done
+		}
+		return d.closeErr
 	}
-	if d.state.pd != nil {
-		d.state.api.deallocProtectionDomain(d.state.pd)
-		d.state.pd = nil
+	if d.children != 0 {
+		n := d.children
+		d.mu.Unlock()
+		return errs.Detail(ErrBusy, "device has %d live child resources | 设备仍有 %d 个活动子资源", n, n)
 	}
-	if d.state.ctx != nil {
-		d.state.api.close(d.state.ctx)
-		d.state.ctx = nil
+	d.closed.Store(true)
+	d.mu.Unlock()
+	var first error
+	if d.state != nil {
+		if d.state.pd != nil {
+			if rc := d.state.api.deallocProtectionDomain(d.state.pd); rc != 0 {
+				first = errnoError("dealloc protection domain", rc)
+			}
+			d.state.pd = nil
+		}
+		if d.state.ctx != nil {
+			if rc := d.state.api.close(d.state.ctx); rc != 0 && first == nil {
+				first = errnoError("close device", rc)
+			}
+			d.state.ctx = nil
+		}
 	}
-	return nil
+	d.mu.Lock()
+	d.closeErr = first
+	if d.closeDone != nil {
+		close(d.closeDone)
+	}
+	d.mu.Unlock()
+	return first
 }
 
 // NewCQ creates a completion queue. depth is clamped to the device maximum. |
@@ -266,6 +293,15 @@ func (d *Device) NewCQ(depth int) (*CQ, error) {
 	if d == nil || d.closed.Load() {
 		return nil, ErrClosed
 	}
+	if !d.acquireChild() {
+		return nil, ErrClosed
+	}
+	success := false
+	defer func() {
+		if !success {
+			d.releaseChild()
+		}
+	}()
 	if depth <= 0 {
 		depth = d.cfg.CQDepth
 	}
@@ -279,6 +315,7 @@ func (d *Device) NewCQ(depth int) (*CQ, error) {
 	if rc != 0 {
 		return nil, errnoError("create completion queue", rc)
 	}
+	success = true
 	return &CQ{
 		dev:   d,
 		state: &cqState{cq: cq, scratch: make([]ibvWC, 64), pollFn: d.state.ops.pollCQ},
@@ -291,8 +328,25 @@ func (d *Device) NewQP(cfg QPConfig) (*QP, error) {
 	if d == nil || d.closed.Load() {
 		return nil, ErrClosed
 	}
+	if cfg.Access == 0 {
+		cfg.Access = AccessDefault
+	}
+	if !d.acquireChild() {
+		return nil, ErrClosed
+	}
+	success := false
+	defer func() {
+		if !success {
+			d.releaseChild()
+		}
+	}()
 	if cfg.Type == 0 {
 		cfg.Type = QPTypeRC
+	}
+	switch cfg.Type {
+	case QPTypeRC, QPTypeUC, QPTypeUD:
+	default:
+		return nil, errs.Detail(ErrInvalidConfig, "queue pair type %d | 队列对类型 %d", cfg.Type, cfg.Type)
 	}
 	if cfg.SendCQ == nil {
 		return nil, errs.Detail(ErrInvalidConfig, "send cq is required | 必须提供发送 CQ")
@@ -318,6 +372,9 @@ func (d *Device) NewQP(cfg QPConfig) (*QP, error) {
 		maxRecv = d.cfg.QueueDepth
 	}
 	if cfg.SRQ != nil {
+		if cfg.SRQ.dev != d || cfg.SRQ.closed.Load() || cfg.SRQ.state == nil || cfg.SRQ.state.srq == nil {
+			return nil, errs.Detail(ErrInvalidConfig, "SRQ is closed or belongs to another device | SRQ 已关闭或属于其它设备")
+		}
 		maxRecv = 0
 	}
 	if max := int(d.attr.MaxQPWR); max > 0 {
@@ -393,6 +450,19 @@ func (d *Device) NewQP(cfg QPConfig) (*QP, error) {
 			d.inlineMax.Store(-1)
 		}
 	}
+	// Providers may clamp the requested queue depth. Tracking the granted
+	// values keeps the software queues from overrunning the hardware WQEs, which
+	// would surface as ENOMEM/queue-full retries at runtime. | 提供方可能截断请求
+	// 的队列深度。跟踪实际授予值可避免软件队列超出硬件 WQE，从而在运行时表现为
+	// ENOMEM/队列满重试。
+	if send, recv, rc := d.state.api.qpCap(q); rc == 0 {
+		if send > 0 && send < maxSend {
+			maxSend = send
+		}
+		if recv > 0 && recv < maxRecv {
+			maxRecv = recv
+		}
+	}
 	st := &qpState{qp: q, scap: maxSend, rcap: maxRecv, sendFn: d.state.ops.postSend, recvFn: d.state.ops.postRecv}
 	if maxSend > 0 {
 		st.swr = make([]ibvSendWR, maxSend)
@@ -402,7 +472,8 @@ func (d *Device) NewQP(cfg QPConfig) (*QP, error) {
 		st.rwr = make([]ibvRecvWR, maxRecv)
 		st.rsge = make([]ibvSGE, maxRecv*MaxSGE)
 	}
-	return &QP{dev: d, state: st, typ: cfg.Type, qpn: q.QPNum, inline: granted}, nil
+	success = true
+	return &QP{dev: d, state: st, typ: cfg.Type, qpn: q.QPNum, inline: granted, access: cfg.Access}, nil
 }
 
 // createQP builds the init attributes and creates one queue pair. | createQP
@@ -432,11 +503,22 @@ func (d *Device) NewSRQ(cfg SRQConfig) (*SRQ, error) {
 	if d == nil || d.closed.Load() {
 		return nil, ErrClosed
 	}
+	if !d.acquireChild() {
+		return nil, ErrClosed
+	}
+	success := false
+	defer func() {
+		if !success {
+			d.releaseChild()
+		}
+	}()
 	maxWR := cfg.MaxWR
 	if maxWR <= 0 {
 		maxWR = d.cfg.QueueDepth
 	}
-	if max := int(d.attr.MaxQPWR); max > 0 && maxWR > max {
+	if max := int(d.attr.MaxSRQWR); max > 0 && maxWR > max {
+		maxWR = max
+	} else if max := int(d.attr.MaxQPWR); max > 0 && maxWR > max {
 		maxWR = max
 	}
 	maxSGE := cfg.MaxSGE
@@ -461,6 +543,7 @@ func (d *Device) NewSRQ(cfg SRQConfig) (*SRQ, error) {
 		st.rwr = make([]ibvRecvWR, maxWR)
 		st.rsge = make([]ibvSGE, maxWR*MaxSGE)
 	}
+	success = true
 	return &SRQ{dev: d, state: st}, nil
 }
 
@@ -470,6 +553,15 @@ func (d *Device) NewAH(attr AHAttr) (*AH, error) {
 	if d == nil || d.closed.Load() {
 		return nil, ErrClosed
 	}
+	if !d.acquireChild() {
+		return nil, ErrClosed
+	}
+	success := false
+	defer func() {
+		if !success {
+			d.releaseChild()
+		}
+	}()
 	if attr.Port == 0 {
 		attr.Port = uint8(d.port)
 	}
@@ -503,7 +595,8 @@ func (d *Device) NewAH(attr AHAttr) (*AH, error) {
 	if rc != 0 {
 		return nil, errnoError("create address handle", rc)
 	}
-	return &AH{state: &ahState{api: d.state.api, ah: ah}}, nil
+	success = true
+	return &AH{dev: d, state: &ahState{api: d.state.api, ah: ah}}, nil
 }
 
 // boolByte converts a bool to the uint8 used by C structures. | boolByte 将
@@ -520,16 +613,31 @@ func boolByte(v bool) uint8 {
 // NewMR 分配库拥有的内存并将其注册到设备。优先尝试 2 MiB 大页，失败时回退
 // 透明大页。
 func (d *Device) NewMR(size int, access Access) (*MR, error) {
+	return d.newMR(size, access, true)
+}
+
+// newMR allocates and registers library-owned memory, optionally preferring
+// huge pages. | newMR 分配并注册库拥有的内存，可选优先大页。
+func (d *Device) newMR(size int, access Access, huge bool) (*MR, error) {
 	if d == nil || d.closed.Load() {
 		return nil, ErrClosed
 	}
+	if !d.acquireChild() {
+		return nil, ErrClosed
+	}
+	success := false
+	defer func() {
+		if !success {
+			d.releaseChild()
+		}
+	}()
 	if size <= 0 {
 		return nil, errs.Detail(ErrInvalidConfig, "mr size %d | 内存区大小 %d", size, size)
 	}
 	if access == 0 {
 		access = AccessDefault
 	}
-	mem, err := allocMem(size, true)
+	mem, err := allocMem(size, huge)
 	if err != nil {
 		return nil, errs.WrapDetail(err, ErrNoBuffer, "allocate %d bytes | 分配 %d 字节", size, size)
 	}
@@ -539,11 +647,20 @@ func (d *Device) NewMR(size int, access Access) (*MR, error) {
 		_ = syscall.Munmap(mem)
 		return nil, errnoError("register memory region", rc)
 	}
-	release := func() {
-		d.state.api.deregisterMR(mr)
+	release := func() error {
+		if rc := d.state.api.deregisterMR(mr); rc != 0 {
+			// Keep the mapping and registration alive on failure; unmapping
+			// memory the HCA may still reference would corrupt or crash. |
+			// 注销失败时保留映射与注册；HCA 仍可能引用已取消映射的内存，会造成
+			// 数据损坏或崩溃。
+			return errnoError("deregister memory region", rc)
+		}
 		_ = syscall.Munmap(mem)
+		return nil
 	}
+	success = true
 	return &MR{
+		dev:     d,
 		mem:     mem,
 		ptr:     ptr,
 		addr:    uintptr(ptr),
@@ -571,38 +688,57 @@ func allocMem(size int, huge bool) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	_ = syscall.Madvise(mem, syscall.MADV_HUGEPAGE)
+	if huge {
+		_ = syscall.Madvise(mem, syscall.MADV_HUGEPAGE)
+	}
 	return mem, nil
 }
 
 // RegisterMemory registers caller-owned memory. The caller must not pass the
-// slice to another owner or free it while the region is open. The region pins
-// the backing object for its lifetime. Prefer NewMR for DMA buffers. |
-// RegisterMemory 注册调用方拥有的内存。内存区打开期间，调用方不得转移或释放
-// 该切片。内存区会在生命周期内钉住底层对象。DMA 缓冲区优先使用 NewMR。
+// slice to another owner or free it while the region is open. The MR retains
+// the slice; the runtime GC is non-moving, so no runtime.Pinner is used (which
+// would reject mmap or C-owned memory). Prefer NewMR for DMA buffers. |
+// RegisterMemory 注册调用方拥有的内存。内存区打开期间，调用方不得转移或释放该
+// 切片。MR 持有切片；运行时 GC 不移动对象，因此不使用会拒绝 mmap/C 内存的
+// runtime.Pinner。DMA 缓冲区优先使用 NewMR。
 func (d *Device) RegisterMemory(buf []byte, access Access) (*MR, error) {
 	if d == nil || d.closed.Load() {
 		return nil, ErrClosed
 	}
+	if !d.acquireChild() {
+		return nil, ErrClosed
+	}
+	success := false
+	defer func() {
+		if !success {
+			d.releaseChild()
+		}
+	}()
 	if len(buf) == 0 {
 		return nil, errs.Detail(ErrInvalidConfig, "empty buffer | 缓冲区为空")
 	}
 	if access == 0 {
 		access = AccessDefault
 	}
-	pinner := new(runtime.Pinner)
-	pinner.Pin(&buf[0])
 	ptr := unsafe.Pointer(&buf[0])
 	mr, rc := d.state.api.registerMR(d.state.pd, ptr, len(buf), access)
 	if mr == nil {
-		pinner.Unpin()
 		return nil, errnoError("register memory region", rc)
 	}
-	release := func() {
-		d.state.api.deregisterMR(mr)
-		pinner.Unpin()
+	// The MR retains the slice, which keeps caller-owned Go memory alive. The
+	// runtime GC is non-moving; runtime.Pinner must not be used here because it
+	// rejects memory that does not belong to the Go heap (mmap/C arenas).
+	// | MR 持有切片，使调用方拥有的 Go 内存保持存活。运行时 GC 不移动对象；
+	// 此处不能使用 runtime.Pinner，因为它会拒绝不属于 Go 堆的内存（mmap/C 内存区）。
+	release := func() error {
+		if rc := d.state.api.deregisterMR(mr); rc != 0 {
+			return errnoError("deregister memory region", rc)
+		}
+		return nil
 	}
+	success = true
 	return &MR{
+		dev:     d,
 		mem:     buf,
 		ptr:     ptr,
 		addr:    uintptr(ptr),
@@ -632,11 +768,11 @@ func (d *Device) NewPool(cfg PoolConfig) (*Pool, error) {
 	if cfg.Slots > math.MaxInt/cfg.SlotSize {
 		return nil, errs.Detail(ErrInvalidConfig, "pool size overflows | 内存池大小溢出")
 	}
-	mr, err := d.NewMR(cfg.Slots*cfg.SlotSize, cfg.Access)
+	mr, err := d.newMR(cfg.Slots*cfg.SlotSize, cfg.Access, cfg.HugePages)
 	if err != nil {
 		return nil, err
 	}
-	pool, err := newPool(mr, cfg.SlotSize, cfg.Align)
+	pool, err := newPoolMax(mr, cfg.SlotSize, cfg.Align, cfg.Slots)
 	if err != nil {
 		_ = mr.Close()
 		return nil, err
