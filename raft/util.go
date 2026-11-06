@@ -18,19 +18,6 @@ func entryBytes(entries []Entry) int {
 	return total
 }
 
-// cloneEntries deep-copies entries at API boundaries. | cloneEntries 在 API 边界深拷贝
-// 日志项。
-func cloneEntries(entries []Entry) []Entry {
-	if entries == nil {
-		return nil
-	}
-	out := make([]Entry, len(entries))
-	for i := range entries {
-		out[i] = entries[i].clone()
-	}
-	return out
-}
-
 // sameConfState reports whether two serialized configurations are equal. | sameConfState
 // 报告两个序列化配置是否相等。
 func sameConfState(a, b ConfState) bool {

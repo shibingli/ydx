@@ -3,6 +3,7 @@ package raft
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -388,5 +389,20 @@ func TestUnmarshalRejectsCorruption(t *testing.T) {
 		if _, err := UnmarshalMessage(data); err == nil {
 			t.Fatalf("accepted corrupt input %v", data)
 		}
+	}
+}
+
+// TestProposalSizeLimit rejects an oversized proposal before it enters the log.
+// | TestProposalSizeLimit 在超大提案进入日志前拒绝它。
+func TestProposalSizeLimit(t *testing.T) {
+	c := newTestCluster(t, 1, func(cfg *Config) { cfg.MaxProposalBytes = 64 })
+	leader := c.waitLeader(3 * time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if _, err := leader.Propose(ctx, make([]byte, 65)); !errors.Is(err, ErrTooLarge) {
+		t.Fatalf("oversized proposal error = %v, want ErrTooLarge", err)
+	}
+	if _, err := leader.Propose(ctx, make([]byte, 64)); err != nil {
+		t.Fatalf("limit proposal: %v", err)
 	}
 }

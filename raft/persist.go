@@ -7,11 +7,32 @@ import (
 	ydlog "github.com/shibingli/ydx/log"
 )
 
+// maxPersistBatchBytes bounds one merged durable batch. It keeps a burst of
+// large proposals from allocating an unbounded WAL buffer or exceeding the WAL
+// record limit; a single oversized request is still processed alone so the
+// storage layer can report the error. | maxPersistBatchBytes 限制一个合并持久批次，
+// 避免大量大提案分配无界 WAL 缓冲区或超过 WAL 记录上限；单个超大请求仍单独处理，
+// 由存储层报告错误。
+const maxPersistBatchBytes = 32 << 20
+
+// persistBytes estimates the encoded size of a request. | persistBytes 估算请求的
+// 编码大小。
+func persistBytes(req *persistRequest) int {
+	if req == nil || len(req.batch.Entries) == 0 {
+		return 0
+	}
+	total := len(req.batch.Entries) * 16
+	for i := range req.batch.Entries {
+		total += len(req.batch.Entries[i].Data)
+	}
+	return total
+}
+
 // persistRequest is one durable batch queued for the writer goroutine. | persistRequest
 // 是排队给写协程的一个持久批次。
 type persistRequest struct {
-	seq     uint64
 	batch   PersistBatch
+	seq     uint64
 	compact uint64
 }
 
@@ -19,15 +40,15 @@ type persistRequest struct {
 // the highest sequence included in the acked batch. | persistAck 在持久写完成后
 // 释放延迟的协议工作。maxSeq 是被确认批次中的最高序号。
 type persistAck struct {
-	maxSeq uint64
 	err    error
+	maxSeq uint64
 }
 
 // deferredAction runs after the persistence with the same sequence completes.
 // | deferredAction 在相同序号的持久化完成后运行。
 type deferredAction struct {
-	seq uint64
 	fn  func(error)
+	seq uint64
 }
 
 // hardState snapshots the durable state for a batch. | hardState 为批次生成持久状态
@@ -36,9 +57,11 @@ func (n *Node) hardState() HardState {
 	return HardState{Term: n.term, Vote: n.vote, Commit: n.committed}
 }
 
-// persist queues a batch. compact, when non-zero, asks the storage to release
-// entries through that index after the batch is durable. | persist 将批次入队。
-// compact 非零时，在批次持久化后请求存储释放该索引及之前的日志项。
+// persist queues a batch. compact, when non-zero, releases entries through that
+// index after the batch is durable and reports failures without stopping the
+// node: the snapshot marker already makes older entries ignorable. | persist
+// 将批次入队。compact 非零时在批次持久化后释放该索引及之前的日志项；失败只报告而
+// 不停止节点：快照标记已使更旧日志项可忽略。
 func (n *Node) persist(batch PersistBatch, compact uint64, fn func(error)) uint64 {
 	if n.immediateStore {
 		err := n.storage.Persist(batch)
@@ -82,9 +105,9 @@ func (n *Node) persistEntries(entries []Entry, truncate uint64) uint64 {
 	return n.persist(PersistBatch{HardState: &hs, Truncate: truncate, Entries: entries}, 0, nil)
 }
 
-// persistSnapshot records a snapshot image and compacts storage after it.
-// replacesLog marks an InstallSnapshot whose entire prior log is stale.
-// | persistSnapshot 记录快照镜像并在其后压缩存储。replacesLog 标记整段旧日志都已
+// persistSnapshot records a snapshot image and compacts storage through its
+// index. replacesLog marks an InstallSnapshot whose entire prior log is stale.
+// | persistSnapshot 记录快照镜像并压缩到该索引。replacesLog 标记整段旧日志都已
 // 失效的 InstallSnapshot。
 func (n *Node) persistSnapshot(snap *Snapshot, replacesLog bool, fn func(error)) uint64 {
 	hs := n.hardState()
@@ -163,6 +186,43 @@ func (n *Node) collectPersist(first *persistRequest, reqs []*persistRequest) []*
 	return reqs
 }
 
+// persistLastIndex returns the last entry index a request contributes. | persistLastIndex
+// 返回请求贡献的最后日志索引。
+func persistLastIndex(req *persistRequest) (uint64, bool) {
+	if req == nil || len(req.batch.Entries) == 0 {
+		return 0, false
+	}
+	return req.batch.Entries[len(req.batch.Entries)-1].Index, true
+}
+
+// persistMergeable reports whether req can extend a merged batch ending at last.
+// Duplicate or overlapping entry ranges must not be coalesced: the WAL entry
+// encoding uses index deltas and requires a strictly contiguous range. A
+// truncating request is mergeable when its truncation point joins the current
+// range; its entries then replace the overlapping suffix. | persistMergeable 报告
+// req 能否扩展以 last 结尾的合并批次。重复或重叠的日志区间不得合并：WAL 日志项编码
+// 使用索引增量，要求严格连续。截断请求在截断点与当前区间相接时可合并，其日志项会
+// 替换重叠后缀。
+func persistMergeable(last uint64, hasEntries bool, req *persistRequest) bool {
+	if req == nil {
+		return false
+	}
+	b := req.batch
+	if b.Truncate > 0 {
+		if len(b.Entries) == 0 {
+			return false
+		}
+		if b.Entries[0].Index != b.Truncate {
+			return false
+		}
+		return !hasEntries || b.Truncate <= last+1
+	}
+	if len(b.Entries) == 0 {
+		return true
+	}
+	return !hasEntries || b.Entries[0].Index == last+1
+}
+
 // processPersistReqs splits snapshot requests from mergeable groups. | processPersistReqs
 // 将快照请求与可合并分组分开处理。
 func (n *Node) processPersistReqs(reqs []*persistRequest) {
@@ -174,7 +234,21 @@ func (n *Node) processPersistReqs(reqs []*persistRequest) {
 			continue
 		}
 		j := i + 1
+		bytes := persistBytes(reqs[i])
+		last, hasEntries := persistLastIndex(reqs[i])
 		for j < len(reqs) && reqs[j].batch.Snapshot == nil {
+			next := persistBytes(reqs[j])
+			if bytes+next > maxPersistBatchBytes {
+				break
+			}
+			if !persistMergeable(last, hasEntries, reqs[j]) {
+				break
+			}
+			if nextLast, ok := persistLastIndex(reqs[j]); ok {
+				last = nextLast
+				hasEntries = true
+			}
+			bytes += next
 			j++
 		}
 		n.persistGroup(reqs[i:j])
@@ -182,8 +256,10 @@ func (n *Node) processPersistReqs(reqs []*persistRequest) {
 	}
 }
 
-// persistOne writes one snapshot request and then compacts. | persistOne 写入一个
-// 快照请求并随后压缩。
+// persistOne writes one snapshot request and then compacts. Compaction failure
+// is logged rather than fatal because the durable marker already makes covered
+// entries ignorable. | persistOne 写入一个快照请求并随后压缩。压缩失败只记录日志
+// 而不致命，因为持久标记已使被覆盖的日志项可忽略。
 func (n *Node) persistOne(req *persistRequest) {
 	err := n.storage.Persist(req.batch)
 	if err == nil && req.compact > 0 {
@@ -274,4 +350,8 @@ func (n *Node) handlePersistAck(ack persistAck) {
 	if len(n.pending) == 0 && cap(n.pending) > 64 {
 		n.pending = nil
 	}
+	// Deferred actions may have advanced persistedIndex without advancing the
+	// commit index; release any committed entries that are now durable. | 延迟动作
+	// 可能推进了 persistedIndex 而未推进提交索引；释放现在已持久化的已提交日志项。
+	n.advanceApply()
 }

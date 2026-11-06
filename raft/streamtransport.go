@@ -19,6 +19,15 @@ import (
 // 限制流式连接建立时间。
 const defaultDialTimeout = 5 * time.Second
 
+// defaultMaxConns bounds tracked inbound and outbound connections. | defaultMaxConns
+// 限制跟踪的入站与出站连接数。
+const defaultMaxConns = 256
+
+// defaultReadTimeout closes a connection that sends no complete frame for this
+// long, preventing stalled peers from pinning large read buffers. | defaultReadTimeout
+// 关闭长时间收不到完整帧的连接，避免停滞对端长期占用大读取缓冲区。
+const defaultReadTimeout = 60 * time.Second
+
 // streamListener is a listener abstraction shared by TCP and RDMA. | streamListener
 // 是 TCP 与 RDMA 共用的监听抽象。
 type streamListener interface {
@@ -72,31 +81,34 @@ func readFrame(conn io.ReadWriteCloser, secret []byte, maxFrame int) ([]Message,
 type streamTransport struct {
 	backend  streamBackend
 	listener streamListener
+	peers    map[NodeID]*streamPeer
+	conns    map[io.ReadWriteCloser]struct{}
+
+	handler  atomic.Pointer[func(Message)]
+	stopCh   chan struct{}
 	secret   []byte
+	wg       sync.WaitGroup
 	queue    int
 	maxFrame int
+	maxConns int
 	timeout  time.Duration
+	readTTL  time.Duration
 
-	mu      sync.RWMutex
-	peers   map[NodeID]*streamPeer
-	conns   map[io.ReadWriteCloser]struct{}
-	started bool
+	drops atomic.Uint64
 
-	handler   atomic.Pointer[func(Message)]
-	stopCh    chan struct{}
-	stopped   atomic.Bool
+	mu        sync.RWMutex
 	startOnce sync.Once
 	closeOnce sync.Once
-	wg        sync.WaitGroup
-	drops     atomic.Uint64
+	stopped   atomic.Bool
+	started   bool
 }
 
 // streamPeer owns the ordered outbound queue for one peer. | streamPeer 持有一个
 // 对端的有序出站队列。
 type streamPeer struct {
-	id   NodeID
-	addr string
 	ch   chan []Message
+	addr string
+	id   NodeID
 }
 
 // newStreamTransport binds the listener and returns a stopped-until-Start
@@ -128,7 +140,9 @@ func newStreamTransport(backend streamBackend, listenAddr string, secret []byte,
 		secret:   append([]byte(nil), secret...),
 		queue:    queue,
 		maxFrame: maxFrame,
+		maxConns: defaultMaxConns,
 		timeout:  timeout,
+		readTTL:  defaultReadTimeout,
 		peers:    make(map[NodeID]*streamPeer),
 		conns:    make(map[io.ReadWriteCloser]struct{}),
 		stopCh:   make(chan struct{}),
@@ -230,6 +244,11 @@ func (t *streamTransport) Addr() string {
 // | Drops 返回因队列压力或网络错误丢弃的帧或批次。
 func (t *streamTransport) Drops() uint64 { return t.drops.Load() }
 
+// FrameLimit reports the maximum encoded frame accepted by this transport, or
+// zero when unbounded. | FrameLimit 返回该传输可接受的最大编码帧；无限制时为
+// 零。
+func (t *streamTransport) FrameLimit() int64 { return int64(t.maxFrame) }
+
 // Close implements Transport. | Close 实现 Transport。
 func (t *streamTransport) Close() error {
 	t.closeOnce.Do(func() {
@@ -266,7 +285,11 @@ func (t *streamTransport) acceptLoop() {
 		}
 		if !t.track(conn) {
 			_ = conn.Close()
-			return
+			if t.stopped.Load() {
+				return
+			}
+			time.Sleep(10 * time.Millisecond)
+			continue
 		}
 		t.wg.Add(1)
 		go t.readLoop(conn)
@@ -279,6 +302,9 @@ func (t *streamTransport) readLoop(conn io.ReadWriteCloser) {
 	defer t.untrack(conn)
 	defer conn.Close()
 	for {
+		if dc, ok := conn.(interface{ SetReadDeadline(time.Time) error }); ok {
+			_ = dc.SetReadDeadline(time.Now().Add(t.readTTL))
+		}
 		msgs, err := readFrame(conn, t.secret, t.maxFrame)
 		if err != nil {
 			return
@@ -322,7 +348,11 @@ func (t *streamTransport) peerLoop(p *streamPeer) {
 				}
 				if !t.track(c) {
 					_ = c.Close()
-					return
+					if t.stopped.Load() {
+						return
+					}
+					t.drops.Add(uint64(len(batch)))
+					continue
 				}
 				conn = c
 			}
@@ -346,6 +376,9 @@ func (t *streamTransport) track(conn io.ReadWriteCloser) bool {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if t.stopped.Load() {
+		return false
+	}
+	if t.maxConns > 0 && len(t.conns) >= t.maxConns {
 		return false
 	}
 	t.conns[conn] = struct{}{}
@@ -376,28 +409,30 @@ func writeFull(w io.Writer, frame []byte) error {
 }
 
 // encodeStreamFrame builds length-prefixed, CRC-checked, optionally HMAC-signed
-// frame bytes. | encodeStreamFrame 构建带长度前缀、CRC 校验与可选 HMAC 签名的帧字节。
+// frame bytes. It encodes directly into the final buffer so a large snapshot
+// image is not copied twice. | encodeStreamFrame 构建带长度前缀、CRC 校验与可选
+// HMAC 签名的帧字节。它直接编码到最终缓冲区，避免大快照镜像被复制两次。
 func encodeStreamFrame(msgs []Message, secret []byte, maxFrame int) ([]byte, error) {
-	payload, err := encodeHTTPFrame(msgs)
-	if err != nil {
-		return nil, err
-	}
 	macLen := 0
 	if len(secret) > 0 {
 		macLen = sha256.Size
 	}
-	length := len(payload) + macLen
-	if maxFrame > 0 && 4+length > maxFrame {
+	out := make([]byte, 4, 4+256+macLen)
+	var err error
+	out, err = encodeHTTPFrameInto(out, msgs)
+	if err != nil {
+		return nil, err
+	}
+	length := len(out) - 4 + macLen
+	if length > maxMessageBytes || (maxFrame > 0 && 4+length > maxFrame) {
 		return nil, errs.Detail(ErrTooLarge, "stream frame %d bytes", 4+length)
 	}
-	out := make([]byte, 4+length)
 	binary.BigEndian.PutUint32(out[:4], uint32(length))
-	copy(out[4:], payload)
 	if macLen > 0 {
 		mac := hmac.New(sha256.New, secret)
 		_, _ = mac.Write(out[:4])
-		_, _ = mac.Write(payload)
-		copy(out[4+len(payload):], mac.Sum(nil))
+		_, _ = mac.Write(out[4:])
+		out = append(out, mac.Sum(nil)...)
 	}
 	return out, nil
 }
@@ -410,7 +445,8 @@ func readStreamFrame(r io.Reader, secret []byte, maxFrame int) ([]Message, error
 		return nil, err
 	}
 	length := binary.BigEndian.Uint32(header[:])
-	if length == 0 || (maxFrame > 0 && int(length)+4 > maxFrame) {
+	if length == 0 || uint64(length)+4 > uint64(maxMessageBytes) ||
+		(maxFrame > 0 && uint64(length)+4 > uint64(maxFrame)) {
 		return nil, errs.Detail(ErrTooLarge, "stream frame length %d", length)
 	}
 	frame := make([]byte, 4+int(length))
@@ -428,7 +464,7 @@ func decodeStreamFrame(frame, secret []byte, maxFrame int) ([]Message, error) {
 		return nil, errs.Detail(ErrCorrupt, "short stream frame")
 	}
 	length := binary.BigEndian.Uint32(frame[:4])
-	if length == 0 || int(length) != len(frame)-4 {
+	if length == 0 || uint64(length) > uint64(maxMessageBytes) || int(length) != len(frame)-4 {
 		return nil, errs.Detail(ErrCorrupt, "stream frame length %d, got %d", length, len(frame)-4)
 	}
 	if maxFrame > 0 && len(frame) > maxFrame {

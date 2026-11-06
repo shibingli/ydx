@@ -14,9 +14,9 @@ import (
 // 分发读取不可变处理器快照，因此逐消息路径不加锁；成员变化很少，采用写时复制。
 type groupMux struct {
 	base     Transport
-	mu       sync.Mutex
 	handlers map[GroupID]func(Message)
 	snapshot atomic.Pointer[map[GroupID]func(Message)]
+	mu       sync.Mutex
 }
 
 // newGroupMux wraps a base transport. The caller must start base with dispatch as
@@ -110,6 +110,24 @@ func (t *GroupTransport) SendImmediate() bool {
 // 实现 Transport。地址由所有组共享。
 func (t *GroupTransport) UpdatePeer(id NodeID, addr string) {
 	t.mux.base.UpdatePeer(id, addr)
+}
+
+// FrameLimit reports the shared transport's maximum encoded frame. | FrameLimit
+// 返回共享传输的最大编码帧。
+func (t *GroupTransport) FrameLimit() int64 {
+	if limiter, ok := t.mux.base.(interface{ FrameLimit() int64 }); ok {
+		return limiter.FrameLimit()
+	}
+	return 0
+}
+
+// Drops reports the shared transport's counted drops. | Drops 返回共享传输的丢弃
+// 计数。
+func (t *GroupTransport) Drops() uint64 {
+	if reporter, ok := t.mux.base.(interface{ Drops() uint64 }); ok {
+		return reporter.Drops()
+	}
+	return 0
 }
 
 // Close implements Transport. It only unregisters the group; the host owns the

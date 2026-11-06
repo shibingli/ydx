@@ -17,20 +17,19 @@ import (
 // 用 New 创建后立即启动。除 Close 外所有导出方法都可并发使用；Close 不得在 Raft
 // 事件循环的回调中调用。
 type Node struct {
-	cfg          Config
-	id           NodeID
-	group        GroupID
-	storage      Storage
-	transport    Transport
-	fsm          FSM
-	logger       *ydlog.Logger
-	metrics      *metrics
-	futures      *futureStore
 	futurePool   sync.Pool
 	proposalPool sync.Pool
 
-	immediateStore     bool
-	immediateTransport bool
+	leaseUntil time.Time
+	storage    Storage
+	transport  Transport
+	fsm        FSM
+	closeErr   error
+	fatalErr   error
+
+	logger  *ydlog.Logger
+	metrics *metrics
+	futures *futureStore
 
 	// Channels. Sizes come from Config. | 通道；大小来自 Config。
 	recvCh          chan Message
@@ -55,68 +54,68 @@ type Node struct {
 	applyDoneCh     chan struct{}
 	snapshotDoneCh  chan struct{}
 
-	stopped   atomic.Bool
-	closeOnce sync.Once
-	stopOnce  sync.Once
-	closeErr  error
-	wg        sync.WaitGroup
-
-	stateAtomic    atomic.Uint32
-	termAtomic     atomic.Uint64
-	leaderAtomic   atomic.Uint64
-	commitAtomic   atomic.Uint64
-	applied        atomic.Uint64
-	lastSnapshot   atomic.Uint64
-	appliedNotify  *appliedNotifier
-	remoteReadSeq  atomic.Uint64
-	remoteReads    *remoteReadStore
-	transferActive atomic.Bool
-	fatalMu        sync.Mutex
-	fatalErr       error
-
-	// Event-loop state. | 事件循环状态。
-	state             State
-	term              uint64
-	vote              NodeID
-	leader            NodeID
+	appliedNotify     *appliedNotifier
+	remoteReads       *remoteReadStore
 	log               *raftLog
-	committed         uint64
-	sentApplied       uint64
-	persistedIndex    uint64
 	conf              *membership
 	confBase          *membership
-	confBaseIndex     uint64
-	confHistory       []confVersion
-	jointIndex        uint64
 	progress          map[NodeID]*progress
 	votes             map[NodeID]bool
 	preVotes          map[NodeID]bool
-	electionElapsed   int
-	heartbeatElapsed  int
-	electionTimeout   int
-	leadTransferee    NodeID
-	transferElapsed   int
-	transferSent      bool
-	transferWaiters   []chan error
+	preVoteSent       map[NodeID]struct{}
+	preVotePending    map[NodeID]struct{}
+	preVoteRemaining  []NodeID
+	preVoteReq        Message
+	preVoteExpandTick uint64
 	pendingConf       *pendingConf
-	pendingRemoval    []NodeID
-	leaveIndex        uint64
 	latestSnapshot    *Snapshot
-	snapshotting      bool
-	snapshotWaiters   []chan error
 	activeSnapshotReq *snapshotRequest
 	readRound         *readRound
-	readSeq           uint64
-	tickCount         uint64
-	leaseUntil        time.Time
-	termStartIndex    uint64
-	appliedTerm       uint64
-	persistSeq        uint64
+	pendingReads      []*readRequest
+	pendingRemoteRead []remoteReadResponse
+	pendingReadLimit  int
+	confHistory       []confVersion
+	transferWaiters   []chan error
+	pendingRemoval    []NodeID
+	snapshotWaiters   []chan error
 	pending           []deferredAction
 	outBuf            []Message
+	outCtrlBuf        []Message
+	outDataBuf        []Message
 	scratch           []uint64
 	campaignWaiters   []chan error
-	autoCampaign      bool
+	cfg               Config
+	wg                sync.WaitGroup
+
+	id               NodeID
+	group            GroupID
+	termAtomic       atomic.Uint64
+	leaderAtomic     atomic.Uint64
+	commitAtomic     atomic.Uint64
+	applied          atomic.Uint64
+	lastSnapshot     atomic.Uint64
+	remoteReadSeq    atomic.Uint64
+	remoteEpoch      uint64
+	term             uint64
+	vote             NodeID
+	leader           NodeID
+	committed        uint64
+	sentApplied      uint64
+	persistedIndex   uint64
+	confBaseIndex    uint64
+	jointIndex       uint64
+	electionElapsed  int
+	heartbeatElapsed int
+	electionTimeout  int
+	leadTransferee   NodeID
+	transferElapsed  int
+	leaveIndex       uint64
+	readSeq          uint64
+	tickCount        uint64
+	termStartIndex   uint64
+	appliedTerm      uint64
+	persistSeq       uint64
+	outControls      int
 
 	// Config-derived hot fields. | 由配置导出的热字段。
 	tickInterval     time.Duration
@@ -124,25 +123,48 @@ type Node struct {
 	electionTicks    int
 	maxBatchEntries  int
 	maxBatchBytes    int
+	maxProposalBytes int
 	maxInflightMsgs  int
 	maxInflightBytes int
 	snapshotEntries  uint64
 	snapshotCatchUp  uint64
+	closeOnce        sync.Once
+	stopOnce         sync.Once
+	fatalMu          sync.Mutex
+
+	stopped atomic.Bool
+
+	stateAtomic    atomic.Uint32
+	transferActive atomic.Bool
+
+	immediateStore     bool
+	immediateTransport bool
+
+	// Event-loop state. | 事件循环状态。
+	electionTimer    *time.Timer
+	electionRankConf *membership
+	electionDeadline time.Time
+	electionRank     int
+	state            State
+	transferSent     bool
+	snapshotting     bool
+	autoCampaign     bool
+	selfVoteDurable  bool
 }
 
 // confVersion records the membership produced by one log entry. | confVersion 记录
 // 一条日志项产生的成员配置。
 type confVersion struct {
-	index      uint64
 	conf       *membership
+	index      uint64
 	jointIndex uint64
 }
 
 // proposal is one client or internal write. | proposal 是一次客户端或内部写请求。
 type proposal struct {
-	data   []byte
 	conf   *ConfChange
 	future *Future
+	data   []byte
 }
 
 // readRequest asks for a linearizable read index. | readRequest 请求线性一致读索引。
@@ -152,8 +174,8 @@ type readRequest struct {
 
 // readResult is the outcome of ReadIndex. | readResult 是 ReadIndex 的结果。
 type readResult struct {
-	index uint64
 	err   error
+	index uint64
 }
 
 // campaignRequest forces an election. | campaignRequest 强制发起选举。
@@ -164,8 +186,8 @@ type campaignRequest struct {
 // transferRequest asks the leader to hand over to target. | transferRequest 请求领导
 // 者将领导权交给 target。
 type transferRequest struct {
-	target NodeID
 	done   chan error
+	target NodeID
 }
 
 // outboundBatch is handed to the sender goroutine. | outboundBatch 交给发送协程。
@@ -176,10 +198,10 @@ type outboundBatch struct {
 // pendingConf tracks an in-flight membership change. | pendingConf 跟踪进行中的成员
 // 变更。
 type pendingConf struct {
+	future       *Future
 	change       ConfChange
 	initialIndex uint64
 	leaveIndex   uint64
-	future       *Future
 	resolved     bool
 }
 
@@ -251,8 +273,30 @@ func New(cfg Config) (*Node, error) {
 	if err := cfg.validate(); err != nil {
 		return nil, err
 	}
+	// Reject an obviously unusable multi-node transport before Load/recover can
+	// bootstrap or mutate storage. Without this a failed New leaves a fresh
+	// single-voter bootstrap behind. | 在 Load/recover 可能引导或修改存储前拒绝明显
+	// 不可用的多节点传输；否则失败的 New 会留下一个全新的单投票成员引导状态。
+	if cfg.Transport == nil && !cfg.RDMA && len(cfg.Peers) > 1 {
+		return nil, errs.Detail(ErrInvalidConfig, "Transport is required for a multi-node cluster")
+	}
+	// Build the RDMA transport before Load/recover. Invalid RDMA options must not
+	// leave a freshly bootstrapped log behind. | 在 Load/recover 前构建 RDMA 传输。
+	// 无效的 RDMA 选项不得留下全新引导的日志。
+	var builtTransport Transport
+	if cfg.Transport == nil && cfg.RDMA {
+		transport, err := NewRDMATransport(cfg.RDMAOptions)
+		if err != nil {
+			return nil, err
+		}
+		builtTransport = transport
+		cfg.Transport = transport
+	}
 	rec, err := cfg.Storage.Load()
 	if err != nil {
+		if builtTransport != nil {
+			_ = builtTransport.Close()
+		}
 		return nil, errs.Wrap(err, ErrStorage)
 	}
 	n := &Node{
@@ -266,6 +310,7 @@ func New(cfg Config) (*Node, error) {
 		futures:          newFutureStore(),
 		appliedNotify:    newAppliedNotifier(),
 		remoteReads:      newRemoteReadStore(),
+		remoteEpoch:      newRemoteReadEpoch(),
 		recvCh:           make(chan Message, cfg.MessageQueue),
 		controlCh:        make(chan Message, controlQueueSize(cfg.MessageQueue)),
 		proposals:        newProposalQueue(cfg.ProposalQueue),
@@ -295,26 +340,36 @@ func New(cfg Config) (*Node, error) {
 		electionTicks:    cfg.ElectionTicks,
 		maxBatchEntries:  cfg.MaxBatchEntries,
 		maxBatchBytes:    cfg.MaxBatchBytes,
+		maxProposalBytes: cfg.MaxProposalBytes,
 		maxInflightMsgs:  cfg.MaxInflightMsgs,
 		maxInflightBytes: cfg.MaxInflightBytes,
 		snapshotEntries:  cfg.SnapshotEntries,
 		snapshotCatchUp:  cfg.SnapshotCatchUpEntries,
+		pendingReadLimit: cfg.pendingReadLimit(),
 	}
 	n.applyQueue = newApplyQueue()
 	n.autoCampaign = false
-	if err := n.recover(rec); err != nil {
-		return nil, err
-	}
-	if n.cfg.Transport == nil && n.cfg.RDMA {
-		transport, err := NewRDMATransport(n.cfg.RDMAOptions)
-		if err != nil {
-			_ = n.storage.Close()
-			return nil, err
+	// Recovery arms this timer for every path that has a membership; a Join
+	// node with empty storage keeps it stopped until it is added. | 恢复会为所有
+	// 有成员配置的路径启动该定时器；空存储的 Join 节点保持停止，直到被加入。
+	n.electionTimer = time.NewTimer(time.Hour)
+	n.electionTimer.Stop()
+	success := false
+	defer func() {
+		if !success {
+			n.stopElectionTimer()
 		}
-		n.cfg.Transport = transport
+	}()
+	if err := n.recover(rec); err != nil {
+		_ = n.storage.Close()
+		if builtTransport != nil {
+			_ = builtTransport.Close()
+		}
+		return nil, err
 	}
 	if n.cfg.Transport == nil {
 		if !n.singleVoter() {
+			_ = n.storage.Close()
 			return nil, errs.Detail(ErrInvalidConfig, "Transport is required for a multi-node cluster")
 		}
 		n.cfg.Transport = noopTransport{}
@@ -338,6 +393,7 @@ func New(cfg Config) (*Node, error) {
 	go n.persistLoop()
 	go n.senderLoop()
 	go n.tickerLoop()
+	success = true
 	go n.run()
 	return n, nil
 }
@@ -363,12 +419,19 @@ func (n *Node) recover(rec Recovery) error {
 	}
 	var snap *Snapshot
 	if rec.Snapshot != nil {
-		snap = rec.Snapshot.clone()
+		// Storage.Load returns an immutable image owned by this recovery; keep it
+		// without a full payload copy. | Storage.Load 返回的镜像不可变且归本次恢复
+		// 所有；无需复制完整负载。
+		snap = rec.Snapshot
 		if err := n.fsm.Restore(snap.Data); err != nil {
 			return errs.Wrap(err, ErrFSMPanic)
 		}
 	}
-	l, err := newLog(snap, cloneEntries(rec.Entries))
+	// Storage.Load hands over fresh slices (see the Storage contract), so the
+	// log can take ownership instead of deep-copying a potentially large tail.
+	// | Storage.Load 移交全新的切片（见 Storage 契约），因此日志可直接接管，
+	// 无需深拷贝可能很大的尾部。
+	l, err := newLog(snap, rec.Entries)
 	if err != nil {
 		return err
 	}
@@ -416,7 +479,7 @@ func (n *Node) recover(rec Recovery) error {
 	}
 	n.state = StateFollower
 	n.stateAtomic.Store(uint32(StateFollower))
-	n.electionTimeout = n.cfg.electionTimeoutTicks()
+	n.resetElection()
 	return nil
 }
 
@@ -461,7 +524,7 @@ func (n *Node) bootstrap() error {
 	n.persistedIndex = 1
 	n.state = StateFollower
 	n.stateAtomic.Store(uint32(StateFollower))
-	n.electionTimeout = n.cfg.electionTimeoutTicks()
+	n.resetElection()
 	return nil
 }
 
@@ -522,6 +585,7 @@ func (n *Node) configAt(index uint64) *membership {
 // the configuration of the surviving log. | truncateConfig 删除 index 及之后的配置
 // 版本，并恢复幸存日志对应的配置。
 func (n *Node) truncateConfig(index uint64) {
+	before := len(n.confHistory)
 	cut := len(n.confHistory)
 	for i := range n.confHistory {
 		if n.confHistory[i].index >= index {
@@ -540,6 +604,9 @@ func (n *Node) truncateConfig(index uint64) {
 	}
 	if n.conf.joint() && n.jointIndex == 0 {
 		n.jointIndex = n.confBaseIndex
+	}
+	if cut < before && n.cfg.OnConfChange != nil {
+		n.cfg.OnConfChange(n.conf.confState())
 	}
 }
 
@@ -586,6 +653,21 @@ func (n *Node) appendConfig(entries []Entry, from uint64) error {
 	n.jointIndex = jointIndex
 	n.updateProgressForConfig()
 	n.updatePeerAddresses()
+	if n.cfg.OnConfChange != nil {
+		// Membership entries take effect as soon as they enter the log, on
+		// followers as well as the leader. | 成员变更项进入日志即生效，跟随者与
+		// 领导者同样如此。
+		changed := false
+		for i := range entries {
+			if entries[i].Index >= from && (entries[i].Type == EntryBootstrap || entries[i].Type == EntryConfChange) {
+				changed = true
+				break
+			}
+		}
+		if changed {
+			n.cfg.OnConfChange(n.conf.confState())
+		}
+	}
 	return nil
 }
 
@@ -701,6 +783,14 @@ func (n *Node) Step(m Message) {
 	if m.Type < MsgHup || m.Type > maxMessageType {
 		return
 	}
+	// MsgHup is a local event, not a network message. Accepting it here would let
+	// any peer that can reach the Raft port force elections and inflate terms.
+	// Local campaigns use campaignCh. | MsgHup 是本地事件而非网络消息。在此接受它
+	// 会让任何能访问 Raft 端口的对端强制发起选举并膨胀任期；本地竞选走 campaignCh。
+	if m.Type == MsgHup {
+		n.metrics.messagesDropped.Add(1)
+		return
+	}
 	n.metrics.messagesIn.Add(1)
 	if isControlMessage(m.Type) {
 		select {
@@ -733,8 +823,16 @@ func (n *Node) Commit() uint64 { return n.commitAtomic.Load() }
 // Applied returns the highest applied log index. | Applied 返回最高已应用日志索引。
 func (n *Node) Applied() uint64 { return n.applied.Load() }
 
-// Stats returns a snapshot of node counters. | Stats 返回节点计数器快照。
-func (n *Node) Stats() Stats { return n.metrics.snapshot() }
+// Stats returns a snapshot of node counters. Transport-level drops are merged
+// from transports that expose them. | Stats 返回节点计数器快照。暴露计数的传输层
+// 会合并其丢弃计数。
+func (n *Node) Stats() Stats {
+	st := n.metrics.snapshot()
+	if reporter, ok := n.transport.(interface{ Drops() uint64 }); ok {
+		st.TransportDrops = reporter.Drops()
+	}
+	return st
+}
 
 // ID returns the local node identifier. | ID 返回本地节点标识。
 func (n *Node) ID() NodeID { return n.id }

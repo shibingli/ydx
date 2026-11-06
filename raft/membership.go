@@ -28,9 +28,9 @@ const (
 // ConfChange is the command stored in an EntryConfChange log entry. | ConfChange
 // 是 EntryConfChange 日志项中存储的命令。
 type ConfChange struct {
-	Type   ConfChangeType
-	NodeID NodeID
 	Addr   string
+	NodeID NodeID
+	Type   ConfChangeType
 }
 
 // membership is an immutable view of the cluster configuration. Joint consensus

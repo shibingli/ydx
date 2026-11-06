@@ -32,46 +32,51 @@ var castagnoli = crc32.MakeTable(crc32.Castagnoli)
 // walSegment is one append-only file with the entries it contains. | walSegment
 // 是一个只追加文件及其包含的日志项。
 type walSegment struct {
-	seq       uint64
-	path      string
-	file      *os.File
-	size      int64
-	lastIndex uint64
-	hasMarker bool
+	file        *os.File
+	path        string
+	seq         uint64
+	size        int64
+	lastIndex   uint64
+	markerIndex uint64
+	hasMarker   bool
 }
 
 // wal is the append-only log storage. All methods are called under FileStorage's
 // mutex. | wal 是只追加日志存储。所有方法都在 FileStorage 的互斥锁下调用。
 type wal struct {
-	dir         string
-	noSync      bool
-	segmentSize int64
-	segments    []*walSegment
 	active      *walSegment
-	nextSeq     uint64
+	dir         string
+	segments    []*walSegment
 	recBuf      []byte
+	segmentSize int64
+	nextSeq     uint64
+	noSync      bool
 }
 
 // walRecovery is the reconstructed state. | walRecovery 是重建后的状态。
 type walRecovery struct {
-	hs       HardState
 	entries  []Entry
+	hs       HardState
 	base     uint64
 	sawState bool
 }
 
-// openWAL scans every segment, rebuilds state and opens the active segment.
-// | openWAL 扫描所有分段、重建状态并打开活动分段。
-func openWAL(dir string, base uint64, noSync bool, segmentSize int64) (*wal, walRecovery, error) {
+// openWAL scans every segment once, rebuilds state, finds the newest snapshot
+// marker and opens the active segment. Combining both recovery passes avoids
+// decoding every WAL record twice at startup. | openWAL 一次扫描所有分段，重建
+// 状态、查找最新快照标记并打开活动分段。合并两遍恢复扫描可避免启动时把每条 WAL
+// 记录解码两次。
+func openWAL(dir string, noSync bool, segmentSize int64) (*wal, walRecovery, snapshotMarker, error) {
 	w := &wal{dir: dir, noSync: noSync, segmentSize: segmentSize}
 	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return nil, walRecovery{}, errs.Wrap(err, ErrStorage)
+		return nil, walRecovery{}, snapshotMarker{}, errs.Wrap(err, ErrStorage)
 	}
 	names, err := segmentNames(dir)
 	if err != nil {
-		return nil, walRecovery{}, err
+		return nil, walRecovery{}, snapshotMarker{}, err
 	}
-	rec := walRecovery{base: base}
+	var rec walRecovery
+	var marker snapshotMarker
 	for i, name := range names {
 		path := filepath.Join(dir, name)
 		seq, _ := strconv.ParseUint(strings.TrimSuffix(name, ".wal"), 10, 64)
@@ -80,10 +85,19 @@ func openWAL(dir string, base uint64, noSync bool, segmentSize int64) (*wal, wal
 		if err := readSegmentRecords(seg, last, func(b walBatch) error {
 			if b.hasSnapshot {
 				seg.hasMarker = true
+				if b.snapIndex > seg.markerIndex {
+					seg.markerIndex = b.snapIndex
+				}
+				if !marker.found || b.snapIndex > marker.index ||
+					(b.snapIndex == marker.index && b.snapTerm >= marker.term) {
+					marker = snapshotMarker{
+						index: b.snapIndex, term: b.snapTerm, found: true,
+					}
+				}
 			}
 			return rec.apply(b, seg)
 		}); err != nil {
-			return nil, walRecovery{}, err
+			return nil, walRecovery{}, snapshotMarker{}, err
 		}
 		w.segments = append(w.segments, seg)
 		if seq >= w.nextSeq {
@@ -92,21 +106,22 @@ func openWAL(dir string, base uint64, noSync bool, segmentSize int64) (*wal, wal
 	}
 	if len(w.segments) == 0 {
 		if err := w.rotateLocked(); err != nil {
-			return nil, walRecovery{}, err
+			return nil, walRecovery{}, snapshotMarker{}, err
 		}
 	} else {
 		active := w.segments[len(w.segments)-1]
 		f, err := os.OpenFile(active.path, os.O_RDWR|os.O_APPEND, 0o600)
 		if err != nil {
-			return nil, walRecovery{}, errs.Wrap(err, ErrStorage)
+			return nil, walRecovery{}, snapshotMarker{}, errs.Wrap(err, ErrStorage)
 		}
 		active.file = f
 		w.active = active
 	}
-	if len(rec.entries) > 0 && rec.entries[0].Index != base+1 {
-		return nil, walRecovery{}, errs.Detail(ErrCorrupt, "WAL starts at %d, snapshot ends at %d", rec.entries[0].Index, base)
+	if len(rec.entries) > 0 && rec.entries[0].Index != rec.base+1 {
+		return nil, walRecovery{}, snapshotMarker{}, errs.Detail(ErrCorrupt,
+			"WAL starts at %d, snapshot ends at %d", rec.entries[0].Index, rec.base)
 	}
-	return w, rec, nil
+	return w, rec, marker, nil
 }
 
 // segmentNames returns the *.wal files in ascending sequence order. | segmentNames
@@ -242,10 +257,23 @@ func (rec *walRecovery) apply(b walBatch, seg *walSegment) error {
 		rec.entries = rec.entries[:cut]
 	}
 	if b.hasSnapshot {
-		if b.snapIndex > rec.base {
-			return errs.Detail(ErrCorrupt, "WAL references missing snapshot %d (loaded %d)", b.snapIndex, rec.base)
+		// Markers advance the log base. Entries collected from earlier segments
+		// that the new base covers are dropped here rather than retained until
+		// the final snapshot is known. The snapshot file itself is opened after
+		// the scan, so a marker without a durable image still fails recovery.
+		// | 标记推进日志基点。此前分段中已被新基点覆盖的日志项在此丢弃，而不是保留到
+		// 最终快照确定。快照文件在扫描后打开，因此缺少持久镜像的标记仍会让恢复失败。
+		if b.snapIndex >= rec.base {
+			rec.base = b.snapIndex
+			cut := 0
+			for cut < len(rec.entries) && rec.entries[cut].Index <= rec.base {
+				cut++
+			}
+			if cut > 0 {
+				rec.entries = append([]Entry(nil), rec.entries[cut:]...)
+			}
 		}
-		if b.snapReset {
+		if b.snapReset && b.snapIndex >= rec.base {
 			// InstallSnapshot makes every older entry stale, including entries
 			// scanned from segments that precede the marker. | InstallSnapshot 使
 			// 所有更旧日志项失效，包括标记之前分段中已扫描到的日志项。
@@ -305,9 +333,19 @@ func (w *wal) append(batch PersistBatch) error {
 	// syscall instead of three. The eight-byte header is filled after encoding.
 	// | 在一个缓冲区中构建完整记录，使一个批次只产生一次 write 系统调用而非三次。
 	// 八字节头在编码完成后回填。
+	estimated := len(batch.Entries) * 16
+	for i := range batch.Entries {
+		estimated += len(batch.Entries[i].Data)
+	}
+	if estimated > maxWALRecord {
+		return errs.Detail(ErrTooLarge, "WAL batch %d bytes", estimated)
+	}
 	w.recBuf = w.recBuf[:0]
 	w.recBuf = append(w.recBuf, 0, 0, 0, 0, 0, 0, 0, 0, walRecBatch)
 	w.recBuf = encodeWALBatch(w.recBuf, batch)
+	if len(w.recBuf)-8 > maxWALRecord {
+		return errs.Detail(ErrTooLarge, "WAL record %d bytes", len(w.recBuf)-8)
+	}
 	payload := w.recBuf[9:]
 	if w.active == nil || w.active.file == nil {
 		if err := w.rotateLocked(); err != nil {
@@ -326,6 +364,9 @@ func (w *wal) append(batch PersistBatch) error {
 	}
 	if batch.Snapshot != nil {
 		w.active.hasMarker = true
+		if batch.Snapshot.Index > w.active.markerIndex {
+			w.active.markerIndex = batch.Snapshot.Index
+		}
 		if batch.Snapshot.Index > w.active.lastIndex {
 			w.active.lastIndex = batch.Snapshot.Index
 		}
@@ -376,7 +417,10 @@ func (w *wal) rotateLocked() error {
 		// The new segment's directory entry must be durable before any entry in
 		// it is acknowledged. | 在确认新分段中的任何日志项之前，新分段的目录项必须
 		// 已持久化。
-		syncDir(w.dir)
+		if err := syncDir(w.dir); err != nil {
+			_ = f.Close()
+			return errs.Wrap(err, ErrStorage)
+		}
 	}
 	seg := &walSegment{seq: seq, path: path, file: f, size: int64(len(walMagic))}
 	w.segments = append(w.segments, seg)
@@ -396,16 +440,39 @@ func (w *wal) syncLocked() error {
 }
 
 // compact deletes segments whose entire content is covered by the snapshot.
-// The active segment is always retained. | compact 删除内容已被快照完全覆盖的分段；
-// 活动分段始终保留。
+// The active segment and the segment holding the newest snapshot marker are
+// always retained; older marker segments are deleted once covered. Keeping
+// every marker segment would pin one segment per local snapshot forever.
+// | compact 删除内容已被快照完全覆盖的分段。活动分段与持有最新快照标记的分段始终
+// 保留；更旧的标记分段一旦被覆盖即删除。保留所有标记分段会让每次本地快照永久钉住
+// 一个分段。
 func (w *wal) compact(index uint64) error {
+	var keepMarker *walSegment
+	for _, seg := range w.segments {
+		if !seg.hasMarker {
+			continue
+		}
+		if keepMarker == nil || seg.markerIndex > keepMarker.markerIndex {
+			keepMarker = seg
+		}
+	}
 	keep := w.segments[:0]
 	for _, seg := range w.segments {
-		if seg == w.active || seg.hasMarker {
+		if seg == w.active || seg == keepMarker {
 			keep = append(keep, seg)
 			continue
 		}
-		if seg.lastIndex > 0 && seg.lastIndex <= index {
+		if seg.hasMarker && seg.markerIndex >= index {
+			keep = append(keep, seg)
+			continue
+		}
+		// Only segments with no records at all can be dropped without checking
+		// their hard state. A segment may contain a newer term/vote but no
+		// entries (lastIndex stays zero), and deleting it could make recovery
+		// reuse an older term or vote. | 只有完全不含记录的分段才能直接删除；
+		// 分段可能只有更新的任期/选票而没有日志项（lastIndex 仍为零），删除它会让
+		// 恢复复用更旧的任期或选票。
+		if seg.size == int64(len(walMagic)) || seg.lastIndex > 0 && seg.lastIndex <= index {
 			if err := os.Remove(seg.path); err != nil && !errors.Is(err, os.ErrNotExist) {
 				return errs.Wrap(err, ErrStorage)
 			}
@@ -456,8 +523,8 @@ func (w *wal) close() error {
 // 解码载荷。
 type walBatch struct {
 	hs          *HardState
-	truncate    uint64
 	entries     []Entry
+	truncate    uint64
 	snapIndex   uint64
 	snapTerm    uint64
 	hasSnapshot bool
@@ -469,38 +536,7 @@ type walBatch struct {
 type snapshotMarker struct {
 	index uint64
 	term  uint64
-	reset bool
 	found bool
-}
-
-// scanWALMarkers finds the newest snapshot marker without loading snapshot
-// data. This lets recovery ignore snapshot files whose durability marker was
-// never written. | scanWALMarkers 在不加载快照数据的情况下找到最新快照标记，使恢复
-// 可以忽略从未写入持久化标记的快照文件。
-func scanWALMarkers(dir string) (snapshotMarker, error) {
-	names, err := segmentNames(dir)
-	if err != nil {
-		return snapshotMarker{}, err
-	}
-	var marker snapshotMarker
-	for i, name := range names {
-		path := filepath.Join(dir, name)
-		seg := &walSegment{path: path}
-		last := i == len(names)-1
-		if err := readSegmentRecords(seg, last, func(b walBatch) error {
-			if !b.hasSnapshot {
-				return nil
-			}
-			if !marker.found || b.snapIndex > marker.index ||
-				(b.snapIndex == marker.index && b.snapTerm >= marker.term) {
-				marker = snapshotMarker{index: b.snapIndex, term: b.snapTerm, reset: b.snapReset, found: true}
-			}
-			return nil
-		}); err != nil {
-			return snapshotMarker{}, err
-		}
-	}
-	return marker, nil
 }
 
 // encodeWALBatch serializes one durable batch. | encodeWALBatch 序列化一个持久批次。
@@ -542,7 +578,7 @@ func encodeWALBatch(dst []byte, batch PersistBatch) []byte {
 
 // decodeWALBatch parses one durable batch. | decodeWALBatch 解析一个持久批次。
 func decodeWALBatch(data []byte) (walBatch, error) {
-	d := decoder{src: data}
+	d := decoder{src: data, allowDuplicateIndex: true}
 	flags := d.byte()
 	if d.err != nil {
 		return walBatch{}, d.err

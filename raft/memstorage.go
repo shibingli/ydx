@@ -11,10 +11,10 @@ import (
 // | MemStorage 是用于测试、临时集群与基准的内存 Storage 实现，进程重启后不提供
 // 持久性。
 type MemStorage struct {
-	mu      sync.Mutex
-	hard    HardState
 	snap    *Snapshot
 	entries []Entry
+	hard    HardState
+	mu      sync.Mutex
 }
 
 // NewMemStorage returns an empty in-memory store. | NewMemStorage 返回空的内存存储。
@@ -38,7 +38,12 @@ func (s *MemStorage) Load() (Recovery, error) {
 		if s.entries[i].Index <= base {
 			continue
 		}
-		if len(rec.Entries) > 0 && s.entries[i].Index != rec.Entries[len(rec.Entries)-1].Index+1 {
+		if len(rec.Entries) == 0 {
+			if s.entries[i].Index != base+1 {
+				return Recovery{}, errs.Detail(ErrCorrupt,
+					"storage starts at %d, want %d", s.entries[i].Index, base+1)
+			}
+		} else if s.entries[i].Index != rec.Entries[len(rec.Entries)-1].Index+1 {
 			return Recovery{}, errs.Detail(ErrCorrupt, "storage gap at index %d", s.entries[i].Index)
 		}
 		rec.Entries = append(rec.Entries, s.entries[i].clone())
@@ -50,8 +55,14 @@ func (s *MemStorage) Load() (Recovery, error) {
 func (s *MemStorage) Persist(batch PersistBatch) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if batch.Snapshot != nil {
-		s.snap = batch.Snapshot.clone()
+	if batch.Snapshot != nil && (s.snap == nil || batch.Snapshot.Index > s.snap.Index) {
+		// Snapshot data is immutable by contract; retaining the caller's image
+		// avoids duplicating a potentially large payload in the in-memory store.
+		// Older images are ignored so a delayed completion cannot regress the
+		// base below newer committed state. | 快照数据按约定不可变；保留调用方镜像
+		// 可避免在内存存储中复制大负载。更旧的镜像会被忽略，避免迟到的完成把基点
+		// 回退到更新的已提交状态之下。
+		s.snap = batch.Snapshot
 		if batch.SnapshotReplacesLog {
 			s.entries = nil
 		} else {
@@ -71,6 +82,21 @@ func (s *MemStorage) Persist(batch PersistBatch) error {
 		e := batch.Entries[i]
 		if e.Index == 0 {
 			return errs.Detail(ErrInvalidConfig, "entry index zero")
+		}
+		// Entries covered by the current snapshot base are already durable in
+		// the image and must not re-enter the log out of order. | 当前快照基点
+		// 覆盖的日志项已在镜像中持久化，不得乱序重新进入日志。
+		if s.snap != nil && e.Index <= s.snap.Index {
+			continue
+		}
+		if len(s.entries) == 0 {
+			base := uint64(0)
+			if s.snap != nil {
+				base = s.snap.Index
+			}
+			if e.Index != base+1 {
+				return errs.Detail(ErrCorrupt, "storage gap at index %d, want %d", e.Index, base+1)
+			}
 		}
 		if len(s.entries) > 0 {
 			last := s.entries[len(s.entries)-1]

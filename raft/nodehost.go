@@ -18,9 +18,6 @@ import (
 // NodeHostConfig configures a multi-group NodeHost. | NodeHostConfig 配置多组
 // NodeHost。
 type NodeHostConfig struct {
-	// ID is this host's member identifier; it is shared by every group. | ID 是本
-	// 主机的成员标识，所有组共用。
-	ID NodeID
 	// Transport is the shared base transport. The host starts it with a group
 	// multiplexer; do not start it yourself. | Transport 是共享基础传输。NodeHost
 	// 会以组多路复用器启动它；请勿自行启动。
@@ -32,20 +29,27 @@ type NodeHostConfig struct {
 	// Logger is shared by all groups. Nil disables lifecycle logging. | Logger 由
 	// 所有组共享；nil 关闭生命周期日志。
 	Logger *ydlog.Logger
+	// ID is this host's member identifier; it is shared by every group. | ID 是本
+	// 主机的成员标识，所有组共用。
+	ID NodeID
 }
 
 // GroupConfig starts one Raft group. Zero tuning fields use Config defaults.
 // | GroupConfig 启动一个 Raft 组。零值调优字段使用 Config 默认值。
 type GroupConfig struct {
-	ID    GroupID
 	Peers []Peer
-	Join  bool
+	ID    GroupID
 
 	TickInterval           time.Duration
 	HeartbeatTicks         int
 	ElectionTicks          int
+	ElectionStagger        time.Duration
+	PreVoteSubsetThreshold int
+	PreVoteSubsetExtra     int
+	MaxPendingReads        int
 	MaxBatchEntries        int
 	MaxBatchBytes          int
+	MaxProposalBytes       int
 	MaxInflightMsgs        int
 	MaxInflightBytes       int
 	SnapshotEntries        uint64
@@ -54,6 +58,7 @@ type GroupConfig struct {
 	ProposalQueue          int
 	MessageQueue           int
 	OutboundQueue          int
+	Join                   bool
 }
 
 // groupNodeConfig converts GroupConfig into a Node Config template. | groupNodeConfig
@@ -64,8 +69,13 @@ func (g GroupConfig) groupNodeConfig(hostID NodeID, storage Storage, fsm FSM, tr
 		Storage: storage, FSM: fsm, Transport: transport, Logger: logger,
 		TickInterval:   g.TickInterval,
 		HeartbeatTicks: g.HeartbeatTicks, ElectionTicks: g.ElectionTicks,
-		MaxBatchEntries: g.MaxBatchEntries, MaxBatchBytes: g.MaxBatchBytes,
-		MaxInflightMsgs: g.MaxInflightMsgs, MaxInflightBytes: g.MaxInflightBytes,
+		ElectionStagger:        g.ElectionStagger,
+		PreVoteSubsetThreshold: g.PreVoteSubsetThreshold,
+		PreVoteSubsetExtra:     g.PreVoteSubsetExtra,
+		MaxPendingReads:        g.MaxPendingReads,
+		MaxBatchEntries:        g.MaxBatchEntries, MaxBatchBytes: g.MaxBatchBytes,
+		MaxProposalBytes: g.MaxProposalBytes,
+		MaxInflightMsgs:  g.MaxInflightMsgs, MaxInflightBytes: g.MaxInflightBytes,
 		SnapshotEntries: g.SnapshotEntries, SnapshotCatchUpEntries: g.SnapshotCatchUpEntries,
 		PersistBatchDelay: g.PersistBatchDelay,
 		ProposalQueue:     g.ProposalQueue, MessageQueue: g.MessageQueue,
@@ -75,9 +85,9 @@ func (g GroupConfig) groupNodeConfig(hostID NodeID, storage Storage, fsm FSM, tr
 
 // Group is one running Raft group. | Group 是一个运行中的 Raft 组。
 type Group struct {
-	ID        GroupID
 	node      *Node
 	transport *GroupTransport
+	ID        GroupID
 }
 
 // Node returns the group's Raft node. | Node 返回该组的 Raft 节点。
@@ -89,10 +99,10 @@ func (g *Group) Node() *Node { return g.node }
 // 多个 Raft 组。所有组共享基础传输与节点身份，但每个组拥有独立的日志、WAL、FSM、选举
 // 状态、快照与复制进度。
 type NodeHost struct {
-	cfg    NodeHostConfig
 	mux    *groupMux
-	mu     sync.RWMutex
 	groups map[GroupID]*Group
+	cfg    NodeHostConfig
+	mu     sync.RWMutex
 	closed bool
 }
 
@@ -150,19 +160,24 @@ func (h *NodeHost) StartGroup(cfg GroupConfig) (*Group, error) {
 	return g, nil
 }
 
-// StopGroup stops one group and closes its storage. | StopGroup 停止一个组并关闭其
-// 存储。
+// StopGroup stops one group and closes its storage. The group entry is kept
+// until Close completes so a concurrent StartGroup cannot open a second writer
+// for the same storage. | StopGroup 停止一个组并关闭其存储。组条目保留到 Close
+// 完成，避免并发 StartGroup 为同一存储打开第二个写入者。
 func (h *NodeHost) StopGroup(id GroupID) error {
-	h.mu.Lock()
+	h.mu.RLock()
 	g := h.groups[id]
-	if g != nil {
-		delete(h.groups, id)
-	}
-	h.mu.Unlock()
+	h.mu.RUnlock()
 	if g == nil {
 		return errs.Detail(ErrUnknownGroup, "group %d", id)
 	}
-	return g.node.Close()
+	err := g.node.Close()
+	h.mu.Lock()
+	if h.groups[id] == g {
+		delete(h.groups, id)
+	}
+	h.mu.Unlock()
+	return err
 }
 
 // Group returns a running group. | Group 返回运行中的组。

@@ -2,6 +2,7 @@ package raft
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"sync/atomic"
 
@@ -14,8 +15,8 @@ import (
 // | appliedNotifier 唤醒 WaitApplied 调用方，无需轮询。等待者计数让无人等待时的
 // apply 热路径不再分配通道。
 type appliedNotifier struct {
-	mu      sync.Mutex
 	ch      chan struct{}
+	mu      sync.Mutex
 	waiters atomic.Int32
 }
 
@@ -38,12 +39,12 @@ func (a *appliedNotifier) notify() {
 	a.mu.Unlock()
 }
 
-// wait blocks until ready reports true, the notifier fires, or ctx expires. The
-// readiness check runs under the same lock that notify uses, which closes the
-// lost-wakeup window between observing applied and capturing the channel.
-// | wait 阻塞到 ready 为真、通知触发或 ctx 到期。就绪检查与 notify 使用同一把锁，
-// 消除了“观察到 applied 后、捕获通道前”丢失唤醒的窗口。
-func (a *appliedNotifier) wait(ctx context.Context, ready func() bool) error {
+// wait blocks until ready reports true, the notifier fires, stop closes, or ctx
+// expires. The readiness check runs under the same lock that notify uses, which
+// closes the lost-wakeup window between observing applied and capturing the
+// channel. | wait 阻塞到 ready 为真、通知触发、stop 关闭或 ctx 到期。就绪检查与
+// notify 使用同一把锁，消除了“观察到 applied 后、捕获通道前”丢失唤醒的窗口。
+func (a *appliedNotifier) wait(ctx context.Context, stop <-chan struct{}, ready func() bool) error {
 	a.mu.Lock()
 	// Register before the readiness check. A notifier that misses this waiter
 	// must have observed applied before the registration, so the check below
@@ -61,6 +62,8 @@ func (a *appliedNotifier) wait(ctx context.Context, ready func() bool) error {
 	var err error
 	select {
 	case <-ch:
+	case <-stop:
+		err = ErrStopped
 	case <-ctx.Done():
 		err = ctx.Err()
 	}
@@ -68,12 +71,19 @@ func (a *appliedNotifier) wait(ctx context.Context, ready func() bool) error {
 	return err
 }
 
+// maxApplyBatchEntries bounds one apply task. A single huge task would keep
+// Close waiting for the whole committed backlog and would delay snapshot
+// boundaries; each task can still use BatchFSM. | maxApplyBatchEntries 限制单个
+// apply 任务。单个超大任务会让 Close 等待整个已提交积压，并推迟快照边界；每个任务
+// 仍可使用 BatchFSM。
+const maxApplyBatchEntries = 4096
+
 // applyTask is a committed batch or a snapshot restore. | applyTask 是已提交批次或
 // 快照还原。
 type applyTask struct {
-	entries       []Entry
 	snapshot      *Snapshot
 	snapshotReady chan struct{}
+	entries       []Entry
 }
 
 // applyQueue is an unbounded handoff from the event loop to the apply worker.
@@ -81,9 +91,9 @@ type applyTask struct {
 // falls behind. | applyQueue 是事件循环到 apply 协程的无界交接。它从不阻塞事件
 // 循环，因此慢 FSM 落后时心跳仍能流动。
 type applyQueue struct {
-	mu     sync.Mutex
-	tasks  []applyTask
 	notify chan struct{}
+	tasks  []applyTask
+	mu     sync.Mutex
 	closed bool
 }
 
@@ -144,11 +154,11 @@ type snapshotRequest struct {
 // snapshotReady carries a captured image to the event loop for persistence.
 // | snapshotReady 将捕获的镜像交给事件循环持久化。
 type snapshotReady struct {
-	index   uint64
-	term    uint64
-	data    []byte
 	err     error
 	request *snapshotRequest
+	data    []byte
+	index   uint64
+	term    uint64
 }
 
 // applyLoop is the only goroutine that calls FSM.Apply, FSM.Snapshot and
@@ -158,11 +168,19 @@ type snapshotReady struct {
 func (n *Node) applyLoop() {
 	defer n.wg.Done()
 	snapshotting := false
+	var pending *snapshotRequest
 	for {
 		select {
 		case <-n.snapshotDoneCh:
 			snapshotting = false
 		default:
+		}
+		if !snapshotting && pending != nil {
+			req := pending
+			pending = nil
+			if n.createSnapshot(req) {
+				snapshotting = true
+			}
 		}
 		if task, ok := n.applyQueue.pop(); ok {
 			if !n.processApplyTask(task) {
@@ -175,14 +193,38 @@ func (n *Node) applyLoop() {
 		}
 		select {
 		case <-n.stopCh:
+			if pending != nil {
+				sendErr(pending.done, ErrStopped)
+			}
 			return
 		case <-n.applyQueue.notify:
 		case req := <-n.applySnapshotCh:
+			if snapshotting {
+				// An automatic capture is in flight. Remember this request and
+				// start it after the completion signal; otherwise two captures
+				// could race with one shared node-level snapshot state. The event
+				// loop serializes manual requests, so there is at most one.
+				// | 自动捕获仍在进行。记住该请求并在完成信号后启动；否则两次捕获
+				// 会与共享的节点级快照状态竞争。事件循环已串行化手动请求，因此至多
+				// 一个。
+				if pending != nil {
+					sendErr(pending.done, ErrSnapshotOutOfDate)
+				}
+				pending = req
+				continue
+			}
 			if n.createSnapshot(req) {
 				snapshotting = true
 			}
 		case <-n.snapshotDoneCh:
 			snapshotting = false
+			if pending != nil {
+				req := pending
+				pending = nil
+				if n.createSnapshot(req) {
+					snapshotting = true
+				}
+			}
 		}
 	}
 }
@@ -234,18 +276,45 @@ func (n *Node) applyEntries(entries []Entry) bool {
 	var normals []Entry
 	var values []any
 	if ok {
-		normals = make([]Entry, 0, len(entries))
+		allNormal := true
 		for i := range entries {
-			if entries[i].Type == EntryNormal {
-				normals = append(normals, entries[i])
+			if entries[i].Type != EntryNormal {
+				allNormal = false
+				break
+			}
+		}
+		if allNormal {
+			// The common case is a pure command batch; pass the caller's slice
+			// directly instead of allocating a copy. | 常见情况是纯命令批次；直接
+			// 传递调用方切片，避免复制分配。
+			normals = entries
+		} else {
+			normals = make([]Entry, 0, len(entries))
+			for i := range entries {
+				if entries[i].Type == EntryNormal {
+					normals = append(normals, entries[i])
+				}
 			}
 		}
 		if len(normals) > 0 {
 			values = batchFSM.ApplyBatch(normals)
+			if len(values) != len(normals) {
+				n.metrics.applyErrors.Add(1)
+				n.fatal(errs.Detail(ErrFSMPanic, "ApplyBatch returned %d values for %d entries",
+					len(values), len(normals)))
+				return false
+			}
 		}
 	}
 	valueIndex := 0
 	for i := range entries {
+		if i > 0 && i&1023 == 0 && n.stopped.Load() {
+			// Shutdown is in progress. Do not keep Close waiting for a large
+			// committed backlog; failWaiters has already resolved its futures.
+			// | 正在关闭。不要让 Close 等待大量已提交积压；failWaiters 已结束其
+			// Future。
+			return false
+		}
 		e := &entries[i]
 		var value any
 		if e.Type == EntryNormal {
@@ -311,7 +380,7 @@ func (n *Node) createSnapshot(req *snapshotRequest) bool {
 	index := n.applied.Load()
 	if index == 0 || index <= n.lastSnapshot.Load() {
 		if req != nil {
-			sendErr(req.done, ErrSnapshotOutOfDate)
+			n.snapshotFailure(req, ErrSnapshotOutOfDate)
 		}
 		return false
 	}
@@ -321,7 +390,7 @@ func (n *Node) createSnapshot(req *snapshotRequest) bool {
 		n.logf("warn", "raft snapshot failed | raft 快照失败",
 			ydlog.Uint64("node", uint64(n.id)), ydlog.Err(err))
 		if req != nil {
-			sendErr(req.done, err)
+			n.snapshotFailure(req, err)
 		}
 		return false
 	}
@@ -337,27 +406,55 @@ func (n *Node) createSnapshot(req *snapshotRequest) bool {
 	}
 }
 
+// snapshotFailure reports a capture that never produced an image to the event
+// loop. The event loop owns snapshotting and must clear it even when the apply
+// worker fails before sending a ready image. | snapshotFailure 将未能产出镜像的
+// 捕获报告给事件循环。快照状态由事件循环持有，即使 apply 协程在发送就绪镜像前失败，
+// 也必须清除它。
+func (n *Node) snapshotFailure(req *snapshotRequest, err error) {
+	select {
+	case n.snapshotReadyCh <- snapshotReady{err: err, request: req}:
+	case <-n.stopCh:
+		sendErr(req.done, ErrStopped)
+	}
+}
+
 // advanceApply hands newly committed entries to the apply worker. | advanceApply
 // 将新提交的日志项交给 apply 协程。
 func (n *Node) advanceApply() {
-	if n.committed <= n.sentApplied {
+	// Only apply entries that are durable locally. The leader's commit index is
+	// already bounded by persistedIndex, but a follower adopts the leader's
+	// commit index with an append that may still be in the persist queue; applying
+	// it first would let a crash lose an entry whose effects were already visible.
+	// | 只应用本地已持久化的日志项。领导者的提交索引已受 persistedIndex 约束，但
+	// 跟随者会在追加仍排队持久化时采用领导者提交索引；先应用会让崩溃丢失一个副作用
+	// 已经可见的日志项。
+	limit := n.committed
+	if limit > n.persistedIndex {
+		limit = n.persistedIndex
+	}
+	if limit <= n.sentApplied {
 		return
 	}
 	start := n.sentApplied + 1
 	if start < n.log.firstIndex {
 		start = n.log.firstIndex
 	}
-	if start > n.committed {
-		n.sentApplied = n.committed
+	if start > limit {
+		n.sentApplied = limit
 		return
 	}
-	entries, err := n.log.slice(start, n.committed+1, 0)
+	end := limit + 1
+	if end-start > maxApplyBatchEntries {
+		end = start + maxApplyBatchEntries
+	}
+	entries, err := n.log.slice(start, end, 0)
 	if err != nil {
 		n.fatal(err)
 		return
 	}
 	if len(entries) == 0 {
-		n.sentApplied = n.committed
+		n.sentApplied = limit
 		return
 	}
 	n.sentApplied = entries[len(entries)-1].Index
@@ -384,7 +481,9 @@ func (n *Node) handleSnapshotRequest(req *snapshotRequest) {
 // the caller. | handleSnapshotReady 持久化捕获的镜像、压缩内存并结束调用方。
 func (n *Node) handleSnapshotReady(ready snapshotReady) {
 	if ready.err != nil {
-		n.metrics.applyErrors.Add(1)
+		if !errors.Is(ready.err, ErrSnapshotOutOfDate) {
+			n.metrics.applyErrors.Add(1)
+		}
 		n.snapshotting = false
 		n.signalSnapshotDone()
 		if ready.request != nil {
@@ -394,6 +493,21 @@ func (n *Node) handleSnapshotReady(ready snapshotReady) {
 		return
 	}
 	if ready.index == 0 {
+		n.snapshotting = false
+		n.signalSnapshotDone()
+		if ready.request != nil {
+			sendErr(ready.request.done, ErrSnapshotOutOfDate)
+		}
+		n.startNextSnapshot()
+		return
+	}
+	// A remote InstallSnapshot may have advanced the log while the state machine
+	// was capturing this image. Persisting and publishing an older image would
+	// regress latestSnapshot/confBase below log.snapshotIndex and can send stale
+	// snapshots in a loop. | 状态机捕获镜像期间，远端 InstallSnapshot 可能已推进
+	// 日志。持久化并发布旧镜像会把 latestSnapshot/confBase 回退到
+	// log.snapshotIndex 之下，并可能循环发送过期快照。
+	if ready.index <= n.lastSnapshot.Load() || ready.index <= n.log.snapshotIndex {
 		n.snapshotting = false
 		n.signalSnapshotDone()
 		if ready.request != nil {
@@ -416,12 +530,18 @@ func (n *Node) handleSnapshotReady(ready snapshotReady) {
 		n.snapshotting = false
 		n.signalSnapshotDone()
 		if err == nil {
-			n.latestSnapshot = snap
-			n.lastSnapshot.Store(snap.Index)
-			if snap.Index <= n.log.lastIndex {
-				_ = n.log.compact(snap.Index)
+			// Re-check at durability time: another snapshot may have completed
+			// while this one was being written. Never move the in-memory base
+			// backwards. | 持久化完成时重新检查：该镜像写入期间可能有更新的快照
+			// 完成，绝不能把内存基点向后移动。
+			if snap.Index > n.lastSnapshot.Load() && snap.Index > n.log.snapshotIndex {
+				n.latestSnapshot = snap
+				n.lastSnapshot.Store(snap.Index)
+				if snap.Index <= n.log.lastIndex {
+					_ = n.log.compact(snap.Index, n.snapshotCatchUp)
+				}
+				n.compactConfig(snap.Index, conf)
 			}
-			n.compactConfig(snap.Index, conf)
 			n.metrics.snapshotsCreated.Add(1)
 		}
 		if ready.request != nil {

@@ -34,20 +34,6 @@ type BatchFSM interface {
 // are required. Boolean safety features default to enabled. | Config 配置 Node。零值
 // 不可用：ID、Storage 与 FSM 必填。布尔安全特性默认开启。
 type Config struct {
-	// ID is the local member identifier and must be non-zero. | ID 是本地成员标识，
-	// 必须非零。
-	ID NodeID
-	// Group identifies a NodeHost group. It is zero for a standalone Node and
-	// non-zero for NodeHost-managed groups. | Group 标识 NodeHost 组。独立 Node 为
-	// 零，NodeHost 管理的组非零。
-	Group GroupID
-	// Peers seeds a brand-new cluster. It is ignored when Storage already holds
-	// state. The local ID is added automatically when absent. | Peers 用于初始化全
-	// 新集群；Storage 已有状态时忽略。本地 ID 缺失时会自动加入。
-	Peers []Peer
-	// Join starts an empty node that waits to be added by a leader. | Join 启动一个
-	// 空节点，等待领导者将其加入集群。
-	Join bool
 	// Storage persists hard state, log entries and snapshots. Required. | Storage
 	// 持久化硬状态、日志项与快照。必填。
 	Storage Storage
@@ -57,18 +43,34 @@ type Config struct {
 	// cluster has exactly one voter, or when RDMA is enabled. | Transport 在节点
 	// 间传递消息。仅当集群只有一个投票成员或启用 RDMA 时可以为 nil。
 	Transport Transport
-	// RDMA enables the built-in RDMA transport when Transport is nil. It requires
-	// a Linux build with CGO_ENABLED=1 and -tags rdma; other builds return
-	// ErrUnsupported. An explicit Transport always takes precedence. | RDMA 在
-	// Transport 为 nil 时启用内置 RDMA 传输。需要 Linux、CGO_ENABLED=1 与
-	// -tags rdma；其它构建返回 ErrUnsupported。显式 Transport 始终优先。
-	RDMA bool
-	// RDMAOptions configures the built-in RDMA transport. | RDMAOptions 配置内置
-	// RDMA 传输。
-	RDMAOptions RDMATransportOptions
 	// Logger receives rare lifecycle and error events. Nil disables logging.
 	// | Logger 接收少量生命周期与错误事件；nil 表示关闭日志。
 	Logger *log.Logger
+
+	// OnConfChange observes membership transitions when they take effect, which
+	// in Raft is when the entry enters the log. It is called from the Raft event
+	// loop on every replica and must not call back into the Node. | OnConfChange
+	// 观察生效的成员变更；按 Raft 规则，变更项进入日志即生效。它由 Raft 事件循环在
+	// 每个副本上调用，且不得回调 Node。
+	OnConfChange func(ConfState)
+	// OnStateChange observes role changes. It is called from the Raft event loop
+	// and must not call back into the Node. | OnStateChange 观察角色变化。它由 Raft
+	// 事件循环调用，不得回调 Node。
+	OnStateChange func(from, to State)
+	// Peers seeds a brand-new cluster. It is ignored when Storage already holds
+	// state. The local ID is added automatically when absent. | Peers 用于初始化全
+	// 新集群；Storage 已有状态时忽略。本地 ID 缺失时会自动加入。
+	Peers []Peer
+	// RDMAOptions configures the built-in RDMA transport. | RDMAOptions 配置内置
+	// RDMA 传输。
+	RDMAOptions RDMATransportOptions
+	// ID is the local member identifier and must be non-zero. | ID 是本地成员标识，
+	// 必须非零。
+	ID NodeID
+	// Group identifies a NodeHost group. It is zero for a standalone Node and
+	// non-zero for NodeHost-managed groups. | Group 标识 NodeHost 组。独立 Node 为
+	// 零，NodeHost 管理的组非零。
+	Group GroupID
 
 	// TickInterval is the logical clock granularity. Default 100ms, matching the
 	// usual etcd-style 100ms heartbeat / 1s election cadence. Lower it only when
@@ -84,18 +86,28 @@ type Config struct {
 	// 是最小选举超时（tick 数）；实际超时在 [ElectionTicks, 2*ElectionTicks) 内随机。
 	// 默认 10。
 	ElectionTicks int
-
-	// DisablePreVote turns off the pre-vote probe. Pre-vote prevents a
-	// partitioned member from disrupting a healthy leader. | DisablePreVote 关闭
-	// 预投票。预投票可避免被分区成员打扰健康领导者。
-	DisablePreVote bool
-	// DisableCheckQuorum turns off leader quorum checking. | DisableCheckQuorum
-	// 关闭领导者法定人数检查。
-	DisableCheckQuorum bool
-	// DisableLeaseRead forces every linearizable read to confirm leadership with
-	// a heartbeat round. | DisableLeaseRead 强制每次线性一致读都通过心跳轮次确认
-	// 领导权。
-	DisableLeaseRead bool
+	// ElectionStagger adds a deterministic delay of rank * ElectionStagger to
+	// the fine-grained election timeout, where rank is the zero-based position
+	// of this node in the sorted voter-ID list. Lower IDs campaign first; this
+	// reduces split votes in large clusters. Zero disables stagger and keeps
+	// purely randomized timeouts. Keep the total stagger well below the election
+	// timeout so a failed preferred node does not delay failover excessively.
+	// | ElectionStagger 在细粒度选举超时上增加 rank * ElectionStagger 的确定性
+	// 延迟，rank 是节点在 voter ID 升序列表中的零基位置。较小 ID 优先竞选，可减少
+	// 大集群的分裂投票。零值关闭 stagger，保持纯随机超时。总 stagger 应明显小于
+	// 选举超时，避免首选节点故障时过度拖慢故障转移。
+	ElectionStagger time.Duration
+	// PreVoteSubsetThreshold enables bounded pre-vote fanout once the voter set
+	// is larger than this value. Zero uses 16. Small clusters always contact
+	// every voter. | PreVoteSubsetThreshold 在投票成员数超过该值时启用有界
+	// pre-vote 扇出；零表示 16。小集群始终联系所有投票成员。
+	PreVoteSubsetThreshold int
+	// PreVoteSubsetExtra is the number of extra voters contacted beyond the
+	// quorum in the first bounded pre-vote wave. Zero uses 4. The remaining
+	// voters are contacted if the first wave cannot reach a quorum or times out.
+	// | PreVoteSubsetExtra 是首轮有界 pre-vote 在法定人数之外额外联系的投票成员
+	// 数；零表示 4。首轮无法达到多数或超时后会联系其余成员。
+	PreVoteSubsetExtra int
 
 	// MaxBatchEntries caps entries in one AppendEntries message. Default 64.
 	// | MaxBatchEntries 限制单条 AppendEntries 的日志项数量，默认 64。
@@ -103,6 +115,14 @@ type Config struct {
 	// MaxBatchBytes caps entries' payload bytes in one AppendEntries message.
 	// Default 1 MiB. | MaxBatchBytes 限制单条 AppendEntries 的负载字节数，默认 1 MiB。
 	MaxBatchBytes int
+	// MaxProposalBytes rejects a single proposal larger than this before it
+	// enters the log. Default 1 MiB. Keep it below the transport's frame/body
+	// limit (TCP/HTTP MaxFrameBytes/MaxBodyBytes; RDMA chunking has no slot
+	// limit) so an accepted entry can always be replicated. | MaxProposalBytes
+	// 在单条提案进入日志前拒绝超过该值的负载。默认 1 MiB。应低于传输的帧/请求体
+	// 上限（TCP/HTTP 的 MaxFrameBytes/MaxBodyBytes；RDMA 分块不受槽位限制），确保
+	// 已接受的日志项总能被复制。
+	MaxProposalBytes int
 	// MaxInflightMsgs caps pipelined AppendEntries messages per follower.
 	// Default 64. | MaxInflightMsgs 限制每个跟随者的流水线消息数，默认 64。
 	MaxInflightMsgs int
@@ -113,9 +133,11 @@ type Config struct {
 	// entries since the last snapshot. Default 10000. | SnapshotEntries 表示距上次
 	// 快照累计应用多少日志项后自动创建快照，默认 10000。
 	SnapshotEntries uint64
-	// SnapshotCatchUpEntries is retained after compaction so a slightly lagging
-	// follower can catch up without a full snapshot. Default 256. | SnapshotCatchUpEntries
-	// 是压缩后保留的日志项数量，使略微落后的跟随者无需完整快照即可追上，默认 256。
+	// SnapshotCatchUpEntries is retained in memory after compaction so a slightly
+	// lagging follower can catch up without a full snapshot. The window is not
+	// recovered after a restart, where a snapshot may be required. Default 256.
+	// | SnapshotCatchUpEntries 是压缩后在内存中保留的日志项数量，使略微落后的
+	// 跟随者无需完整快照即可追上。重启后该窗口不会恢复，此时可能仍需快照。默认 256。
 	SnapshotCatchUpEntries uint64
 
 	// PersistBatchDelay is a group-commit window for durable writes. The persist
@@ -140,15 +162,39 @@ type Config struct {
 	// OutboundQueue is the buffered outbound message channel size. Default 8192.
 	// | OutboundQueue 是出站消息通道缓冲区大小，默认 8192。
 	OutboundQueue int
+	// MaxPendingReads bounds local and, separately, forwarded ReadIndex calls
+	// parked until the new leader commits a current-term entry. Zero derives a
+	// capacity from MessageQueue: max(256, min(4096, MessageQueue/8)). This is a
+	// backpressure bound, not a parallelism target. | MaxPendingReads 分别限制
+	// 本地与转发的 ReadIndex 在新领导者提交当前任期日志项前的暂存量。零值时根据
+	// MessageQueue 推导：max(256, min(4096, MessageQueue/8))。这是背压上限，不是
+	// 并行度目标。
+	MaxPendingReads int
 
-	// OnConfChange observes committed membership transitions. It is called from
-	// the Raft event loop and must not call back into the Node. | OnConfChange 观察
-	// 已生效的成员变更。它由 Raft 事件循环调用，不得回调 Node。
-	OnConfChange func(ConfState)
-	// OnStateChange observes role changes. It is called from the Raft event loop
-	// and must not call back into the Node. | OnStateChange 观察角色变化。它由 Raft
-	// 事件循环调用，不得回调 Node。
-	OnStateChange func(from, to State)
+	// Join starts an empty node that waits to be added by a leader. | Join 启动一个
+	// 空节点，等待领导者将其加入集群。
+	Join bool
+	// RDMA enables the built-in RDMA transport when Transport is nil. It requires
+	// a Linux/amd64 or Linux/arm64 build with -tags rdma; other builds return
+	// ErrUnsupported. ydx/rdma is pure Go (no cgo). An explicit Transport always
+	// takes precedence. | RDMA 在 Transport 为 nil 时启用内置 RDMA 传输。需要
+	// Linux/amd64 或 Linux/arm64 与 -tags rdma；其它构建返回 ErrUnsupported。
+	// ydx/rdma 为纯 Go（不使用 cgo）。显式 Transport 始终优先。
+	RDMA bool
+
+	// DisablePreVote turns off the pre-vote probe. Pre-vote prevents a
+	// partitioned member from disrupting a healthy leader; lease reads are also
+	// disabled because their safety bound depends on it. | DisablePreVote 关闭
+	// 预投票。预投票可避免被分区成员打扰健康领导者；租约读也随之一并禁用，因为其
+	// 安全边界依赖预投票。
+	DisablePreVote bool
+	// DisableCheckQuorum turns off leader quorum checking. | DisableCheckQuorum
+	// 关闭领导者法定人数检查。
+	DisableCheckQuorum bool
+	// DisableLeaseRead forces every linearizable read to confirm leadership with
+	// a heartbeat round. | DisableLeaseRead 强制每次线性一致读都通过心跳轮次确认
+	// 领导权。
+	DisableLeaseRead bool
 }
 
 // defaults fills unset fields. | defaults 填充未设置的字段。
@@ -162,11 +208,26 @@ func (c *Config) defaults() {
 	if c.ElectionTicks <= 0 {
 		c.ElectionTicks = 10
 	}
+	if c.ElectionStagger < 0 {
+		c.ElectionStagger = 0
+	}
+	if c.PreVoteSubsetThreshold <= 0 {
+		c.PreVoteSubsetThreshold = 16
+	}
+	if c.PreVoteSubsetExtra < 0 {
+		c.PreVoteSubsetExtra = 0
+	}
+	if c.PreVoteSubsetExtra == 0 {
+		c.PreVoteSubsetExtra = 4
+	}
 	if c.MaxBatchEntries <= 0 {
 		c.MaxBatchEntries = 64
 	}
 	if c.MaxBatchBytes <= 0 {
 		c.MaxBatchBytes = 1 << 20
+	}
+	if c.MaxProposalBytes <= 0 {
+		c.MaxProposalBytes = 1 << 20
 	}
 	if c.MaxInflightMsgs <= 0 {
 		c.MaxInflightMsgs = 64
@@ -208,6 +269,10 @@ func (c *Config) validate() error {
 	if c.TickInterval <= 0 {
 		return errs.Detail(ErrInvalidConfig, "TickInterval must be positive")
 	}
+	if c.MaxProposalBytes > maxEntryBytes {
+		return errs.Detail(ErrInvalidConfig, "MaxProposalBytes %d exceeds wire entry limit %d",
+			c.MaxProposalBytes, maxEntryBytes)
+	}
 	seenID := make(map[NodeID]struct{}, len(c.Peers)+1)
 	seenAddr := make(map[string]struct{}, len(c.Peers))
 	for _, p := range c.Peers {
@@ -232,6 +297,22 @@ func (c *Config) validate() error {
 // | electionTimeoutTicks 在 [ElectionTicks, 2*ElectionTicks) 内抽取超时。
 func (c *Config) electionTimeoutTicks() int {
 	return c.ElectionTicks + int(fastrand()%uint64(c.ElectionTicks))
+}
+
+// pendingReadLimit returns the configured or capacity-derived parked-read
+// bound. | pendingReadLimit 返回配置的或按容量推导的暂存读上限。
+func (c *Config) pendingReadLimit() int {
+	if c.MaxPendingReads > 0 {
+		return c.MaxPendingReads
+	}
+	limit := c.MessageQueue / 8
+	if limit < 256 {
+		limit = 256
+	}
+	if limit > 4096 {
+		limit = 4096
+	}
+	return limit
 }
 
 // electionTimeout returns the current wall-clock timeout estimate. | electionTimeout

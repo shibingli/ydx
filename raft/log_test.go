@@ -27,7 +27,7 @@ func TestLogAppendTruncateCompact(t *testing.T) {
 	if l.lastIndex != 5 {
 		t.Fatalf("last after truncate = %d", l.lastIndex)
 	}
-	if err := l.compact(3); err != nil {
+	if err := l.compact(3, 0); err != nil {
 		t.Fatal(err)
 	}
 	if l.firstIndex != 4 || l.snapshotIndex != 3 || l.mustTerm(3) != 1 {
@@ -38,6 +38,36 @@ func TestLogAppendTruncateCompact(t *testing.T) {
 	}
 	if got, err := l.slice(4, 6, 0); err != nil || len(got) != 2 || got[0].Index != 4 {
 		t.Fatalf("slice = %+v %v", got, err)
+	}
+}
+
+// TestLogCompactRetainsCatchUp verifies compaction can keep a bounded window
+// below the snapshot base for follower catch-up. | TestLogCompactRetainsCatchUp
+// 验证压缩可为跟随者追赶在快照基点之下保留有界窗口。
+func TestLogCompactRetainsCatchUp(t *testing.T) {
+	l, err := newLog(nil, entriesRange(1, 10, 1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := l.compact(8, 3); err != nil {
+		t.Fatal(err)
+	}
+	if l.firstIndex != 5 || l.snapshotIndex != 8 || l.lastIndex != 10 {
+		t.Fatalf("compacted log = first=%d snapshot=%d last=%d",
+			l.firstIndex, l.snapshotIndex, l.lastIndex)
+	}
+	if term, err := l.term(5); err != nil || term != 1 {
+		t.Fatalf("term(5) = %d, %v", term, err)
+	}
+	if _, err := l.term(4); !errors.Is(err, ErrCompacted) {
+		t.Fatalf("term(4) error = %v, want ErrCompacted", err)
+	}
+	if got, err := l.slice(5, 9, 0); err != nil || len(got) != 4 || got[0].Index != 5 {
+		t.Fatalf("slice(5,9) = %+v, %v", got, err)
+	}
+	if _, _, _, conflict := l.maybeAppend(7, 1, 0, nil); conflict == nil ||
+		conflict.index != 9 || conflict.term != 1 {
+		t.Fatalf("below-snapshot conflict = %+v, want index 9 term 1", conflict)
 	}
 }
 

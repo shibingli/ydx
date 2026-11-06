@@ -55,6 +55,9 @@ func (n *Node) buildStatus() Status {
 			ps.PendingSnapshot = pr.pendingSnapshot
 			ps.InflightMsgs = pr.inflights.count
 			ps.InflightBytes = pr.inflights.bytes
+			if pr.snapshotErr != nil {
+				ps.SnapshotError = pr.snapshotErr.Error()
+			}
 		}
 		st.Peers = append(st.Peers, ps)
 	}

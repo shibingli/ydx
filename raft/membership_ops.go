@@ -46,13 +46,28 @@ func (n *Node) handleProposalBatch(first *proposal) {
 		if len(more) == 0 {
 			break
 		}
-		for _, p := range more {
-			if p.conf != nil {
-				n.appendNormalBatch(batch)
-				n.handleConfProposal(p)
-				return
+		for i, p := range more {
+			if p.conf == nil {
+				batch = append(batch, p)
+				continue
 			}
-			batch = append(batch, p)
+			n.appendNormalBatch(batch)
+			n.handleConfProposal(p)
+			// The rest of this popped slice must not be dropped. Normal proposals
+			// can follow the membership entry; additional membership changes are
+			// rejected because only one may be in flight. | 本次取出的其余提案不能
+			// 丢弃。普通提案可以排在成员变更项之后；额外的成员变更因同一时间只允许
+			// 一个而拒绝。
+			var normals []*proposal
+			for _, rest := range more[i+1:] {
+				if rest.conf != nil {
+					n.failProposal(rest, ErrConfChangeInProgress)
+					continue
+				}
+				normals = append(normals, rest)
+			}
+			n.appendNormalBatch(normals)
+			return
 		}
 	}
 	n.appendNormalBatch(batch)
@@ -98,6 +113,7 @@ func (n *Node) appendNormalBatch(batch []*proposal) {
 			return
 		}
 		n.persistedIndex = max64(n.persistedIndex, lastNew)
+		n.advanceApply()
 		if self := n.progress[n.id]; self != nil {
 			self.match = max64(self.match, lastNew)
 			self.next = self.match + 1
@@ -168,6 +184,7 @@ func (n *Node) handleConfProposal(p *proposal) {
 			return
 		}
 		n.persistedIndex = max64(n.persistedIndex, entry.Index)
+		n.advanceApply()
 		if self := n.progress[n.id]; self != nil {
 			self.match = max64(self.match, entry.Index)
 			self.next = self.match + 1
@@ -204,14 +221,16 @@ func (n *Node) maybeAutoLeave() {
 	}
 	// Keep removed members in the replication set until the final configuration
 	// commits so they learn that they are no longer voters and stop campaigning.
-	// | 在最终配置提交前保留被移除成员的复制进度，使其得知自己不再投票并停止竞选。
+	// A learner promoted into the new voter set is still a member and must not be
+	// mistaken for a removal. | 在最终配置提交前保留被移除成员的复制进度，使其得知
+	// 自己不再投票并停止竞选。被提升进新投票集合的学习者仍是成员，不能被误判为移除。
 	for id := range n.conf.votersOut {
-		if _, ok := next.voters[id]; !ok {
+		if !next.isMember(id) {
 			n.pendingRemoval = append(n.pendingRemoval, id)
 		}
 	}
 	for id := range n.conf.learnersOut {
-		if _, ok := next.learners[id]; !ok {
+		if !next.isMember(id) {
 			n.pendingRemoval = append(n.pendingRemoval, id)
 		}
 	}
@@ -233,6 +252,7 @@ func (n *Node) maybeAutoLeave() {
 			return
 		}
 		n.persistedIndex = max64(n.persistedIndex, entry.Index)
+		n.advanceApply()
 		if self := n.progress[n.id]; self != nil {
 			self.match = max64(self.match, entry.Index)
 			self.next = self.match + 1

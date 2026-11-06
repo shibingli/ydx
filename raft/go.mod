@@ -5,7 +5,7 @@ go 1.27.3
 require (
 	github.com/shibingli/ydx/errs v0.1.4
 	github.com/shibingli/ydx/log v0.1.11
-	github.com/shibingli/ydx/rdma v0.1.1
+	github.com/shibingli/ydx/rdma v0.1.2
 )
 
 require (

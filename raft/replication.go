@@ -3,6 +3,7 @@ package raft
 import (
 	"time"
 
+	"github.com/shibingli/ydx/errs"
 	ydlog "github.com/shibingli/ydx/log"
 )
 
@@ -31,7 +32,15 @@ func (n *Node) maybeSendAppend(to NodeID) {
 		return
 	}
 	next := pr.next
-	if next <= n.log.firstIndex-1 || next <= n.log.snapshotIndex {
+	// next == 1 has a known zero predecessor. Any other position at firstIndex
+	// whose predecessor is below the snapshot base cannot be verified from
+	// memory, so only that position falls back to a snapshot. Positions after
+	// firstIndex can be served from retained catch-up entries even when they are
+	// at or below snapshotIndex. | next == 1 的前驱为零，已知。其他位于 firstIndex
+	// 且前驱低于快照基点的位置无法从内存校验，只有该位置回退到快照；firstIndex 之后
+	// 的位置即使不高于 snapshotIndex，也可由保留的追赶日志项提供。
+	if next < n.log.firstIndex ||
+		(next == n.log.firstIndex && next > 1 && next <= n.log.snapshotIndex) {
 		n.sendSnapshot(to)
 		return
 	}
@@ -89,6 +98,13 @@ func (n *Node) maybeSendAppend(to NodeID) {
 	n.send(msg)
 }
 
+// snapshotRetryInterval bounds how often a leader re-enqueues a snapshot whose
+// response has not arrived. Re-sending every few ticks would multiply a large
+// image in the outbound queues while a slow link is still transferring it.
+// | snapshotRetryInterval 限制领导者重发尚未收到响应的快照。每隔几个 tick 重发会在
+// 慢链路仍在传输时把大镜像在出站队列中复制多份。
+const snapshotRetryInterval = 5 * time.Second
+
 // sendSnapshot transfers the latest snapshot to a lagging follower. | sendSnapshot
 // 将最新快照传输给落后跟随者。
 func (n *Node) sendSnapshot(to NodeID) {
@@ -99,6 +115,10 @@ func (n *Node) sendSnapshot(to NodeID) {
 	if pr == nil {
 		return
 	}
+	if pr.state == snapshot && !pr.snapshotSentAt.IsZero() &&
+		n.now().Sub(pr.snapshotSentAt) < snapshotRetryInterval {
+		return
+	}
 	snap := n.latestSnapshot
 	if snap == nil {
 		n.logf("warn", "raft cannot send snapshot | raft 无法发送快照",
@@ -106,13 +126,62 @@ func (n *Node) sendSnapshot(to NodeID) {
 		return
 	}
 	if snap.Index <= pr.match {
+		// A follower can only have matched through this snapshot when it already
+		// has a prefix consistent with the leader. If the leader has compacted
+		// beyond that point but still exposes an older image, retrying would loop
+		// between snapshot and append forever; wait for a newer image instead.
+		// | 跟随者匹配到该快照时，其前缀必然与领导者一致。若领导者已压缩到更靠后的
+		// 位置却仍暴露旧镜像，重试会在快照与追加之间无限循环；应等待更新的镜像。
+		if pr.match < n.log.snapshotIndex {
+			n.logf("warn", "raft snapshot is older than compacted log | raft 快照落后于已压缩日志",
+				ydlog.Uint64("node", uint64(n.id)), ydlog.Uint64("peer", uint64(to)),
+				ydlog.Uint64("snapshot", snap.Index), ydlog.Uint64("compacted", n.log.snapshotIndex))
+			pr.state = snapshot
+			pr.snapshotSentAt = n.now()
+			return
+		}
 		pr.next = pr.match + 1
 		pr.state = probe
+		pr.snapshotErr = nil
+		pr.snapshotErrIndex = 0
+		pr.snapshotSentAt = time.Time{}
 		n.maybeSendAppend(to)
 		return
 	}
+	if limiter, ok := n.transport.(interface{ FrameLimit() int64 }); ok {
+		if limit := limiter.FrameLimit(); limit > 0 {
+			size := int64(len(snap.Data)) + 256
+			for _, p := range snap.ConfState.Addresses {
+				size += int64(len(p.Addr))
+			}
+			if size > limit-64 {
+				// The transport would drop every attempt. Report the real cause
+				// through Status and log it once per snapshot instead of silently
+				// retrying an unsendable image. | 传输层会丢弃每次尝试。通过 Status
+				// 报告真实原因，并对每张快照只记录一次日志，而不是静默重试无法发送的
+				// 镜像。
+				pr.state = snapshot
+				pr.pendingSnapshot = snap.Index
+				pr.lastSnapshotTick = n.tickCount
+				pr.snapshotSentAt = n.now()
+				if pr.snapshotErr == nil || pr.snapshotErrIndex != snap.Index {
+					pr.snapshotErr = errs.Detail(ErrTooLarge,
+						"snapshot %d is %d bytes, transport limit is %d", snap.Index, size, limit)
+					pr.snapshotErrIndex = snap.Index
+					n.logf("error", "raft snapshot exceeds transport frame limit | raft 快照超过传输帧上限",
+						ydlog.Uint64("node", uint64(n.id)), ydlog.Uint64("peer", uint64(to)),
+						ydlog.Uint64("snapshot", snap.Index), ydlog.Int64("size", size),
+						ydlog.Int64("limit", limit))
+				}
+				return
+			}
+		}
+	}
 	pr.becomesSnapshot(snap.Index)
 	pr.lastSnapshotTick = n.tickCount
+	pr.snapshotSentAt = n.now()
+	pr.snapshotErr = nil
+	pr.snapshotErrIndex = 0
 	n.logf("info", "raft sending snapshot | raft 发送快照",
 		ydlog.Uint64("node", uint64(n.id)), ydlog.Uint64("peer", uint64(to)),
 		ydlog.Uint64("index", snap.Index))
@@ -164,6 +233,13 @@ func (n *Node) handleAppend(m Message) {
 	}
 	if truncatedAt > 0 {
 		n.truncateConfig(truncatedAt)
+		// The truncated suffix may have been durable. Do not let its old
+		// persistedIndex authorize applying the new suffix before that suffix is
+		// itself durable. | 被截断后缀可能已持久化。不得让旧的 persistedIndex 授权
+		// 在新后缀自身持久化之前应用它。
+		if n.persistedIndex >= truncatedAt {
+			n.persistedIndex = truncatedAt - 1
+		}
 	}
 	from := oldLast + 1
 	if truncatedAt > 0 {
@@ -189,6 +265,8 @@ func (n *Node) handleAppend(m Message) {
 			return
 		}
 		n.persistedIndex = max64(n.persistedIndex, lastNew)
+		n.advanceApply()
+		n.maybeCompleteConf()
 		n.send(Message{Type: MsgAppResp, To: m.From, Term: n.term, Index: lastNew})
 	})
 }
@@ -280,16 +358,18 @@ func (n *Node) handleHeartbeat(m Message) {
 		}
 	}
 	resp := Message{
-		Type:    MsgHeartbeatResp,
-		To:      m.From,
-		Term:    n.term,
-		Index:   n.log.lastIndex,
-		Commit:  n.committed,
-		Context: m.Context,
+		Type:     MsgHeartbeatResp,
+		To:       m.From,
+		Term:     n.term,
+		Index:    n.log.lastIndex,
+		Commit:   n.committed,
+		LogIndex: m.LogIndex,
+		Context:  m.Context,
 	}
 	if seq > 0 {
 		n.deferAction(seq, func(err error) {
 			if err == nil && n.term == m.Term {
+				n.advanceApply()
 				n.send(resp)
 			}
 		})
@@ -317,6 +397,28 @@ func (n *Node) handleHeartbeatResp(m Message) {
 	}
 	pr.recentActive = true
 	pr.inflights.freeTo(m.Index)
+	// A restarted follower can report a shorter log than the previous instance.
+	// Only lower match when the response echoes the match this heartbeat was sent
+	// with; otherwise a delayed response from before later appends would force a
+	// needless backtrack. | 重启后的跟随者可能报告比旧实例更短的日志。仅当响应的
+	// LogIndex 回显了本心跳发送时的 match 才降低 match；否则，在后续追加之前发出的
+	// 延迟响应会造成不必要的回退。
+	if m.Index < pr.match && m.LogIndex == pr.match {
+		pr.match = m.Index
+		pr.pendingSnapshot = 0
+		pr.snapshotErr = nil
+		pr.snapshotErrIndex = 0
+		pr.snapshotSentAt = time.Time{}
+		pr.inflights.reset()
+	}
+	// While a snapshot is in flight, heartbeat responses must not switch the
+	// follower back to probe/replicate; that would start appends from an index the
+	// follower cannot serve and starve the snapshot. | 快照传输期间，心跳响应不得
+	// 把跟随者切回 probe/replicate；否则会从跟随者无法提供的位置开始追加，饿死快照。
+	if pr.state == snapshot {
+		n.ackReadRound(m.From, m.Context)
+		return
+	}
 	// A new or lagging member reports its last index in the heartbeat response.
 	// Move next back so the probe can start from a position the follower can
 	// verify; without this a freshly added node would never receive its first
@@ -373,8 +475,19 @@ func (n *Node) heartbeatRound() {
 		if n.readRound != nil {
 			context = encodeRoundContext(n.readRound.id)
 		}
-		msg := Message{Type: MsgHeartbeat, Term: n.term, Commit: n.committed, Context: context}
-		n.broadcast(msg)
+		// Commit is capped by each follower's match. A follower may have a
+		// divergent uncommitted suffix beyond match; sending the leader's full
+		// commit index could make it apply entries that the next AppendEntries is
+		// about to truncate. | 提交索引按每个跟随者的 match 封顶。跟随者可能拥有
+		// 超出 match 的分叉未提交后缀；直接发送领导者完整提交索引会使其应用即将被
+		// 下一条 AppendEntries 截断的日志项。
+		for id, pr := range n.progress {
+			if id == n.id || pr == nil {
+				continue
+			}
+			n.send(Message{Type: MsgHeartbeat, To: id, Term: n.term,
+				Commit: min64(n.committed, pr.match), LogIndex: pr.match, Context: context})
+		}
 	}
 	for id, pr := range n.progress {
 		if id == n.id {
@@ -409,10 +522,18 @@ func (n *Node) maybeCommit() {
 		return
 	}
 	n.setCommitted(quorum)
+	// A current-term entry is now committed, so parked ReadIndex calls can
+	// proceed with a commit index that is known to be cluster-wide. | 当前任期
+	// 日志项已提交，暂存的 ReadIndex 可以用已知的集群提交索引继续。
+	n.releasePendingReads()
 	n.advanceApply()
-	n.maybeCompleteConf()
 	n.maybeAutoLeave()
+	// Drop removed peers before maybeCompleteConf clears leaveIndex; otherwise the
+	// removal barrier is lost and the leader keeps replicating to them. | 在
+	// maybeCompleteConf 清除 leaveIndex 前丢弃被移除成员；否则移除屏障丢失，领导者会
+	// 继续向它们复制。
 	n.finishRemovals()
+	n.maybeCompleteConf()
 	n.broadcastCommit()
 	if n.state == StateLeader && !n.conf.isVoter(n.id) {
 		if n.leaveIndex == 0 || n.committed >= n.leaveIndex {
@@ -440,8 +561,15 @@ func (n *Node) finishRemovals() {
 // they can apply entries without waiting for the next heartbeat. | broadcastCommit
 // 通知跟随者领导者提交索引已推进，使其无需等待下次心跳即可应用日志。
 func (n *Node) broadcastCommit() {
-	msg := Message{Type: MsgHeartbeat, Term: n.term, Commit: n.committed}
-	n.broadcast(msg)
+	for id, pr := range n.progress {
+		if id == n.id || pr == nil {
+			continue
+		}
+		// Never advertise a commit index beyond what this follower has matched.
+		// | 绝不向跟随者通告超过其 match 的提交索引。
+		n.send(Message{Type: MsgHeartbeat, To: id, Term: n.term,
+			Commit: min64(n.committed, pr.match), LogIndex: pr.match})
+	}
 }
 
 // conflictHintFor computes the leader's restart index from a follower hint.

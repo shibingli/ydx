@@ -64,6 +64,11 @@ var (
 	// 存储失败。观察到该错误的节点会停止，继续运行可能破坏 Raft 安全性。
 	ErrStorage = errs.New("raft: storage failure | raft：存储失败")
 
+	// ErrStorageLocked reports that another process already owns the storage
+	// directory. Running two writers on one WAL can corrupt it. | ErrStorageLocked
+	// 表示另一个进程已占用存储目录；两个写入者共用一份 WAL 会破坏数据。
+	ErrStorageLocked = errs.New("raft: storage directory is locked | raft：存储目录已被占用")
+
 	// ErrNetwork reports a transport connection or I/O failure. | ErrNetwork
 	// 表示传输连接或 I/O 故障。
 	ErrNetwork = errs.New("raft: network failure | raft：网络故障")

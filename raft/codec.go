@@ -18,6 +18,11 @@ const (
 	maxAddressBytes   = 1 << 20
 	maxMessageEntries = 1 << 20
 	maxConfNodes      = 1 << 16
+	// minEntryWireBytes is the smallest possible encoding of one entry: index,
+	// term, type and data length. It bounds a claimed count before allocation.
+	// | minEntryWireBytes 是单条日志项的最小可能编码：索引、任期、类型与数据长度。
+	// 它在分配前约束声明的数量。
+	minEntryWireBytes = 4
 )
 
 // marshalFlags packs optional Message fields. | marshalFlags 打包 Message 的可选字段。
@@ -268,9 +273,16 @@ func decodeConfStateBytes(data []byte) (ConfState, error) {
 // decoder is a bounds-checked cursor over a wire payload. | decoder 是带边界检查的
 // 线载荷游标。
 type decoder struct {
+	err error
 	src []byte
 	pos int
-	err error
+	// allowDuplicateIndex accepts a zero index delta. WAL recovery enables it so
+	// logs written by older group-commit implementations, which could coalesce a
+	// duplicate append retry, remain fully readable; message decoding keeps the
+	// strict contiguous invariant. | allowDuplicateIndex 接受零索引增量。WAL 恢复
+	// 启用它，使旧版组提交可能合并重复追加重试而写出的日志仍可完整读取；消息解码
+	// 保持严格连续约束。
+	allowDuplicateIndex bool
 }
 
 // fail records the first decode error. | fail 记录第一个解码错误。
@@ -352,6 +364,14 @@ func (d *decoder) entries() []Entry {
 		d.fail(errs.Detail(ErrTooLarge, "entries %d", count))
 		return nil
 	}
+	// Every entry needs at least four bytes. Without this check a tiny payload
+	// could force an allocation of up to maxMessageEntries Entry values. | 每条
+	// 日志项至少需要四个字节。缺少该检查时，极小载荷可能迫使分配最多
+	// maxMessageEntries 个 Entry。
+	if count > uint64(len(d.src)-d.pos)/minEntryWireBytes {
+		d.fail(errs.Detail(ErrTooLarge, "entries %d for %d bytes", count, len(d.src)-d.pos))
+		return nil
+	}
 	entries := make([]Entry, count)
 	total := 0
 	var prev uint64
@@ -364,7 +384,7 @@ func (d *decoder) entries() []Entry {
 			if d.err != nil {
 				return nil
 			}
-			if delta != 1 {
+			if delta != 1 && !(d.allowDuplicateIndex && delta == 0) {
 				d.fail(errs.Detail(ErrCorrupt, "entry delta %d", delta))
 				return nil
 			}
@@ -424,6 +444,10 @@ func (d *decoder) confState() ConfState {
 			d.fail(errs.Detail(ErrTooLarge, "conf nodes %d", count))
 			return ConfState{}
 		}
+		if count > uint64(len(d.src)-d.pos) {
+			d.fail(errs.Detail(ErrTooLarge, "conf nodes %d for %d bytes", count, len(d.src)-d.pos))
+			return ConfState{}
+		}
 		list := make([]NodeID, count)
 		for j := range list {
 			list[j] = NodeID(d.uvarint())
@@ -443,6 +467,12 @@ func (d *decoder) confState() ConfState {
 	}
 	if count > maxConfNodes {
 		d.fail(errs.Detail(ErrTooLarge, "addresses %d", count))
+		return ConfState{}
+	}
+	// Each address needs at least a node id and a length byte. | 每个地址至少需要
+	// 一个节点标识和一个长度字节。
+	if count > uint64(len(d.src)-d.pos)/2 {
+		d.fail(errs.Detail(ErrTooLarge, "addresses %d for %d bytes", count, len(d.src)-d.pos))
 		return ConfState{}
 	}
 	addresses := make([]Peer, count)

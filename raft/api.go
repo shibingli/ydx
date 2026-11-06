@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"time"
+
+	"github.com/shibingli/ydx/errs"
 )
 
 // ProposeAsync appends data to the log and returns a Future. It copies data, so
@@ -44,6 +46,9 @@ func (n *Node) proposeWithFuture(ctx context.Context, data []byte, owned bool, f
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
+	}
+	if n.maxProposalBytes > 0 && len(data) > n.maxProposalBytes {
+		return nil, errs.Detail(ErrTooLarge, "proposal %d bytes exceeds %d", len(data), n.maxProposalBytes)
 	}
 	p := n.allocProposal(data, owned, f, reuse)
 	if err := n.proposals.push(p); err != nil {
@@ -114,7 +119,7 @@ func (n *Node) forwardReadIndex(ctx context.Context) (uint64, error) {
 	ch := n.remoteReads.add(id)
 	msg := Message{
 		Type: MsgReadIndex, From: n.id, To: leader, Group: n.group, Term: n.Term(),
-		Context: encodeRoundContext(id),
+		Context: encodeRemoteReadContext(n.remoteEpoch, id),
 	}
 	select {
 	case n.outCh <- outboundBatch{msgs: []Message{msg}}:
@@ -148,7 +153,7 @@ func (n *Node) WaitApplied(ctx context.Context, index uint64) error {
 		if n.stopped.Load() {
 			return ErrStopped
 		}
-		if err := n.appliedNotify.wait(ctx, func() bool { return n.applied.Load() >= index }); err != nil {
+		if err := n.appliedNotify.wait(ctx, n.stopCh, func() bool { return n.applied.Load() >= index }); err != nil {
 			return err
 		}
 	}

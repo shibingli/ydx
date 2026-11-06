@@ -8,7 +8,7 @@ github.com/shibingli/ydx/json v0.1.12 h1:R3gry4+UXrKMmTNSkgvLiDgxRse9m4sX5d03eVN
 github.com/shibingli/ydx/json v0.1.12/go.mod h1:aAIQPJx/JqDHjNwgS8XEI5KxJ0QMJbkNGvr8IC2y6Ow=
 github.com/shibingli/ydx/log v0.1.11 h1:6b8LbcyuIuLAJNLj3GdfKA8hDH8I/PM5+T0/g9MIU60=
 github.com/shibingli/ydx/log v0.1.11/go.mod h1:5/gnsfDGe6vjDyOKXBUC+w5pwsrye0KcM+e9P2c76ac=
-github.com/shibingli/ydx/rdma v0.1.1 h1:880/egvZTUXen9rrfmbUJlvkjWeecRq5kaUQ6FN7EGs=
-github.com/shibingli/ydx/rdma v0.1.1/go.mod h1:jl+JUt93pw8GQfQfoY2O/2LhXGeChGNnBdnvGjp0Hqc=
+github.com/shibingli/ydx/rdma v0.1.2 h1:J+BbVhfnny6ARs3s9dPC8lel72rHcXrSym8/RL6GpMQ=
+github.com/shibingli/ydx/rdma v0.1.2/go.mod h1:jl+JUt93pw8GQfQfoY2O/2LhXGeChGNnBdnvGjp0Hqc=
 github.com/shibingli/ydx/sysinfo v0.1.4 h1:tskX01rpXsDkEmCCz+2s7FnSQqrQCY8SQUeWstPQhMk=
 github.com/shibingli/ydx/sysinfo v0.1.4/go.mod h1:31V/9KavYTLUNJwAsgCHuN6z2wvRpS20En5em99nmqE=

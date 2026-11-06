@@ -4,9 +4,9 @@ package raft
 // and immediately follow Snapshot. | Recovery 是启动时加载的持久状态。Entries 必须
 // 连续，且紧接在 Snapshot 之后。
 type Recovery struct {
-	HardState HardState
 	Snapshot  *Snapshot
 	Entries   []Entry
+	HardState HardState
 }
 
 // PersistBatch is one durable write. Truncate, when non-zero, removes every
@@ -19,9 +19,9 @@ type Recovery struct {
 // 失效）与本地压缩快照（快照之后的日志项仍然有效）。
 type PersistBatch struct {
 	HardState           *HardState
-	Truncate            uint64
-	Entries             []Entry
 	Snapshot            *Snapshot
+	Entries             []Entry
+	Truncate            uint64
 	SnapshotReplacesLog bool
 }
 
@@ -50,14 +50,19 @@ type ImmediateTransport interface {
 
 // Storage is the durable backend. Persist must not return until the batch is
 // durable for the configured durability level; Raft safety depends on that
-// ordering. Implementations are used by a single writer goroutine and may assume
-// no concurrent Persist calls, but Load and Close must be safe against it.
+// ordering. A Snapshot batch installs the image and its durability marker;
+// Compact, which the node calls immediately afterwards, releases the entries the
+// image covers. Implementations are used by a single writer goroutine and may
+// assume no concurrent Persist calls, but Load and Close must be safe against it.
 // | Storage 是持久化后端。Persist 在批次达到配置的持久级别前不得返回；Raft 安全
-// 性依赖该顺序。实现由单个写协程调用，可假定 Persist 不并发，但 Load 与 Close 必须
-// 能安全并发。
+// 性依赖该顺序。Snapshot 批次安装镜像及其持久标记；节点随后立即调用 Compact
+// 释放镜像覆盖的日志项。实现由单个写协程调用，可假定 Persist 不并发，但 Load 与
+// Close 必须能安全并发。
 type Storage interface {
-	// Load returns the durable snapshot, hard state and entries after it. | Load
-	// 返回持久快照、硬状态及其后的日志项。
+	// Load returns the durable snapshot, hard state and entries after it. The
+	// returned Snapshot and Entries become owned by the caller: implementations
+	// must not reuse or mutate them afterwards. | Load 返回持久快照、硬状态及其后的
+	// 日志项。返回的 Snapshot 与 Entries 归调用方所有：实现此后不得复用或修改它们。
 	Load() (Recovery, error)
 	// Persist atomically applies one durable batch. | Persist 原子应用一个持久批次。
 	Persist(batch PersistBatch) error

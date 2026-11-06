@@ -19,6 +19,10 @@ type RDMATransportOptions struct {
 	// the first device with an active port. | Device 选择 RDMA 设备，例如 "mlx5_0"；
 	// 为空时由 ydx/rdma 选择第一个存在活动端口的设备。
 	Device string
+	// SharedSecret enables frame-level HMAC-SHA256 authentication. RDMA provides
+	// reliable delivery, not encryption; use IPsec/MACsec for encryption. | SharedSecret
+	// 启用帧级 HMAC-SHA256 认证。RDMA 提供可靠传输，不提供加密；加密请使用 IPsec/MACsec。
+	SharedSecret []byte
 	// GIDIndex selects a GID table entry when positive. Zero lets ydx/rdma prefer
 	// a routable RoCE v2 GID. | GIDIndex 为正时选择 GID 表项；零表示由 ydx/rdma
 	// 优先选择可路由的 RoCE v2 GID。
@@ -42,19 +46,6 @@ type RDMATransportOptions struct {
 	// 所有对端必须使用相同的 BufferSize，且 QueueDepth 足以容纳一个发送批次
 	// （32 个分块）；RDMA 消息不能超过接收方注册的槽位。
 	BufferSize int
-	// BusyPoll is retained for compatibility. ydx/rdma polls completion queues on
-	// the hot path with a bounded spin before yielding. | BusyPoll 为兼容保留。
-	// ydx/rdma 热路径轮询完成队列，并在有限自旋后让出处理器。
-	BusyPoll bool
-	// UseHandshake is retained for compatibility. ydx/rdma always exchanges queue
-	// pair parameters over a TCP control connection; payloads use RDMA. |
-	// UseHandshake 为兼容保留。ydx/rdma 始终通过 TCP 控制连接交换队列对参数，
-	// 负载走 RDMA。
-	UseHandshake bool
-	// SharedSecret enables frame-level HMAC-SHA256 authentication. RDMA provides
-	// reliable delivery, not encryption; use IPsec/MACsec for encryption. | SharedSecret
-	// 启用帧级 HMAC-SHA256 认证。RDMA 提供可靠传输，不提供加密；加密请使用 IPsec/MACsec。
-	SharedSecret []byte
 	// Queue is the per-peer outbound queue length. Default 64. | Queue 是每对端出站
 	// 队列长度，默认 64。
 	Queue int
@@ -66,6 +57,15 @@ type RDMATransportOptions struct {
 	// 64 MiB. | MaxFrameBytes 限制重组后的单帧大小。超过一个注册槽位的帧会被分块，
 	// 因此该限制与 BufferSize 独立。默认 64 MiB。
 	MaxFrameBytes int
+	// BusyPoll is retained for compatibility. ydx/rdma polls completion queues on
+	// the hot path with a bounded spin before yielding. | BusyPoll 为兼容保留。
+	// ydx/rdma 热路径轮询完成队列，并在有限自旋后让出处理器。
+	BusyPoll bool
+	// UseHandshake is retained for compatibility. ydx/rdma always exchanges queue
+	// pair parameters over a TCP control connection; payloads use RDMA. |
+	// UseHandshake 为兼容保留。ydx/rdma 始终通过 TCP 控制连接交换队列对参数，
+	// 负载走 RDMA。
+	UseHandshake bool
 }
 
 // RDMATransport is the concrete RDMA transport. | RDMATransport 是具体 RDMA 传输。

@@ -98,20 +98,19 @@ tr, _ := raft.NewHTTPTransport(raft.HTTPTransportOptions{
     SharedSecret: sharedSecret,
 })
 
-// YD 路由（一等公民）：共享路由器的中间件、认证与观测链
+// YD 路由（一等公民）：共享路由器的中间件、认证与观测链。
+// Handler().ServeHTTP 与 router.HandlerFuncRaw 的底层函数类型相同，无需适配包。
 r := router.New()
-if err := ydrouter.Mount(r, "/raft/message", tr); err != nil {
-    return err
-}
+r.HandleRaw(http.MethodPost, "/raft/message", tr.Handler().ServeHTTP)
 
 // 原生 net/http 兼容入口
 http.Handle("/raft/message", tr.Handler())
 ```
 
-`raft/ydrouter` 是独立子模块，核心 `raft` 不依赖 `ydx/router`；不使用 YD 路由的
-应用只依赖 `raft` 并直接挂载 `tr.Handler()`。HTTP 对端地址使用基础 URL，例如
-`http://192.168.2.2:23102`。TLS 由外层 HTTP 服务器/客户端提供；`SharedSecret`
-负责消息认证。
+核心 `raft` 不依赖 `ydx/router`；不使用 YD 路由的应用只依赖 `raft` 并直接挂载
+`tr.Handler()`。原 `raft/ydrouter` 用户改为上述一行 `HandleRaw` 即可，无需适配包。
+HTTP 对端地址使用基础 URL，例如 `http://192.168.2.2:23102`。TLS 由外层 HTTP
+服务器/客户端提供；`SharedSecret` 负责消息认证。
 
 ### RDMA（可选）
 
@@ -139,6 +138,22 @@ cfg.RDMAOptions = raft.RDMATransportOptions{
 消息不能超过接收方注册的槽位。RDMA 链路本身不加密；需要保密性时使用
 IPsec/MACsec，或改用启用 TLS 的 TCP/HTTP 传输。
 
+### 传输安全与帧上限（生产必读）
+
+- 传输层**默认不认证入站消息**。多节点部署必须配置 `SharedSecret`（至少 16 字节，
+  HMAC-SHA256）或 TLS；两者同时使用最稳妥：TLS 负责加密与服务器身份，HMAC 负责
+  帧完整性。RDMA 没有内置加密，生产环境应配合 IPsec/MACsec 与 HMAC。
+- 同一集群的所有成员必须使用相同的 `SharedSecret`。密钥只从环境变量或密钥管理
+  系统读取，不得写入源码、配置样例或日志。
+- TCP 的 `MaxFrameBytes` 与 HTTP 的 `MaxBodyBytes` 必须大于最大快照的编码大小
+  （快照数据 + 配置 + 帧头/HMAC，建议留 1 MiB 余量）。默认 64 MiB；超过上限的
+  快照无法发送，领导者会记录 `snapshot exceeds transport frame limit` 错误而不是
+  静默重试。RDMA 的 `MaxFrameBytes` 同理（分块不改变重组后的上限）。
+- 流式传输限制并发连接数（默认 256）并对空闲/停滞读设置 60 秒截止时间；这避免
+  半开连接按声明长度长期占用大缓冲区。
+- 应用只在日志项**本地持久化后**执行，跟随者不会把尚未落盘的已提交项交给 FSM。
+
+
 ## 一致性语义
 
 - `Propose` 成功返回时，日志项已被多数派提交并在本地状态机应用。
@@ -147,8 +162,27 @@ IPsec/MACsec，或改用启用 TLS 的 TCP/HTTP 传输。
 - `ReadIndex` 返回与调用线性一致的已提交索引；读取状态机前必须
   `WaitApplied(index)`（或直接使用 `Barrier`）。
 - 领导者只有在当前任期已有提交日志项、且租约有效时才直接服务读；否则发起心跳
-  法定人数确认。跟随者自动把 `ReadIndex` 转发给领导者，并等待本地应用追上。
+  法定人数确认。租约从心跳发送时刻起算且不超过 `(ElectionTicks-1)*TickInterval`，
+  小于跟随者可能发起选举的最短时间，避免分区旧领导者继续服务过期读。跟随者自动把
+  `ReadIndex` 转发给领导者，并等待本地应用追上。
+- 单投票成员集群的 `ReadIndex`/`Barrier` 在本地立即完成，不需要也不等待对端。
+- 新领导者在本任期日志项提交前分别暂存本地与转发的 `ReadIndex`；上限由
+  `MaxPendingReads` 配置，零值按 `MessageQueue/8` 推导（256–4096），提交推进后
+  批量放行；避免返回尚未获知集群提交位置的过期索引。
+- 领导者按每个跟随者的 `match` 封顶心跳中的提交索引；跟随者不会因心跳提交自己
+  尚未与领导者校验的冲突后缀。`InstallSnapshot` 与本地快照并发时，旧镜像不会
+  回退内存快照基点或配置基点。
 - 默认关闭“任意本地读”；`ReadIndex`/`Barrier` 是唯一的线性一致读入口。
+
+## 选主算法与故障转移
+
+选举采用细粒度墙钟 timer + 随机化超时 + pre-vote + 每任期一票；候选人自投票
+持久化与投票扇出重叠，新领导者 no-op 复制与本地持久化重叠，两者都由持久化门控
+保证不会提前计票或提交。可选 `ElectionStagger` 按 voter ID 排名错峰竞选；大集群
+使用 `PreVoteSubsetThreshold` 限制首轮 pre-vote 扇出，未达多数时自动扩展。
+详细的安全边界、延迟公式、高节点数下的分裂投票分析、可并行/不可并行的部分以及
+参数建议见 [`ELECTION.md`](ELECTION.md)。内存传输、1ms tick 下的故障转移基准见
+`benchmarks/raft/election_bench_test.go`。
 
 ## 成员变更
 
@@ -181,6 +215,12 @@ node.TransferLeader(ctx, 2)
 - 快照先落盘，再写 WAL 标记；恢复只信任带标记的快照，避免“快照已写但未提交”
   的悬空状态。
 - `InstallSnapshot` 标记会清除旧日志项；本地压缩快照保留快照之后的日志尾。
+- 本地压缩默认在内存中额外保留 `SnapshotCatchUpEntries` 条已覆盖日志（默认 256），
+  略落后的跟随者可直接用 AppendEntries 追上；该窗口不跨重启保留。
+- 存储目录带进程级排他锁，重复打开返回 `ErrStorageLocked`；崩溃遗留的临时快照文件
+  会在下次打开时清理。
+- 快照超过传输帧上限时，`Status.Peers[].SnapshotError` 会暴露 `ErrTooLarge` 及实际
+  大小/上限；此时应提高 `MaxBodyBytes`/`MaxFrameBytes` 或减小快照。
 - `FileStorageOptions.NoSync` 只用于临时测试/基准；生产必须保持 fsync。
 
 ## 性能
@@ -256,10 +296,13 @@ GOWORK=off CGO_ENABLED=1 CC=clang go test ./... -race
 ```
 
 测试覆盖：选举/预投票（含隔离节点不提升任期）、分区与 Check-Quorum、日志冲突
-回退、批量/流水线并发提案、64 分片提案入口与对象复用、快照创建/安装/压缩/高负载
-快照传输、带快照重启、WAL 撕裂写/损坏恢复/多分段轮转、持久化组提交窗口、联合
-共识增删/提升/移除、领导者转移、领导者与跟随者 ReadIndex、HTTP/TCP 传输、编解码
-fuzz、RDMA 不可用时的显式错误。仓库级守卫见 `repotest`。
+回退、心跳提交索引按跟随者 match 封顶、分叉后缀不被心跳误提交、重启后较短日志
+重新探测、批量/流水线并发提案、64 分片提案入口与对象复用、快照创建/安装/压缩/
+高负载快照传输、快照失败不阻塞后续请求、带快照与 FileStorage 重启、WAL 撕裂写/
+损坏恢复/重复追加重试恢复/多分段轮转与标记分段回收、持久化组提交窗口、持久化后
+才 apply、联合共识增删/提升/移除、领导者转移、领导者与跟随者 ReadIndex、单投票
+成员 ReadIndex/Barrier、降级时读请求释放、租约上限、HTTP/TCP 传输帧上限与连接
+限制、编解码 fuzz、RDMA 不可用时的显式错误。仓库级守卫见 `repotest`。
 
 ## 多组 Raft（NodeHost）
 

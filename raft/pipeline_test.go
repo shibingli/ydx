@@ -180,3 +180,15 @@ func TestProposalQueueStripedIntake(t *testing.T) {
 		t.Fatalf("push after close = %v", err)
 	}
 }
+
+// TestApplyQueueCloseDropsPending verifies shutdown cannot be stuck draining a
+// backlog that can no longer be acknowledged. | TestApplyQueueCloseDropsPending
+// 验证关闭时不会因排空无法再确认的积压而卡住。
+func TestApplyQueueCloseDropsPending(t *testing.T) {
+	q := newApplyQueue()
+	q.push(applyTask{entries: []Entry{{Index: 1}}})
+	q.close()
+	if _, ok := q.pop(); ok {
+		t.Fatal("closed queue returned a task")
+	}
+}

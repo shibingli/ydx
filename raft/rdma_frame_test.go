@@ -31,6 +31,11 @@ func TestRDMAChunkHeader(t *testing.T) {
 		t.Fatalf("version check error = %v", err)
 	}
 	bad = buf
+	encodeRDMAChunkHeader(bad[:], ^uint32(0), 0)
+	if _, _, err := decodeRDMAChunkHeader(bad[:], 0); !errors.Is(err, ErrTooLarge) {
+		t.Fatalf("huge frame length error = %v", err)
+	}
+	bad = buf
 	encodeRDMAChunkHeader(bad[:], 100, 100)
 	if _, _, err := decodeRDMAChunkHeader(bad[:], 0); !errors.Is(err, ErrCorrupt) {
 		t.Fatalf("offset check error = %v", err)

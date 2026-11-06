@@ -22,8 +22,8 @@ func (id GroupID) String() string { return uint64String(uint64(id)) }
 // Peer is a member identifier together with its transport address. | Peer 是成员
 // 标识与其传输地址的组合。
 type Peer struct {
-	ID   NodeID
 	Addr string
+	ID   NodeID
 }
 
 // EntryType classifies a log entry. The numeric values are part of the wire
@@ -47,10 +47,10 @@ const (
 // proposed; callers must not mutate it. | Entry 是一条复制日志记录。提案后 Data
 // 归节点所有，调用方不得再修改。
 type Entry struct {
+	Data  []byte
 	Index uint64
 	Term  uint64
 	Type  EntryType
-	Data  []byte
 }
 
 // clone returns a deep copy used at API and recovery boundaries. | clone 返回深拷贝，
@@ -113,10 +113,10 @@ func contains(ids []NodeID, id NodeID) bool {
 // Snapshot is a point-in-time state machine image and the configuration that
 // produced it. | Snapshot 是某一时刻的状态机镜像及其对应的配置。
 type Snapshot struct {
-	Index     uint64
-	Term      uint64
 	ConfState ConfState
 	Data      []byte
+	Index     uint64
+	Term      uint64
 }
 
 // clone returns a deep copy of the snapshot. | clone 返回快照的深拷贝。

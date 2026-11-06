@@ -1,6 +1,7 @@
 package raft
 
 import (
+	"slices"
 	"time"
 
 	ydlog "github.com/shibingli/ydx/log"
@@ -26,22 +27,134 @@ func (n *Node) campaign(preVote bool) {
 func (n *Node) startPreVote() {
 	n.setState(StatePreCandidate)
 	n.setLeader(0)
+	n.selfVoteDurable = false
 	n.resetElection()
 	n.preVotes = make(map[NodeID]bool, len(n.conf.voters)+1)
 	n.preVotes[n.id] = true
+	n.preVoteSent = make(map[NodeID]struct{}, len(n.conf.voters)+1)
+	n.preVotePending = make(map[NodeID]struct{}, len(n.conf.voters)+1)
+	n.preVoteRemaining = nil
+	n.preVoteExpandTick = n.tickCount + 1
 	n.metrics.preVotes.Add(1)
-	last := n.log.lastIndex
-	lastTerm := n.log.lastTerm()
-	msg := Message{
+	n.preVoteReq = Message{
 		Type:     MsgPreVote,
 		Term:     n.term + 1,
-		LogIndex: last,
-		LogTerm:  lastTerm,
+		LogIndex: n.log.lastIndex,
+		LogTerm:  n.log.lastTerm(),
 	}
-	n.broadcastVoters(msg)
+	initial, remaining := n.preVoteTargets()
+	n.preVoteRemaining = remaining
+	n.sendPreVoteTargets(initial)
 	if n.conf.hasQuorum(func(id NodeID) bool { return n.preVotes[id] }) {
 		n.startVote()
 	}
+}
+
+// preVoteTargets chooses the first bounded pre-vote wave. It always contains a
+// quorum of every voter set (self included), plus a small failure budget; the
+// rest are contacted only if needed. | preVoteTargets 选择首轮有界 pre-vote 目标。
+// 首轮始终包含每个投票集合的多数（含自身）以及少量容错余量；其余成员仅在需要时
+// 联系。
+func (n *Node) preVoteTargets() (initial, remaining []NodeID) {
+	allSet := make(map[NodeID]struct{}, len(n.conf.voters)+len(n.conf.votersOut))
+	for id := range n.conf.voters {
+		if id != n.id {
+			allSet[id] = struct{}{}
+		}
+	}
+	for id := range n.conf.votersOut {
+		if id != n.id {
+			allSet[id] = struct{}{}
+		}
+	}
+	all := make([]NodeID, 0, len(allSet))
+	for id := range allSet {
+		all = append(all, id)
+	}
+	slices.Sort(all)
+	if len(all)+1 <= n.cfg.PreVoteSubsetThreshold {
+		return all, nil
+	}
+	selected := make(map[NodeID]struct{}, len(all))
+	addQuorum := func(set map[NodeID]struct{}) {
+		if len(set) == 0 {
+			return
+		}
+		need := len(set)/2 + 1
+		count := 0
+		if _, self := set[n.id]; self {
+			count++
+		}
+		for id := range selected {
+			if _, ok := set[id]; ok {
+				count++
+			}
+		}
+		for _, id := range all {
+			if count >= need {
+				break
+			}
+			if _, ok := set[id]; !ok {
+				continue
+			}
+			if _, ok := selected[id]; ok {
+				continue
+			}
+			selected[id] = struct{}{}
+			count++
+		}
+	}
+	addQuorum(n.conf.voters)
+	addQuorum(n.conf.votersOut)
+	extra := n.cfg.PreVoteSubsetExtra
+	for _, id := range all {
+		if extra <= 0 {
+			break
+		}
+		if _, ok := selected[id]; ok {
+			continue
+		}
+		selected[id] = struct{}{}
+		extra--
+	}
+	initial = make([]NodeID, 0, len(selected))
+	for id := range selected {
+		initial = append(initial, id)
+	}
+	slices.Sort(initial)
+	remaining = make([]NodeID, 0, len(all)-len(initial))
+	for _, id := range all {
+		if _, ok := selected[id]; !ok {
+			remaining = append(remaining, id)
+		}
+	}
+	return initial, remaining
+}
+
+// sendPreVoteTargets sends the pre-vote request to peers not contacted yet. |
+// sendPreVoteTargets 向尚未联系的成员发送 pre-vote 请求。
+func (n *Node) sendPreVoteTargets(ids []NodeID) {
+	for _, id := range ids {
+		if _, sent := n.preVoteSent[id]; sent {
+			continue
+		}
+		n.preVoteSent[id] = struct{}{}
+		n.preVotePending[id] = struct{}{}
+		m := n.preVoteReq
+		m.To = id
+		n.send(m)
+	}
+}
+
+// expandPreVote contacts the remaining voters after the first wave cannot
+// reach a quorum. | expandPreVote 在首轮无法达到多数后联系其余投票成员。
+func (n *Node) expandPreVote() {
+	if n.state != StatePreCandidate || len(n.preVoteRemaining) == 0 {
+		return
+	}
+	targets := n.preVoteRemaining
+	n.preVoteRemaining = nil
+	n.sendPreVoteTargets(targets)
 }
 
 // startVote increments the term, votes for self and asks every voter for a vote
@@ -54,27 +167,53 @@ func (n *Node) startVote() {
 	n.setLeader(0)
 	n.resetElection()
 	n.votes = make(map[NodeID]bool, len(n.conf.voters)+1)
-	n.votes[n.id] = true
 	n.preVotes = make(map[NodeID]bool)
+	n.preVoteSent = nil
+	n.preVotePending = nil
+	n.preVoteRemaining = nil
+	n.preVoteReq = Message{}
+	n.selfVoteDurable = false
 	n.metrics.elections.Add(1)
 	last := n.log.lastIndex
 	lastTerm := n.log.lastTerm()
+	term := n.term
 	seq := n.persistHardState()
+	// Send the vote requests while the term and self-vote are being persisted.
+	// Voters still persist their grants before responding, and this candidate
+	// does not count its own vote or become leader until its hard state is
+	// durable (see maybeBecomeLeader). This overlaps one fsync with the network
+	// round trip; a crash before durability loses only this candidacy, because
+	// the vote cannot be counted and no leader action is taken. | 在持久化任期与
+	// 自投票的同时发送投票请求。投票者仍会在响应前持久化授权，而本候选者在硬状态
+	// 持久化完成前不会计入自投票或成为领导者（见 maybeBecomeLeader）。这样把一次
+	// fsync 与网络往返重叠；持久化前崩溃只会丢失本次候选资格，因为选票不会被计入，
+	// 也不会执行领导者动作。
+	n.broadcastVoters(Message{
+		Type:     MsgVote,
+		Term:     term,
+		LogIndex: last,
+		LogTerm:  lastTerm,
+	})
 	n.deferAction(seq, func(err error) {
-		if err != nil || n.term == 0 || n.state != StateCandidate {
+		if err != nil || n.term != term || n.state != StateCandidate {
 			return
 		}
-		msg := Message{
-			Type:     MsgVote,
-			Term:     n.term,
-			LogIndex: last,
-			LogTerm:  lastTerm,
-		}
-		n.broadcastVoters(msg)
-		if n.conf.hasQuorum(func(id NodeID) bool { return n.votes[id] }) {
-			n.becomeLeader()
-		}
+		n.selfVoteDurable = true
+		n.votes[n.id] = true
+		n.maybeBecomeLeader()
 	})
+}
+
+// maybeBecomeLeader promotes a candidate once its own vote is durable and every
+// active voter set has a quorum. | maybeBecomeLeader 在候选者自投票已持久化且每个
+// 生效投票集合都达到多数时将其提升为领导者。
+func (n *Node) maybeBecomeLeader() {
+	if n.state != StateCandidate || !n.selfVoteDurable {
+		return
+	}
+	if n.conf.hasQuorum(func(id NodeID) bool { return n.votes[id] }) {
+		n.becomeLeader()
+	}
 }
 
 // broadcastVoters sends one message to each voter in both joint sets. | broadcastVoters
@@ -105,9 +244,17 @@ func (n *Node) broadcastVoters(m Message) {
 // | handlePreVote 在不改变本地任期的情况下裁决预投票请求。
 func (n *Node) handlePreVote(m Message) {
 	grant := false
-	if m.Term > n.term && n.conf.isVoter(n.id) &&
+	if m.Term > n.term && n.conf.isVoter(n.id) && n.conf.isVoter(m.From) &&
 		n.log.upToDate(m.LogIndex, m.LogTerm) {
-		if n.leader == 0 || n.electionElapsed >= n.electionTimeout {
+		stickWindow := n.electionTicks
+		if n.state == StateLeader {
+			// A leader uses its full check-quorum interval; a healthy leader
+			// must not grant a pre-vote just because the minimum window passed.
+			// | 领导者使用完整法定人数检查间隔；健康领导者不能仅因最小窗口已过就
+			// 授予预投票。
+			stickWindow = n.electionTimeout
+		}
+		if n.leader == 0 || n.electionElapsed >= stickWindow {
 			grant = true
 		}
 	}
@@ -130,12 +277,20 @@ func (n *Node) handlePreVoteResp(m Message) {
 		n.becomeFollower(m.Term, 0, true)
 		return
 	}
+	delete(n.preVotePending, m.From)
 	if m.Reject || !n.conf.isVoter(m.From) {
+		if len(n.preVotePending) == 0 {
+			n.expandPreVote()
+		}
 		return
 	}
 	n.preVotes[m.From] = true
 	if n.conf.hasQuorum(func(id NodeID) bool { return n.preVotes[id] }) {
 		n.startVote()
+		return
+	}
+	if len(n.preVotePending) == 0 {
+		n.expandPreVote()
 	}
 }
 
@@ -151,7 +306,8 @@ func (n *Node) handleVote(m Message) {
 		n.becomeFollower(m.Term, 0, true)
 	}
 	canVote := n.vote == 0 || n.vote == m.From
-	if !canVote || !n.conf.isVoter(n.id) || !n.log.upToDate(m.LogIndex, m.LogTerm) {
+	if !canVote || !n.conf.isVoter(n.id) || !n.conf.isVoter(m.From) ||
+		!n.log.upToDate(m.LogIndex, m.LogTerm) {
 		n.send(Message{Type: MsgVoteResp, To: m.From, Term: n.term, Reject: true})
 		return
 	}
@@ -179,9 +335,7 @@ func (n *Node) handleVoteResp(m Message) {
 		return
 	}
 	n.votes[m.From] = true
-	if n.conf.hasQuorum(func(id NodeID) bool { return n.votes[id] }) {
-		n.becomeLeader()
-	}
+	n.maybeBecomeLeader()
 }
 
 // becomeLeader initializes replication progress and appends a no-op entry in the
@@ -235,12 +389,21 @@ func (n *Node) becomeLeader() {
 	}
 	n.termStartIndex = noop.Index
 	seq := n.persistEntries([]Entry{noop}, 0)
+	// Replicate the no-op before the local fsync completes. Followers can
+	// persist it and respond while this leader is still writing; the leader
+	// never counts its own copy before persistedIndex advances, so it cannot
+	// commit early. This shortens the interval until the new term is usable and
+	// immediately resets followers' election timers. | 在本地 fsync 完成前复制空
+	// 操作日志项。跟随者可在领导者仍写入时持久化并响应；领导者在 persistedIndex
+	// 推进前不会计入自己的副本，因此不会提前提交。这缩短新任期可用的时间，并立即
+	// 重置跟随者的选举计时器。
+	n.broadcastAppend()
 	n.deferAction(seq, func(err error) {
 		if err != nil || n.state != StateLeader {
 			return
 		}
 		n.persistedIndex = max64(n.persistedIndex, noop.Index)
-		n.broadcastAppend()
+		n.advanceApply()
 		n.maybeCommit()
 		n.resolveCampaign(nil)
 	})
@@ -266,23 +429,35 @@ func (n *Node) becomeFollower(term uint64, leader NodeID, persist bool) uint64 {
 	n.resetElection()
 	n.votes = make(map[NodeID]bool)
 	n.preVotes = make(map[NodeID]bool)
+	n.preVoteSent = nil
+	n.preVotePending = nil
+	n.preVoteRemaining = nil
+	n.preVoteReq = Message{}
+	n.selfVoteDurable = false
 	n.progress = make(map[NodeID]*progress)
 	n.pendingRemoval = nil
 	n.leaseUntil = time.Time{}
-	n.readRound = nil
 	n.remoteReads.failAll(ErrLeadershipLost)
 	n.termStartIndex = 0
 	var seq uint64
 	if persist && (term != oldTerm || n.vote == 0) {
 		seq = n.persistHardState()
 	}
+	n.failPendingReads(ErrLeadershipLost)
 	if wasLeader {
 		n.futures.failAll(ErrLeadershipLost)
 		n.metrics.futuresFailed.Add(1)
+		// resolveReads clears and fails the active round; calling it after
+		// clearing readRound would leave local and forwarded readers blocked
+		// until their contexts expire. | resolveReads 会清除并结束活动轮次；若在清除
+		// readRound 后调用，本地与转发读会一直阻塞到上下文超时。
 		n.resolveReads(ErrLeadershipLost)
 		n.resolveTransfer(nil)
 		n.abortPendingConf(ErrLeadershipLost)
+	} else {
+		n.resolveReads(ErrLeadershipLost)
 	}
+	n.readRound = nil
 	if leader != 0 {
 		n.resolveCampaign(ErrNotLeader)
 	}
@@ -294,10 +469,119 @@ func (n *Node) becomeFollower(term uint64, leader NodeID, persist bool) uint64 {
 	return seq
 }
 
-// resetElection draws a new randomized timeout. | resetElection 抽取新的随机超时。
+// resetElection draws a new randomized timeout and arms the fine-grained
+// wall-clock election timer. The timer keeps the discrete tick window for the
+// pre-vote lease check but adds sub-tick jitter, so large clusters do not all
+// campaign on the same tick boundary. | resetElection 抽取新的随机超时并启动细粒度
+// 墙钟选举定时器。定时器保留 pre-vote 租约检查所需的离散 tick 窗口，同时加入
+// 亚 tick 抖动，避免大集群在同一 tick 边界同时竞选。
 func (n *Node) resetElection() {
 	n.electionElapsed = 0
 	n.electionTimeout = n.cfg.electionTimeoutTicks()
+	n.armElectionTimer()
+}
+
+// armElectionTimer schedules one election deadline. A single reusable timer is
+// reset on each heartbeat, avoiding an allocation per AppendEntries. A stale
+// timer event is recognized by comparing the current wall clock with
+// electionDeadline. | armElectionTimer 安排一次选举截止时间。每次心跳重置同一个
+// 可复用定时器，避免每条 AppendEntries 都分配定时器。通过当前墙钟与
+// electionDeadline 比较识别过期事件。
+func (n *Node) armElectionTimer() {
+	interval := n.tickInterval
+	if interval <= 0 {
+		interval = n.cfg.TickInterval
+	}
+	if interval <= 0 {
+		interval = 100 * time.Millisecond
+	}
+	base := time.Duration(n.electionTimeout) * interval
+	jitter := time.Duration(fastrand() % uint64(interval))
+	delay := base + jitter
+	if n.cfg.ElectionStagger > 0 {
+		n.refreshElectionRank()
+		stagger := time.Duration(n.electionRank) * n.cfg.ElectionStagger
+		if stagger > base {
+			// Bound the preference delay so a failed low-ranked node cannot make
+			// failover arbitrarily slow in a very large cluster. | 限制优先延迟，
+			// 避免大集群中低优先级首选节点故障时使故障转移无限变慢。
+			stagger = base
+		}
+		delay += stagger
+	}
+	n.electionDeadline = time.Now().Add(delay)
+	if n.electionTimer == nil {
+		n.electionTimer = time.NewTimer(delay)
+		return
+	}
+	if !n.electionTimer.Stop() {
+		select {
+		case <-n.electionTimer.C:
+		default:
+		}
+	}
+	n.electionTimer.Reset(delay)
+}
+
+// refreshElectionRank computes this node's zero-based rank among the sorted
+// voter IDs. All replicas derive the same order from the replicated membership
+// without exchanging extra priority state. | refreshElectionRank 计算本节点在
+// voter ID 升序列表中的零基排名。所有副本从复制的成员配置推导同一顺序，无需交换
+// 额外优先级状态。
+func (n *Node) refreshElectionRank() {
+	if n.electionRankConf == n.conf {
+		return
+	}
+	n.electionRankConf = n.conf
+	n.electionRank = 0
+	if n.conf == nil {
+		return
+	}
+	ids := make([]NodeID, 0, len(n.conf.voters)+len(n.conf.votersOut))
+	for id := range n.conf.voters {
+		ids = append(ids, id)
+	}
+	for id := range n.conf.votersOut {
+		if _, ok := n.conf.voters[id]; !ok {
+			ids = append(ids, id)
+		}
+	}
+	slices.Sort(ids)
+	for i, id := range ids {
+		if id == n.id {
+			n.electionRank = i
+			return
+		}
+	}
+	n.electionRank = len(ids)
+}
+
+// handleElectionTimer starts a campaign or re-arms for a non-voter. A timer
+// event older than the current deadline is a harmless leftover from a reset. |
+// handleElectionTimer 发起竞选，非投票成员则重新计时。早于当前截止时间的定时器
+// 事件是重置后的无害残留。
+func (n *Node) handleElectionTimer() {
+	if n.stopped.Load() || n.electionDeadline.After(time.Now()) {
+		return
+	}
+	if n.state == StateLeader {
+		// A leader is driven by heartbeats and check-quorum, not this timer. |
+		// 领导者由心跳与法定人数检查驱动，不使用该定时器。
+		return
+	}
+	if !n.conf.isVoter(n.id) {
+		n.resetElection()
+		return
+	}
+	n.campaign(!n.cfg.DisablePreVote)
+}
+
+// stopElectionTimer stops the pending timer when the event loop exits. |
+// stopElectionTimer 在事件循环退出时停止待触发定时器。
+func (n *Node) stopElectionTimer() {
+	if n.electionTimer != nil {
+		n.electionTimer.Stop()
+	}
 }
 
 // handleCampaignRequest responds to a forced Campaign call. | handleCampaignRequest
@@ -329,6 +613,9 @@ func (n *Node) resolveCampaign(err error) {
 // handleTimeoutNow starts an immediate election for a leader transfer. | handleTimeoutNow
 // 为领导权转移立即发起选举。
 func (n *Node) handleTimeoutNow(m Message) {
+	if m.Term != n.term || n.leader != m.From || !n.conf.isVoter(m.From) {
+		return
+	}
 	if n.state == StateLeader || !n.conf.isVoter(n.id) {
 		return
 	}

@@ -14,8 +14,8 @@ const proposalShards = 64
 // proposalShard is one lock-protected intake stripe. | proposalShard 是一个带锁的
 // 入口分片。
 type proposalShard struct {
-	mu    sync.Mutex
 	items []*proposal
+	mu    sync.Mutex
 }
 
 // proposalQueue is a bounded multi-producer intake drained in batches by the
@@ -26,9 +26,9 @@ type proposalShard struct {
 // 事件循环批量取出。生产者散列到锁分片队列，32 个并发客户端很少争用同一互斥锁；
 // 分片由空变非空时通知共享通道。位图让事件循环无需扫描全部分片即可找到就绪分片。
 type proposalQueue struct {
+	notify chan struct{}
 	shards [proposalShards]proposalShard
 	ready  atomic.Uint64
-	notify chan struct{}
 	limit  int
 	closed atomic.Bool
 }

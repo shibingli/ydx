@@ -32,7 +32,7 @@ ydx 是 yd 全栈框架的可复用组件仓库；组件源码以本仓库为唯
 - 产品模块：`errs`、`sysinfo`、`gc`、`buffpool`、`pool`、`protocol`、`nodeid`、`base64`、`json`、`xml`、`afs`、
   `config`、`log`、`regexpx`、`router`、`gorm`、`redis`、`asynq`、`cron`、`cache`、`sse`、`websocket`、
   `webtransport`、`realtime`、`render`、`i18n`、`openapi`、`openapi/ydrouter`、`jwt`、`captcha`、`guomi`、
-  `workflow`、`waf`、`raft`、`raft/ydrouter`、`rdma`、`middleware` 及
+  `workflow`、`waf`、`raft`、`rdma`、`middleware` 及
   `middleware/{accesslog,asyncafter,compress,cors,ratelimit,recovery,requestid,reqlog}`。
 - `waf`（根目录）是唯一的 WAF 实现：自研 SecLang 引擎，原生支持 `router` 与 `net/http`，
   带热更新、钩子、原生/WASM 插件与报警；热路径使用必需字面量/字节集/最小长度预过滤与
@@ -62,7 +62,10 @@ ydx 是 yd 全栈框架的可复用组件仓库；组件源码以本仓库为唯
   编译，使用本仓 `github.com/shibingli/ydx/rdma`（经 purego 运行时加载
   `libibverbs`，**不使用 cgo**），默认构建为返回 `ErrUnsupported` 的桩。`raft` 的
   RDMA 传输按注册槽位对流帧分块/重组，快照与大日志批次不要求超大槽位。`raft`
-  核心不依赖 `ydx/router`，YD 路由适配只在 `raft/ydrouter`。
+  核心不依赖 `ydx/router`；`HTTPTransport.Handler().ServeHTTP` 与
+  `router.HandlerFuncRaw` 底层函数类型相同，可直接
+  `r.HandleRaw(http.MethodPost, path, tr.Handler().ServeHTTP)`，原生 `net/http`
+  使用 `tr.Handler()`，不再维护独立的 `raft/ydrouter` 包。
 - `rdma` 是独立的纯 Go RDMA 传输模块：经 `github.com/ebitengine/purego`（Apache-2.0）
   在运行时加载 `libibverbs`，**不使用 cgo**；Linux + 64 位 + `-tags rdma` 编译，
   没有标签时为返回 `ErrUnsupported` 的桩实现。支持 RoCE v1/v2 与 InfiniBand、

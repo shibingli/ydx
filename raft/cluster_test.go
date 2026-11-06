@@ -153,6 +153,12 @@ func TestRestartFollowerReplaysLog(t *testing.T) {
 func TestSnapshotCatchUpLearner(t *testing.T) {
 	c := newTestCluster(t, 3, func(cfg *Config) {
 		cfg.SnapshotEntries = 5
+		// Keep the catch-up window smaller than the log so a fresh learner at
+		// index 1 still needs a snapshot; the default 256 would let it replay
+		// entries and would not exercise InstallSnapshot. | 让追赶窗口小于日志，
+		// 使索引 1 的全新学习者仍需快照；默认 256 会让它直接重放日志，无法覆盖
+		// InstallSnapshot。
+		cfg.SnapshotCatchUpEntries = 1
 	})
 	leader := c.waitLeader(5 * time.Second)
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)

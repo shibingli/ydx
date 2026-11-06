@@ -7,23 +7,23 @@ import (
 
 // Result is the outcome of a committed proposal. | Result 是已提交提案的结果。
 type Result struct {
+	Value any
 	Index uint64
 	Term  uint64
-	Value any
 }
 
 // futureResult is the channel payload. | futureResult 是通道载荷。
 type futureResult struct {
-	result Result
 	err    error
+	result Result
 }
 
 // Future waits for a proposal to be committed and applied. The zero value is
 // not usable. | Future 等待提案被提交并应用。零值不可用。
 type Future struct {
+	ch    chan futureResult
 	index uint64
 	term  uint64
-	ch    chan futureResult
 }
 
 // newFuture builds a one-shot future. | newFuture 构建一次性 Future。
@@ -117,8 +117,8 @@ const futureShards = 64
 
 // futureShard is one lock-protected map. | futureShard 是一个带锁的 map。
 type futureShard struct {
-	mu sync.Mutex
 	m  map[uint64]*Future
+	mu sync.Mutex
 }
 
 // futureStore tracks proposals by log index. Apply runs on its own goroutine,

@@ -24,28 +24,33 @@ const (
 	httpFrameVersion  = byte(1)
 	httpFlagHMAC      = byte(1)
 	httpSignatureHead = "X-Ydx-Raft-Signature"
-	maxFrameMessages  = 1 << 20
+	maxFrameMessages  = 1 << 16
+	// minMessageWireBytes is the smallest encoded message: protocol version,
+	// type, flags and ten one-byte varints. It bounds a claimed batch count
+	// before the message slice is allocated. | minMessageWireBytes 是最小编码消息：
+	// 协议版本、类型、标志与十个单字节 varint。它在分配消息切片前约束声明的批量数量。
+	minMessageWireBytes = 13
 )
 
 // HTTPTransportOptions configures the HTTP transport. | HTTPTransportOptions 配置
 // HTTP 传输。
 type HTTPTransportOptions struct {
-	// ID is the local node ID. When non-zero, inbound messages addressed to a
-	// different ID are rejected. | ID 是本地节点标识。非零时，拒绝收件人不是本地
-	// 节点的入站消息。
-	ID NodeID
-	// Path is the HTTP endpoint for Raft messages. Default "/raft/message".
-	// | Path 是 Raft 消息的 HTTP 端点，默认 "/raft/message"。
-	Path string
 	// Client is the outbound HTTP client. Nil uses a private client with a 30s
 	// timeout. Supply a client with TLS configuration for HTTPS peers. | Client
 	// 是出站 HTTP 客户端。nil 使用带 30 秒超时的私有客户端。为 HTTPS 对端提供带 TLS
 	// 配置的客户端。
 	Client *http.Client
+	// Path is the HTTP endpoint for Raft messages. Default "/raft/message".
+	// | Path 是 Raft 消息的 HTTP 端点，默认 "/raft/message"。
+	Path string
 	// SharedSecret enables HMAC-SHA256 authentication of every frame. Use it
 	// together with TLS; HMAC authenticates, TLS encrypts. | SharedSecret 启用每帧
 	// HMAC-SHA256 认证。应与 TLS 一起使用；HMAC 负责认证，TLS 负责加密。
 	SharedSecret []byte
+	// ID is the local node ID. When non-zero, inbound messages addressed to a
+	// different ID are rejected. | ID 是本地节点标识。非零时，拒绝收件人不是本地
+	// 节点的入站消息。
+	ID NodeID
 	// MaxBodyBytes caps inbound frame size. Default 64 MiB. Snapshots must fit.
 	// | MaxBodyBytes 限制入站帧大小，默认 64 MiB；快照必须能放下。
 	MaxBodyBytes int64
@@ -59,28 +64,29 @@ type HTTPTransportOptions struct {
 // middleware. | HTTPTransport 以带认证的二进制 POST 体传递 Raft 消息，易挂载到现有
 // HTTP 服务器、TLS 终结器与认证中间件之后。
 type HTTPTransport struct {
-	id        NodeID
-	path      string
-	client    *http.Client
-	ownClient bool
-	secret    []byte
-	maxBody   int64
-	queue     int
-
-	mu      sync.RWMutex
+	client  *http.Client
 	peers   map[NodeID]*httpPeer
 	handler atomic.Pointer[func(Message)]
-	stopped atomic.Bool
 	stopCh  chan struct{}
-	once    sync.Once
-	drops   atomic.Uint64
+	path    string
+	secret  []byte
+	id      NodeID
+	maxBody int64
+	queue   int
+
+	drops atomic.Uint64
+
+	mu        sync.RWMutex
+	once      sync.Once
+	stopped   atomic.Bool
+	ownClient bool
 }
 
 // httpPeer owns one ordered outbound queue. | httpPeer 持有一条有序出站队列。
 type httpPeer struct {
-	id   NodeID
-	addr string
 	ch   chan []Message
+	addr string
+	id   NodeID
 }
 
 // NewHTTPTransport returns a transport with a normalized endpoint path. | NewHTTPTransport
@@ -300,27 +306,41 @@ func (t *HTTPTransport) SendImmediate() bool { return true }
 // | Drops 返回因队列满、编码失败或 HTTP 错误而丢弃的帧数。
 func (t *HTTPTransport) Drops() uint64 { return t.drops.Load() }
 
-// encodeHTTPFrame builds a checksummed, optionally authenticated frame. | encodeHTTPFrame
-// 构建带校验和、可选认证的帧。
+// FrameLimit reports the maximum inbound body accepted by this transport.
+// | FrameLimit 返回该传输可接受的最大入站请求体。
+func (t *HTTPTransport) FrameLimit() int64 { return t.maxBody }
+
+// encodeHTTPFrame builds a checksummed, optionally authenticated frame. |
+// encodeHTTPFrame 构建带校验和、可选认证的帧。
 func encodeHTTPFrame(msgs []Message) ([]byte, error) {
-	flags := byte(0)
-	payload := make([]byte, 0, 256)
-	payload = binary.AppendUvarint(payload, uint64(len(msgs)))
+	return encodeHTTPFrameInto(nil, msgs)
+}
+
+// encodeHTTPFrameInto appends one frame to dst, avoiding an intermediate
+// payload copy on the large snapshot path. | encodeHTTPFrameInto 将一帧追加到 dst，
+// 避免大快照路径上的中间负载复制。
+func encodeHTTPFrameInto(dst []byte, msgs []Message) ([]byte, error) {
+	if len(msgs) > maxFrameMessages {
+		return nil, errs.Detail(ErrTooLarge, "http frame messages %d", len(msgs))
+	}
+	start := len(dst)
+	dst = append(dst, make([]byte, 10)...)
+	payloadStart := len(dst)
+	dst = binary.AppendUvarint(dst, uint64(len(msgs)))
 	for i := range msgs {
 		data, err := MarshalMessage(msgs[i])
 		if err != nil {
 			return nil, err
 		}
-		payload = binary.AppendUvarint(payload, uint64(len(data)))
-		payload = append(payload, data...)
+		dst = binary.AppendUvarint(dst, uint64(len(data)))
+		dst = append(dst, data...)
 	}
-	crc := crc32.Checksum(payload, castagnoli)
-	out := make([]byte, 0, 4+1+1+4+len(payload))
-	out = append(out, httpFrameMagic...)
-	out = append(out, httpFrameVersion, flags)
-	out = binary.LittleEndian.AppendUint32(out, crc)
-	out = append(out, payload...)
-	return out, nil
+	crc := crc32.Checksum(dst[payloadStart:], castagnoli)
+	copy(dst[start:start+4], httpFrameMagic)
+	dst[start+4] = httpFrameVersion
+	dst[start+5] = 0
+	binary.LittleEndian.PutUint32(dst[start+6:start+10], crc)
+	return dst, nil
 }
 
 // decodeHTTPFrame validates framing, checksum and message payloads. | decodeHTTPFrame
@@ -351,6 +371,12 @@ func decodeHTTPFrame(frame []byte) ([]Message, error) {
 	}
 	if count > maxFrameMessages {
 		return nil, errs.Detail(ErrTooLarge, "http frame messages %d", count)
+	}
+	// Reject counts that cannot fit in the remaining payload before allocating
+	// the message slice. | 在分配消息切片前拒绝剩余载荷不可能容纳的数量。
+	if count > uint64(len(payload)-d.pos)/minMessageWireBytes {
+		return nil, errs.Detail(ErrTooLarge, "http frame messages %d for %d bytes",
+			count, len(payload)-d.pos)
 	}
 	msgs := make([]Message, 0, count)
 	for i := uint64(0); i < count; i++ {

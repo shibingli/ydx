@@ -3,6 +3,7 @@ package raft
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"errors"
 	"net/http/httptest"
 	"testing"
@@ -184,5 +185,15 @@ func TestClusterOverTCP(t *testing.T) {
 		if got := fsms[i].value("tcp"); got != "ok" {
 			t.Fatalf("node %d value = %q", i+1, got)
 		}
+	}
+}
+
+// TestStreamFrameLengthCap rejects an implausible frame length before
+// allocating memory. | TestStreamFrameLengthCap 在分配内存前拒绝不合理的帧长度。
+func TestStreamFrameLengthCap(t *testing.T) {
+	var header [4]byte
+	binary.BigEndian.PutUint32(header[:], ^uint32(0))
+	if _, err := readStreamFrame(bytes.NewReader(header[:]), nil, 0); !errors.Is(err, ErrTooLarge) {
+		t.Fatalf("huge frame error = %v, want ErrTooLarge", err)
 	}
 }

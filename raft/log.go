@@ -4,9 +4,13 @@ import (
 	"github.com/shibingli/ydx/errs"
 )
 
-// raftLog is the in-memory log window. Entries before firstIndex live only in
-// the latest snapshot and can be served from there. | raftLog 是内存日志窗口。
-// firstIndex 之前的日志项只存在于最新快照中。
+// raftLog is the in-memory log window. Entries after the snapshot base are
+// authoritative; compact may retain a bounded prefix at or below snapshotIndex
+// so slightly lagging followers can catch up without a snapshot transfer. That
+// prefix is memory-only and is not recovered after a restart. | raftLog 是内存
+// 日志窗口。快照基点之后的日志项是权威数据；compact 可保留 snapshotIndex 及之前
+// 有界的前缀，使略微落后的跟随者无需快照传输即可追上。该前缀仅存在于内存，重启后
+// 不会恢复。
 type raftLog struct {
 	entries       []Entry
 	firstIndex    uint64
@@ -175,7 +179,11 @@ func (l *raftLog) maybeAppend(prevIndex, prevTerm, leaderCommit uint64, entries 
 	// snapshot base must be rejected. | prevIndex 等于快照索引时可用快照任期校验，
 	// 索引 0 是空日志的合法前驱；只有严格早于快照基点的位置才必须拒绝。
 	if prevIndex < l.snapshotIndex {
-		return 0, 0, 0, &conflict{index: l.firstIndex, term: l.snapshotTerm}
+		// Point the leader at the first position checkable from the snapshot
+		// term, not at a retained catch-up entry that this log still refuses to
+		// match below the snapshot base. | 让领导者从可用快照任期校验的第一个
+		// 位置重试，而不是指向本日志在快照基点之下仍拒绝匹配的追赶日志项。
+		return 0, 0, 0, &conflict{index: l.snapshotIndex + 1, term: l.snapshotTerm}
 	}
 	if prevIndex > l.lastIndex {
 		return 0, 0, 0, &conflict{index: l.lastIndex + 1, term: 0, tooFar: true}
@@ -236,9 +244,12 @@ func (l *raftLog) restore(s *Snapshot) {
 	l.lastIndex = s.Index
 }
 
-// compact folds entries through index into the snapshot base. | compact 将 index
-// 及之前的日志项折叠进快照基点。
-func (l *raftLog) compact(index uint64) error {
+// compact folds entries through index into the snapshot base. catchUp retains
+// up to that many older entries in memory for follower catch-up; with zero the
+// window starts strictly after the snapshot. | compact 将 index 及之前的日志项
+// 折叠进快照基点。catchUp 会在内存中保留最多该数量的更旧日志项供跟随者追赶；
+// 为零时窗口严格位于快照之后。
+func (l *raftLog) compact(index, catchUp uint64) error {
 	if index <= l.snapshotIndex {
 		return nil
 	}
@@ -246,13 +257,27 @@ func (l *raftLog) compact(index uint64) error {
 		return errs.Detail(ErrUnavailable, "compact %d past last %d", index, l.lastIndex)
 	}
 	term := l.mustTerm(index)
-	keep := append([]Entry(nil), l.entries[index-l.firstIndex+1:]...)
+	keepFrom := index + 1
+	if catchUp > 0 {
+		if index > catchUp && index-catchUp > l.firstIndex {
+			keepFrom = index - catchUp
+		} else {
+			keepFrom = l.firstIndex
+		}
+	}
+	if keepFrom < l.firstIndex {
+		keepFrom = l.firstIndex
+	}
+	cut := int(keepFrom - l.firstIndex)
+	keep := append([]Entry(nil), l.entries[cut:]...)
 	l.entries = keep
 	l.snapshotIndex = index
 	l.snapshotTerm = term
-	l.firstIndex = index + 1
+	l.firstIndex = keepFrom
 	if len(keep) == 0 {
 		l.lastIndex = index
+	} else {
+		l.lastIndex = keep[len(keep)-1].Index
 	}
 	return nil
 }

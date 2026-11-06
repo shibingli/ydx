@@ -45,7 +45,7 @@ func decodeRDMAChunkHeader(src []byte, maxFrame int) (total, offset uint32, err 
 	if total == 0 {
 		return 0, 0, errs.Detail(ErrCorrupt, "zero RDMA frame length")
 	}
-	if maxFrame > 0 && uint64(total) > uint64(maxFrame) {
+	if uint64(total) > uint64(maxMessageBytes) || (maxFrame > 0 && uint64(total) > uint64(maxFrame)) {
 		return 0, 0, errs.Detail(ErrTooLarge, "RDMA frame %d bytes", total)
 	}
 	if offset >= total {

@@ -5,7 +5,9 @@ package raft
 type MessageType uint8
 
 const (
-	// MsgHup asks the local node to start an election. | MsgHup 请求本地节点发起选举。
+	// MsgHup is a local election trigger. It is never accepted from the network;
+	// use Node.Campaign for a local request. | MsgHup 是本地选举触发器，绝不从
+	// 网络接受；本地请求请使用 Node.Campaign。
 	MsgHup MessageType = iota + 1
 	// MsgPreVote probes an election without incrementing the term. | MsgPreVote
 	// 在不提升任期的情况下探测选举。
@@ -88,7 +90,9 @@ func (m MessageType) String() string {
 // message is in flight. | Message 是一条 Raft RPC。消息在途期间日志项与快照数据
 // 不可修改。
 type Message struct {
-	Type       MessageType
+	Snapshot   *Snapshot
+	Context    []byte
+	Entries    []Entry
 	From       NodeID
 	To         NodeID
 	Group      GroupID
@@ -99,9 +103,7 @@ type Message struct {
 	Commit     uint64
 	RejectHint uint64
 	RejectTerm uint64
-	Context    []byte
-	Entries    []Entry
-	Snapshot   *Snapshot
+	Type       MessageType
 	Reject     bool
 }
 

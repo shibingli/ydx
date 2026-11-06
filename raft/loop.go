@@ -9,7 +9,16 @@ import (
 
 // stop closes the shared stop channel exactly once. | stop 只关闭一次共享停止通道。
 func (n *Node) stop() {
-	n.stopOnce.Do(func() { close(n.stopCh) })
+	n.stopOnce.Do(func() {
+		// Discard queued apply work before waiting for the worker. Otherwise a
+		// large backlog would keep Close blocked while it drains entries that
+		// can no longer be acknowledged. | 在等待 apply 协程前丢弃排队工作，否则
+		// 大量积压会让 Close 一直等待已经无法确认的日志项。
+		if n.applyQueue != nil {
+			n.applyQueue.close()
+		}
+		close(n.stopCh)
+	})
 }
 
 // run is the single Raft event loop. All mutable Raft state below the atomic
@@ -18,6 +27,7 @@ func (n *Node) stop() {
 func (n *Node) run() {
 	defer n.wg.Done()
 	defer close(n.doneCh)
+	defer n.stopElectionTimer()
 	if n.autoCampaign {
 		n.campaign(false)
 	}
@@ -31,6 +41,8 @@ func (n *Node) run() {
 			return
 		case <-n.tickCh:
 			n.tick()
+		case <-n.electionTimer.C:
+			n.handleElectionTimer()
 		case m := <-n.recvCh:
 			n.step(m)
 		case <-n.proposals.notify:
@@ -115,15 +127,49 @@ func (n *Node) senderLoop() {
 	}
 }
 
-// flushOutbound batches messages produced by one event loop iteration. If the
-// outbound queue is full the batch is dropped; Raft retransmits. | flushOutbound
-// 批量发送一个事件循环迭代产生的消息。出站队列满时整批丢弃；Raft 会重传。
+// flushOutbound batches messages produced by one event loop iteration. Control
+// traffic is handed to the transport first so heartbeats, votes, snapshots and
+// lease probes are not stuck behind a large replication batch. If the outbound
+// queue is full the data batch is dropped; Raft retransmits. | flushOutbound 批量
+// 发送一个事件循环迭代产生的消息。控制流量先交给传输层，避免心跳、选票、快照与
+// 租约探测排在大批复制消息之后。出站队列满时数据批次被丢弃；Raft 会重传。
 func (n *Node) flushOutbound() {
 	if len(n.outBuf) == 0 {
 		return
 	}
-	msgs := n.outBuf
+	if n.outControls == 0 {
+		msgs := n.outBuf
+		n.outBuf = n.outBuf[:0]
+		n.sendBatch(msgs)
+		return
+	}
+	ctrl := n.outCtrlBuf[:0]
+	data := n.outDataBuf[:0]
+	for i := range n.outBuf {
+		if isControlMessage(n.outBuf[i].Type) {
+			ctrl = append(ctrl, n.outBuf[i])
+		} else {
+			data = append(data, n.outBuf[i])
+		}
+	}
 	n.outBuf = n.outBuf[:0]
+	n.outControls = 0
+	n.outCtrlBuf = ctrl
+	n.outDataBuf = data
+	if len(ctrl) > 0 {
+		n.sendBatch(ctrl)
+	}
+	if len(data) > 0 {
+		n.sendBatch(data)
+	}
+}
+
+// sendBatch hands one ordered batch to the transport. | sendBatch 将一个有序批次
+// 交给传输层。
+func (n *Node) sendBatch(msgs []Message) {
+	if len(msgs) == 0 {
+		return
+	}
 	if n.immediateTransport {
 		// Built-in transports only enqueue, so the slice is reusable as soon as
 		// Send returns. | 内置传输只入队，因此 Send 返回后即可复用切片。
@@ -151,7 +197,26 @@ func (n *Node) send(m Message) {
 		return
 	}
 	n.metrics.messagesOut.Add(1)
+	if isControlMessage(m.Type) {
+		n.outControls++
+	}
 	n.outBuf = append(n.outBuf, m)
+}
+
+// sendAfterTerm sends m once the hard-state write identified by seq is durable.
+// A zero seq means the term was already durable and m can be sent immediately.
+// | sendAfterTerm 在 seq 标识的硬状态写入持久化后发送 m。seq 为零表示任期已持久，
+// 可立即发送。
+func (n *Node) sendAfterTerm(seq uint64, term uint64, m Message) {
+	if seq == 0 {
+		n.send(m)
+		return
+	}
+	n.deferAction(seq, func(err error) {
+		if err == nil && n.term == term {
+			n.send(m)
+		}
+	})
 }
 
 // broadcast sends one message to every peer in the active configuration.
@@ -192,18 +257,38 @@ func (n *Node) step(m Message) {
 	if m.To != n.id || m.From == 0 {
 		return
 	}
+	if m.Term < n.term {
+		// Stale requests and most stale responses are ignored. Pre-vote replies
+		// echo the responder's term, which may legitimately lag the candidate,
+		// and read-index replies are matched by their unique context. | 过期请求与
+		// 大多数过期响应会被忽略。预投票应答回显应答者任期，可能合法地低于候选者；
+		// 读索引应答由唯一上下文匹配。
+		switch m.Type {
+		case MsgPreVote, MsgPreVoteResp, MsgReadIndexResp:
+		default:
+			return
+		}
+	}
 	if m.Term > n.term {
-		if m.Type == MsgPreVote {
+		switch m.Type {
+		case MsgPreVote:
 			// Pre-vote intentionally does not advance the local term. | 预投票有意
 			// 不推进本地任期。
 			n.handlePreVote(m)
 			return
+		case MsgApp, MsgHeartbeat, MsgSnap:
+			// The handler advances the term and persists it together with its
+			// response barrier. | 处理器会推进任期，并与响应屏障一起持久化。
+		case MsgTimeoutNow:
+			// The sender is the new leader; install it so the handler's leader
+			// check succeeds after the term is durable. | 发送者是新领导者；先安装
+			// 它，使处理器在任期持久化后通过领导者校验。
+			n.becomeFollower(m.Term, m.From, true)
+		default:
+			n.becomeFollower(m.Term, 0, true)
 		}
-		n.becomeFollower(m.Term, 0, true)
 	}
 	switch m.Type {
-	case MsgHup:
-		n.campaign(false)
 	case MsgPreVote:
 		n.handlePreVote(m)
 	case MsgPreVoteResp:
@@ -237,6 +322,7 @@ func (n *Node) step(m Message) {
 
 // tick advances the logical clock. | tick 推进逻辑时钟。
 func (n *Node) tick() {
+	n.tickCount++
 	switch n.state {
 	case StateLeader:
 		n.tickLeader()
@@ -247,28 +333,22 @@ func (n *Node) tick() {
 	}
 }
 
-// tickFollower starts an election after a randomized timeout. | tickFollower 在随机
-// 超时后发起选举。
+// tickFollower advances the tick clock used by pre-vote and leader-quorum
+// checks. Elections are driven by the fine-grained wall-clock timer, not by
+// tick quantization. | tickFollower 推进 pre-vote 与领导者法定人数检查使用的
+// tick 时钟。选举由细粒度墙钟定时器驱动，而不是 tick 量化。
 func (n *Node) tickFollower() {
 	n.electionElapsed++
-	if n.electionElapsed < n.electionTimeout {
-		return
-	}
-	if !n.conf.isVoter(n.id) {
-		n.electionElapsed = 0
-		n.electionTimeout = n.cfg.electionTimeoutTicks()
-		return
-	}
-	n.campaign(!n.cfg.DisablePreVote)
 }
 
-// tickCandidate retries an election after a timeout. | tickCandidate 在超时后重试选举。
+// tickCandidate advances the tick clock while a candidate waits for votes. |
+// tickCandidate 在候选者等待选票时推进 tick 时钟。
 func (n *Node) tickCandidate() {
 	n.electionElapsed++
-	if n.electionElapsed < n.electionTimeout {
-		return
+	if n.state == StatePreCandidate && len(n.preVoteRemaining) > 0 &&
+		n.tickCount >= n.preVoteExpandTick {
+		n.expandPreVote()
 	}
-	n.campaign(!n.cfg.DisablePreVote)
 }
 
 // tickLeader drives heartbeats, quorum checks and leader transfer deadlines.
@@ -334,6 +414,7 @@ func (n *Node) failWaiters(err error) {
 	}
 	n.futures.failAll(err)
 	n.remoteReads.failAll(err)
+	n.failPendingReads(err)
 	n.metrics.futuresFailed.Add(1)
 	if n.pendingConf != nil && n.pendingConf.future != nil && !n.pendingConf.resolved {
 		n.pendingConf.future.fail(err)

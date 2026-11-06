@@ -20,8 +20,8 @@ type linkKey struct {
 type memRoute struct {
 	endpoints map[NodeID]*MemTransport
 	blocked   map[linkKey]struct{}
-	latency   time.Duration
 	drop      func(from, to NodeID) bool
+	latency   time.Duration
 }
 
 // MemNetwork is an in-process network for tests and benchmarks. It can drop,
@@ -30,13 +30,13 @@ type memRoute struct {
 // 是用于测试与基准的进程内网络，可在不触碰 Raft 核心的情况下丢包、延迟、分区与恢复。
 // 路由使用不可变快照，因此热路径投递不加锁。
 type MemNetwork struct {
-	mu        sync.Mutex
 	endpoints map[NodeID]*MemTransport
 	blocked   map[linkKey]struct{}
-	latency   time.Duration
 	drop      func(from, to NodeID) bool
-	closed    bool
 	route     atomic.Pointer[memRoute]
+	latency   time.Duration
+	mu        sync.Mutex
+	closed    bool
 }
 
 // NewMemNetwork returns an empty in-process network. | NewMemNetwork 返回空的进程内
@@ -233,15 +233,15 @@ func (n *MemNetwork) deliver(from NodeID, m Message) {
 // MemTransport is one endpoint on a MemNetwork. | MemTransport 是 MemNetwork 上的
 // 一个端点。
 type MemTransport struct {
-	id      NodeID
 	net     *MemNetwork
 	inbox   chan Message
 	done    chan struct{}
 	handler atomic.Pointer[func(Message)]
-	started atomic.Bool
-	closed  atomic.Bool
+	id      NodeID
 	drops   atomic.Uint64
 	once    sync.Once
+	started atomic.Bool
+	closed  atomic.Bool
 }
 
 // ID returns the endpoint identifier. | ID 返回端点标识。

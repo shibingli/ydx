@@ -1,5 +1,7 @@
 package raft
 
+import "time"
+
 // progressState is the replication mode of one follower. | progressState 是单个
 // 跟随者的复制模式。
 type progressState uint8
@@ -123,13 +125,16 @@ func (in *inflights) grow() {
 
 // progress tracks replication state for one peer. | progress 跟踪一个对端的复制状态。
 type progress struct {
+	inflights        *inflights
+	snapshotErr      error
+	snapshotSentAt   time.Time
 	match            uint64
 	next             uint64
 	pendingSnapshot  uint64
+	snapshotErrIndex uint64
 	lastSnapshotTick uint64
 	state            progressState
 	recentActive     bool
-	inflights        *inflights
 }
 
 // newProgress builds a follower starting at next. | newProgress 构建从 next 开始的

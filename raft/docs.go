@@ -49,22 +49,23 @@
 //
 // # HTTP transport | HTTP 传输
 //
-// The YD router is the first-class entry point. The raft/ydrouter module mounts
-// the transport as a POST route on an existing router, sharing its middleware
-// chain, authentication and observability; the same HTTPTransport.Handler is
-// also a standard net/http handler for compatibility. | YD 路由是一等入口。
-// raft/ydrouter 模块把传输挂载为现有路由器上的 POST 路由，共享中间件链、认证与
-// 可观测性；同一个 HTTPTransport.Handler 也是标准 net/http 处理器，用于兼容。
+// The YD router is the first-class entry point. HTTPTransport.Handler returns a
+// standard http.Handler, and its ServeHTTP method value is directly assignable
+// to router.HandlerFuncRaw, so no adapter module or extra dependency is needed:
+// mounting shares the router's middleware chain, authentication and
+// observability. The same handler also works with net/http. | YD 路由是一等入口。
+// HTTPTransport.Handler 返回标准 http.Handler，其 ServeHTTP 方法值可直接赋给
+// router.HandlerFuncRaw，因此无需适配模块或额外依赖：挂载后共享路由器的中间件链、
+// 认证与可观测性；同一个处理器也适用于原生 net/http。
 //
 //	tr, _ := raft.NewHTTPTransport(raft.HTTPTransportOptions{
 //		ID: 1, Path: "/raft/message", SharedSecret: secret,
 //	})
 //
-//	// YD router first | YD 路由优先
+//	// YD router: same underlying func type, no raft/ydrouter package | YD 路由：
+//	// 底层函数类型相同，无需 raft/ydrouter 包
 //	r := router.New()
-//	if err := ydrouter.Mount(r, "/raft/message", tr); err != nil {
-//		// handle
-//	}
+//	r.HandleRaw(http.MethodPost, "/raft/message", tr.Handler().ServeHTTP)
 //
 //	// plain net/http compatibility | 原生 net/http 兼容
 //	http.Handle("/raft/message", tr.Handler())
@@ -74,6 +75,25 @@
 // server for confidentiality. | 此时 Peers 使用 "http://192.168.2.2:23102" 这类
 // 基础 URL。设置 SharedSecret 启用 HMAC-SHA256 认证，并在服务器前使用 TLS 提供
 // 保密性。
+//
+// # Security and limits | 安全与上限
+//
+// Inbound messages are not authenticated by default. Every multi-node deployment
+// must configure TLS and/or SharedSecret (at least 16 bytes); use both for
+// encryption plus frame integrity. RDMA needs HMAC plus IPsec/MACsec for
+// confidentiality. TCP MaxFrameBytes and HTTP MaxBodyBytes must exceed the
+// largest encoded snapshot; a leader logs an explicit error when a snapshot
+// cannot fit instead of retrying silently. | 入站消息默认不认证。所有多节点部署
+// 必须配置 TLS 和/或至少 16 字节的 SharedSecret；两者同时使用可同时获得加密与帧
+// 完整性。RDMA 需要 HMAC 与 IPsec/MACsec 才能保密。TCP MaxFrameBytes 与 HTTP
+// MaxBodyBytes 必须大于最大快照的编码大小；快照无法放下时领导者会记录明确错误，
+// 而不是静默重试。
+//
+// Committed entries are applied only after the local WAL persist completes, so a
+// crash cannot expose effects of an entry that was never durable locally. WAL
+// group commit keeps the encoding contiguous even when append retries overlap.
+// | 已提交日志项只会在本地 WAL 持久化完成后应用，因此崩溃不会暴露本地从未持久化
+// 日志项的副作用。即使追加重试重叠，WAL 组提交仍保持编码区间连续。
 //
 // # RDMA transport | RDMA 传输
 //
@@ -150,10 +170,16 @@
 // snapshot files protected by CRC32C and SHA-256. A snapshot file is trusted
 // only when a durable WAL marker names it, so a crash between the file write
 // and the marker leaves the previous log intact. InstallSnapshot markers reset
-// stale log entries; local compaction snapshots keep the valid tail. | FileStorage
-// 写入带 CRC 校验的 WAL 分段（组提交）以及由 CRC32C 与 SHA-256 保护的原子快照文件。
-// 只有持久 WAL 标记引用快照文件时才会信任它，因此文件写入与标记之间的崩溃会保留旧
-// 日志。InstallSnapshot 标记会丢弃陈旧日志项；本地压缩快照保留有效尾部。
+// stale log entries; local compaction snapshots keep the valid tail. Local
+// compaction also retains up to SnapshotCatchUpEntries covered entries in
+// memory so slightly lagging followers can catch up with AppendEntries; that
+// window is not recovered after a restart. The storage directory is locked
+// against a second writer. | FileStorage 写入带 CRC 校验的 WAL 分段（组提交）以及
+// 由 CRC32C 与 SHA-256 保护的原子快照文件。只有持久 WAL 标记引用快照文件时才会
+// 信任它，因此文件写入与标记之间的崩溃会保留旧日志。InstallSnapshot 标记会丢弃
+// 陈旧日志项；本地压缩快照保留有效尾部，并在内存中额外保留最多
+// SnapshotCatchUpEntries 条已覆盖日志，使略落后的跟随者可用 AppendEntries 追上；
+// 该窗口重启后不会恢复。存储目录带进程级排他锁。
 //
 // # State machine contract | 状态机契约
 //

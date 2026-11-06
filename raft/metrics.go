@@ -20,6 +20,7 @@ type Stats struct {
 	MessagesIn       uint64
 	MessagesOut      uint64
 	MessagesDropped  uint64
+	TransportDrops   uint64
 	AppendsIn        uint64
 	AppendsOut       uint64
 	HeartbeatsIn     uint64
@@ -99,9 +100,13 @@ func (m *metrics) snapshot() Stats {
 // Status is a point-in-time view assembled by the Raft event loop. | Status 是由
 // Raft 事件循环组装的即时视图。
 type Status struct {
+	Voters           []NodeID
+	Learners         []NodeID
+	VotersOutgoing   []NodeID
+	LearnersOutgoing []NodeID
+	Peers            []PeerStatus
 	ID               NodeID
 	Group            GroupID
-	State            State
 	Term             uint64
 	Leader           NodeID
 	Commit           uint64
@@ -110,25 +115,22 @@ type Status struct {
 	LastTerm         uint64
 	FirstIndex       uint64
 	SnapshotIndex    uint64
-	Voters           []NodeID
-	Learners         []NodeID
-	VotersOutgoing   []NodeID
-	LearnersOutgoing []NodeID
+	LeadTransferee   NodeID
+	State            State
 	Joint            bool
 	Snapshotting     bool
-	LeadTransferee   NodeID
-	Peers            []PeerStatus
 }
 
 // PeerStatus is one follower's replication view. | PeerStatus 是单个跟随者的复制视图。
 type PeerStatus struct {
-	ID              NodeID
 	Addr            string
+	State           string
+	SnapshotError   string
+	ID              NodeID
 	Match           uint64
 	Next            uint64
-	State           string
-	RecentActive    bool
 	PendingSnapshot uint64
 	InflightMsgs    int
 	InflightBytes   int
+	RecentActive    bool
 }
