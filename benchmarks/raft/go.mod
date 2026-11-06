@@ -5,7 +5,7 @@ go 1.27.3
 require (
 	github.com/hashicorp/raft v1.8.0
 	github.com/lni/dragonboat/v4 v4.0.0-20250723143628-076c7f6497dc
-	github.com/shibingli/ydx/raft v0.1.3
+	github.com/shibingli/ydx/raft v0.1.4
 	go.etcd.io/raft/v3 v3.7.0
 	google.golang.org/protobuf v1.36.12
 )
