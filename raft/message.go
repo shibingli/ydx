@@ -43,10 +43,19 @@ const (
 	MsgReadIndex
 	// MsgReadIndexResp answers MsgReadIndex. | MsgReadIndexResp 应答 MsgReadIndex。
 	MsgReadIndexResp
+	// MsgSnapChunk carries one contiguous slice of a chunked snapshot. LogIndex
+	// is the byte offset and LogTerm is the total payload size. |
+	// MsgSnapChunk 携带分块快照的一个连续片段。LogIndex 是字节偏移，LogTerm 是
+	// 负载总大小。
+	MsgSnapChunk
+	// MsgSnapChunkResp acknowledges a chunk; Index is the next contiguous byte the
+	// follower needs and LogIndex echoes the chunk offset. | MsgSnapChunkResp 确认
+	// 一个分块；Index 是跟随者所需的下一连续字节，LogIndex 回显分块偏移。
+	MsgSnapChunkResp
 )
 
 // maxMessageType is the largest valid wire type. | maxMessageType 是最大合法线类型。
-const maxMessageType = MsgReadIndexResp
+const maxMessageType = MsgSnapChunkResp
 
 // String renders a stable RPC name. | String 输出稳定的 RPC 名称。
 func (m MessageType) String() string {
@@ -81,14 +90,23 @@ func (m MessageType) String() string {
 		return "read-index"
 	case MsgReadIndexResp:
 		return "read-index-resp"
+	case MsgSnapChunk:
+		return "snapshot-chunk"
+	case MsgSnapChunkResp:
+		return "snapshot-chunk-resp"
 	default:
 		return "unknown"
 	}
 }
 
 // Message is one Raft RPC. Entry data and snapshot data are immutable while a
-// message is in flight. | Message 是一条 Raft RPC。消息在途期间日志项与快照数据
-// 不可修改。
+// message is in flight. For MsgSnapChunk, LogIndex is the payload byte offset
+// and LogTerm is the total payload size. For MsgSnapChunkResp, Index is the next
+// contiguous offset, LogIndex echoes the chunk offset, and Commit echoes the
+// snapshot index. | Message 是一条 Raft RPC。消息在途期间日志项与快照数据不可
+// 修改。MsgSnapChunk 的 LogIndex 是负载字节偏移，LogTerm 是负载总大小；
+// MsgSnapChunkResp 的 Index 是下一连续偏移，LogIndex 回显分块偏移，Commit 回显
+// 快照索引。
 type Message struct {
 	Snapshot   *Snapshot
 	Context    []byte
@@ -119,7 +137,7 @@ func isControlMessage(t MessageType) bool {
 	switch t {
 	case MsgPreVote, MsgPreVoteResp, MsgVote, MsgVoteResp,
 		MsgHeartbeat, MsgHeartbeatResp, MsgTransferLeader, MsgTimeoutNow,
-		MsgSnap, MsgSnapResp:
+		MsgSnap, MsgSnapResp, MsgSnapChunk, MsgSnapChunkResp:
 		return true
 	default:
 		return false
@@ -130,7 +148,8 @@ func isControlMessage(t MessageType) bool {
 // 是否应答请求。
 func (m Message) isResponse() bool {
 	switch m.Type {
-	case MsgPreVoteResp, MsgVoteResp, MsgAppResp, MsgHeartbeatResp, MsgSnapResp, MsgReadIndexResp:
+	case MsgPreVoteResp, MsgVoteResp, MsgAppResp, MsgHeartbeatResp, MsgSnapResp,
+		MsgReadIndexResp, MsgSnapChunkResp:
 		return true
 	default:
 		return false

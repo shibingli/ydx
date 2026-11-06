@@ -2,12 +2,10 @@ package raft
 
 import (
 	"context"
-	"errors"
 	"sync"
 	"sync/atomic"
 
 	"github.com/shibingli/ydx/errs"
-	ydlog "github.com/shibingli/ydx/log"
 )
 
 // appliedNotifier wakes WaitApplied callers without polling. The waiter count
@@ -143,22 +141,6 @@ func (q *applyQueue) close() {
 	case q.notify <- struct{}{}:
 	default:
 	}
-}
-
-// snapshotRequest asks the apply worker to capture the current state. | snapshotRequest
-// 请求 apply 协程捕获当前状态。
-type snapshotRequest struct {
-	done chan error
-}
-
-// snapshotReady carries a captured image to the event loop for persistence.
-// | snapshotReady 将捕获的镜像交给事件循环持久化。
-type snapshotReady struct {
-	err     error
-	request *snapshotRequest
-	data    []byte
-	index   uint64
-	term    uint64
 }
 
 // applyLoop is the only goroutine that calls FSM.Apply, FSM.Snapshot and
@@ -351,74 +333,6 @@ func (n *Node) restoreSafe(data []byte) (err error) {
 	return n.fsm.Restore(data)
 }
 
-// snapshotSafe wraps FSM.Snapshot with panic containment. | snapshotSafe 用 panic
-// 隔离包装 FSM.Snapshot。
-func (n *Node) snapshotSafe() (data []byte, err error) {
-	defer func() {
-		if r := recover(); r != nil {
-			err = errs.Detail(ErrFSMPanic, "snapshot: %v", r)
-		}
-	}()
-	return n.fsm.Snapshot()
-}
-
-// shouldSnapshot reports whether the applied-entry threshold was crossed.
-// | shouldSnapshot 报告是否跨过已应用日志项阈值。
-func (n *Node) shouldSnapshot() bool {
-	if n.snapshotEntries == 0 {
-		return false
-	}
-	applied := n.applied.Load()
-	base := n.lastSnapshot.Load()
-	return applied > base && applied-base >= n.snapshotEntries
-}
-
-// createSnapshot captures the state machine at the current applied index. It
-// returns true when an image was sent to the event loop. | createSnapshot 在当前
-// 已应用索引处捕获状态机。镜像已发送给事件循环时返回 true。
-func (n *Node) createSnapshot(req *snapshotRequest) bool {
-	index := n.applied.Load()
-	if index == 0 || index <= n.lastSnapshot.Load() {
-		if req != nil {
-			n.snapshotFailure(req, ErrSnapshotOutOfDate)
-		}
-		return false
-	}
-	data, err := n.snapshotSafe()
-	if err != nil {
-		n.metrics.applyErrors.Add(1)
-		n.logf("warn", "raft snapshot failed | raft 快照失败",
-			ydlog.Uint64("node", uint64(n.id)), ydlog.Err(err))
-		if req != nil {
-			n.snapshotFailure(req, err)
-		}
-		return false
-	}
-	ready := snapshotReady{index: index, term: n.appliedTerm, data: data, request: req}
-	select {
-	case n.snapshotReadyCh <- ready:
-		return true
-	case <-n.stopCh:
-		if req != nil {
-			sendErr(req.done, ErrStopped)
-		}
-		return false
-	}
-}
-
-// snapshotFailure reports a capture that never produced an image to the event
-// loop. The event loop owns snapshotting and must clear it even when the apply
-// worker fails before sending a ready image. | snapshotFailure 将未能产出镜像的
-// 捕获报告给事件循环。快照状态由事件循环持有，即使 apply 协程在发送就绪镜像前失败，
-// 也必须清除它。
-func (n *Node) snapshotFailure(req *snapshotRequest, err error) {
-	select {
-	case n.snapshotReadyCh <- snapshotReady{err: err, request: req}:
-	case <-n.stopCh:
-		sendErr(req.done, ErrStopped)
-	}
-}
-
 // advanceApply hands newly committed entries to the apply worker. | advanceApply
 // 将新提交的日志项交给 apply 协程。
 func (n *Node) advanceApply() {
@@ -459,143 +373,4 @@ func (n *Node) advanceApply() {
 	}
 	n.sentApplied = entries[len(entries)-1].Index
 	n.applyQueue.push(applyTask{entries: entries})
-}
-
-// handleSnapshotRequest starts a manual snapshot or queues it behind one in
-// flight. | handleSnapshotRequest 启动手动快照，或将其排在进行中快照之后。
-func (n *Node) handleSnapshotRequest(req *snapshotRequest) {
-	if n.snapshotting {
-		n.snapshotWaiters = append(n.snapshotWaiters, req.done)
-		return
-	}
-	n.snapshotting = true
-	select {
-	case n.applySnapshotCh <- req:
-	case <-n.stopCh:
-		n.snapshotting = false
-		sendErr(req.done, ErrStopped)
-	}
-}
-
-// handleSnapshotReady persists a captured image, compacts memory, and resolves
-// the caller. | handleSnapshotReady 持久化捕获的镜像、压缩内存并结束调用方。
-func (n *Node) handleSnapshotReady(ready snapshotReady) {
-	if ready.err != nil {
-		if !errors.Is(ready.err, ErrSnapshotOutOfDate) {
-			n.metrics.applyErrors.Add(1)
-		}
-		n.snapshotting = false
-		n.signalSnapshotDone()
-		if ready.request != nil {
-			sendErr(ready.request.done, ready.err)
-		}
-		n.startNextSnapshot()
-		return
-	}
-	if ready.index == 0 {
-		n.snapshotting = false
-		n.signalSnapshotDone()
-		if ready.request != nil {
-			sendErr(ready.request.done, ErrSnapshotOutOfDate)
-		}
-		n.startNextSnapshot()
-		return
-	}
-	// A remote InstallSnapshot may have advanced the log while the state machine
-	// was capturing this image. Persisting and publishing an older image would
-	// regress latestSnapshot/confBase below log.snapshotIndex and can send stale
-	// snapshots in a loop. | 状态机捕获镜像期间，远端 InstallSnapshot 可能已推进
-	// 日志。持久化并发布旧镜像会把 latestSnapshot/confBase 回退到
-	// log.snapshotIndex 之下，并可能循环发送过期快照。
-	if ready.index <= n.lastSnapshot.Load() || ready.index <= n.log.snapshotIndex {
-		n.snapshotting = false
-		n.signalSnapshotDone()
-		if ready.request != nil {
-			sendErr(ready.request.done, ErrSnapshotOutOfDate)
-		}
-		n.startNextSnapshot()
-		return
-	}
-	conf := n.configAt(ready.index)
-	snap := &Snapshot{
-		Index:     ready.index,
-		Term:      ready.term,
-		ConfState: conf.confState(),
-		Data:      ready.data,
-	}
-	n.snapshotting = true
-	n.activeSnapshotReq = ready.request
-	seq := n.persistSnapshot(snap, false, func(err error) {
-		n.activeSnapshotReq = nil
-		n.snapshotting = false
-		n.signalSnapshotDone()
-		if err == nil {
-			// Re-check at durability time: another snapshot may have completed
-			// while this one was being written. Never move the in-memory base
-			// backwards. | 持久化完成时重新检查：该镜像写入期间可能有更新的快照
-			// 完成，绝不能把内存基点向后移动。
-			if snap.Index > n.lastSnapshot.Load() && snap.Index > n.log.snapshotIndex {
-				n.latestSnapshot = snap
-				n.lastSnapshot.Store(snap.Index)
-				if snap.Index <= n.log.lastIndex {
-					_ = n.log.compact(snap.Index, n.snapshotCatchUp)
-				}
-				n.compactConfig(snap.Index, conf)
-			}
-			n.metrics.snapshotsCreated.Add(1)
-		}
-		if ready.request != nil {
-			sendErr(ready.request.done, err)
-		}
-		n.startNextSnapshot()
-	})
-	_ = seq
-}
-
-// signalSnapshotDone wakes the apply worker so it may capture another image.
-// | signalSnapshotDone 唤醒 apply 协程以捕获下一张镜像。
-func (n *Node) signalSnapshotDone() {
-	select {
-	case n.snapshotDoneCh <- struct{}{}:
-	default:
-	}
-}
-
-// startNextSnapshot starts the next queued manual snapshot. | startNextSnapshot 启动
-// 下一个排队的手动快照。
-func (n *Node) startNextSnapshot() {
-	if len(n.snapshotWaiters) == 0 {
-		return
-	}
-	ch := n.snapshotWaiters[0]
-	n.snapshotWaiters = n.snapshotWaiters[1:]
-	req := &snapshotRequest{done: ch}
-	n.snapshotting = true
-	select {
-	case n.applySnapshotCh <- req:
-	case <-n.stopCh:
-		n.snapshotting = false
-		sendErr(ch, ErrStopped)
-	}
-}
-
-// compactConfig folds configuration history through index into the snapshot
-// base. | compactConfig 将 index 及之前的配置历史折叠进快照基点。
-func (n *Node) compactConfig(index uint64, conf *membership) {
-	n.confBase = conf
-	n.confBaseIndex = index
-	cut := 0
-	for cut < len(n.confHistory) && n.confHistory[cut].index <= index {
-		cut++
-	}
-	if cut > 0 {
-		n.confHistory = append([]confVersion(nil), n.confHistory[cut:]...)
-	}
-	if n.conf.joint() {
-		if n.jointIndex < index {
-			n.jointIndex = index
-		}
-	} else {
-		n.jointIndex = 0
-	}
 }

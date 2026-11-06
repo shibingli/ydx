@@ -63,6 +63,44 @@ func BenchmarkYdxFileStoragePersist(b *testing.B) {
 	}
 }
 
+// BenchmarkYdxFileStorageLargeEntry measures the WAL path for entries large
+// enough to use the vectored write on Unix. | BenchmarkYdxFileStorageLargeEntry
+// 测量足以在 Unix 上使用向量写的大日志项 WAL 路径。
+func BenchmarkYdxFileStorageLargeEntry(b *testing.B) {
+	for _, kib := range []int{64, 256, 1024} {
+		for _, noSync := range []bool{false, true} {
+			mode := "sync"
+			if noSync {
+				mode = "nosync"
+			}
+			b.Run(mode+"/"+itoa(kib)+"KiB", func(b *testing.B) {
+				storage, err := ydx.NewFileStorage(ydx.FileStorageOptions{
+					Dir:         filepath.Join(b.TempDir(), "wal"),
+					NoSync:      noSync,
+					SegmentSize: 1 << 30,
+				})
+				if err != nil {
+					b.Fatal(err)
+				}
+				defer storage.Close()
+				hs := ydx.HardState{Term: 1, Commit: 0}
+				entries := walEntries(1, 1, kib<<10)
+				b.SetBytes(int64(kib << 10))
+				b.ReportAllocs()
+				b.ResetTimer()
+				for i := 0; i < b.N; i++ {
+					entries[0].Index = uint64(i + 1)
+					hs.Commit = uint64(i + 1)
+					if err := storage.Persist(ydx.PersistBatch{HardState: &hs, Entries: entries}); err != nil {
+						b.Fatal(err)
+					}
+				}
+				b.StopTimer()
+			})
+		}
+	}
+}
+
 // itoa formats a small non-negative integer without importing strconv in the
 // hot benchmark file's imports twice. | itoa 格式化小的非负整数。
 func itoa(v int) string {

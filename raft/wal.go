@@ -329,6 +329,25 @@ func (w *wal) append(batch PersistBatch) error {
 	if batch.HardState == nil && batch.Truncate == 0 && len(batch.Entries) == 0 && batch.Snapshot == nil {
 		return nil
 	}
+	// Large entry batches avoid the copy into the reusable record buffer and
+	// reach the file through one vectored write. Snapshot markers stay on the
+	// buffered path because their payload is metadata only. | 大日志项批次避免复制
+	// 进复用记录缓冲区，并通过一次向量写落到文件。快照标记负载仅为元数据，保持缓冲
+	// 路径。
+	if writevEnabled {
+		if parts, size, ok := walWritevParts(batch); ok {
+			if err := w.writeWALParts(parts, size); err != nil {
+				return err
+			}
+			if last := batch.Entries[len(batch.Entries)-1].Index; last > w.active.lastIndex {
+				w.active.lastIndex = last
+			}
+			if w.active.size >= w.segmentSize {
+				return w.rotateLocked()
+			}
+			return nil
+		}
+	}
 	// Build the complete record in one buffer so a batch costs a single write
 	// syscall instead of three. The eight-byte header is filled after encoding.
 	// | 在一个缓冲区中构建完整记录，使一个批次只产生一次 write 系统调用而非三次。
@@ -517,101 +536,4 @@ func (w *wal) close() error {
 		return errs.Wrap(cerr, ErrStorage)
 	}
 	return nil
-}
-
-// walBatch is the decoded payload of one WAL record. | walBatch 是一条 WAL 记录的
-// 解码载荷。
-type walBatch struct {
-	hs          *HardState
-	entries     []Entry
-	truncate    uint64
-	snapIndex   uint64
-	snapTerm    uint64
-	hasSnapshot bool
-	snapReset   bool
-}
-
-// snapshotMarker is the newest snapshot referenced by the WAL. | snapshotMarker
-// 是 WAL 引用的最新快照。
-type snapshotMarker struct {
-	index uint64
-	term  uint64
-	found bool
-}
-
-// encodeWALBatch serializes one durable batch. | encodeWALBatch 序列化一个持久批次。
-func encodeWALBatch(dst []byte, batch PersistBatch) []byte {
-	flags := byte(0)
-	if batch.HardState != nil {
-		flags |= walFlagState
-	}
-	if batch.Truncate > 0 {
-		flags |= walFlagTrunc
-	}
-	if len(batch.Entries) > 0 {
-		flags |= walFlagEntry
-	}
-	if batch.Snapshot != nil {
-		flags |= walFlagSnap
-		if batch.SnapshotReplacesLog {
-			flags |= walFlagSnapReset
-		}
-	}
-	dst = append(dst, flags)
-	if batch.HardState != nil {
-		dst = binary.AppendUvarint(dst, batch.HardState.Term)
-		dst = binary.AppendUvarint(dst, uint64(batch.HardState.Vote))
-		dst = binary.AppendUvarint(dst, batch.HardState.Commit)
-	}
-	if batch.Truncate > 0 {
-		dst = binary.AppendUvarint(dst, batch.Truncate)
-	}
-	if batch.Snapshot != nil {
-		dst = binary.AppendUvarint(dst, batch.Snapshot.Index)
-		dst = binary.AppendUvarint(dst, batch.Snapshot.Term)
-	}
-	if len(batch.Entries) > 0 {
-		dst = appendEntries(dst, batch.Entries)
-	}
-	return dst
-}
-
-// decodeWALBatch parses one durable batch. | decodeWALBatch 解析一个持久批次。
-func decodeWALBatch(data []byte) (walBatch, error) {
-	d := decoder{src: data, allowDuplicateIndex: true}
-	flags := d.byte()
-	if d.err != nil {
-		return walBatch{}, d.err
-	}
-	if flags == 0 || flags&^walKnownFlags != 0 {
-		return walBatch{}, errs.Detail(ErrCorrupt, "WAL flags %d", flags)
-	}
-	var out walBatch
-	if flags&walFlagState != 0 {
-		hs := HardState{
-			Term:   d.uvarint(),
-			Vote:   NodeID(d.uvarint()),
-			Commit: d.uvarint(),
-		}
-		out.hs = &hs
-	}
-	if flags&walFlagTrunc != 0 {
-		out.truncate = d.uvarint()
-	}
-	if flags&walFlagSnap != 0 {
-		out.hasSnapshot = true
-		out.snapReset = flags&walFlagSnapReset != 0
-		out.snapIndex = d.uvarint()
-		out.snapTerm = d.uvarint()
-	}
-	if flags&walFlagEntry != 0 {
-		out.entries = d.entries()
-	}
-	if d.err != nil {
-		return walBatch{}, d.err
-	}
-	if d.pos != len(data) {
-		return walBatch{}, errs.Detail(ErrCorrupt, "trailing WAL bytes %d", len(data)-d.pos)
-	}
-	return out, nil
 }

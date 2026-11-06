@@ -1,6 +1,7 @@
 package raft
 
 import (
+	"io"
 	"time"
 
 	"github.com/shibingli/ydx/errs"
@@ -28,6 +29,23 @@ type FSM interface {
 type BatchFSM interface {
 	FSM
 	ApplyBatch(entries []Entry) []any
+}
+
+// StreamingFSM is an optional FSM extension that writes a snapshot directly to
+// a writer instead of returning a whole []byte image. Implementing it lets a
+// FileStorage-backed node keep large images out of the heap and avoid the
+// second full copy into the snapshot file. SnapshotTo must be deterministic,
+// must write the same bytes Snapshot would return, and must not retain w after
+// it returns. The call still runs on the apply goroutine, so a slow disk extends
+// the apply pause; implementations should stream in bounded chunks. |
+// StreamingFSM 是可选的 FSM 扩展，把快照直接写入 writer，而不是返回完整 []byte
+// 镜像。实现它可让基于 FileStorage 的节点避免大镜像驻留堆内存，也避免向快照文件
+// 的第二次完整复制。SnapshotTo 必须确定性输出与 Snapshot 相同的字节，且返回后不得
+// 保留 w。调用仍运行在 apply 协程上，慢磁盘会延长 apply 暂停；实现应使用有界分块
+// 流式写入。
+type StreamingFSM interface {
+	FSM
+	SnapshotTo(w io.Writer) error
 }
 
 // Config configures a Node. The zero value is not usable: ID, Storage and FSM
@@ -139,16 +157,28 @@ type Config struct {
 	// | SnapshotCatchUpEntries 是压缩后在内存中保留的日志项数量，使略微落后的
 	// 跟随者无需完整快照即可追上。重启后该窗口不会恢复，此时可能仍需快照。默认 256。
 	SnapshotCatchUpEntries uint64
+	// SnapshotChunkBytes splits a snapshot into ack-gated messages of at most
+	// this payload size. Zero disables chunking and sends one whole MsgSnap,
+	// which must fit the transport frame limit. Chunking removes that frame-limit
+	// restriction and lets a file-backed image be read chunk by chunk instead of
+	// materializing the whole payload; it requires every peer to understand
+	// MsgSnapChunk. The last chunk may be smaller. | SnapshotChunkBytes 将快照拆成
+	// 逐块确认的消息，每条负载不超过该值。零值关闭分块并发送单条完整 MsgSnap，必须
+	// 适配传输帧上限。分块消除帧上限限制，并让文件支持的镜像逐块读取而非整体物化；
+	// 它要求所有对端都理解 MsgSnapChunk。最后一块可以更小。
+	SnapshotChunkBytes int
 
-	// PersistBatchDelay is a group-commit window for durable writes. The persist
-	// goroutine waits up to this long after the first request to merge more
-	// concurrent requests into one fsync. It never blocks the Raft event loop;
-	// only commit acknowledgement is delayed. Zero disables the extra window and
-	// relies on requests already queued. 50-200us is useful on storage whose
-	// fsync latency dominates. | PersistBatchDelay 是持久写的组提交窗口。持久化
-	// 协程在首个请求后最多等待该时长，把更多并发请求合并到一次 fsync。它不阻塞
-	// Raft 事件循环，只延迟提交确认。零值关闭额外等待，仅合并已排队的请求。在
-	// fsync 延迟占主导的存储上，50-200us 很有用。
+	// PersistBatchDelay is the base group-commit window for durable writes. The
+	// persist goroutine waits up to this long after the first request to merge
+	// more concurrent requests into one fsync. The effective window adapts upward
+	// with the measured fsync cost and queue depth, bounded to 5ms. It never
+	// blocks the Raft event loop; only commit acknowledgement is delayed. Zero
+	// disables the extra window and relies on requests already queued. 50-200us
+	// is useful on storage whose fsync latency dominates. | PersistBatchDelay 是
+	// 持久写的基础组提交窗口。持久化协程在首个请求后最多等待该时长，把更多并发请求
+	// 合并到一次 fsync。实际窗口会随实测 fsync 成本与队列深度向上自适应，上限 5ms。
+	// 它不阻塞 Raft 事件循环，只延迟提交确认。零值关闭额外等待，仅合并已排队的请求。
+	// 在 fsync 延迟占主导的存储上，50-200us 很有用。
 	PersistBatchDelay time.Duration
 	// ProposalQueue is the bounded proposal intake size. The intake is striped
 	// across 64 locks; the limit is divided across stripes. A full stripe makes
@@ -241,6 +271,9 @@ func (c *Config) defaults() {
 	if c.SnapshotCatchUpEntries == 0 {
 		c.SnapshotCatchUpEntries = 256
 	}
+	if c.SnapshotChunkBytes < 0 {
+		c.SnapshotChunkBytes = 0
+	}
 	if c.ProposalQueue <= 0 {
 		c.ProposalQueue = 4096
 	}
@@ -272,6 +305,10 @@ func (c *Config) validate() error {
 	if c.MaxProposalBytes > maxEntryBytes {
 		return errs.Detail(ErrInvalidConfig, "MaxProposalBytes %d exceeds wire entry limit %d",
 			c.MaxProposalBytes, maxEntryBytes)
+	}
+	if c.SnapshotChunkBytes > maxSnapshotBytes {
+		return errs.Detail(ErrInvalidConfig, "SnapshotChunkBytes %d exceeds wire snapshot limit %d",
+			c.SnapshotChunkBytes, maxSnapshotBytes)
 	}
 	seenID := make(map[NodeID]struct{}, len(c.Peers)+1)
 	seenAddr := make(map[string]struct{}, len(c.Peers))

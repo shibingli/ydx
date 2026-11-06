@@ -20,12 +20,13 @@ type Node struct {
 	futurePool   sync.Pool
 	proposalPool sync.Pool
 
-	leaseUntil time.Time
-	storage    Storage
-	transport  Transport
-	fsm        FSM
-	closeErr   error
-	fatalErr   error
+	leaseUntil       time.Time
+	electionDeadline time.Time
+	storage          Storage
+	transport        Transport
+	fsm              FSM
+	closeErr         error
+	fatalErr         error
 
 	logger  *ydlog.Logger
 	metrics *metrics
@@ -42,6 +43,7 @@ type Node struct {
 	persistAckCh    chan persistAck
 	snapshotReadyCh chan snapshotReady
 	snapshotFileCh  chan snapshotFileResult
+	snapshotConfCh  chan *snapshotConfRequest
 	snapshotCh      chan *snapshotRequest
 	campaignCh      chan *campaignRequest
 	transferCh      chan *transferRequest
@@ -65,16 +67,18 @@ type Node struct {
 	preVotes          map[NodeID]bool
 	preVoteSent       map[NodeID]struct{}
 	preVotePending    map[NodeID]struct{}
-	preVoteRemaining  []NodeID
-	preVoteReq        Message
-	preVoteExpandTick uint64
 	pendingConf       *pendingConf
 	latestSnapshot    *Snapshot
 	activeSnapshotReq *snapshotRequest
 	readRound         *readRound
+	incomingSnapshot  *incomingSnapshot
+
+	// Event-loop state. | 事件循环状态。
+	electionTimer     *time.Timer
+	electionRankConf  *membership
+	preVoteRemaining  []NodeID
 	pendingReads      []*readRequest
 	pendingRemoteRead []remoteReadResponse
-	pendingReadLimit  int
 	confHistory       []confVersion
 	transferWaiters   []chan error
 	pendingRemoval    []NodeID
@@ -85,8 +89,12 @@ type Node struct {
 	outDataBuf        []Message
 	scratch           []uint64
 	campaignWaiters   []chan error
+	preVoteReq        Message
 	cfg               Config
 	wg                sync.WaitGroup
+
+	preVoteExpandTick uint64
+	pendingReadLimit  int
 
 	id               NodeID
 	group            GroupID
@@ -119,19 +127,23 @@ type Node struct {
 	outControls      int
 
 	// Config-derived hot fields. | 由配置导出的热字段。
-	tickInterval     time.Duration
-	heartbeatTicks   int
-	electionTicks    int
-	maxBatchEntries  int
-	maxBatchBytes    int
-	maxProposalBytes int
-	maxInflightMsgs  int
-	maxInflightBytes int
-	snapshotEntries  uint64
-	snapshotCatchUp  uint64
-	closeOnce        sync.Once
-	stopOnce         sync.Once
-	fatalMu          sync.Mutex
+	tickInterval       time.Duration
+	heartbeatTicks     int
+	electionTicks      int
+	maxBatchEntries    int
+	maxBatchBytes      int
+	maxProposalBytes   int
+	maxInflightMsgs    int
+	maxInflightBytes   int
+	snapshotEntries    uint64
+	snapshotCatchUp    uint64
+	snapshotChunkBytes int
+	persistLatency     atomic.Int64
+
+	electionRank int
+	closeOnce    sync.Once
+	stopOnce     sync.Once
+	fatalMu      sync.Mutex
 
 	stopped atomic.Bool
 
@@ -141,16 +153,11 @@ type Node struct {
 	immediateStore     bool
 	immediateTransport bool
 
-	// Event-loop state. | 事件循环状态。
-	electionTimer    *time.Timer
-	electionRankConf *membership
-	electionDeadline time.Time
-	electionRank     int
-	state            State
-	transferSent     bool
-	snapshotting     bool
-	autoCampaign     bool
-	selfVoteDurable  bool
+	state           State
+	transferSent    bool
+	snapshotting    bool
+	autoCampaign    bool
+	selfVoteDurable bool
 }
 
 // confVersion records the membership produced by one log entry. | confVersion 记录
@@ -301,53 +308,55 @@ func New(cfg Config) (*Node, error) {
 		return nil, errs.Wrap(err, ErrStorage)
 	}
 	n := &Node{
-		cfg:              cfg,
-		id:               cfg.ID,
-		group:            cfg.Group,
-		storage:          cfg.Storage,
-		fsm:              cfg.FSM,
-		logger:           cfg.Logger,
-		metrics:          newMetrics(),
-		futures:          newFutureStore(),
-		appliedNotify:    newAppliedNotifier(),
-		remoteReads:      newRemoteReadStore(),
-		remoteEpoch:      newRemoteReadEpoch(),
-		recvCh:           make(chan Message, cfg.MessageQueue),
-		controlCh:        make(chan Message, controlQueueSize(cfg.MessageQueue)),
-		proposals:        newProposalQueue(cfg.ProposalQueue),
-		readCh:           make(chan *readRequest, 256),
-		tickCh:           make(chan struct{}, 1),
-		outCh:            make(chan outboundBatch, cfg.OutboundQueue),
-		persistCh:        make(chan *persistRequest, 128),
-		persistAckCh:     make(chan persistAck, 256),
-		snapshotReadyCh:  make(chan snapshotReady, 16),
-		snapshotFileCh:   make(chan snapshotFileResult, 16),
-		snapshotCh:       make(chan *snapshotRequest, 16),
-		campaignCh:       make(chan *campaignRequest, 16),
-		transferCh:       make(chan *transferRequest, 16),
-		statusCh:         make(chan chan Status, 16),
-		fatalCh:          make(chan error, 1),
-		stopCh:           make(chan struct{}),
-		doneCh:           make(chan struct{}),
-		closeDoneCh:      make(chan struct{}),
-		applySnapshotCh:  make(chan *snapshotRequest, 16),
-		applyDoneCh:      make(chan struct{}),
-		snapshotDoneCh:   make(chan struct{}, 1),
-		progress:         make(map[NodeID]*progress),
-		votes:            make(map[NodeID]bool),
-		preVotes:         make(map[NodeID]bool),
-		scratch:          make([]uint64, 0, 16),
-		tickInterval:     cfg.TickInterval,
-		heartbeatTicks:   cfg.HeartbeatTicks,
-		electionTicks:    cfg.ElectionTicks,
-		maxBatchEntries:  cfg.MaxBatchEntries,
-		maxBatchBytes:    cfg.MaxBatchBytes,
-		maxProposalBytes: cfg.MaxProposalBytes,
-		maxInflightMsgs:  cfg.MaxInflightMsgs,
-		maxInflightBytes: cfg.MaxInflightBytes,
-		snapshotEntries:  cfg.SnapshotEntries,
-		snapshotCatchUp:  cfg.SnapshotCatchUpEntries,
-		pendingReadLimit: cfg.pendingReadLimit(),
+		cfg:                cfg,
+		id:                 cfg.ID,
+		group:              cfg.Group,
+		storage:            cfg.Storage,
+		fsm:                cfg.FSM,
+		logger:             cfg.Logger,
+		metrics:            newMetrics(),
+		futures:            newFutureStore(),
+		appliedNotify:      newAppliedNotifier(),
+		remoteReads:        newRemoteReadStore(),
+		remoteEpoch:        newRemoteReadEpoch(),
+		recvCh:             make(chan Message, cfg.MessageQueue),
+		controlCh:          make(chan Message, controlQueueSize(cfg.MessageQueue)),
+		proposals:          newProposalQueue(cfg.ProposalQueue),
+		readCh:             make(chan *readRequest, 256),
+		tickCh:             make(chan struct{}, 1),
+		outCh:              make(chan outboundBatch, cfg.OutboundQueue),
+		persistCh:          make(chan *persistRequest, 128),
+		persistAckCh:       make(chan persistAck, 256),
+		snapshotReadyCh:    make(chan snapshotReady, 16),
+		snapshotFileCh:     make(chan snapshotFileResult, 16),
+		snapshotConfCh:     make(chan *snapshotConfRequest, 16),
+		snapshotCh:         make(chan *snapshotRequest, 16),
+		campaignCh:         make(chan *campaignRequest, 16),
+		transferCh:         make(chan *transferRequest, 16),
+		statusCh:           make(chan chan Status, 16),
+		fatalCh:            make(chan error, 1),
+		stopCh:             make(chan struct{}),
+		doneCh:             make(chan struct{}),
+		closeDoneCh:        make(chan struct{}),
+		applySnapshotCh:    make(chan *snapshotRequest, 16),
+		applyDoneCh:        make(chan struct{}),
+		snapshotDoneCh:     make(chan struct{}, 1),
+		progress:           make(map[NodeID]*progress),
+		votes:              make(map[NodeID]bool),
+		preVotes:           make(map[NodeID]bool),
+		scratch:            make([]uint64, 0, 16),
+		tickInterval:       cfg.TickInterval,
+		heartbeatTicks:     cfg.HeartbeatTicks,
+		electionTicks:      cfg.ElectionTicks,
+		maxBatchEntries:    cfg.MaxBatchEntries,
+		maxBatchBytes:      cfg.MaxBatchBytes,
+		maxProposalBytes:   cfg.MaxProposalBytes,
+		maxInflightMsgs:    cfg.MaxInflightMsgs,
+		maxInflightBytes:   cfg.MaxInflightBytes,
+		snapshotEntries:    cfg.SnapshotEntries,
+		snapshotCatchUp:    cfg.SnapshotCatchUpEntries,
+		snapshotChunkBytes: cfg.SnapshotChunkBytes,
+		pendingReadLimit:   cfg.pendingReadLimit(),
 	}
 	n.applyQueue = newApplyQueue()
 	n.autoCampaign = false

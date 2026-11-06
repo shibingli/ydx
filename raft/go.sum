@@ -12,3 +12,5 @@ github.com/shibingli/ydx/rdma v0.1.2 h1:J+BbVhfnny6ARs3s9dPC8lel72rHcXrSym8/RL6G
 github.com/shibingli/ydx/rdma v0.1.2/go.mod h1:jl+JUt93pw8GQfQfoY2O/2LhXGeChGNnBdnvGjp0Hqc=
 github.com/shibingli/ydx/sysinfo v0.1.4 h1:tskX01rpXsDkEmCCz+2s7FnSQqrQCY8SQUeWstPQhMk=
 github.com/shibingli/ydx/sysinfo v0.1.4/go.mod h1:31V/9KavYTLUNJwAsgCHuN6z2wvRpS20En5em99nmqE=
+golang.org/x/sys v0.49.0 h1:XbzkgYJHdqh/8m2Uu0W/dQv8nktxx4BFHp1M0gROTXA=
+golang.org/x/sys v0.49.0/go.mod h1:hNLxWAXmnKAxqDtdwIYC4bM9oQPEecfsnNMuSxOs3og=

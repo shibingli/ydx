@@ -113,10 +113,21 @@ func contains(ids []NodeID, id NodeID) bool {
 // Snapshot is a point-in-time state machine image and the configuration that
 // produced it. | Snapshot 是某一时刻的状态机镜像及其对应的配置。
 type Snapshot struct {
+	// file is the durable image backing a local streaming snapshot. Data is nil
+	// in that case and the payload is loaded only when a follower needs it. It is
+	// internal and never serialized. | file 是本地流式快照的持久镜像路径。此时
+	// Data 为空，只在跟随者需要发送时加载负载。该字段仅内部使用，不参与序列化。
+	file      string
 	ConfState ConfState
 	Data      []byte
-	Index     uint64
-	Term      uint64
+	// dataSize is the payload size for a file-backed snapshot. | dataSize 是文件
+	// 快照的负载大小。
+	dataSize int64
+	// dataOffset is the byte offset of the payload in file. | dataOffset 是负载在
+	// file 中的字节偏移。
+	dataOffset int64
+	Index      uint64
+	Term       uint64
 }
 
 // clone returns a deep copy of the snapshot. | clone 返回快照的深拷贝。

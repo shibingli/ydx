@@ -33,6 +33,11 @@ type PersistBatch struct {
 type localSnapshotFileStorage interface {
 	WriteSnapshotFile(snap *Snapshot) error
 	PersistLocalSnapshotMarker(snap *Snapshot, hs *HardState) error
+	// PersistLocalSnapshotMarkerBatch appends the marker together with one
+	// already-durable-ordered WAL batch, so a snapshot costs no extra fsync when
+	// traffic follows it. | PersistLocalSnapshotMarkerBatch 将标记与一个已按序排队的
+	// WAL 批次一起追加，使快照在后方有流量时不再多付一次 fsync。
+	PersistLocalSnapshotMarkerBatch(snap *Snapshot, batch PersistBatch) error
 }
 
 // ImmediateStorage is an optional optimization for in-memory or otherwise

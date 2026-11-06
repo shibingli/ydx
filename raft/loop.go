@@ -57,6 +57,11 @@ func (n *Node) run() {
 			n.handleSnapshotRequest(req)
 		case ready := <-n.snapshotReadyCh:
 			n.handleSnapshotReady(ready)
+		case req := <-n.snapshotConfCh:
+			select {
+			case req.reply <- n.configAt(req.index).confState():
+			default:
+			}
 		case result := <-n.snapshotFileCh:
 			n.handleSnapshotFileResult(result)
 		case ack := <-n.persistAckCh:
@@ -188,6 +193,33 @@ func (n *Node) sendBatch(msgs []Message) {
 	}
 }
 
+// sendSolo delivers one message in its own transport batch. Large snapshot
+// chunks must not be coalesced with other control messages into one frame, or
+// the transport frame limit would be exceeded again. | sendSolo 将一条消息作为
+// 独立传输批次发送。大快照分块不得与其他控制消息合并进同一帧，否则会再次超过
+// 传输帧上限。
+func (n *Node) sendSolo(m Message) {
+	m.From = n.id
+	if n.group != 0 {
+		m.Group = n.group
+	}
+	if m.To == 0 || m.To == n.id {
+		return
+	}
+	n.metrics.messagesOut.Add(1)
+	if n.immediateTransport {
+		if err := n.transport.Send(context.Background(), []Message{m}); err != nil {
+			n.metrics.messagesDropped.Add(1)
+		}
+		return
+	}
+	select {
+	case n.outCh <- outboundBatch{msgs: []Message{m}}:
+	default:
+		n.metrics.messagesDropped.Add(1)
+	}
+}
+
 // send appends one message to the current outbound batch. | send 将一条消息追加到
 // 当前出站批次。
 func (n *Node) send(m Message) {
@@ -311,6 +343,10 @@ func (n *Node) step(m Message) {
 		n.handleSnapshot(m)
 	case MsgSnapResp:
 		n.handleSnapshotResp(m)
+	case MsgSnapChunk:
+		n.handleSnapshotChunk(m)
+	case MsgSnapChunkResp:
+		n.handleSnapshotChunkResp(m)
 	case MsgTransferLeader:
 		n.handleTransferMessage(m)
 	case MsgTimeoutNow:

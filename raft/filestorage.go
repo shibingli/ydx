@@ -1,16 +1,8 @@
 package raft
 
 import (
-	"bytes"
-	"crypto/sha256"
-	"encoding/binary"
-	"fmt"
-	"hash/crc32"
-	"io"
 	"os"
 	"path/filepath"
-	"sort"
-	"strconv"
 	"strings"
 	"sync"
 
@@ -20,43 +12,79 @@ import (
 const (
 	snapshotMagic   = "YDRSNP01"
 	snapshotVersion = byte(1)
-	maxConfBytes    = 4 << 20
+	// snapshotVersionCRCOnly adds a checksum-flags byte and omits the SHA-256
+	// comparison. The 32-byte hash field remains reserved for a fixed layout. |
+	// snapshotVersionCRCOnly 增加校验和标志字节并省略 SHA-256 比较；32 字节哈希
+	// 字段仍保留以维持固定布局。
+	snapshotVersionCRCOnly = byte(2)
+	snapshotFlagSHA256     = byte(1 << 0)
+	maxConfBytes           = 4 << 20
+)
+
+// SnapshotChecksum selects the integrity check written for new snapshot images.
+// CRC32C detects accidental corruption at negligible cost. Adding SHA-256 gives
+// a stronger digest suitable for tamper detection. | SnapshotChecksum 选择新快照
+// 镜像写入的完整性校验。CRC32C 以极低开销检测意外损坏；增加 SHA-256 提供适合
+// 篡改检测的更强摘要。
+type SnapshotChecksum uint8
+
+const (
+	// SnapshotChecksumCRC32CSHA256 writes the original layout with both checks.
+	// | SnapshotChecksumCRC32CSHA256 写入同时包含两种校验的原始布局。
+	SnapshotChecksumCRC32CSHA256 SnapshotChecksum = iota
+	// SnapshotChecksumCRC32C writes CRC32C only, saving one full SHA-256 pass
+	// over very large images. | SnapshotChecksumCRC32C 仅写入 CRC32C，对超大
+	// 镜像节省一次完整 SHA-256 扫描。
+	SnapshotChecksumCRC32C
 )
 
 // FileStorageOptions configures durable WAL and snapshot storage. | FileStorageOptions
 // 配置持久化 WAL 与快照存储。
 type FileStorageOptions struct {
-	// Dir is the storage root. WAL and snapshots live in subdirectories. | Dir
-	// 是存储根目录；WAL 与快照位于其子目录。
+	// Dir is the storage root. WAL lives in Dir/wal and snapshots default to
+	// Dir/snapshots. | Dir 是存储根目录；WAL 位于 Dir/wal，快照默认为
+	// Dir/snapshots。
 	Dir string
-	// NoSync disables fsync. It is intended only for ephemeral benchmarks and
-	// tests where crash durability is not under test. | NoSync 关闭 fsync，仅用于
-	// 不测试崩溃持久性的临时基准与测试。
-	NoSync bool
+	// SnapshotDir optionally places snapshot images on a different volume from
+	// the WAL. Empty uses Dir/snapshots. The directory is owned exclusively by
+	// this storage instance; the lock remains in Dir. | SnapshotDir 可选地将快照
+	// 镜像放在与 WAL 不同的卷；为空时使用 Dir/snapshots。该目录由本存储实例独占；
+	// 锁仍位于 Dir。
+	SnapshotDir string
 	// SegmentSize rotates the WAL after this many bytes. Default 64 MiB.
 	// | SegmentSize 在达到该字节数后轮转 WAL，默认 64 MiB。
 	SegmentSize int64
 	// SnapshotKeep is the number of snapshot files retained. Default 2.
 	// | SnapshotKeep 是保留的快照文件数量，默认 2。
 	SnapshotKeep int
+	// NoSync disables fsync. It is intended only for ephemeral benchmarks and
+	// tests where crash durability is not under test. | NoSync 关闭 fsync，仅用于
+	// 不测试崩溃持久性的临时基准与测试。
+	NoSync bool
+	// SnapshotChecksum selects the integrity check for new snapshot images.
+	// Existing v1 and v2 files remain readable. Default CRC32C + SHA-256. |
+	// SnapshotChecksum 选择新快照镜像的完整性校验。已有的 v1 与 v2 文件仍可读取。
+	// 默认 CRC32C + SHA-256。
+	SnapshotChecksum SnapshotChecksum
 }
 
 // FileStorage is a crash-safe Storage backed by WAL segments and snapshot files.
 // | FileStorage 是由 WAL 分段与快照文件支撑的崩溃安全 Storage。
 type FileStorage struct {
-	wal          *wal
-	snapshot     *Snapshot
-	lockFile     *os.File
-	dir          string
-	walDir       string
-	snapDir      string
-	recovery     Recovery
-	segmentSize  int64
-	snapshotKeep int
-	mu           sync.Mutex
-	noSync       bool
-	loaded       bool
-	closed       bool
+	wal              *wal
+	snapshot         *Snapshot
+	lockFile         *os.File
+	dir              string
+	walDir           string
+	snapDir          string
+	recovery         Recovery
+	segmentSize      int64
+	snapshotKeep     int
+	snapshotChecksum SnapshotChecksum
+	mu               sync.Mutex
+	noSync           bool
+	loaded           bool
+	closed           bool
 }
 
 // NewFileStorage creates the directory layout. | NewFileStorage 创建目录布局。
@@ -70,13 +98,22 @@ func NewFileStorage(opts FileStorageOptions) (*FileStorage, error) {
 	if opts.SnapshotKeep <= 0 {
 		opts.SnapshotKeep = 2
 	}
+	if opts.SnapshotChecksum != SnapshotChecksumCRC32CSHA256 &&
+		opts.SnapshotChecksum != SnapshotChecksumCRC32C {
+		return nil, errs.Detail(ErrInvalidConfig, "unknown SnapshotChecksum %d", opts.SnapshotChecksum)
+	}
+	snapDir := opts.SnapshotDir
+	if snapDir == "" {
+		snapDir = filepath.Join(opts.Dir, "snapshots")
+	}
 	s := &FileStorage{
-		dir:          opts.Dir,
-		walDir:       filepath.Join(opts.Dir, "wal"),
-		snapDir:      filepath.Join(opts.Dir, "snapshots"),
-		noSync:       opts.NoSync,
-		segmentSize:  opts.SegmentSize,
-		snapshotKeep: opts.SnapshotKeep,
+		dir:              opts.Dir,
+		walDir:           filepath.Join(opts.Dir, "wal"),
+		snapDir:          snapDir,
+		noSync:           opts.NoSync,
+		segmentSize:      opts.SegmentSize,
+		snapshotKeep:     opts.SnapshotKeep,
+		snapshotChecksum: opts.SnapshotChecksum,
 	}
 	if err := os.MkdirAll(s.walDir, 0o700); err != nil {
 		return nil, errs.Wrap(err, ErrStorage)
@@ -270,280 +307,4 @@ func (s *FileStorage) Close() error {
 		s.lockFile = nil
 	}
 	return err
-}
-
-// snapshotPath returns the canonical file name for an index and term. | snapshotPath
-// 返回索引与任期的规范文件名。
-func (s *FileStorage) snapshotPath(index, term uint64) string {
-	return filepath.Join(s.snapDir, fmt.Sprintf("%020d-%020d.snap", index, term))
-}
-
-// WriteSnapshotFile writes and fsyncs one local snapshot image without touching
-// the WAL. The caller must later call PersistLocalSnapshotMarker to make the
-// image trusted by recovery. It is safe to run while WAL appends continue. |
-// WriteSnapshotFile 写入并 fsync 一个本地快照镜像，不接触 WAL。调用方随后必须调用
-// PersistLocalSnapshotMarker 使恢复信任该镜像。它可以与 WAL 追加并发执行。
-func (s *FileStorage) WriteSnapshotFile(snap *Snapshot) error {
-	if snap == nil {
-		return errs.Detail(ErrInvalidConfig, "nil snapshot")
-	}
-	s.mu.Lock()
-	if s.closed {
-		s.mu.Unlock()
-		return ErrStopped
-	}
-	if !s.loaded {
-		if _, err := s.loadLocked(); err != nil {
-			s.mu.Unlock()
-			return err
-		}
-	}
-	noSync := s.noSync
-	s.mu.Unlock()
-	// The image is uniquely named and independent of the WAL. Do not hold the
-	// storage mutex across the large fsync; WAL appends must continue. | 镜像名
-	// 唯一且与 WAL 独立，不在大 fsync 期间持有存储锁，WAL 追加可以继续。
-	return s.writeSnapshotFile(snap, noSync)
-}
-
-// PersistLocalSnapshotMarker appends the WAL marker for a local image written
-// by WriteSnapshotFile. It is serialized with WAL appends and ignores an image
-// older than the current snapshot base. | PersistLocalSnapshotMarker 为
-// WriteSnapshotFile 写好的本地镜像追加 WAL 标记。它与 WAL 追加串行，并忽略比当前
-// 快照基点更旧的镜像。
-func (s *FileStorage) PersistLocalSnapshotMarker(snap *Snapshot, hs *HardState) error {
-	if snap == nil {
-		return errs.Detail(ErrInvalidConfig, "nil snapshot")
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.closed {
-		return ErrStopped
-	}
-	if !s.loaded {
-		if _, err := s.loadLocked(); err != nil {
-			return err
-		}
-	}
-	if s.snapshot != nil && snap.Index <= s.snapshot.Index {
-		if hs != nil {
-			return s.wal.append(PersistBatch{HardState: hs})
-		}
-		return nil
-	}
-	marker := PersistBatch{
-		HardState: hs,
-		Snapshot:  &Snapshot{Index: snap.Index, Term: snap.Term},
-	}
-	if err := s.wal.append(marker); err != nil {
-		return err
-	}
-	s.snapshot = &Snapshot{Index: snap.Index, Term: snap.Term}
-	s.pruneSnapshotsLocked()
-	return nil
-}
-
-// writeSnapshotFile atomically writes one snapshot image. | writeSnapshotFile 原子
-// 写入一个快照镜像。
-func (s *FileStorage) writeSnapshotFile(snap *Snapshot, noSync bool) error {
-	conf := appendConfState(nil, snap.ConfState)
-	if len(conf) > maxConfBytes {
-		return errs.Detail(ErrTooLarge, "snapshot conf state %d bytes", len(conf))
-	}
-	// Compute both checksums while the payload is written, not in two separate
-	// full passes over a potentially large image. | 在写入负载时同时计算两种校验和，
-	// 避免对可能很大的镜像做两次完整扫描。
-	tmp, err := os.CreateTemp(s.snapDir, ".snap-*")
-	if err != nil {
-		return errs.Wrap(err, ErrStorage)
-	}
-	tmpName := tmp.Name()
-	cleanup := true
-	defer func() {
-		if cleanup {
-			_ = tmp.Close()
-			_ = os.Remove(tmpName)
-		}
-	}()
-	if err := tmp.Chmod(0o600); err != nil {
-		return errs.Wrap(err, ErrStorage)
-	}
-	headerLen := 8 + 1 + 8 + 8 + 4 + len(conf) + 8 + 4 + 32
-	if _, err := tmp.Write(make([]byte, headerLen)); err != nil {
-		return errs.Wrap(err, ErrStorage)
-	}
-	dataCRC := crc32.New(castagnoli)
-	dataHash := sha256.New()
-	if n, err := io.MultiWriter(tmp, dataCRC, dataHash).Write(snap.Data); err != nil {
-		return errs.Wrap(err, ErrStorage)
-	} else if n != len(snap.Data) {
-		return errs.Detail(ErrStorage, "short snapshot write %d/%d | 快照写入不完整 %d/%d", n, len(snap.Data), n, len(snap.Data))
-	}
-	header := make([]byte, 0, headerLen)
-	header = append(header, snapshotMagic...)
-	header = append(header, snapshotVersion)
-	header = binary.LittleEndian.AppendUint64(header, snap.Index)
-	header = binary.LittleEndian.AppendUint64(header, snap.Term)
-	header = binary.LittleEndian.AppendUint32(header, uint32(len(conf)))
-	header = append(header, conf...)
-	header = binary.LittleEndian.AppendUint64(header, uint64(len(snap.Data)))
-	header = binary.LittleEndian.AppendUint32(header, dataCRC.Sum32())
-	header = append(header, dataHash.Sum(nil)...)
-	if _, err := tmp.Seek(0, io.SeekStart); err != nil {
-		return errs.Wrap(err, ErrStorage)
-	}
-	if _, err := tmp.Write(header); err != nil {
-		return errs.Wrap(err, ErrStorage)
-	}
-	if !noSync {
-		if err := syncFile(tmp); err != nil {
-			return errs.Wrap(err, ErrStorage)
-		}
-	}
-	if err := tmp.Close(); err != nil {
-		return errs.Wrap(err, ErrStorage)
-	}
-	final := s.snapshotPath(snap.Index, snap.Term)
-	// os.Rename replaces the destination atomically on Unix and uses
-	// MOVEFILE_REPLACE_EXISTING on Windows. Removing the destination first would
-	// leave a window where a crash loses the only snapshot referenced by the WAL.
-	// | 在 Unix 上 os.Rename 原子替换目标，在 Windows 上使用
-	// MOVEFILE_REPLACE_EXISTING。先删除目标会在崩溃时留下丢失 WAL 所引用唯一快照的
-	// 窗口。
-	if err := os.Rename(tmpName, final); err != nil {
-		return errs.Wrap(err, ErrStorage)
-	}
-	cleanup = false
-	if !noSync {
-		if err := syncDir(s.snapDir); err != nil {
-			return errs.Wrap(err, ErrStorage)
-		}
-	}
-	return nil
-}
-
-// readSnapshotFile loads and validates one snapshot image. | readSnapshotFile 加载
-// 并校验一个快照镜像。
-func readSnapshotFile(path string) (*Snapshot, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return nil, errs.Wrap(err, ErrStorage)
-	}
-	defer f.Close()
-	info, err := f.Stat()
-	if err != nil {
-		return nil, errs.Wrap(err, ErrStorage)
-	}
-	const fixed = 8 + 1 + 8 + 8 + 4
-	if info.Size() < int64(fixed+8+4+32) {
-		return nil, errs.Detail(ErrCorrupt, "short snapshot %s", path)
-	}
-	header := make([]byte, fixed)
-	if _, err := io.ReadFull(f, header); err != nil {
-		return nil, errs.Detail(ErrCorrupt, "short snapshot header %s", path)
-	}
-	if string(header[:8]) != snapshotMagic {
-		return nil, errs.Detail(ErrCorrupt, "bad snapshot magic %s", path)
-	}
-	if header[8] != snapshotVersion {
-		return nil, errs.Detail(ErrCorrupt, "snapshot version %d", header[8])
-	}
-	pos := 9
-	index := binary.LittleEndian.Uint64(header[pos:])
-	pos += 8
-	term := binary.LittleEndian.Uint64(header[pos:])
-	pos += 8
-	confLen := int(binary.LittleEndian.Uint32(header[pos:]))
-	if confLen < 0 || confLen > maxConfBytes {
-		return nil, errs.Detail(ErrCorrupt, "snapshot conf length %d", confLen)
-	}
-	confData := make([]byte, confLen)
-	if _, err := io.ReadFull(f, confData); err != nil {
-		return nil, errs.Detail(ErrCorrupt, "short snapshot conf %s", path)
-	}
-	conf, err := decodeConfStateBytes(confData)
-	if err != nil {
-		return nil, err
-	}
-	var trailer [8 + 4 + 32]byte
-	if _, err := io.ReadFull(f, trailer[:]); err != nil {
-		return nil, errs.Detail(ErrCorrupt, "short snapshot header %s", path)
-	}
-	dataLen := binary.LittleEndian.Uint64(trailer[:8])
-	wantCRC := binary.LittleEndian.Uint32(trailer[8:12])
-	var wantSum [32]byte
-	copy(wantSum[:], trailer[12:])
-	headerLen := int64(fixed + confLen + len(trailer))
-	if dataLen > uint64(info.Size()-headerLen) || headerLen+int64(dataLen) != info.Size() {
-		return nil, errs.Detail(ErrCorrupt, "snapshot data length %d", dataLen)
-	}
-	payload := make([]byte, int(dataLen))
-	gotCRC := crc32.New(castagnoli)
-	gotHash := sha256.New()
-	if _, err := io.ReadFull(io.TeeReader(f, io.MultiWriter(gotCRC, gotHash)), payload); err != nil {
-		return nil, errs.Detail(ErrCorrupt, "short snapshot payload %s", path)
-	}
-	if gotCRC.Sum32() != wantCRC {
-		return nil, errs.Detail(ErrCorrupt, "snapshot CRC mismatch %s", path)
-	}
-	if !bytes.Equal(gotHash.Sum(nil), wantSum[:]) {
-		return nil, errs.Detail(ErrCorrupt, "snapshot SHA-256 mismatch %s", path)
-	}
-	if index == 0 || term == 0 {
-		return nil, errs.Detail(ErrCorrupt, "snapshot index=%d term=%d", index, term)
-	}
-	return &Snapshot{Index: index, Term: term, ConfState: conf, Data: payload}, nil
-}
-
-// pruneSnapshotsLocked removes old snapshot files beyond the retention count.
-// | pruneSnapshotsLocked 删除超出保留数量的旧快照文件。
-func (s *FileStorage) pruneSnapshotsLocked() {
-	entries, err := os.ReadDir(s.snapDir)
-	if err != nil {
-		return
-	}
-	type snapFile struct {
-		name  string
-		index uint64
-		term  uint64
-	}
-	var files []snapFile
-	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".snap") {
-			continue
-		}
-		base := strings.TrimSuffix(entry.Name(), ".snap")
-		parts := strings.Split(base, "-")
-		if len(parts) != 2 {
-			continue
-		}
-		index, err1 := strconv.ParseUint(parts[0], 10, 64)
-		term, err2 := strconv.ParseUint(parts[1], 10, 64)
-		if err1 != nil || err2 != nil {
-			continue
-		}
-		files = append(files, snapFile{name: entry.Name(), index: index, term: term})
-	}
-	sort.Slice(files, func(i, j int) bool {
-		if files[i].index != files[j].index {
-			return files[i].index > files[j].index
-		}
-		return files[i].term > files[j].term
-	})
-	current := ""
-	if s.snapshot != nil {
-		current = filepath.Base(s.snapshotPath(s.snapshot.Index, s.snapshot.Term))
-	}
-	kept := 0
-	for _, f := range files {
-		if f.name == current {
-			kept++
-			continue
-		}
-		if kept < s.snapshotKeep {
-			kept++
-			continue
-		}
-		_ = os.Remove(filepath.Join(s.snapDir, f.name))
-	}
 }

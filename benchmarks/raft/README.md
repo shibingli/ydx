@@ -134,7 +134,32 @@ tmpfs 上 fsync 是空操作，NoSync 与 fsync 均约 2.0 µs/128 条（4.1 GB/
 - WAL 记录一次 `write` 写出（头 + 类型 + 负载），不再三次系统调用。
 - Linux 使用 `fdatasync`（不支持时回退 `fsync`）；新分段创建后同步目录项。
 - 持久化循环复用请求数组；单请求走无额外切片分配的快速路径。
-- 分组提交把并发请求合并为一次 fsync；`PersistBatchDelay` 提供可选窗口。
+- 分组提交把并发请求合并为一次 fsync；`PersistBatchDelay` 提供基础窗口，
+  实际窗口按实测 fsync 成本与队列深度自适应，上限 5 ms。
+- 大日志项批次在 Linux/Darwin/OpenBSD/illumos 使用 `writev`，不再把条目负载复制
+  进 WAL 缓冲区；Windows 等平台回退到单次缓冲写。
+
+`BenchmarkYdxFileStorageLargeEntry`，单条大日志项、NoSync、50 次迭代：
+
+| 平台 / 路径 | 64 KiB | 256 KiB | 1 MiB | allocs/op |
+|---|---:|---:|---:|---:|
+| Windows 缓冲写 | 718 MB/s | 1.46 GB/s | 1.67 GB/s | 3.9–53 KB |
+| WSL Linux `writev` | 3.2 GB/s | 4.0 GB/s | 3.6–5.0 GB/s | **156–159 B** |
+
+两组数据来自不同文件系统，绝对带宽不可直接比较；关键是 `writev` 路径把每条大日志项
+的分配从“复制整条负载”降到仅记录头/元数据约 160 B。Linux 上 `fdatasync` 主导时
+单条 1 MiB 仍约 3.2–3.4 ms（约 300–330 MB/s），说明此时瓶颈在设备同步而非编码。
+
+快照侧新增能力与基准入口：
+
+- `StreamingFSM.SnapshotTo`：大状态直接写临时镜像，避免堆内完整 `[]byte`。
+- `SnapshotChunkBytes`：逐块确认的分块快照，解除传输帧上限；领导者逐块读取文件。
+- 标记与后续 WAL 批次合并，单次快照少一次 `fdatasync`。
+- `SnapshotChecksumCRC32C`、`SnapshotDir` 与 `writev` 组合用于超大状态。
+- `BenchmarkYdxFileStorageSnapshotWrite` / `BenchmarkYdxFileStorageSnapshotRead`
+  覆盖本地镜像写入/读取；分块网络传输由
+  `raft` 包内 `TestChunkedSnapshotTransfer` 与
+  `TestChunkedFileBackedSnapshotTransfer` 做正确性门禁。
 
 ## 4. 跨主机 3 节点 TCP（主线网络）
 

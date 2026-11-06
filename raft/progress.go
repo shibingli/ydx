@@ -131,10 +131,14 @@ type progress struct {
 	match            uint64
 	next             uint64
 	pendingSnapshot  uint64
+	snapshotOffset   uint64
+	snapshotSize     uint64
 	snapshotErrIndex uint64
 	lastSnapshotTick uint64
 	state            progressState
 	recentActive     bool
+	snapshotChunked  bool
+	snapshotInFlight bool
 }
 
 // newProgress builds a follower starting at next. | newProgress 构建从 next 开始的
@@ -191,4 +195,14 @@ func (p *progress) snapshotDone(index uint64) {
 	p.update(index)
 	p.pendingSnapshot = 0
 	p.state = probe
+	p.resetSnapshotChunks()
+}
+
+// resetSnapshotChunks clears chunk transfer state. | resetSnapshotChunks 清除分块
+// 传输状态。
+func (p *progress) resetSnapshotChunks() {
+	p.snapshotChunked = false
+	p.snapshotInFlight = false
+	p.snapshotOffset = 0
+	p.snapshotSize = 0
 }

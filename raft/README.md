@@ -149,6 +149,10 @@ IPsec/MACsec，或改用启用 TLS 的 TCP/HTTP 传输。
   （快照数据 + 配置 + 帧头/HMAC，建议留 1 MiB 余量）。默认 64 MiB；超过上限的
   快照无法发送，领导者会记录 `snapshot exceeds transport frame limit` 错误而不是
   静默重试。RDMA 的 `MaxFrameBytes` 同理（分块不改变重组后的上限）。
+- 设置 `Config.SnapshotChunkBytes > 0` 后，超过该值或传输帧上限的快照改用
+  `MsgSnapChunk`/`MsgSnapChunkResp` 逐块传输。分块不受传输帧上限约束，但接收端
+  仍会一次性重组完整镜像，因此总大小仍受协议上限 `256 MiB` 约束。分块要求所有
+  对端都已升级到支持该消息的版本；默认 `0` 关闭，保持旧线格式兼容。
 - 流式传输限制并发连接数（默认 256）并对空闲/停滞读设置 60 秒截止时间；这避免
   半开连接按声明长度长期占用大缓冲区。
 - 应用只在日志项**本地持久化后**执行，跟随者不会把尚未落盘的已提交项交给 FSM。
@@ -203,9 +207,27 @@ node.TransferLeader(ctx, 2)
 ## 整状态快照与 fsync
 
 本地全量快照的镜像写入与 fsync 已移出 WAL persist 协程，镜像落盘期间提案/追加仍可
-继续进行；随后只排队一条小型 WAL 标记。快照写入一次遍历计算 CRC32C/SHA-256，
+继续进行；随后只排队一条小型 WAL 标记。标记可与紧随其后的连续 WAL 批次合并为
+同一条记录，由一次 `fdatasync` 覆盖两者。快照写入一次遍历计算 CRC32C/SHA-256，
 读取流式校验。完整路径、fsync 盘点、实测数据与后续方向见
 [`SNAPSHOT.md`](SNAPSHOT.md)。
+
+- **流式 FSM**：实现可选的 `StreamingFSM.SnapshotTo(io.Writer)` 后，基于
+  `FileStorage` 的节点可把状态直接写入临时镜像文件，不再在堆中生成完整
+  `[]byte`。镜像头部的写入、fsync、rename 与 WAL 标记仍在持久化协程完成；apply
+  协程只承担 FSM 写文件的这段时间。未实现该接口时继续使用 `FSM.Snapshot()`。
+- **文件支持与懒加载**：大镜像以文件路径参与后续发送，分块发送时逐块读取，
+  不在内存保留完整负载；小镜像仍保留内存副本，避免单条 `MsgSnap` 在事件循环上
+  读文件。
+- **分块传输**：`Config.SnapshotChunkBytes`（或 `GroupConfig.SnapshotChunkBytes`）
+  启用逐块确认的快照传输。每条消息在独立传输批次中发送，避免与其他控制消息合并
+  后再次超过帧上限；丢失的分块按当前偏移重传，最后一块丢失时用零长度探测消息
+  重新获取安装响应。分块是显式 opt-in，要求所有对端支持新消息类型。
+- **校验策略**：`FileStorageOptions.SnapshotChecksum` 可选择仅 CRC32C，跳过
+  超大镜像的 SHA-256 扫描；仅 CRC 镜像写为新文件版本，恢复时仍可同时读取旧版
+  CRC+SHA 文件与新版仅 CRC 文件。
+- **独立快照盘**：`FileStorageOptions.SnapshotDir` 可把镜像放到与 WAL 不同的卷；
+  WAL 目录锁仍位于 `Dir`，快照目录应由单个存储实例独占。
 
 ## 持久化与恢复
 
@@ -217,17 +239,23 @@ node.TransferLeader(ctx, 2)
   snapshots/00000000000000001234-00000000000000000009.snap
 ```
 
-- WAL 记录带长度、CRC32C、类型；尾部撕裂写会被安全截断。
-- 快照文件包含索引、任期、配置、数据长度、CRC32C 与 SHA-256。
+`SnapshotDir` 非空时，快照文件写入该目录，WAL 仍在 `<dir>/wal`。
+
+- WAL 记录带长度、CRC32C、类型；尾部撕裂写会被安全截断。Unix 上大日志项批次
+  可通过 `writev` 从条目切片直接写出，避免先复制进 WAL 缓冲；Windows 等平台
+  自动回退到单次缓冲写。
+- 快照文件包含索引、任期、配置、数据长度、CRC32C；默认还包含 SHA-256。仅 CRC
+  模式使用版本 2 头部（带校验标志），恢复同时支持版本 1 与 2。
 - 快照先落盘，再写 WAL 标记；恢复只信任带标记的快照，避免“快照已写但未提交”
-  的悬空状态。
+  的悬空状态。本地快照标记可与后续连续 WAL 批次共用一条记录和一次 fsync。
 - `InstallSnapshot` 标记会清除旧日志项；本地压缩快照保留快照之后的日志尾。
 - 本地压缩默认在内存中额外保留 `SnapshotCatchUpEntries` 条已覆盖日志（默认 256），
   略落后的跟随者可直接用 AppendEntries 追上；该窗口不跨重启保留。
 - 存储目录带进程级排他锁，重复打开返回 `ErrStorageLocked`；崩溃遗留的临时快照文件
   会在下次打开时清理。
-- 快照超过传输帧上限时，`Status.Peers[].SnapshotError` 会暴露 `ErrTooLarge` 及实际
-  大小/上限；此时应提高 `MaxBodyBytes`/`MaxFrameBytes` 或减小快照。
+- 快照超过传输帧上限时，可通过 `SnapshotChunkBytes` 启用分块；未启用时
+  `Status.Peers[].SnapshotError` 会暴露 `ErrTooLarge` 及实际大小/上限，此时应提高
+  `MaxBodyBytes`/`MaxFrameBytes`、启用分块或减小快照。
 - `FileStorageOptions.NoSync` 只用于临时测试/基准；生产必须保持 fsync。
 
 ## 性能

@@ -66,6 +66,9 @@ ydx 是 yd 全栈框架的可复用组件仓库；组件源码以本仓库为唯
   `router.HandlerFuncRaw` 底层函数类型相同，可直接
   `r.HandleRaw(http.MethodPost, path, tr.Handler().ServeHTTP)`，原生 `net/http`
   使用 `tr.Handler()`，不再维护独立的 `raft/ydrouter` 包。
+- `raft` 在 Linux/Darwin/OpenBSD/illumos 上使用 `golang.org/x/sys`（BSD-3-Clause，
+  与 yd 根 `go.mod` 锁定同版本）的 `writev` 处理大日志项批次，避免把条目负载复制进
+  WAL 缓冲区；其他平台自动回退到单次缓冲写。快照分块消息要求所有对端升级，默认关闭。
 - `rdma` 是独立的纯 Go RDMA 传输模块：经 `github.com/ebitengine/purego`（Apache-2.0）
   在运行时加载 `libibverbs`，**不使用 cgo**；Linux + 64 位 + `-tags rdma` 编译，
   没有标签时为返回 `ErrUnsupported` 的桩实现。支持 RoCE v1/v2 与 InfiniBand、

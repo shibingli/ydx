@@ -27,6 +27,7 @@ func (n *Node) campaign(preVote bool) {
 func (n *Node) startPreVote() {
 	n.setState(StatePreCandidate)
 	n.setLeader(0)
+	n.incomingSnapshot = nil
 	n.selfVoteDurable = false
 	n.resetElection()
 	n.preVotes = make(map[NodeID]bool, len(n.conf.voters)+1)
@@ -165,6 +166,7 @@ func (n *Node) startVote() {
 	n.vote = n.id
 	n.setState(StateCandidate)
 	n.setLeader(0)
+	n.incomingSnapshot = nil
 	n.resetElection()
 	n.votes = make(map[NodeID]bool, len(n.conf.voters)+1)
 	n.preVotes = make(map[NodeID]bool)
@@ -347,6 +349,7 @@ func (n *Node) becomeLeader() {
 	}
 	n.setState(StateLeader)
 	n.setLeader(n.id)
+	n.incomingSnapshot = nil
 	n.metrics.leaderChanges.Add(1)
 	n.resetElection()
 	n.heartbeatElapsed = 0
@@ -420,12 +423,20 @@ func (n *Node) becomeLeader() {
 func (n *Node) becomeFollower(term uint64, leader NodeID, persist bool) uint64 {
 	wasLeader := n.state == StateLeader
 	oldTerm := n.term
+	oldLeader := n.leader
 	if term > n.term {
 		n.setTerm(term)
 		n.vote = 0
 	}
 	n.setState(StateFollower)
 	n.setLeader(leader)
+	// A partial chunked snapshot belongs to one leader and term. A new term or a
+	// different leader invalidates it; heartbeats from the same leader do not. |
+	// 分块快照属于特定领导者与任期。新任期内或不同领导者会使其中断；同一领导者的
+	// 心跳不会。
+	if term != oldTerm || (leader != 0 && leader != oldLeader) {
+		n.incomingSnapshot = nil
+	}
 	n.resetElection()
 	n.votes = make(map[NodeID]bool)
 	n.preVotes = make(map[NodeID]bool)

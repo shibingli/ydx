@@ -54,6 +54,7 @@ type GroupConfig struct {
 	MaxInflightBytes       int
 	SnapshotEntries        uint64
 	SnapshotCatchUpEntries uint64
+	SnapshotChunkBytes     int
 	PersistBatchDelay      time.Duration
 	ProposalQueue          int
 	MessageQueue           int
@@ -77,8 +78,9 @@ func (g GroupConfig) groupNodeConfig(hostID NodeID, storage Storage, fsm FSM, tr
 		MaxProposalBytes: g.MaxProposalBytes,
 		MaxInflightMsgs:  g.MaxInflightMsgs, MaxInflightBytes: g.MaxInflightBytes,
 		SnapshotEntries: g.SnapshotEntries, SnapshotCatchUpEntries: g.SnapshotCatchUpEntries,
-		PersistBatchDelay: g.PersistBatchDelay,
-		ProposalQueue:     g.ProposalQueue, MessageQueue: g.MessageQueue,
+		SnapshotChunkBytes: g.SnapshotChunkBytes,
+		PersistBatchDelay:  g.PersistBatchDelay,
+		ProposalQueue:      g.ProposalQueue, MessageQueue: g.MessageQueue,
 		OutboundQueue: g.OutboundQueue,
 	}
 }

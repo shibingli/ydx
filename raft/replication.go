@@ -3,7 +3,6 @@ package raft
 import (
 	"time"
 
-	"github.com/shibingli/ydx/errs"
 	ydlog "github.com/shibingli/ydx/log"
 )
 
@@ -96,96 +95,6 @@ func (n *Node) maybeSendAppend(to NodeID) {
 	pr.state = replicate
 	n.metrics.appendsOut.Add(1)
 	n.send(msg)
-}
-
-// snapshotRetryInterval bounds how often a leader re-enqueues a snapshot whose
-// response has not arrived. Re-sending every few ticks would multiply a large
-// image in the outbound queues while a slow link is still transferring it.
-// | snapshotRetryInterval 限制领导者重发尚未收到响应的快照。每隔几个 tick 重发会在
-// 慢链路仍在传输时把大镜像在出站队列中复制多份。
-const snapshotRetryInterval = 5 * time.Second
-
-// sendSnapshot transfers the latest snapshot to a lagging follower. | sendSnapshot
-// 将最新快照传输给落后跟随者。
-func (n *Node) sendSnapshot(to NodeID) {
-	if n.state != StateLeader {
-		return
-	}
-	pr := n.progress[to]
-	if pr == nil {
-		return
-	}
-	if pr.state == snapshot && !pr.snapshotSentAt.IsZero() &&
-		n.now().Sub(pr.snapshotSentAt) < snapshotRetryInterval {
-		return
-	}
-	snap := n.latestSnapshot
-	if snap == nil {
-		n.logf("warn", "raft cannot send snapshot | raft 无法发送快照",
-			ydlog.Uint64("node", uint64(n.id)), ydlog.Uint64("peer", uint64(to)))
-		return
-	}
-	if snap.Index <= pr.match {
-		// A follower can only have matched through this snapshot when it already
-		// has a prefix consistent with the leader. If the leader has compacted
-		// beyond that point but still exposes an older image, retrying would loop
-		// between snapshot and append forever; wait for a newer image instead.
-		// | 跟随者匹配到该快照时，其前缀必然与领导者一致。若领导者已压缩到更靠后的
-		// 位置却仍暴露旧镜像，重试会在快照与追加之间无限循环；应等待更新的镜像。
-		if pr.match < n.log.snapshotIndex {
-			n.logf("warn", "raft snapshot is older than compacted log | raft 快照落后于已压缩日志",
-				ydlog.Uint64("node", uint64(n.id)), ydlog.Uint64("peer", uint64(to)),
-				ydlog.Uint64("snapshot", snap.Index), ydlog.Uint64("compacted", n.log.snapshotIndex))
-			pr.state = snapshot
-			pr.snapshotSentAt = n.now()
-			return
-		}
-		pr.next = pr.match + 1
-		pr.state = probe
-		pr.snapshotErr = nil
-		pr.snapshotErrIndex = 0
-		pr.snapshotSentAt = time.Time{}
-		n.maybeSendAppend(to)
-		return
-	}
-	if limiter, ok := n.transport.(interface{ FrameLimit() int64 }); ok {
-		if limit := limiter.FrameLimit(); limit > 0 {
-			size := int64(len(snap.Data)) + 256
-			for _, p := range snap.ConfState.Addresses {
-				size += int64(len(p.Addr))
-			}
-			if size > limit-64 {
-				// The transport would drop every attempt. Report the real cause
-				// through Status and log it once per snapshot instead of silently
-				// retrying an unsendable image. | 传输层会丢弃每次尝试。通过 Status
-				// 报告真实原因，并对每张快照只记录一次日志，而不是静默重试无法发送的
-				// 镜像。
-				pr.state = snapshot
-				pr.pendingSnapshot = snap.Index
-				pr.lastSnapshotTick = n.tickCount
-				pr.snapshotSentAt = n.now()
-				if pr.snapshotErr == nil || pr.snapshotErrIndex != snap.Index {
-					pr.snapshotErr = errs.Detail(ErrTooLarge,
-						"snapshot %d is %d bytes, transport limit is %d", snap.Index, size, limit)
-					pr.snapshotErrIndex = snap.Index
-					n.logf("error", "raft snapshot exceeds transport frame limit | raft 快照超过传输帧上限",
-						ydlog.Uint64("node", uint64(n.id)), ydlog.Uint64("peer", uint64(to)),
-						ydlog.Uint64("snapshot", snap.Index), ydlog.Int64("size", size),
-						ydlog.Int64("limit", limit))
-				}
-				return
-			}
-		}
-	}
-	pr.becomesSnapshot(snap.Index)
-	pr.lastSnapshotTick = n.tickCount
-	pr.snapshotSentAt = n.now()
-	pr.snapshotErr = nil
-	pr.snapshotErrIndex = 0
-	n.logf("info", "raft sending snapshot | raft 发送快照",
-		ydlog.Uint64("node", uint64(n.id)), ydlog.Uint64("peer", uint64(to)),
-		ydlog.Uint64("index", snap.Index))
-	n.send(Message{Type: MsgSnap, To: to, Term: n.term, Snapshot: snap})
 }
 
 // handleAppend processes an AppendEntries request. Log mutations and the new
@@ -409,6 +318,7 @@ func (n *Node) handleHeartbeatResp(m Message) {
 		pr.snapshotErr = nil
 		pr.snapshotErrIndex = 0
 		pr.snapshotSentAt = time.Time{}
+		pr.resetSnapshotChunks()
 		pr.inflights.reset()
 	}
 	// While a snapshot is in flight, heartbeat responses must not switch the

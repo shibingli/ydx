@@ -145,6 +145,28 @@ func (n *Node) persistSnapshot(snap *Snapshot, replacesLog bool, fn func(error))
 	return n.persist(PersistBatch{HardState: &hs, Snapshot: snap, SnapshotReplacesLog: replacesLog}, snap.Index, fn)
 }
 
+// persistSnapshotImage finalizes a streaming image outside the event loop and
+// then queues its small WAL marker. | persistSnapshotImage 在事件循环之外完成
+// 流式镜像定稿，随后只排队小型 WAL 标记。
+func (n *Node) persistSnapshotImage(snap *Snapshot, image snapshotImage, fn func(error)) uint64 {
+	n.wg.Add(1)
+	go func() {
+		defer n.wg.Done()
+		err := image.Finalize()
+		if err != nil {
+			image.Abort()
+		}
+		select {
+		case n.snapshotFileCh <- snapshotFileResult{snap: snap, fn: fn, err: err}:
+		case <-n.stopCh:
+			// No marker was written, so an uncommitted final file is garbage. |
+			// 尚未写入标记，未提交的最终文件属于垃圾。
+			image.Abort()
+		}
+	}()
+	return 0
+}
+
 // handleSnapshotFileResult queues the WAL marker after an asynchronous local
 // image write. The marker receives a new sequence number only now, so it cannot
 // overtake WAL requests created while the image was being written. |
@@ -154,6 +176,15 @@ func (n *Node) handleSnapshotFileResult(result snapshotFileResult) {
 	if result.err != nil {
 		n.fatal(errs.Wrap(result.err, ErrStorage))
 		return
+	}
+	// A large image that will be sent in chunks no longer needs its heap copy;
+	// senders read bounded slices on demand. Small images keep their payload so
+	// a single MsgSnap does not touch the filesystem on the event loop. |
+	// 将以分块发送的大镜像不再需要堆副本；发送方按需读取有界切片。小镜像保留负载，
+	// 使单条 MsgSnap 不必在事件循环上访问文件系统。
+	if result.snap != nil && result.snap.file != "" && n.snapshotChunkBytes > 0 &&
+		result.snap.dataSize > int64(n.snapshotChunkBytes) {
+		result.snap.Data = nil
 	}
 	n.persistSeq++
 	seq := n.persistSeq
@@ -204,12 +235,80 @@ func (n *Node) persistLoop() {
 			return
 		case first := <-n.persistCh:
 			reqs := n.collectPersist(first, buf[:0])
+			measure := true
+			for _, req := range reqs {
+				if req.batch.Snapshot != nil && !req.markerOnly {
+					measure = false
+					break
+				}
+			}
+			start := time.Now()
 			n.processPersistReqs(reqs)
+			if measure {
+				n.recordPersistLatency(time.Since(start))
+			}
 			for i := range reqs {
 				reqs[i] = nil
 			}
 		}
 	}
+}
+
+// recordPersistLatency keeps an exponential moving average of durable batch
+// cost. It is updated only by the persist goroutine. | recordPersistLatency 维护
+// 持久批次开销的指数移动平均，只由持久化协程更新。
+func (n *Node) recordPersistLatency(elapsed time.Duration) {
+	if elapsed <= 0 {
+		return
+	}
+	next := int64(elapsed)
+	if old := n.persistLatency.Load(); old > 0 {
+		next = (old*7 + next) / 8
+	}
+	n.persistLatency.Store(next)
+}
+
+// persistWindow adapts the fixed group-commit base to the observed fsync cost
+// and queued backlog. A window of half the measured fsync lets several requests
+// share one sync without doubling the tail latency; deeper queues widen it
+// further, bounded to avoid unbounded proposal delay. Zero keeps the feature
+// disabled. | persistWindow 根据实测 fsync 成本与排队积压自适应调整固定组提交
+// 基数。取实测 fsync 的一半可让多个请求共享一次 sync 而不过度延长尾延迟；队列越深
+// 窗口越大，并设有上限避免提案延迟无界增长。零值保持关闭。
+func (n *Node) persistWindow() time.Duration {
+	base := n.cfg.PersistBatchDelay
+	if base <= 0 {
+		return 0
+	}
+	window := base
+	if latency := time.Duration(n.persistLatency.Load()); latency > 0 {
+		if target := latency / 2; target > window {
+			window = target
+		}
+	}
+	depth := len(n.persistCh)
+	switch {
+	case depth >= 32:
+		window *= 4
+	case depth >= 8:
+		window *= 2
+	}
+	limit := base * 8
+	if limit < time.Millisecond {
+		limit = time.Millisecond
+	}
+	if limit > 5*time.Millisecond {
+		limit = 5 * time.Millisecond
+	}
+	if limit < base {
+		// A configured base above the adaptive cap is still honored. | 高于自适应
+		// 上限的显式基础窗口仍然生效。
+		limit = base
+	}
+	if window > limit {
+		window = limit
+	}
+	return window
 }
 
 // collectPersist merges queued write requests. When PersistBatchDelay is set,
@@ -221,7 +320,7 @@ func (n *Node) persistLoop() {
 // 请求仍在它之后排队。
 func (n *Node) collectPersist(first *persistRequest, reqs []*persistRequest) []*persistRequest {
 	reqs = append(reqs, first)
-	if delay := n.cfg.PersistBatchDelay; delay > 0 && first.batch.Snapshot == nil {
+	if delay := n.persistWindow(); delay > 0 && first.batch.Snapshot == nil {
 		timer := time.NewTimer(delay)
 		for len(reqs) < 64 {
 			select {
@@ -290,6 +389,34 @@ func persistMergeable(last uint64, hasEntries bool, req *persistRequest) bool {
 func (n *Node) processPersistReqs(reqs []*persistRequest) {
 	i := 0
 	for i < len(reqs) {
+		if reqs[i].markerOnly {
+			// A deferred local snapshot marker can share one WAL record and one
+			// fsync with entries that immediately follow its base. Combining is
+			// only safe for a contiguous range after the snapshot index. |
+			// 延迟的本地快照标记可与紧接其基点的日志项共享一条 WAL 记录和一次
+			// fsync。只有快照索引之后的连续区间才能安全合并。
+			j := i + 1
+			bytes := 0
+			last := reqs[i].batch.Snapshot.Index
+			for j < len(reqs) && !reqs[j].markerOnly && reqs[j].batch.Snapshot == nil {
+				next := persistBytes(reqs[j])
+				if bytes+next > maxPersistBatchBytes || !persistMergeable(last, true, reqs[j]) {
+					break
+				}
+				if nextLast, ok := persistLastIndex(reqs[j]); ok {
+					last = nextLast
+				}
+				bytes += next
+				j++
+			}
+			if j == i+1 {
+				n.persistOne(reqs[i])
+			} else {
+				n.persistMarkerGroup(reqs[i:j])
+			}
+			i = j
+			continue
+		}
 		if reqs[i].batch.Snapshot != nil {
 			n.persistOne(reqs[i])
 			i++
@@ -346,18 +473,12 @@ func (n *Node) persistOne(req *persistRequest) {
 	n.sendPersistAck(req.seq, err)
 }
 
-// persistGroup merges adjacent non-snapshot requests. | persistGroup 合并相邻的非快照
-// 请求。
-func (n *Node) persistGroup(reqs []*persistRequest) {
-	if len(reqs) == 1 {
-		req := reqs[0]
-		err := n.storage.Persist(req.batch)
-		if err != nil {
-			n.metrics.persistErrors.Add(1)
-		}
-		n.sendPersistAck(req.seq, err)
-		return
-	}
+// mergePersistEntries merges requests into one entry batch, preserving truncate
+// ordering and taking the newest hard state. Snapshot fields are deliberately
+// ignored so callers can merge only the non-snapshot parts. | mergePersistEntries
+// 将请求合并为单个日志项批次，保持截断顺序并采用最新硬状态。快照字段被有意忽略，
+// 调用方只合并非快照部分。
+func mergePersistEntries(reqs []*persistRequest) (PersistBatch, uint64) {
 	var hs *HardState
 	truncate := uint64(0)
 	total := 0
@@ -389,7 +510,48 @@ func (n *Node) persistGroup(reqs []*persistRequest) {
 			maxSeq = req.seq
 		}
 	}
-	err := n.storage.Persist(PersistBatch{HardState: hs, Truncate: truncate, Entries: entries})
+	return PersistBatch{HardState: hs, Truncate: truncate, Entries: entries}, maxSeq
+}
+
+// persistMarkerGroup writes a deferred local snapshot marker and its following
+// WAL requests in one durable call. | persistMarkerGroup 在一次持久调用中写入延迟
+// 本地快照标记及其后的 WAL 请求。
+func (n *Node) persistMarkerGroup(reqs []*persistRequest) {
+	marker := reqs[0]
+	batch, maxSeq := mergePersistEntries(reqs)
+	writer, ok := n.storage.(localSnapshotFileStorage)
+	var err error
+	if !ok {
+		err = errs.Detail(ErrUnsupported, "storage does not support deferred snapshot markers | 存储不支持延迟快照标记")
+	} else {
+		err = writer.PersistLocalSnapshotMarkerBatch(marker.batch.Snapshot, batch)
+	}
+	if err == nil && marker.compact > 0 {
+		if cerr := n.storage.Compact(marker.compact); cerr != nil {
+			n.logf("warn", "raft storage compact failed | raft 存储压缩失败",
+				ydlog.Uint64("node", uint64(n.id)), ydlog.Err(cerr))
+		}
+	}
+	if err != nil {
+		n.metrics.persistErrors.Add(1)
+	}
+	n.sendPersistAck(maxSeq, err)
+}
+
+// persistGroup merges adjacent non-snapshot requests. | persistGroup 合并相邻的非快照
+// 请求。
+func (n *Node) persistGroup(reqs []*persistRequest) {
+	if len(reqs) == 1 {
+		req := reqs[0]
+		err := n.storage.Persist(req.batch)
+		if err != nil {
+			n.metrics.persistErrors.Add(1)
+		}
+		n.sendPersistAck(req.seq, err)
+		return
+	}
+	batch, maxSeq := mergePersistEntries(reqs)
+	err := n.storage.Persist(batch)
 	if err != nil {
 		n.metrics.persistErrors.Add(1)
 	}

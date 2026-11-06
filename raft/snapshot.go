@@ -18,6 +18,9 @@ func (n *Node) handleSnapshot(m Message) {
 		return
 	}
 	snap := m.Snapshot
+	// A complete image supersedes any partially reassembled chunk transfer. |
+	// 完整镜像取代任何尚未完成的分块重组。
+	n.incomingSnapshot = nil
 	// Persist the new term before any response, including a rejection. Responses
 	// for a valid snapshot are already tied to the snapshot's own durable write.
 	// | 在发送任何响应（包括拒绝）前持久化新任期。合法快照的响应已绑定到快照自身的
@@ -120,12 +123,14 @@ func (n *Node) handleSnapshotResp(m Message) {
 		pr.snapshotErr = nil
 		pr.snapshotErrIndex = 0
 		pr.snapshotSentAt = time.Time{}
+		pr.resetSnapshotChunks()
 		n.maybeSendAppend(m.From)
 		return
 	}
 	pr.snapshotErr = nil
 	pr.snapshotErrIndex = 0
 	pr.snapshotSentAt = time.Time{}
+	pr.resetSnapshotChunks()
 	if m.Index > n.log.lastIndex {
 		m.Index = n.log.lastIndex
 	}
@@ -135,6 +140,33 @@ func (n *Node) handleSnapshotResp(m Message) {
 		n.sendTimeoutNow()
 	}
 	n.maybeSendAppend(m.From)
+}
+
+// snapshotData returns the image payload, loading a file-backed streaming
+// snapshot on demand. The returned slice may be the snapshot's own Data. |
+// snapshotData 返回镜像负载；文件支持的流式快照按需加载。返回切片可能是快照自身的
+// Data。
+func (n *Node) snapshotData(snap *Snapshot) ([]byte, error) {
+	if snap == nil {
+		return nil, errs.Detail(ErrCorrupt, "nil snapshot")
+	}
+	if snap.Data != nil {
+		return snap.Data, nil
+	}
+	if snap.file == "" {
+		return nil, errs.Detail(ErrCorrupt,
+			"snapshot %d/%d has no image data | 快照缺少镜像数据", snap.Index, snap.Term)
+	}
+	loaded, err := readSnapshotFile(snap.file)
+	if err != nil {
+		return nil, err
+	}
+	if loaded.Index != snap.Index || loaded.Term != snap.Term {
+		return nil, errs.Detail(ErrCorrupt,
+			"snapshot file %d/%d does not match %d/%d | 快照文件与元数据不匹配",
+			loaded.Index, loaded.Term, snap.Index, snap.Term)
+	}
+	return loaded.Data, nil
 }
 
 // snapshotIndexOrZero returns a snapshot index for rejection matching. | snapshotIndexOrZero

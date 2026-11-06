@@ -82,18 +82,43 @@
 // must configure TLS and/or SharedSecret (at least 16 bytes); use both for
 // encryption plus frame integrity. RDMA needs HMAC plus IPsec/MACsec for
 // confidentiality. TCP MaxFrameBytes and HTTP MaxBodyBytes must exceed the
-// largest encoded snapshot; a leader logs an explicit error when a snapshot
-// cannot fit instead of retrying silently. | 入站消息默认不认证。所有多节点部署
-// 必须配置 TLS 和/或至少 16 字节的 SharedSecret；两者同时使用可同时获得加密与帧
-// 完整性。RDMA 需要 HMAC 与 IPsec/MACsec 才能保密。TCP MaxFrameBytes 与 HTTP
-// MaxBodyBytes 必须大于最大快照的编码大小；快照无法放下时领导者会记录明确错误，
-// 而不是静默重试。
+// largest encoded snapshot unless chunking is enabled. Config.SnapshotChunkBytes
+// transfers large images as ack-gated MsgSnapChunk messages, removing the
+// transport frame limit; the receiver still reassembles the whole image, so the
+// protocol cap of 256 MiB remains. Chunk messages are an opt-in extension and
+// require every peer to support them. Without chunking, a leader logs an
+// explicit error when a snapshot cannot fit instead of retrying silently. |
+// 入站消息默认不认证。所有多节点部署必须配置 TLS 和/或至少 16 字节的
+// SharedSecret；两者同时使用可同时获得加密与帧完整性。RDMA 需要 HMAC 与
+// IPsec/MACsec 才能保密。TCP MaxFrameBytes 与 HTTP MaxBodyBytes 必须大于最大快照
+// 的编码大小，除非启用分块。Config.SnapshotChunkBytes 通过逐块确认的
+// MsgSnapChunk 传输大镜像，解除传输帧上限；接收端仍会重组完整镜像，因此协议上限
+// 256 MiB 仍然有效。分块消息是显式扩展，要求所有对端支持。未启用分块时，快照无法
+// 放下会让领导者记录明确错误，而不是静默重试。
 //
 // Committed entries are applied only after the local WAL persist completes, so a
 // crash cannot expose effects of an entry that was never durable locally. WAL
 // group commit keeps the encoding contiguous even when append retries overlap.
 // | 已提交日志项只会在本地 WAL 持久化完成后应用，因此崩溃不会暴露本地从未持久化
 // 日志项的副作用。即使追加重试重叠，WAL 组提交仍保持编码区间连续。
+//
+// # Snapshots | 快照
+//
+// FileStorage writes local images outside the WAL persist goroutine and records
+// a small marker afterwards; the marker can share one WAL record and fsync with
+// following entries. An FSM may implement StreamingFSM to write the image
+// directly to a temporary file instead of materializing a full []byte. Large
+// images with Config.SnapshotChunkBytes enabled are sent as bounded, ack-gated
+// chunks and read from the file on demand; small snapshots keep a memory copy so
+// a single MsgSnap does not touch the filesystem on the event loop.
+// FileStorageOptions.SnapshotChecksum can select CRC32C-only images for very
+// large states, and SnapshotDir can place images on a separate volume. |
+// FileStorage 在 WAL persist 协程之外写入本地镜像，随后记录小型标记；标记可与
+// 后续日志项共享一条 WAL 记录和一次 fsync。FSM 可实现 StreamingFSM，将镜像直接
+// 写入临时文件，而不在内存中生成完整 []byte。启用 Config.SnapshotChunkBytes 后，
+// 大镜像以有界、逐块确认的消息发送并按需从文件读取；小快照保留内存副本，避免单条
+// MsgSnap 在事件循环上访问文件系统。FileStorageOptions.SnapshotChecksum 可为超大
+// 状态选择仅 CRC32C 镜像，SnapshotDir 可把镜像放到独立卷。
 //
 // # RDMA transport | RDMA 传输
 //

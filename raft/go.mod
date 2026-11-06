@@ -6,6 +6,7 @@ require (
 	github.com/shibingli/ydx/errs v0.1.4
 	github.com/shibingli/ydx/log v0.1.11
 	github.com/shibingli/ydx/rdma v0.1.2
+	golang.org/x/sys v0.49.0
 )
 
 require (
