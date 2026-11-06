@@ -161,6 +161,25 @@ RDMA 数据面为 libibverbs SEND/RECV，TCP 仅用于队列对参数交换。�
   index 5，读取到 `after`。
 - 同一轮 `go test -race` 覆盖分区、Check-Quorum、领导者转移、快照追赶与重启。
 
+### 5.1 选举故障转移（内存传输）
+
+`BenchmarkYdxElectionFailover` 关闭当前领导者并等待另一个节点成为领导者；使用
+`TickInterval=1ms`、`ElectionTicks=8`（8–16ms 超时窗口），另用 1ms 延迟存储模拟
+fsync。Windows/i9-10980HK、3 次迭代，仅作趋势参考：
+
+| voter 数 | 内存存储 | 模拟 1ms 持久化 |
+|---:|---:|---:|
+| 3 | 13.7 ms | 19.3 ms |
+| 5 | 12.3 ms | 13.3 ms |
+| 9 | 12.3 ms | 13.0 ms |
+| 25 | 11.7 ms | 13.3 ms |
+| 51 | 11.3 ms | 12.0 ms |
+| 101 | 11.0 ms | 12.0 ms |
+
+25 个以上 voter 默认启用有界 pre-vote 扇出；候选者自投票持久化与投票扇出、
+领导者 no-op 持久化与复制分别重叠，因此 1ms 持久化只增加约 0–5ms；投票者响应前
+的持久化仍在关键路径。算法细节见 [`raft/ELECTION.md`](../../raft/ELECTION.md)。
+
 ## 6. 复现
 
 ```bash

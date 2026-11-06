@@ -216,4 +216,3 @@ func BenchmarkYdxThreeNodePipelined(b *testing.B) {
 		st.Proposals, st.ProposalBatches, float64(st.Proposals)/float64(st.ProposalBatches),
 		st.Applies, st.ApplyBatches)
 }
-
