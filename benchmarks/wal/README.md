@@ -10,7 +10,7 @@ MANIFEST 分片索引、`.idx` 侧车、快照隔离事务、AES-256-GCM / SM4-G
 
 | 实现 | 版本 | 说明 |
 |---|---|---|
-| ydx/wal | 工作树（待发布 v0.2.0） | 本仓库实现；默认 `SyncAlways`，每批一次 fsync |
+| ydx/wal | v0.2.0 | 本仓库实现；默认 `SyncAlways`，每批一次 fsync |
 | `github.com/tidwall/wal` | v1.2.1 | 单文件追加 + 内存段缓存（默认 `SegmentCacheSize=2`） |
 | `github.com/rosedblabs/wal` | v1.3.8 | 分段追加 + 位置句柄式读取 |
 
@@ -78,7 +78,7 @@ MANIFEST 分片索引、`.idx` 侧车、快照隔离事务、AES-256-GCM / SM4-G
 
 ## 第六轮读取路径优化（2026-11-07）
 
-工作树（临时 `replace` 到本仓 `wal`）在第六轮移除了随机读路径上一次性的
+`wal v0.2.0`（发布前以临时 `replace` 联调）在第六轮移除了随机读路径上一次性的
 `Reader` 结构体分配，并把记录头暂存块改为按 WAL 池化：
 
 | 场景 | 第六轮 | 第五轮 | 说明 |
@@ -129,8 +129,8 @@ MANIFEST 分片索引、`.idx` 侧车、快照隔离事务、AES-256-GCM / SM4-G
 
 ## 运行方式
 
-本模块是运行门禁：`go.mod` 依赖已发布的 `github.com/shibingli/ydx/wal`，**不得提交
-本地 `replace`**。发布 `wal/v0.2.0` 标签并同步 `go.mod` 后直接运行：
+本模块是运行门禁：`go.mod` 锁定已发布的 `github.com/shibingli/ydx/wal v0.2.0`，
+**不得提交本地 `replace`**。直接运行：
 
 ```bash
 cd benchmarks/wal
