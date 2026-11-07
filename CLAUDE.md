@@ -66,9 +66,16 @@ ydx 是 yd 全栈框架的可复用组件仓库；组件源码以本仓库为唯
   `router.HandlerFuncRaw` 底层函数类型相同，可直接
   `r.HandleRaw(http.MethodPost, path, tr.Handler().ServeHTTP)`，原生 `net/http`
   使用 `tr.Handler()`，不再维护独立的 `raft/ydrouter` 包。
-- `raft` 在 Linux/Darwin/OpenBSD/illumos 上使用 `golang.org/x/sys`（BSD-3-Clause，
-  与 yd 根 `go.mod` 锁定同版本）的 `writev` 处理大日志项批次，避免把条目负载复制进
-  WAL 缓冲区；其他平台自动回退到单次缓冲写。快照分块消息要求所有对端升级，默认关闭。
+- `raft` 的持久化 WAL 由 `github.com/shibingli/ydx/wal`（v0.2.0）提供：每个
+  `PersistBatch` 是一条原子记录，分段轮转、组提交、稀疏索引、META/MANIFEST/
+  RECOVERY 与平台写路径（Unix `writev`/`pwritev2`，Windows 暂存合并）均由该模块
+  维护；raft 只保留快照文件与 `HARDSTATE`，并通过 `AppendDirect` 单写者快路径
+  写入；NoSync 下关闭轮转刷新与活动段周期检查点，并启用自适应用户态写缓冲
+  （`WithWriteBuffer(-1)`）。大小相关路径由 `wal.SizePolicy` 选择：自动模式按实测
+  CRC 扫描/合并成本、观测写延迟与批次大小直方图决定 CRC 合并、暂存合并与写缓冲
+  阈值，也可用 `WithSizePolicy` 手动固定；`FileStorageOptions.SizePolicy` 透传该
+  策略。WAL 目录格式随该切换变更，旧 `YDRWAL01` 目录不可直接复用。快照分块消息
+  要求所有对端升级，默认关闭。
 - `rdma` 是独立的纯 Go RDMA 传输模块：经 `github.com/ebitengine/purego`（Apache-2.0）
   在运行时加载 `libibverbs`，**不使用 cgo**；Linux + 64 位 + `-tags rdma` 编译，
   没有标签时为返回 `ErrUnsupported` 的桩实现。支持 RoCE v1/v2 与 InfiniBand、
