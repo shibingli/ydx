@@ -36,6 +36,23 @@
   表现良好。ydx 的 FileStorage 在 tmpfs 上的三节点并行约 2.6–2.7 µs（见 WAL 节），
   与内存存储差距很小。
 
+### 1.1 2026-11-07 调度与内存优化后复测（Windows 11，16 逻辑核）
+
+同机同期，`-benchtime=1s -count=3 -benchmem`，取中位数。Dragonboat 的三节点并行
+在该 Windows 主机上阻塞于其自身 `SyncPropose`（10 分钟上下文不返回），单节点
+（Pebble 约 0.93 ms/op）不具可比性，故本表不含 Dragonboat。
+
+| 场景 | ydx/raft | etcd raft v3.7 | hashicorp/raft v1.8 |
+|---|---:|---:|---:|
+| 单节点顺序 | **7,435 ns** (7) | 16,315 ns (39) | 9,031 ns (22) |
+| 单节点并行 | **1,618 ns** (5) | 5,440 ns (26) | 2,267 ns (15) |
+| 三节点顺序 | **22,237 ns** (25) | 38,777 ns (137) | 24,911 ns (110) |
+| 三节点并行 | **4,100 ns** (11) | 26,270 ns (129) | 4,667 ns (42) |
+
+优化前同一主机上三节点并行为 ~10.4 µs，落后 hashicorp（~5.0 µs）；本轮事件循环
+快速排空、`Future.Wait` 无取消上下文快路径、消息空闲链表与 2× 切片扩容后降到
+4.1 µs，反超 hashicorp 1.14×，每提案分配 11 次。
+
 ## 2. 并发与并行
 
 ### 2.1 流水线提案（单组三节点）
@@ -48,6 +65,11 @@
 
 流水线把每批平均提案数从约 5 提升到约 30，摊销了持久化、复制、apply 与 Future
 唤醒成本。
+
+> 本测试机的单调时钟粒度约 0.5 ms（100k 次加法测得 0 s，忙等 200 µs 测得约
+> 529 µs）。时间型 `-benchtime=3s` 会让 benchmark 标定除以≈0 而选到超大 N，
+> 表现为运行数分钟不结束。请使用固定次数，例如
+> `-benchtime=4000000x`；本机 400 万条约 2.5 s（约 1.6M ops/s）。
 
 ### 2.2 客户端并发扩展（单组三节点）
 
@@ -85,8 +107,17 @@
 
 - 提案入口改为 64 分片锁队列 + 位图就绪索引 + 每 P 随机选片，替代单通道；
   生产者在短锁下追加，事件循环批量取走。
+- 事件循环改为**快速排空 + 空闲阻塞**：`drainControl`/`drainMessages`/持久化确认/
+  提案通知/tick/选举定时器/本地请求都用非阻塞单通道操作排空，仅当所有队列为空才
+  进入多路 `select`。繁忙节点不再为每条消息支付 `selectgo` 的锁排序；该函数在
+  CPU 采样中从 28.8% 降到 16%，三节点并行 10.4 µs → 4.5 µs。
+- 进程内消息结构体使用有界通道空闲链表池（`sync.Pool` 会被 GC 清空），处理器改为
+  `*Message` 签名，消除每条消息的结构体分配与值参数逃逸；延迟闭包只捕获标量。
+- `raftLog.entries` 与 `MemStorage.entries` 改用 2× 扩容，替代 Go 对大切片的
+  1.25× 增长，只追加路径的累计复制量约减半。
 - 同步 `Propose` 复用 Future 与 proposal 对象，消除每个提案的通道/结构体分配。
-- `Future.Wait` 先非阻塞接收，已完成流水线提案不再进入多路 select。
+- `Future.Wait` 先非阻塞接收，已完成流水线提案不再进入多路 select；上下文不可取消
+  （`Done()==nil`）时使用普通通道接收，省去阻塞路径的 selectgo。
 - 控制平面独立高优先级队列：心跳/选举/领导权转移/快照不再排在复制积压之后。
 - 快照传输中的过时 AppendEntries 响应被忽略，避免跟随者被重新拉回普通复制而
   饿死快照（修复高负载下 Future 不完成）。
@@ -97,7 +128,10 @@
 
 ## 3. WAL 与持久化
 
-### 3.1 FileStorage 直接写入（NVMe ext4）
+### 3.1 FileStorage 直接写入（重构前，NVMe ext4）
+
+> 下表是改用 `ydx/wal` 之前的旧 WAL 实现。重构后的 Windows 本机前后对比见
+> [`raft/SNAPSHOT.md`](../../raft/SNAPSHOT.md) §4；Linux/NVMe 尚未复测。
 
 `BenchmarkYdxFileStoragePersist`，64 B 负载：
 
@@ -129,26 +163,49 @@ tmpfs 上 fsync 是空操作，NoSync 与 fsync 均约 2.0 µs/128 条（4.1 GB/
 窗口只延迟持久化确认，不阻塞 Raft 事件循环；默认 0，fsync 主导的部署可设
 50–100 µs。
 
-### 3.3 本轮 WAL 优化
+### 3.3 当前 WAL 架构（ydx/wal）
 
-- WAL 记录一次 `write` 写出（头 + 类型 + 负载），不再三次系统调用。
-- Linux 使用 `fdatasync`（不支持时回退 `fsync`）；新分段创建后同步目录项。
-- 持久化循环复用请求数组；单请求走无额外切片分配的快速路径。
-- 分组提交把并发请求合并为一次 fsync；`PersistBatchDelay` 提供基础窗口，
-  实际窗口按实测 fsync 成本与队列深度自适应，上限 5 ms。
-- 大日志项批次在 Linux/Darwin/OpenBSD/illumos 使用 `writev`，不再把条目负载复制
-  进 WAL 缓冲区；Windows 等平台回退到单次缓冲写。
+- 每个 `PersistBatch` 编码为一条 `ydx/wal` 记录；`Append` 在记录与提交标记
+  同步完成后返回，默认即零 RPO。
+- 分段轮转、稀疏索引、META/MANIFEST/RECOVERY、组提交与撕裂尾截断由
+  `ydx/wal` 维护；raft 只保留快照文件与 `HARDSTATE`。
+- 恢复分两遍：先定位最新快照标记，再按 LSN 重放，解决异步本地快照标记晚于
+  其后日志项的问题。
+- `PersistBatchDelay` 仍在 raft 持久化协程合并并发请求；实际窗口按实测 fsync
+  成本与队列深度自适应，上限 5 ms。
+- 大日志项由 `ydx/wal` 平台引擎写出：Unix 直接引用调用方字节并使用
+  `writev`/`pwritev2`；Windows 合并到池化暂存缓冲。
 
-`BenchmarkYdxFileStorageLargeEntry`，单条大日志项、NoSync、50 次迭代：
+联动优化（2026-11-07）后，交替 A/B（Windows/i9-10980HK，n=4 中位数）：
 
-| 平台 / 路径 | 64 KiB | 256 KiB | 1 MiB | allocs/op |
-|---|---:|---:|---:|---:|
-| Windows 缓冲写 | 718 MB/s | 1.46 GB/s | 1.67 GB/s | 3.9–53 KB |
-| WSL Linux `writev` | 3.2 GB/s | 4.0 GB/s | 3.6–5.0 GB/s | **156–159 B** |
+| 场景 | 旧实现 | 新实现 |
+|---|---:|---:|
+| NoSync 256 KiB | 164.1 µs | **144.7 µs** |
+| NoSync 1 MiB | 680.0 µs | **653.2 µs** |
+| fsync 256 KiB | 1.957 ms | **1.774 ms** |
 
-两组数据来自不同文件系统，绝对带宽不可直接比较；关键是 `writev` 路径把每条大日志项
-的分配从“复制整条负载”降到仅记录头/元数据约 160 B。Linux 上 `fdatasync` 主导时
-单条 1 MiB 仍约 3.2–3.4 ms（约 300–330 MB/s），说明此时瓶颈在设备同步而非编码。
+第二轮优化引入用户态写缓冲，在当前 Windows 主机（16 逻辑核，`-count=3` 中位数）：
+
+| 模式 | 批量 | ns/op | 有效带宽 |
+|---|---:|---:|---:|
+| NoSync | 1 | **~800 ns** | 80 MB/s |
+| NoSync | 32 | **~2,100 ns** | 0.98 GB/s |
+| NoSync | 128 | **~6,400 ns** | 1.3 GB/s |
+| fsync | 1 | 948,000 ns | 0.07 MB/s |
+| fsync | 128 | 936,000 ns | 8.8 MB/s |
+
+此前 NoSync 小批量受“每次追加一次 `WriteFile` 系统调用”限制：batch1 的 4.1 µs 中
+86% 是 `runtime.cgocall`/`syscall.writeFile`。本轮引入 `wal.SizePolicy`：自动模式
+按 CRC 扫描/合并成本、观测写延迟与批次大小直方图决定 CRC 合并阈值、暂存合并阈值
+与自适应写缓冲；所有阈值可用 `wal.WithSizePolicy` 手动固定。写缓冲让未同步追加
+先复制进用户态缓冲，并由“复制成本对比写系统调用成本”决定吸收的最大批次（默认
+128 KiB–1 MiB），仅在 Sync、轮转、截断、备份捕获、打开读取器或 Close 时写出（读取器
+存在期间暂停缓冲）。NoSync batch1 由 4.09 µs 降到约 0.8 µs，batch128 由 13.3 µs
+降到约 6.4 µs；SyncAlways 绕过缓冲区，fsync 路径不变。
+三节点 FileStorage NoSync 顺序 56.9→33.1 µs，并行 5.1→3.9 µs。
+
+新增 `BenchmarkYdxFileStorageRecovery` 覆盖启动重放：1k/10k/50k 批分别约
+2.6/14.9/57.8 ms。完整数据见 [`raft/SNAPSHOT.md`](../../raft/SNAPSHOT.md) §4。
 
 快照侧新增能力与基准入口：
 
@@ -227,7 +284,7 @@ TMPDIR=/dev/shm GOWORK=off GOMAXPROCS=32 \
 ```
 
 - WAL 磁盘数据：把 `TMPDIR` 指向目标文件系统的空目录，运行
-  `-bench 'YdxFileStoragePersist|YdxThreeNodeGroupCommit'`。
+  `-bench 'YdxFileStoragePersist|YdxFileStorageRecovery|YdxThreeNodeGroupCommit'`。
 - 多组：`-bench 'YdxNodeHostGroups'`。
 - 流水线：`-bench 'YdxThreeNodePipelined' -benchtime=5000000x`。
 - 客户端扩展：`-cpu 16,32,64,128,256 -bench 'YdxThreeNodeParallel'`。
