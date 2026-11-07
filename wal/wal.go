@@ -124,7 +124,20 @@ type WAL struct {
 	backupGen         uint64
 	readLeases        int
 
-	mu              sync.RWMutex
+	mu sync.RWMutex
+	// commitMu serializes every mutation that touches the active segment: the
+	// writer loop's data/control requests, age/sync ticks, and AppendDirect.
+	// It lets a single-writer integration bypass the append queue without
+	// racing rotation, truncation, or close. | commitMu 串行化所有修改活动段的操作：
+	// 写协程的数据/控制请求、年龄/同步定时器与 AppendDirect。它使单写者集成可以
+	// 绕过追加队列，同时不与轮转、截断或关闭竞争。
+	commitMu        sync.Mutex
+	writeBufMu      sync.Mutex
+	writeBuf        []byte
+	writeBufFile    *os.File
+	writeBufOff     int64
+	readersActive   atomic.Int32
+	policy          *sizePolicyState
 	closeOnce       sync.Once
 	engineCloseOnce sync.Once
 	anchorMu        sync.Mutex
@@ -231,6 +244,8 @@ func Open(dir string, opts ...Option) (*WAL, error) {
 	if o.ioEngine != nil {
 		w.engine = o.ioEngine
 	}
+	w.policy = newSizePolicyState(o.sizePolicy, o.writeBufferBytes)
+	w.policy.bindEngine(w.engine)
 	w.fdcache = newFDCache(dir, o.readFDCacheSize)
 	w.idxcache = newIndexCache(o.indexCacheBytes)
 	w.dedup = newDedupTable(o.dedup.MaxEntries)
@@ -526,6 +541,58 @@ func (w *WAL) Append(ctx context.Context, rec Record) (uint64, error) {
 	return res.lsn, nil
 }
 
+// AppendDirect writes one record without the shared append queue and returns its
+// LSN. It is intended for an integration that already has a single writer and
+// serializes every WAL mutation; callers must not invoke it concurrently with
+// Append, AppendBatch, Sync, Rotate, Truncate, SetActiveKey, or Close. It returns
+// after the record is durable for the configured sync policy. | AppendDirect 绕过
+// 共享追加队列写入一条记录并返回 LSN。它面向已保证单写者、并自行串行化全部 WAL
+// 变更的集成；调用方不得与 Append、AppendBatch、Sync、Rotate、Truncate、
+// SetActiveKey 或 Close 并发调用。记录达到配置的持久级别后返回。
+func (w *WAL) AppendDirect(ctx context.Context, rec Record) (uint64, error) {
+	if w.opts.readOnly {
+		return 0, ErrReadOnly
+	}
+	if err := w.validateUserRecord(rec, false); err != nil {
+		return 0, err
+	}
+	if ctx != nil {
+		if err := ctx.Err(); err != nil {
+			return 0, err
+		}
+	}
+	w.ensureWorkers()
+	req := w.acquireRequest(kindData)
+	defer w.releaseRequest(req)
+	req.one[0] = rec
+	req.recs = req.one[:1]
+	req.direct = true
+	req.directRes = appendResult{}
+	w.commitMu.Lock()
+	if w.isClosed() {
+		w.commitMu.Unlock()
+		return 0, ErrClosed
+	}
+	if err := w.poisonedErr(); err != nil {
+		w.commitMu.Unlock()
+		return 0, err
+	}
+	w.commitBatch([]*appendRequest{req})
+	w.commitMu.Unlock()
+	res := req.directRes
+	if res.err != nil {
+		return 0, res.err
+	}
+	if w.indexer != nil {
+		ts := rec.Timestamp
+		if len(res.timestamps) > 0 {
+			ts = res.timestamps[0]
+		}
+		w.runIndexer(RecordMeta{LSN: res.lsn, Timestamp: ts, Flags: rec.Flags, KeyLen: len(rec.Key), DataLen: len(rec.Data)}, rec.Key, rec.Data)
+	}
+	return res.lsn, nil
+}
+
 // AppendBatch writes a batch atomically and returns its last LSN. | AppendBatch
 // 原子写入一批记录并返回最后一条 LSN。
 func (w *WAL) AppendBatch(ctx context.Context, recs []Record) (uint64, error) {
@@ -739,6 +806,8 @@ func (w *WAL) releaseRequest(req *appendRequest) {
 	req.async = false
 	req.once = false
 	req.allowStream = false
+	req.direct = false
+	req.directRes = appendResult{}
 	req.dedupKey = nil
 	if cap(req.dedupBuf) > 4096 {
 		req.dedupBuf = nil
@@ -945,11 +1014,24 @@ func (w *WAL) closeEngine() {
 // beginRead takes a read lease; it fails after Close. | beginRead 获取读租约；Close 后失败。
 func (w *WAL) beginRead() error {
 	w.readMu.Lock()
-	defer w.readMu.Unlock()
 	if w.readClosed {
+		w.readMu.Unlock()
 		return ErrClosed
 	}
 	w.readLeases++
+	// Mark the read before flushing so a concurrent commit stops buffering and
+	// cannot publish metadata ahead of bytes this reader still cannot see. |
+	// 在刷新前标记读取，使并发提交停止缓冲，也不会把元数据发布到该读取器仍看不到
+	// 的字节之前。
+	w.readersActive.Add(1)
+	w.readMu.Unlock()
+	if err := w.flushWriteBuf(); err != nil {
+		w.readersActive.Add(-1)
+		w.readMu.Lock()
+		w.readLeases--
+		w.readMu.Unlock()
+		return err
+	}
 	return nil
 }
 
@@ -958,6 +1040,7 @@ func (w *WAL) endRead() {
 	w.readMu.Lock()
 	if w.readLeases > 0 {
 		w.readLeases--
+		w.readersActive.Add(-1)
 	}
 	idle := w.readClosed && w.readLeases == 0
 	w.readMu.Unlock()

@@ -16,6 +16,44 @@
 // read-only handles and never block the writer. | 单写协程执行组提交，并发 Append
 // 共享一次位置写与一次同步。读者使用独立只读句柄，永不阻塞写者。
 //
+// # Single-writer fast path | 单写者快路径
+//
+// AppendDirect bypasses the append queue and commits on the caller goroutine.
+// It is intended for an integration that already serializes every WAL mutation
+// and must not be called concurrently with Append, AppendBatch, Sync, Rotate,
+// Truncate, SetActiveKey, or Close. A SyncNever caller that also wants to skip
+// the rotation flush can opt out with WithSyncOnRotate(false); that trades
+// crash durability for throughput. | AppendDirect 绕过追加队列，在调用方协程
+// 完成提交。它面向已自行串行化全部 WAL 变更的集成，不得与 Append、AppendBatch、
+// Sync、Rotate、Truncate、SetActiveKey 或 Close 并发调用。SyncNever 调用方若还
+// 想跳过轮转刷新，可用 WithSyncOnRotate(false) 显式关闭；这会以崩溃持久性换吞吐。
+//
+// WithWriteBuffer collects un-synced appends in a userspace buffer so small
+// batches do not pay one write syscall each. Opening a reader flushes the
+// buffer and suspends buffering for that reader's lifetime; Sync, rotation,
+// truncation, backup capture, and Close flush it as well. SyncAlways bypasses
+// it. The buffer only changes when bytes reach the file, never which records
+// are acknowledged. A negative size lets the size policy grow it with the
+// observed batch-size distribution. | WithWriteBuffer 把未同步的追加收集到用户态
+// 缓冲区，使小批次不再各自支付一次写系统调用。打开读取器会刷新缓冲区并在其生命周期
+// 内暂停缓冲；Sync、轮转、截断、备份捕获与关闭也会刷新。SyncAlways 会绕过它。
+// 缓冲区只改变字节何时到达文件，不改变哪些记录会被确认。负数大小让大小策略随观测到的
+// 批次大小分布扩展它。
+//
+// # Size policy | 大小策略
+//
+// Size-dependent paths are chosen by a SizePolicy instead of compile-time
+// constants. In Auto mode (the default) the WAL measures the CRC scan rate and
+// the GF(2) combination cost once per process, learns the staging-join
+// threshold from observed write latency and copy bandwidth, and sizes an
+// adaptive write buffer from the batch-size histogram. Every strategy can be
+// pinned manually with WithSizePolicy, and negative values disable it.
+// EffectiveSizePolicy reports the values currently in use. |
+// 与大小相关的路径由 SizePolicy 而非编译期常量选择。自动模式（默认）在进程内测量
+// 一次 CRC 扫描速率与 GF(2) 合并成本，根据观测到的写延迟与复制带宽学习暂存合并
+// 阈值，并按批次大小直方图确定自适应写缓冲的大小。所有策略都可用 WithSizePolicy
+// 手动固定，负值关闭对应策略。EffectiveSizePolicy 报告当前生效值。
+//
 // The on-disk format is checksummed with CRC32C. Optional AES-256-GCM or
 // SM4-GCM encryption authenticates every record and binds it to the WAL ID,
 // segment sequence, and record offset. | 磁盘格式使用 CRC32C 校验。可选的

@@ -10,11 +10,20 @@ import (
 
 // defaultEngine is the portable positional I/O engine. | defaultEngine 是可移植的位置写 I/O 引擎。
 type defaultEngine struct {
+	// Windows sequential-write state. The writer appends records in order, so
+	// the file position only needs one Seek when the file or expected offset
+	// changes; subsequent writes use the faster pointer-based Write. |
+	// Windows 顺序写状态。写入方按顺序追加记录，只有文件或预期偏移变化时需要一次
+	// Seek；后续写入使用更快的基于指针的 Write。
+	lastFile       *os.File
+	maxIovecs      int
+	lastOff        int64
+	stagingJoinMax atomic.Int64
+	pwritev2       atomic.Bool
 	fastPath       FastPathOptions
 	macFullFsync   bool
 	dirSyncDurable bool
-	maxIovecs      int
-	pwritev2       atomic.Bool
+	lastValid      bool
 }
 
 // defaultIOEngine builds the platform engine. | defaultIOEngine 构建平台引擎。
@@ -27,8 +36,20 @@ func defaultIOEngine(o *options) *defaultEngine {
 		n = 1024
 	}
 	e := &defaultEngine{fastPath: o.fastPath, macFullFsync: o.macFullFsync, maxIovecs: n}
+	e.stagingJoinMax.Store(defaultStagingJoinBytes)
 	e.initPlatform()
 	return e
+}
+
+// SetStagingJoinMax overrides the staging-join threshold. The size policy
+// learns this value from observed write latency and copy bandwidth. |
+// SetStagingJoinMax 覆盖暂存合并阈值；大小策略根据观测到的写延迟与复制带宽学习
+// 该值。
+func (e *defaultEngine) SetStagingJoinMax(n int) {
+	if n < 0 {
+		n = 0
+	}
+	e.stagingJoinMax.Store(int64(n))
 }
 
 // ReadAt reads exactly len(dst) bytes unless the file ends first. | ReadAt 精确读取 len(dst) 字节，除非文件提前结束。
@@ -56,7 +77,12 @@ func (e *defaultEngine) Sync(f *os.File) error {
 }
 
 // Close releases engine resources. | Close 释放引擎资源。
-func (e *defaultEngine) Close() error { return nil }
+func (e *defaultEngine) Close() error {
+	e.lastFile = nil
+	e.lastOff = 0
+	e.lastValid = false
+	return nil
+}
 
 // readAtFull is the shared exact-read helper used by recovery and readers. | readAtFull
 // 是恢复与读取共用的精确读取辅助函数。

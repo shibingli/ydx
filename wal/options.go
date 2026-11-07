@@ -70,6 +70,8 @@ type options struct {
 	maxBatchRecords        int
 	maxBatchBytes          int
 	maxWritevParts         int
+	writeBufferBytes       int
+	sizePolicy             SizePolicy
 	indexIntervalBytes     int
 	checkpointBytes        int64
 	indexCacheBytes        int64
@@ -107,6 +109,7 @@ type options struct {
 	retentionEnabled       bool
 	monotonicTimestamps    bool
 	macFullFsync           bool
+	syncOnRotate           bool
 	readOnly               bool
 	noLock                 bool
 	allowLSNGaps           bool
@@ -149,6 +152,7 @@ func defaultOptions() options {
 		retentionVerifyTimeout: defaultVerifyTimeout,
 		fastPath:               FastPathOptions{Mode: FastPathAuto, Pwritev2DSync: true},
 		macFullFsync:           true,
+		syncOnRotate:           true,
 		autoRepair:             true,
 		fileMode:               defaultFileMode,
 		dirMode:                defaultDirMode,
@@ -351,6 +355,36 @@ func WithLinuxFastPath(f FastPathOptions) Option { return func(o *options) { o.f
 
 // WithIOEngine installs a custom positional I/O engine. | WithIOEngine 安装自定义位置写 I/O 引擎。
 func WithIOEngine(e IOEngine) Option { return func(o *options) { o.ioEngine = e } }
+
+// WithSyncOnRotate controls whether rotation flushes pending data before it
+// writes segment metadata. Default true. Disable it only together with
+// SyncNever and when losing unsynced records on a crash is acceptable; raft
+// uses it for its NoSync test mode to avoid a full-segment flush at every
+// rotation. | WithSyncOnRotate 控制轮转在写分段元数据前是否刷新待同步数据，默认
+// true。仅在与 SyncNever 搭配且接受崩溃丢失未同步记录时关闭；raft 的 NoSync 测试
+// 模式用它避免每次轮转都刷新整个分段。
+// WithSyncOnRotate sets whether rotation flushes the sealed segment. | WithSyncOnRotate 设置轮转时是否刷新封存分段。
+// WithWriteBuffer enables a userspace append buffer of n bytes. Un-synced
+// appends collect in memory and are written when the buffer fills, on Sync,
+// rotation, truncation, backup capture, read, or close. It is intended for
+// NoSync and interval-sync workloads where the per-append syscall dominates
+// small batches; SyncAlways bypasses the buffer. A negative size enables
+// adaptive sizing from the observed batch-size distribution; zero disables
+// buffering. | WithWriteBuffer 启用 n 字节的用户态追写缓冲。未同步的追加先收集在
+// 内存中，在缓冲填满、Sync、轮转、截断、备份捕获、读取或关闭时写出。它面向
+// NoSync 与按间隔同步的场景，这些场景下每次追加的系统调用主导小批次成本；
+// SyncAlways 会绕过缓冲区。负数表示按观测到的批次大小分布自适应确定大小；零表示
+// 关闭缓冲。
+func WithWriteBuffer(n int) Option { return func(o *options) { o.writeBufferBytes = n } }
+
+// WithSizePolicy sets the size-dependent write strategy. It covers the
+// CRC-combination crossover, the staging-join threshold, and the write buffer;
+// individual non-zero fields override the corresponding learned value. |
+// WithSizePolicy 设置与数据大小相关的写策略，覆盖 CRC 合并阈值、暂存合并阈值与写
+// 缓冲；各字段非零时覆盖对应的学习值。
+func WithSizePolicy(p SizePolicy) Option { return func(o *options) { o.sizePolicy = p } }
+
+func WithSyncOnRotate(enabled bool) Option { return func(o *options) { o.syncOnRotate = enabled } }
 
 // WithMacOSFullFsync selects F_FULLFSYNC on macOS. | WithMacOSFullFsync 选择 macOS 上使用 F_FULLFSYNC。
 func WithMacOSFullFsync(enabled bool) Option { return func(o *options) { o.macFullFsync = enabled } }

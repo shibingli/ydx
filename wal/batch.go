@@ -38,24 +38,30 @@ func releasePrepared(arena []preparedRecord) {
 // preparedRecord is one encoded record waiting for the batch write. | preparedRecord
 // 是一条等待批写入的已编码记录。
 type preparedRecord struct {
-	parts         [3][]byte
-	payload       []byte
-	key           []byte
-	data          []byte
-	headerLen     int
-	nparts        int
-	size          int
-	offset        int64
-	lsn           uint64
-	txnID         uint64
-	timestamp     int64
-	refOffset     uint64
+	parts     [3][]byte
+	payload   []byte
+	key       []byte
+	data      []byte
+	headerLen int
+	nparts    int
+	size      int
+	offset    int64
+	lsn       uint64
+	txnID     uint64
+	timestamp int64
+	refOffset uint64
+	// segmentCRC is this record's contribution to the segment checksum, and
+	// crcReady reports that appendPreparedCRC can combine it without rescanning
+	// the record bytes. | segmentCRC 是记录对分段校验的贡献；crcReady 表示
+	// appendPreparedCRC 可直接合并，无需重新扫描记录字节。
+	segmentCRC    uint32
 	flags         uint16
 	header        [recordHeaderSizeEncrypted]byte
 	digest        [32]byte
 	inlinePayload [markerPayloadSize]byte
 	nonce         [nonceSize]byte
 	hasDigest     bool
+	crcReady      bool
 	ordinary      bool
 	isRef         bool
 	codec         byte
@@ -457,7 +463,7 @@ func (w *WAL) commitBatch(reqs []*appendRequest) {
 		w.userItemBuf = userItems[:0]
 	}()
 	syncNow := w.opts.syncPolicy.Mode == SyncModeAlways
-	if err := w.engine.WriteAt(active.f, parts, baseOff, syncNow); err != nil {
+	if err := w.writeParts(active.f, parts, baseOff, int(off-baseOff), syncNow); err != nil {
 		w.setPoison(err)
 		completeAll(reqs, appendResult{err: err})
 		return
@@ -592,6 +598,9 @@ func (w *WAL) txnWriteKeys(tx *Tx) [][txnKeyDigestSize]byte {
 // appendPreparedCRC updates the segment CRC with one prepared record. | appendPreparedCRC
 // 用一条已准备记录更新段 CRC。
 func appendPreparedCRC(crc uint32, p *preparedRecord) uint32 {
+	if p.crcReady {
+		return crc32Combine(crc, p.segmentCRC, int64(p.size))
+	}
 	for i := 0; i < p.nparts; i++ {
 		crc = appendCRC(crc, p.parts[i])
 	}
@@ -708,10 +717,20 @@ func (w *WAL) prepareUserRecord(p *preparedRecord, active *segment, off int64, r
 	p.headerLen = headerLen
 	p.payload = payload
 	if payload != nil {
-		fillRecordCRCParts(p.header[:headerLen], payload)
+		if len(payload) >= w.crcCombineMin() {
+			p.segmentCRC = fillRecordCRCParts(p.header[:headerLen], payload)
+			p.crcReady = true
+		} else {
+			fillRecordCRCPartsDirect(p.header[:headerLen], payload)
+		}
 		p.parts[0], p.parts[1], p.nparts = p.header[:headerLen], payload, 2
 	} else {
-		fillRecordCRCParts3(p.header[:headerLen], rec.Key, rec.Data)
+		if len(rec.Key)+len(rec.Data) >= w.crcCombineMin() {
+			p.segmentCRC = fillRecordCRCParts3(p.header[:headerLen], rec.Key, rec.Data)
+			p.crcReady = true
+		} else {
+			fillRecordCRCParts3Direct(p.header[:headerLen], rec.Key, rec.Data)
+		}
 		p.parts[0], p.parts[1], p.parts[2], p.nparts = p.header[:headerLen], rec.Key, rec.Data, 3
 	}
 	return p, nil
@@ -756,7 +775,9 @@ func (w *WAL) prepareControlRecord(p *preparedRecord, active *segment, off int64
 	}
 	p.size = int(binary.LittleEndian.Uint32(p.header[recOffSize:]))
 	p.payload = out
-	fillRecordCRCParts(p.header[:headerLen], out)
+	// Control payloads are tiny; a direct scan is cheaper than CRC combination. |
+	// 控制负载很小，直接扫描比 CRC 合并更便宜。
+	fillRecordCRCPartsDirect(p.header[:headerLen], out)
 	p.parts[0], p.parts[1], p.nparts = p.header[:headerLen], out, 2
 	return p, nil
 }
@@ -771,21 +792,52 @@ func binaryPutHeader(dst []byte, size uint32, lsn uint64, timestamp int64, txnID
 	encodeRecordHeader(dst, size, lsn, timestamp, txnID, keyLen, dataLen, flags, cipher, codec, keyID)
 }
 
-// fillRecordCRCParts computes CRC over header[4:] and one payload. | fillRecordCRCParts
-// 计算 header[4:] 与单个负载的 CRC。
-func fillRecordCRCParts(header, payload []byte) {
+// fillRecordCRCPartsDirect computes the record CRC with one scan and leaves the
+// segment contribution to appendPreparedCRC. | fillRecordCRCPartsDirect 一次扫描
+// 计算记录 CRC，把分段贡献留给 appendPreparedCRC。
+func fillRecordCRCPartsDirect(header, payload []byte) {
 	crc := checksum(header[recOffSize:])
 	crc = appendCRC(crc, payload)
 	binaryPutU32(header[recOffCRC:], crc)
 }
 
-// fillRecordCRCParts3 computes CRC over header[4:] and two payload parts. | fillRecordCRCParts3
-// 计算 header[4:] 与两个负载分片的 CRC。
-func fillRecordCRCParts3(header, key, data []byte) {
+// fillRecordCRCParts3Direct computes the record CRC over header[4:], key and
+// data with one scan. | fillRecordCRCParts3Direct 一次扫描计算 header[4:]、key
+// 与 data 的记录 CRC。
+func fillRecordCRCParts3Direct(header, key, data []byte) {
 	crc := checksum(header[recOffSize:])
 	crc = appendCRC(crc, key)
 	crc = appendCRC(crc, data)
 	binaryPutU32(header[recOffCRC:], crc)
+}
+
+// fillRecordCRCParts computes CRC over header[4:] and one payload, stores the
+// record CRC in the header, and returns the CRC of the final record bytes. The
+// payload is scanned once; the segment contribution reuses that checksum via
+// crc32Combine. | fillRecordCRCParts 计算 header[4:] 与单个负载的 CRC，写入头部，
+// 并返回最终记录字节的 CRC。负载只扫描一次；分段贡献通过 crc32Combine 复用该校验。
+func fillRecordCRCParts(header, payload []byte) uint32 {
+	headerCRC := checksum(header[recOffSize:])
+	payloadCRC := checksum(payload)
+	payloadLen := int64(len(payload))
+	binaryPutU32(header[recOffCRC:], crc32Combine(headerCRC, payloadCRC, payloadLen))
+	// The segment checksum covers the final header including its CRC field. |
+	// 分段校验覆盖包含 CRC 字段的最终头部。
+	return crc32Combine(checksum(header), payloadCRC, payloadLen)
+}
+
+// fillRecordCRCParts3 computes CRC over header[4:], key and data, stores the
+// record CRC in the header, and returns the CRC of the final record bytes. |
+// fillRecordCRCParts3 计算 header[4:]、key 与 data 的 CRC，写入头部，并返回最终
+// 记录字节的 CRC。
+func fillRecordCRCParts3(header, key, data []byte) uint32 {
+	headerCRC := checksum(header[recOffSize:])
+	payloadCRC := crc32Combine(checksum(key), checksum(data), int64(len(data)))
+	payloadLen := int64(len(key) + len(data))
+	binaryPutU32(header[recOffCRC:], crc32Combine(headerCRC, payloadCRC, payloadLen))
+	// The segment checksum covers the final header including its CRC field. |
+	// 分段校验覆盖包含 CRC 字段的最终头部。
+	return crc32Combine(checksum(header), payloadCRC, payloadLen)
 }
 
 // binaryPutU32 writes a little-endian uint32. | binaryPutU32 写入小端 uint32。
@@ -844,6 +896,10 @@ func completeAll(reqs []*appendRequest, res appendResult) {
 
 // complete delivers one result exactly once. | complete 只投递一次结果。
 func (req *appendRequest) complete(res appendResult) {
+	if req.direct {
+		req.directRes = res
+		return
+	}
 	if req.async && req.future != nil {
 		req.future.complete(res)
 		return

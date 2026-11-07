@@ -31,14 +31,21 @@ type appendRequest struct {
 	done   chan appendResult
 
 	// Writer-local planning state. | 写入协程本地规划状态。
-	plan      *reqPlan
-	recs      []Record
-	dedupKey  []byte
-	dedupBuf  []byte
-	one       [1]Record
+	plan     *reqPlan
+	recs     []Record
+	dedupKey []byte
+	dedupBuf []byte
+	one      [1]Record
+	// direct reports that AppendDirect calls commitBatch on the caller goroutine
+	// and reads directRes, avoiding both the queue and a result allocation. |
+	// direct 表示 AppendDirect 在调用方协程调用 commitBatch 并读取 directRes，
+	// 同时避免队列与结果分配。
+	directRes appendResult
 	beforeLSN uint64
 
-	keyID       uint32
+	keyID  uint32
+	direct bool
+
 	kind        reqKind
 	once        bool
 	allowStream bool
@@ -97,12 +104,18 @@ func (w *WAL) writerLoop() {
 		} else {
 			select {
 			case <-ageC:
-				if err := w.maybeRotateAge(); err != nil {
+				w.commitMu.Lock()
+				err := w.maybeRotateAge()
+				w.commitMu.Unlock()
+				if err != nil {
 					w.setPoison(err)
 				}
 				continue
 			case <-syncC:
-				if err := w.flushPendingSync(); err != nil {
+				w.commitMu.Lock()
+				err := w.flushPendingSync()
+				w.commitMu.Unlock()
+				if err != nil {
 					w.setPoison(err)
 				}
 				continue
@@ -112,15 +125,21 @@ func (w *WAL) writerLoop() {
 		}
 		switch req.kind {
 		case kindClose:
+			w.commitMu.Lock()
 			w.finishWriter()
+			w.commitMu.Unlock()
 			req.done <- appendResult{}
 			return
 		case kindData, kindTxnCommit:
 			batch, deferred := w.drainBatch(req)
+			w.commitMu.Lock()
 			w.commitBatch(batch)
+			w.commitMu.Unlock()
 			pending = deferred
 		default:
+			w.commitMu.Lock()
 			w.handleControl(req)
+			w.commitMu.Unlock()
 		}
 	}
 }
@@ -206,6 +225,12 @@ func (w *WAL) handleControl(req *appendRequest) {
 	case kindTruncate:
 		res.segments, res.err = w.truncate(req.beforeLSN)
 	case kindBackupSnapshot:
+		// A backup set must describe bytes that are already in the file. |
+		// 备份集必须描述已写入文件的字节。
+		if err := w.flushWriteBuf(); err != nil {
+			res.err = err
+			break
+		}
 		res.backupSet = w.captureBackupSet()
 	default:
 		res.err = errs.Detail(ErrInvalidOptions, "unknown writer request %[1]d | 未知写入请求 %[1]d", req.kind)
@@ -268,7 +293,16 @@ func (w *WAL) setWriterErr(err error) {
 // flushPendingSync synchronizes pending writes and advances the checkpoint
 // watermark. | flushPendingSync 同步待写入并推进检查点水位。
 func (w *WAL) flushPendingSync() error {
-	if !w.pendingSync || w.active == nil {
+	if w.active == nil {
+		return nil
+	}
+	// Buffered appends are not on disk yet; write them before syncing or
+	// publishing any durable watermark. | 缓冲的追加尚未落盘；在同步或发布任何
+	// 持久水位前先写出它们。
+	if err := w.flushWriteBuf(); err != nil {
+		return err
+	}
+	if !w.pendingSync {
 		return nil
 	}
 	if err := w.engine.Sync(w.active.f); err != nil {
@@ -380,11 +414,22 @@ func (w *WAL) rotate() error {
 	if old == nil || old.size <= int64(segmentHeaderSize) {
 		return nil
 	}
+	// The sealed segment must contain every byte its metadata will advertise. |
+	// 封存分段必须包含其元数据所声明的全部字节。
+	if err := w.flushWriteBuf(); err != nil {
+		return err
+	}
 	if w.nextSeq == math.MaxUint64 {
 		return errs.Detail(ErrTooLarge, "WAL segment sequence space is exhausted | WAL 分段序号空间已耗尽")
 	}
-	if err := w.flushPendingSync(); err != nil {
-		return err
+	// A NoSync caller may explicitly trade durability for throughput; in that
+	// mode flushing the whole sealed segment at every rotation would dominate
+	// large-record benchmarks and tests. | NoSync 调用方可显式以持久性换吞吐；
+	// 否则每次轮转刷新整个封段会主导大记录基准与测试的成本。
+	if w.opts.syncOnRotate {
+		if err := w.flushPendingSync(); err != nil {
+			return err
+		}
 	}
 	// Step 2: persist commitSeq/firstLSN before writing the full sidecar. | 第 2 步：写完整侧车前持久化 commitSeq/firstLSN。
 	if err := w.meta.write(w.metaSnapshot()); err != nil {
@@ -678,6 +723,9 @@ func (w *WAL) triggerRetention() {
 func (w *WAL) syncActive() error {
 	if w.active == nil || w.active.f == nil {
 		return nil
+	}
+	if err := w.flushWriteBuf(); err != nil {
+		return err
 	}
 	if err := w.engine.Sync(w.active.f); err != nil {
 		return wrapStorage("sync active segment", err)
