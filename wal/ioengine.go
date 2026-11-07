@@ -13,12 +13,20 @@ type defaultEngine struct {
 	fastPath       FastPathOptions
 	macFullFsync   bool
 	dirSyncDurable bool
+	maxIovecs      int
 	pwritev2       atomic.Bool
 }
 
 // defaultIOEngine builds the platform engine. | defaultIOEngine 构建平台引擎。
 func defaultIOEngine(o *options) *defaultEngine {
-	e := &defaultEngine{fastPath: o.fastPath, macFullFsync: o.macFullFsync}
+	n := o.maxWritevParts
+	if n <= 0 {
+		n = 1
+	}
+	if n > 1024 {
+		n = 1024
+	}
+	e := &defaultEngine{fastPath: o.fastPath, macFullFsync: o.macFullFsync, maxIovecs: n}
 	e.initPlatform()
 	return e
 }
@@ -54,6 +62,28 @@ func (e *defaultEngine) Close() error { return nil }
 // 是恢复与读取共用的精确读取辅助函数。
 func readAtFull(f *os.File, dst []byte, off int64) error {
 	return readFullAt(f, dst, off)
+}
+
+// readAtFull routes data-file reads through the configured IOEngine so an
+// io_uring or other positional backend also serves random reads. Metadata files
+// and directory scans keep using the portable helper. | readAtFull 让数据文件
+// 读取经过配置的 IOEngine，使 io_uring 等位置读后端也能服务随机读；元数据文件
+// 与目录扫描仍使用可移植辅助函数。
+func (w *WAL) readAtFull(f *os.File, dst []byte, off int64) error {
+	if w.engine == nil {
+		return readFullAt(f, dst, off)
+	}
+	n, err := w.engine.ReadAt(f, dst, off)
+	if err != nil {
+		if err == io.EOF && n == len(dst) {
+			return nil
+		}
+		return err
+	}
+	if n != len(dst) {
+		return io.ErrUnexpectedEOF
+	}
+	return nil
 }
 
 // writePartsSequential writes parts with WriteAt and no batching. | writePartsSequential

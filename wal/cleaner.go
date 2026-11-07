@@ -3,8 +3,16 @@ package wal
 import (
 	"context"
 	"os"
+	"time"
 
 	"github.com/shibingli/ydx/errs"
+)
+
+// Cleaner retry bounds for platform-level unlink failures. | cleaner 针对平台
+// 级 unlink 失败的重试边界。
+const (
+	cleanupRetryMin = 100 * time.Millisecond
+	cleanupRetryMax = 5 * time.Second
 )
 
 // cleanerLoop is the only goroutine that unlinks segment files. | cleanerLoop
@@ -44,10 +52,41 @@ func (w *WAL) cleanerLoop() {
 		}
 		w.fdcache.evict(seg.seq)
 		w.idxcache.evict(seg.seq)
-		if err := os.Remove(seg.path); err == nil || os.IsNotExist(err) {
-			_ = removeIfExists(seg.idxPath)
-			_ = removeIfExists(seg.bakPath)
-			w.markBackupDeleted(seg.seq)
+		retry := cleanupRetryMin
+		for {
+			err := os.Remove(seg.path)
+			if err == nil || os.IsNotExist(err) {
+				if e := removeIfExists(seg.idxPath); e != nil {
+					w.counters.cleanupErrors.Add(1)
+					w.reportAsync(errs.WrapDetail(e, ErrStorage, "remove sidecar %s | 删除侧车 %s 失败", seg.idxPath, seg.idxPath))
+				}
+				if e := removeIfExists(seg.bakPath); e != nil {
+					w.counters.cleanupErrors.Add(1)
+					w.reportAsync(errs.WrapDetail(e, ErrStorage, "remove backup marker %s | 删除备份标记 %s 失败", seg.bakPath, seg.bakPath))
+				}
+				w.markBackupDeleted(seg.seq)
+				break
+			}
+			// A retired segment can no longer be read. Keep retrying instead of
+			// silently leaving files behind (e.g. a Windows sharing violation);
+			// Close interrupts the retry loop. | 已退休分段不再可读；不能静默留下
+			// 文件（例如 Windows 共享冲突），必须持续重试；Close 可打断重试。
+			w.counters.cleanupErrors.Add(1)
+			w.reportAsync(errs.WrapDetail(err, ErrStorage, "remove segment %d | 删除分段 %d 失败", seg.seq, seg.seq))
+			select {
+			case <-w.cleanerStop:
+				w.cleanerMu.Lock()
+				w.cleanerBusy = false
+				w.cleanerMu.Unlock()
+				return
+			case <-time.After(retry):
+			}
+			if retry < cleanupRetryMax {
+				retry *= 2
+				if retry > cleanupRetryMax {
+					retry = cleanupRetryMax
+				}
+			}
 		}
 		w.cleanerMu.Lock()
 		w.cleanerBusy = false

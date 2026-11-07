@@ -2,7 +2,6 @@ package wal
 
 import (
 	"encoding/binary"
-	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
@@ -113,6 +112,14 @@ type sparseEntry struct {
 
 // segment is one .wal file plus its in-memory summary and index. | segment 是一个 .wal 文件及其内存摘要与索引。
 type segment struct {
+	f        *os.File
+	keyIndex map[string][]uint64
+	path     string
+	idxPath  string
+	bakPath  string
+
+	sparse      []sparseEntry
+	offsets     []uint64
 	seq         uint64
 	baseLSN     uint64
 	lastLSN     uint64
@@ -120,63 +127,87 @@ type segment struct {
 	size        int64
 	minTime     int64
 	maxTime     int64
-	crc         uint32
-	idxCRC      uint32
 	commitSeq   uint64
 	createdNano int64
-	walID       [16]byte
+	refs        atomic.Int64
+	indexGen    uint64
 
-	missing    bool
-	retired    bool
+	metaMu sync.RWMutex
+
+	checkpointMu sync.Mutex
+	// indexMu serializes lazy full-index rebuilds for a sealed segment. |
+	// indexMu 串行化封段的按需完整索引重建。
+	indexMu    sync.Mutex
+	crc        uint32
+	idxCRC     uint32
 	dedupRefs  uint32
 	compressed uint32
 	state      atomic.Uint32
-	refs       atomic.Int64
+	validated  atomic.Bool
 
-	f       *os.File
-	path    string
-	idxPath string
-	bakPath string
+	walID [16]byte
 
-	metaMu           sync.RWMutex
-	sparse           []sparseEntry
+	missing          bool
+	retired          bool
 	sparseLoaded     bool
-	offsets          []uint64
+	sparseComplete   bool
 	denseLoaded      bool
-	keyIndex         map[string][]uint64
 	keyIndexLoaded   bool
+	keyIndexComplete bool
 	keyIndexOverflow bool
-
-	checkpointMu sync.Mutex
 }
 
 // newSegmentSummary builds a segment with no loaded index. | newSegmentSummary 构建一个未加载索引的分段摘要。
 func newSegmentSummary(seq, baseLSN, lastLSN uint64, size int64, walID [16]byte, dir string) *segment {
+	base := joinPathName(dir, zeroPad20(seq))
 	return &segment{
 		seq:     seq,
 		baseLSN: baseLSN,
 		lastLSN: lastLSN,
 		size:    size,
 		walID:   walID,
-		path:    segmentPath(dir, seq),
-		idxPath: sidecarPath(dir, seq),
-		bakPath: backupPath(dir, seq),
+		path:    base + ".wal",
+		idxPath: base + ".idx",
+		bakPath: base + ".bak",
 	}
+}
+
+// zeroPad20 formats a uint64 as exactly 20 decimal digits. | zeroPad20 把 uint64
+// 格式化为恰好 20 位十进制数字。
+func zeroPad20(v uint64) string {
+	var b [20]byte
+	for i := len(b) - 1; i >= 0; i-- {
+		b[i] = '0' + byte(v%10)
+		v /= 10
+	}
+	return string(b[:])
+}
+
+// joinPathName joins dir and name without cleaning the path. | joinPathName 不经
+// 路径清理地拼接目录与文件名。
+func joinPathName(dir, name string) string {
+	if dir == "" {
+		return name
+	}
+	if os.IsPathSeparator(dir[len(dir)-1]) {
+		return dir + name
+	}
+	return dir + string(filepath.Separator) + name
 }
 
 // segmentPath returns <seq>.wal. | segmentPath 返回 <seq>.wal。
 func segmentPath(dir string, seq uint64) string {
-	return filepath.Join(dir, fmt.Sprintf("%020d.wal", seq))
+	return joinPathName(dir, zeroPad20(seq)) + ".wal"
 }
 
 // sidecarPath returns <seq>.idx. | sidecarPath 返回 <seq>.idx。
 func sidecarPath(dir string, seq uint64) string {
-	return filepath.Join(dir, fmt.Sprintf("%020d.idx", seq))
+	return joinPathName(dir, zeroPad20(seq)) + ".idx"
 }
 
 // backupPath returns <seq>.bak. | backupPath 返回 <seq>.bak。
 func backupPath(dir string, seq uint64) string {
-	return filepath.Join(dir, fmt.Sprintf("%020d.bak", seq))
+	return joinPathName(dir, zeroPad20(seq)) + ".bak"
 }
 
 // createSegmentFile creates an O_EXCL segment and writes its header. | createSegmentFile
@@ -210,6 +241,11 @@ func createSegmentFile(dir string, seq, baseLSN uint64, walID [16]byte, mode os.
 	}
 	s.f = f
 	s.createdNano = h.createdNano
+	s.validated.Store(true)
+	// A freshly created segment has empty, hence complete, indexes. | 新建分段
+	// 的索引为空，因此是完整的。
+	s.sparseComplete = true
+	s.keyIndexComplete = true
 	s.state.Store(uint32(segmentActive))
 	return s, nil
 }
@@ -247,7 +283,32 @@ func openSegmentFile(dir string, seq uint64, walID [16]byte, mode os.FileMode) (
 	s := newSegmentSummary(seq, h.baseLSN, h.baseLSN-1, size, walID, dir)
 	s.f = f
 	s.createdNano = h.createdNano
+	s.validated.Store(true)
 	return s, h, nil
+}
+
+// validateSegmentIdentity checks a lazily opened segment's header. MANIFEST
+// fast-path opens defer this check to the first read; a renamed or replaced
+// file must not pass silently. | validateSegmentIdentity 校验延迟打开分段的
+// 段头；MANIFEST 快速路径把该检查推迟到首次读取，重命名或替换的文件不得静默
+// 通过。
+func validateSegmentIdentity(seg *segment, f *os.File) error {
+	if seg.validated.Load() {
+		return nil
+	}
+	var hdr [segmentHeaderSize]byte
+	if err := readFullAt(f, hdr[:], 0); err != nil {
+		return wrapStorage("read segment header", err)
+	}
+	h, err := decodeSegmentHeader(hdr[:])
+	if err != nil {
+		return err
+	}
+	if h.seq != seg.seq || h.walID != seg.walID {
+		return errs.Detail(ErrCorrupt, "segment %d header identity mismatch | 分段 %d 段头身份不匹配", seg.seq, seg.seq)
+	}
+	seg.validated.Store(true)
+	return nil
 }
 
 // readSegmentHeaderFile reads a segment header without keeping the file open. | readSegmentHeaderFile
@@ -271,20 +332,6 @@ func readSegmentHeaderFile(path string) (segmentHeader, int64, error) {
 		return segmentHeader{}, info.Size(), err
 	}
 	return h, info.Size(), nil
-}
-
-// rewriteSegmentHeader updates the header of an empty reused segment. | rewriteSegmentHeader
-// 更新被复用的空分段头。
-func rewriteSegmentHeader(f *os.File, h segmentHeader) error {
-	var hdr [segmentHeaderSize]byte
-	encodeSegmentHeader(hdr[:], h)
-	if err := writeFullAt(f, hdr[:], 0); err != nil {
-		return errs.WrapDetail(err, ErrStorage, "rewrite segment header | 重写分段头失败")
-	}
-	if err := f.Sync(); err != nil {
-		return errs.WrapDetail(err, ErrStorage, "sync rewritten segment header | 同步重写分段头失败")
-	}
-	return nil
 }
 
 // setState atomically changes the segment lifecycle state. | setState 原子改变分段生命周期状态。
@@ -315,6 +362,23 @@ func (w *WAL) notifyCleanerIfPending() {
 	if pending {
 		w.notifyCleaner()
 	}
+}
+
+// cloneSummary returns a copy of the segment summary without rebuilding its
+// path strings. | cloneSummary 复制分段摘要，不重建路径字符串。
+func (s *segment) cloneSummary() *segment {
+	s.metaMu.RLock()
+	c := &segment{
+		seq: s.seq, baseLSN: s.baseLSN, lastLSN: s.lastLSN, recordCount: s.recordCount,
+		size: s.size, minTime: s.minTime, maxTime: s.maxTime, crc: s.crc,
+		idxCRC: s.idxCRC, commitSeq: s.commitSeq, createdNano: s.createdNano, walID: s.walID,
+		missing: s.missing, retired: s.retired, dedupRefs: s.dedupRefs, compressed: s.compressed,
+		path: s.path, idxPath: s.idxPath, bakPath: s.bakPath,
+	}
+	s.metaMu.RUnlock()
+	c.state.Store(s.state.Load())
+	c.validated.Store(s.validated.Load())
+	return c
 }
 
 // summarySnapshot returns a copy of the mutable summary fields. | summarySnapshot

@@ -3,17 +3,23 @@ package wal
 import (
 	"bytes"
 	"encoding/binary"
+	"io"
 	"os"
 	"path/filepath"
-	"sort"
 
 	"github.com/shibingli/ydx/errs"
 )
 
 // META layout constants. | META 布局常量。
 const (
-	metaMagic      = "YDXMETA1"
-	metaVersion    = uint16(1)
+	metaMagic = "YDXMETA1"
+	// metaVersion 2 marks the v0.2.0 metadata generation. It prevents v0.1.x
+	// readers from opening a directory whose MANIFEST retire records now use
+	// prefix-watermark semantics; v0.2.0 readers still accept v1 slots. |
+	// metaVersion 2 标记 v0.2.0 元数据代次，阻止 v0.1.x 读者打开退休记录已改为
+	// 前缀水位语义的目录；v0.2.0 读者仍接受 v1 槽。
+	metaVersion    = uint16(2)
+	metaVersionV1  = uint16(1)
 	metaHeaderSize = uint32(128)
 	metaSlotSize   = 128
 	metaFileSize   = 256
@@ -23,7 +29,12 @@ const (
 	metaFlagSerializable = uint16(1 << 1)
 	metaFlagHashShift    = 2
 	metaFlagHashMask     = uint16(0x3)
-	metaKnownFlags       = uint16(0x0F)
+	// metaFlagAnchor records that a recovery anchor existed when this META
+	// generation was written; it lets clean opens skip an anchor stat. |
+	// metaFlagAnchor 记录写入本 META 代次时恢复锚点已存在，使干净打开可以跳过
+	// 一次锚点 stat。
+	metaFlagAnchor = uint16(1 << 4)
+	metaKnownFlags = uint16(0x1F)
 )
 
 // META field offsets inside one 128-byte slot. | 单个 128 字节槽内的字段偏移。
@@ -44,6 +55,10 @@ const (
 	metaOffActiveKeyKCV = 92
 	metaOffReserved     = 100
 )
+
+// zeroMetaSlot is the all-zero slot used for torn-slot detection. | zeroMetaSlot
+// 是用于撕裂槽检测的全零槽。
+var zeroMetaSlot [metaSlotSize]byte
 
 // metaState is the complete META state. | metaState 是完整的 META 状态。
 type metaState struct {
@@ -110,7 +125,7 @@ func decodeMetaSlot(slot []byte) (metaState, bool, error) {
 	if len(slot) < metaSlotSize {
 		return metaState{}, false, nil
 	}
-	if bytes.Equal(slot[:metaSlotSize], make([]byte, metaSlotSize)) {
+	if bytes.Equal(slot[:metaSlotSize], zeroMetaSlot[:]) {
 		return metaState{}, false, nil
 	}
 	if string(slot[metaOffMagic:metaOffMagic+8]) != metaMagic {
@@ -118,7 +133,7 @@ func decodeMetaSlot(slot []byte) (metaState, bool, error) {
 	}
 	version := binary.LittleEndian.Uint16(slot[metaOffVersion:])
 	headerSize := binary.LittleEndian.Uint32(slot[metaOffHeaderSize:])
-	if version != metaVersion || headerSize != metaHeaderSize {
+	if (version != metaVersion && version != metaVersionV1) || headerSize != metaHeaderSize {
 		return metaState{}, false, errs.Detail(ErrUnsupported, "META version %[1]d header %[2]d | META 版本 %[1]d 头长度 %[2]d",
 			version, headerSize)
 	}
@@ -165,30 +180,34 @@ func decodeMetaSlot(slot []byte) (metaState, bool, error) {
 
 // metaSlotRecord is one valid slot found during Open. | metaSlotRecord 是 Open 期间发现的一个有效槽。
 type metaSlotRecord struct {
-	state metaState
-	raw   [metaSlotSize]byte
-	file  int
-	slot  int
+	state   metaState
+	raw     [metaSlotSize]byte
+	file    int
+	slot    int
+	version uint16
 }
 
 // metaFile is one of META or META.mirror. | metaFile 是 META 或 META.mirror 之一。
 type metaFile struct {
-	path     string
 	f        *os.File
+	path     string
+	state    metaState
+	current  int
 	exists   bool
 	hasValid bool
-	current  int
-	state    metaState
 }
 
 // metaStore owns the two mirrored META files. It is written by exactly one
 // goroutine at a time. | metaStore 管理两个镜像 META 文件；同一时刻只有一个协程写入。
 type metaStore struct {
-	dir      string
 	files    [2]*metaFile
+	dir      string
 	state    metaState
-	hasState bool
 	fileMode os.FileMode
+	hasState bool
+	// upgrade forces one rewrite when the selected slot is still v1. |
+	// upgrade 在选中的槽仍为 v1 时强制重写一次。
+	upgrade bool
 }
 
 // openMetaStore reads both META files and selects the newest valid generation. | openMetaStore
@@ -202,21 +221,29 @@ func openMetaStore(dir string, fileMode os.FileMode) (*metaStore, error) {
 			{path: filepath.Join(dir, "META.mirror")},
 		},
 	}
-	var records []metaSlotRecord
+	var records [4]metaSlotRecord
+	nrec := 0
+	var buf [metaFileSize + 1]byte
 	for i, mf := range s.files {
-		data, err := os.ReadFile(mf.path)
+		f, err := os.Open(mf.path)
 		if err != nil {
 			if os.IsNotExist(err) {
 				continue
 			}
-			return nil, errs.WrapDetail(err, ErrStorage, "read %s | 读取 %s 失败", mf.path, mf.path)
+			return nil, errs.WrapDetail(err, ErrStorage, "open %s | 打开 %s 失败", mf.path, mf.path)
 		}
+		n, readErr := f.ReadAt(buf[:], 0)
+		_ = f.Close()
+		if readErr != nil && readErr != io.EOF {
+			return nil, errs.WrapDetail(readErr, ErrStorage, "read %s | 读取 %s 失败", mf.path, mf.path)
+		}
+		data := buf[:n]
 		mf.exists = true
 		if len(data) > metaFileSize {
 			return nil, errs.Detail(ErrCorrupt, "%[1]s has %[2]d bytes, want at most %[3]d | %[1]s 有 %[2]d 字节，最多 %[3]d",
 				mf.path, len(data), metaFileSize)
 		}
-		var localBest *metaSlotRecord
+		haveBest := false
 		for slot := 0; slot < 2; slot++ {
 			off := slot * metaSlotSize
 			if off+metaSlotSize > len(data) {
@@ -229,56 +256,59 @@ func openMetaStore(dir string, fileMode os.FileMode) (*metaStore, error) {
 			if !valid {
 				continue
 			}
-			rec := metaSlotRecord{state: state, file: i, slot: slot}
-			copy(rec.raw[:], data[off:off+metaSlotSize])
-			records = append(records, rec)
-			if localBest == nil || state.generation > localBest.state.generation {
-				c := rec
-				localBest = &c
+			records[nrec] = metaSlotRecord{
+				state: state, file: i, slot: slot,
+				version: binary.LittleEndian.Uint16(data[off+metaOffVersion:]),
+			}
+			copy(records[nrec].raw[:], data[off:off+metaSlotSize])
+			nrec++
+			if !haveBest || state.generation > mf.state.generation {
+				mf.hasValid = true
+				mf.current = slot
+				mf.state = state
+				haveBest = true
 			}
 		}
-		if localBest != nil {
-			mf.hasValid = true
-			mf.current = localBest.slot
-			mf.state = localBest.state
-		}
 	}
-	if len(records) == 0 {
+	if nrec == 0 {
 		return s, nil
 	}
-	sort.Slice(records, func(i, j int) bool {
-		if records[i].state.generation != records[j].state.generation {
-			return records[i].state.generation > records[j].state.generation
-		}
-		if records[i].file != records[j].file {
-			return records[i].file < records[j].file
-		}
-		return records[i].slot < records[j].slot
-	})
-	top := records[0]
-	for i := 0; i < len(records); {
-		j := i + 1
-		for j < len(records) && records[j].state.generation == records[i].state.generation {
-			j++
-		}
-		for k := i + 1; k < j; k++ {
-			if !bytes.Equal(records[k].raw[:], records[i].raw[:]) {
-				return nil, errs.Detail(ErrCorrupt, "META slots at generation %[1]d differ | generation %[1]d 的 META 槽内容不一致",
-					records[i].state.generation)
-			}
-		}
-		i = j
-	}
-	for i := 1; i < len(records); i++ {
-		if records[i].state.generation < top.state.generation {
-			if err := checkMetaTransition(top.state, records[i].state); err != nil {
-				return nil, err
-			}
-			break
+	// Find the newest generation (ties prefer file then slot order). | 找出最新
+	// generation；同代按文件、槽顺序取首个。
+	top := 0
+	for i := 1; i < nrec; i++ {
+		if records[i].state.generation > records[top].state.generation {
+			top = i
 		}
 	}
-	s.state = top.state
+	for i := 0; i < nrec; i++ {
+		if i == top || records[i].state.generation != records[top].state.generation {
+			continue
+		}
+		if !bytes.Equal(records[i].raw[:], records[top].raw[:]) {
+			return nil, errs.Detail(ErrCorrupt, "META slots at generation %[1]d differ | generation %[1]d 的 META 槽内容不一致",
+				records[top].state.generation)
+		}
+	}
+	// Validate the newest against the next-newest distinct generation. | 用次新
+	// 的不同 generation 校验最新代。
+	next := -1
+	for i := 0; i < nrec; i++ {
+		if records[i].state.generation >= records[top].state.generation {
+			continue
+		}
+		if next < 0 || records[i].state.generation > records[next].state.generation {
+			next = i
+		}
+	}
+	if next >= 0 {
+		if err := checkMetaTransition(records[top].state, records[next].state); err != nil {
+			return nil, err
+		}
+	}
+	s.state = records[top].state
 	s.hasState = true
+	s.upgrade = records[top].version < metaVersion
 	return s, nil
 }
 
@@ -289,11 +319,17 @@ func checkMetaTransition(newer, older metaState) error {
 		return errs.Detail(ErrCorrupt, "META walID changed across generations | META walID 跨代改变")
 	}
 	if newer.flags != older.flags {
-		enableSerializable := older.flags&metaFlagSerializable == 0 && newer.flags&metaFlagSerializable != 0
-		enableEncryption := older.flags&metaFlagEncrypted == 0 && newer.flags&metaFlagEncrypted != 0
-		empty := newer.nextLSN == older.nextLSN && newer.firstLSN == older.firstLSN && newer.commitSeq == older.commitSeq
-		if (!enableSerializable && !enableEncryption) || !empty {
-			return errs.Detail(ErrCorrupt, "META flags changed across generations | META flags 跨代改变")
+		anchorEnabled := older.flags&metaFlagAnchor == 0 && newer.flags&metaFlagAnchor != 0
+		otherChanged := newer.flags&^metaFlagAnchor != older.flags&^metaFlagAnchor
+		if otherChanged {
+			enableSerializable := older.flags&metaFlagSerializable == 0 && newer.flags&metaFlagSerializable != 0
+			enableEncryption := older.flags&metaFlagEncrypted == 0 && newer.flags&metaFlagEncrypted != 0
+			empty := newer.nextLSN == older.nextLSN && newer.firstLSN == older.firstLSN && newer.commitSeq == older.commitSeq
+			if (!enableSerializable && !enableEncryption) || !empty {
+				return errs.Detail(ErrCorrupt, "META flags changed across generations | META flags 跨代改变")
+			}
+		} else if !anchorEnabled {
+			return errs.Detail(ErrCorrupt, "META anchor flag was cleared | META 锚点标志被清除")
 		}
 	}
 	if newer.nextSeq < older.nextSeq || newer.nextLSN < older.nextLSN ||
@@ -343,6 +379,9 @@ func (s *metaStore) write(st metaState) error {
 			s.hasState = true
 			committed = true
 		}
+	}
+	if committed {
+		s.upgrade = false
 	}
 	return firstErr
 }

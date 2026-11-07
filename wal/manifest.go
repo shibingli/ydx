@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 
 	"github.com/shibingli/ydx/errs"
@@ -139,14 +140,94 @@ func decodeManifestRecord(p []byte) (manifestRecord, error) {
 // manifestData is the in-memory segment directory built from the manifest. | manifestData
 // 是从 MANIFEST 构建的内存段目录。
 type manifestData struct {
-	segments      map[uint64]*segment
-	retired       map[uint64]bool
+	segments map[uint64]*segment
+	retired  map[uint64]bool
+	// retireFloor is the highest retired sequence. Retirement is prefix
+	// monotonic (truncation/retention always removes the oldest segments), so
+	// compaction may keep only this one kind=2 record and replay must treat
+	// every sequence at or below it as retired. Without this floor, a compacted
+	// shard would resurrect older segments whose files were already deleted. |
+	// retireFloor 是最高退休序号。退休按前缀单调（截断/保留总是从最旧段开始），
+	// 因此压缩可以只保留这一条 kind=2 记录，回放必须把所有小于等于它的序号都
+	// 视为退休；否则压缩后的分片会让文件已删除的旧段复活。
+	retireFloor   uint64
 	maxSeq        uint64
 	maxCreatedSeq uint64
 	firstLSN      uint64
 	commitSeq     uint64
 	walID         [16]byte
 	walIDSet      bool
+}
+
+// retired reports whether seq was retired, including the compacted floor. |
+// retired 返回 seq 是否已退休，包含压缩后的水位。
+func (d *manifestData) retiredAt(seq uint64) bool {
+	return seq <= d.retireFloor || d.retired[seq]
+}
+
+// retiredSet is the recovery view of retirement: an explicit set plus the
+// prefix-monotonic floor. | retiredSet 是恢复侧的退休视图：显式集合加上
+// 前缀单调水位。
+type retiredSet struct {
+	m     map[uint64]bool
+	floor uint64
+}
+
+// newRetiredSet returns an empty retirement set. | newRetiredSet 返回空退休集合。
+func newRetiredSet() *retiredSet {
+	return &retiredSet{m: make(map[uint64]bool)}
+}
+
+// has reports whether seq is retired. | has 返回 seq 是否已退休。
+func (r *retiredSet) has(seq uint64) bool {
+	if r == nil {
+		return false
+	}
+	return seq <= r.floor || r.m[seq]
+}
+
+// mark records one retired sequence, advancing the floor when possible. | mark
+// 记录一个退休序号，并在可能时推进水位。
+func (r *retiredSet) mark(seq uint64) {
+	if r == nil {
+		return
+	}
+	if r.m == nil {
+		r.m = make(map[uint64]bool)
+	}
+	r.m[seq] = true
+	if seq > r.floor {
+		r.floor = seq
+	}
+}
+
+// union merges another retirement set. | union 合并另一个退休集合。
+func (r *retiredSet) union(other *retiredSet) {
+	if r == nil || other == nil {
+		return
+	}
+	if other.floor > r.floor {
+		r.floor = other.floor
+	}
+	for seq := range other.m {
+		r.mark(seq)
+	}
+}
+
+// seqs returns explicit sequences at or above the floor, sorted ascending. |
+// seqs 返回水位及以上的显式序号（升序）。
+func (r *retiredSet) seqs() []uint64 {
+	if r == nil {
+		return nil
+	}
+	out := make([]uint64, 0, len(r.m))
+	for seq := range r.m {
+		if seq > r.floor {
+			out = append(out, seq)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
+	return out
 }
 
 // newManifestData returns empty data. | newManifestData 返回空数据。
@@ -178,6 +259,9 @@ func (d *manifestData) apply(r manifestRecord, dir string) error {
 		return nil
 	case manifestKindRetire:
 		d.retired[r.seq] = true
+		if r.seq > d.retireFloor {
+			d.retireFloor = r.seq
+		}
 		return nil
 	case manifestKindCreated:
 		if r.seq > d.maxCreatedSeq {
@@ -227,29 +311,56 @@ func (d *manifestData) apply(r manifestRecord, dir string) error {
 // manifestShardName returns %08d.mf. | manifestShardName 返回 %08d.mf。
 func manifestShardName(index int) string { return fmt.Sprintf("%08d.mf", index) }
 
+// parseManifestShardIndex parses an 8-digit .mf shard name without fmt. |
+// parseManifestShardIndex 不经过 fmt 解析 8 位数字的 .mf 分片名。
+func parseManifestShardIndex(name string) (int, bool) {
+	if len(name) != 11 || name[8:] != ".mf" {
+		return 0, false
+	}
+	idx := 0
+	for i := 0; i < 8; i++ {
+		c := name[i]
+		if c < '0' || c > '9' {
+			return 0, false
+		}
+		idx = idx*10 + int(c-'0')
+	}
+	return idx, true
+}
+
 // manifest is the append-only sharded segment directory. | manifest 是只追加的分片段目录。
 type manifest struct {
+	// poisoned records an unrecoverable MANIFEST sync failure. Appends stop and
+	// Close never compacts a poisoned manifest. | poisoned 记录不可恢复的
+	// MANIFEST 同步失败；其后停止追加，Close 不再压缩。
+	poisoned error
+
+	file         *os.File
 	dir          string
-	enabled      bool
+	total        []int
+	data         manifestData
 	shardRecords int
 	compactRatio float64
-	fileMode     os.FileMode
-
-	appendMu sync.Mutex
-	current  int
-	file     *os.File
-	offset   int64
-	count    int
-	total    []int
+	current      int
+	offset       int64
+	count        int
 
 	summaryMu sync.RWMutex
-	data      manifestData
+
+	appendMu sync.Mutex
+	fileMode os.FileMode
+
+	enabled bool
+	// stale records whether any retire/checkpoint/truncate record exists, which
+	// is what makes a Close-time compaction worth its I/O. | stale 表示是否存在
+	// 退休/检查点/截断记录，即 Close 时压缩是否值得 I/O。
+	stale bool
 }
 
 // openManifest loads all shards. A missing or empty manifest is not an error;
 // the caller falls back to a directory scan and may rebuild it. | openManifest
 // 加载全部 shard；MANIFEST 缺失或为空不是错误，调用方回退目录扫描并可重建。
-func openManifest(dir string, enabled bool, shardRecords int, ratio float64, fileMode os.FileMode) (*manifest, bool, bool, error) {
+func openManifest(dir string, enabled bool, shardRecords int, ratio float64, fileMode os.FileMode, readOnly bool) (*manifest, bool, bool, error) {
 	m := &manifest{
 		dir:          filepath.Join(dir, "manifest"),
 		enabled:      enabled,
@@ -274,11 +385,18 @@ func openManifest(dir string, enabled bool, shardRecords int, ratio float64, fil
 	var names []string
 	maxIndex := -1
 	for _, e := range entries {
-		if e.IsDir() || len(e.Name()) != 11 || filepath.Ext(e.Name()) != ".mf" {
+		if !e.IsDir() && strings.HasSuffix(e.Name(), ".tmp") {
+			// A leftover atomic-write temp file is never a live shard. Remove it
+			// opportunistically; no other writer can be active under the directory
+			// lock. | 原子写残留的临时文件不是存活 shard；目录锁保证没有其它写入者，
+			// 可直接清理。
+			if !readOnly {
+				_ = os.Remove(filepath.Join(m.dir, e.Name()))
+			}
 			continue
 		}
-		var idx int
-		if _, err := fmt.Sscanf(e.Name(), "%08d.mf", &idx); err != nil {
+		idx, ok := parseManifestShardIndex(e.Name())
+		if e.IsDir() || !ok {
 			continue
 		}
 		names = append(names, e.Name())
@@ -290,15 +408,31 @@ func openManifest(dir string, enabled bool, shardRecords int, ratio float64, fil
 		return m, false, false, nil
 	}
 	sort.Strings(names)
+	// Shards are created contiguously from index 0 and only a full rewrite (which
+	// is guarded by .rebuild) removes them. A missing index means the directory
+	// is damaged; reading around it would silently drop records from that shard. |
+	// shard 从 0 开始连续创建，只有受 .rebuild 保护的整体重写才会删除；缺失索引
+	// 说明目录损坏，绕过它读取会静默丢失该分片的记录。
+	for i, name := range names {
+		idx, _ := parseManifestShardIndex(name)
+		if idx != i {
+			return m, true, true, nil
+		}
+	}
 	corrupt := false
+	validRecords := 0
+	validEnds := make([]int64, 0, len(names))
+	shardBytes := make([]int64, 0, len(names))
 	for _, name := range names {
 		path := filepath.Join(m.dir, name)
 		data, err := os.ReadFile(path)
 		if err != nil {
 			return nil, false, false, errs.WrapDetail(err, ErrStorage, "read %s | 读取 %s 失败", path, path)
 		}
-		m.total = append(m.total, len(data)/int(manifestHeaderSize))
-		for off := 0; off+int(manifestHeaderSize) <= len(data); off += int(manifestHeaderSize) {
+		shardBytes = append(shardBytes, int64(len(data)))
+		validInShard := 0
+		off := 0
+		for ; off+int(manifestHeaderSize) <= len(data); off += int(manifestHeaderSize) {
 			r, err := decodeManifestRecord(data[off : off+int(manifestHeaderSize)])
 			if err != nil {
 				// A valid record after the invalid one means middle corruption; a
@@ -312,13 +446,54 @@ func openManifest(dir string, enabled bool, shardRecords int, ratio float64, fil
 			if err := m.data.apply(r, dir); err != nil {
 				return nil, false, false, err
 			}
+			if r.kind == manifestKindRetire || r.kind == manifestKindCheckpoint || r.kind == manifestKindTruncate {
+				m.stale = true
+			}
+			validInShard++
+			validRecords++
 		}
+		m.total = append(m.total, validInShard)
+		validEnds = append(validEnds, int64(off))
 		if corrupt {
 			break
 		}
 	}
+	// A manifest directory with shards but no CRC-valid record is damaged, not
+	// an empty manifest. Treating it as empty would silently discard the
+	// directory's high-water evidence. | 有分片但没有任何 CRC 有效记录的
+	// MANIFEST 属于损坏而非空 MANIFEST；把它当空会静默丢失高水位证据。
+	if !corrupt && validRecords == 0 {
+		corrupt = true
+	}
 	if corrupt {
 		return m, true, true, nil
+	}
+	if !readOnly {
+		// Discard an unconfirmed tail so a later append cannot place valid
+		// records after an invalid one (which would look like middle
+		// corruption). | 丢弃未确认尾部，避免后续追加把有效记录写在无效记录
+		// 之后（否则会被判为中间损坏）。
+		for i, end := range validEnds {
+			if end >= shardBytes[i] {
+				continue
+			}
+			path := filepath.Join(m.dir, names[i])
+			f, err := os.OpenFile(path, os.O_RDWR, fileMode)
+			if err != nil {
+				return nil, false, false, errs.WrapDetail(err, ErrStorage, "open manifest shard for truncate | 打开待截断 MANIFEST 分片失败")
+			}
+			if err := f.Truncate(end); err != nil {
+				_ = f.Close()
+				return nil, false, false, wrapStorage("truncate manifest shard", err)
+			}
+			if err := f.Sync(); err != nil {
+				_ = f.Close()
+				return nil, false, false, wrapStorage("sync truncated manifest shard", err)
+			}
+			if err := f.Close(); err != nil {
+				return nil, false, false, wrapStorage("close truncated manifest shard", err)
+			}
+		}
 	}
 	m.current = maxIndex
 	return m, true, false, nil
@@ -343,6 +518,9 @@ func (m *manifest) append(r manifestRecord) error {
 	}
 	m.appendMu.Lock()
 	defer m.appendMu.Unlock()
+	if m.poisoned != nil {
+		return m.poisoned
+	}
 	if m.file == nil {
 		if err := m.openCurrentLocked(); err != nil {
 			return err
@@ -359,17 +537,29 @@ func (m *manifest) append(r manifestRecord) error {
 	encodeManifestRecord(rec[:], r)
 	good := m.offset
 	if err := writeFullAt(m.file, rec[:], good); err != nil {
-		_ = m.file.Truncate(good)
-		_ = m.file.Sync()
-		return wrapStorage("manifest write", err)
+		werr := wrapStorage("manifest write", err)
+		if terr := m.file.Truncate(good); terr != nil {
+			m.poisoned = werr
+			return werr
+		}
+		if serr := m.file.Sync(); serr != nil {
+			m.poisoned = werr
+			return werr
+		}
+		return werr
 	}
 	if err := syncMetaFile(m.file); err != nil {
-		_ = m.file.Truncate(good)
-		_ = m.file.Sync()
-		return wrapStorage("manifest sync", err)
+		// An fsync failure is unrecoverable: the on-disk state is unknown, so
+		// stop appending instead of rolling back and continuing. | fsync 失败
+		// 不可恢复：磁盘状态未知，停止追加，不能回退后继续。
+		m.poisoned = wrapStorage("manifest sync", err)
+		return m.poisoned
 	}
 	m.offset += int64(manifestHeaderSize)
 	m.count++
+	if r.kind == manifestKindRetire || r.kind == manifestKindCheckpoint || r.kind == manifestKindTruncate {
+		m.stale = true
+	}
 	m.summaryMu.Lock()
 	err := m.data.apply(r, filepath.Dir(m.dir))
 	m.summaryMu.Unlock()
@@ -566,6 +756,29 @@ func (m *manifest) compactShardLocked(index int) error {
 	return writeFileAtomic(path, out, m.fileMode)
 }
 
+// poisonErr returns the unrecoverable sync failure, if any. | poisonErr 返回
+// 不可恢复的同步失败。
+func (m *manifest) poisonErr() error {
+	m.appendMu.Lock()
+	defer m.appendMu.Unlock()
+	return m.poisoned
+}
+
+// closeHandle releases the current shard without compacting. It is used when
+// Open fails and the directory must not be mutated. | closeHandle 关闭当前 shard
+// 且不压缩；用于 Open 失败、不得修改目录的场景。
+func (m *manifest) closeHandle() {
+	if m == nil {
+		return
+	}
+	m.appendMu.Lock()
+	if m.file != nil {
+		_ = m.file.Close()
+		m.file = nil
+	}
+	m.appendMu.Unlock()
+}
+
 // close closes the current shard and compacts every shard. | close 关闭当前 shard 并压缩全部 shard。
 func (m *manifest) close() error {
 	if !m.enabled {
@@ -580,14 +793,20 @@ func (m *manifest) close() error {
 		}
 		m.file = nil
 	}
+	if m.poisoned != nil {
+		return first
+	}
+	if !m.stale {
+		// No retire/checkpoint/truncate records: compaction would rewrite every
+		// shard unchanged, so skip the I/O on clean shutdown. | 没有退休/检查点/
+		// 截断记录时，压缩只会原样重写每个分片；干净关闭跳过该 I/O。
+		return first
+	}
 	entries, err := os.ReadDir(m.dir)
 	if err == nil {
 		for _, e := range entries {
-			if e.IsDir() || filepath.Ext(e.Name()) != ".mf" {
-				continue
-			}
-			var idx int
-			if _, err := fmt.Sscanf(e.Name(), "%08d.mf", &idx); err != nil {
+			idx, ok := parseManifestShardIndex(e.Name())
+			if e.IsDir() || !ok {
 				continue
 			}
 			if err := m.compactShardLocked(idx); err != nil && first == nil {
@@ -616,17 +835,19 @@ func (m *manifest) rewrite(data manifestData) error {
 	}
 	sort.Slice(seqs, func(i, j int) bool { return seqs[i] < seqs[j] })
 	var records []manifestRecord
-	seenRetired := make(map[uint64]bool, len(data.retired))
-	for _, seq := range seqs {
-		if data.retired[seq] {
-			records = append(records, manifestRecord{kind: manifestKindRetire, seq: seq, walID: data.walID})
-			seenRetired[seq] = true
+	// Retirement is prefix monotonic, so one watermark record replaces every
+	// per-segment kind=2 record. This keeps a rewritten manifest small even
+	// after millions of segments were truncated. | 退休按前缀单调，因此一条水位
+	// 记录即可替代所有逐段 kind=2 记录；即使截断过百万段，重写后的 MANIFEST
+	// 也保持紧凑。
+	retireFloor := data.retireFloor
+	for seq := range data.retired {
+		if seq > retireFloor {
+			retireFloor = seq
 		}
 	}
-	for seq := range data.retired {
-		if !seenRetired[seq] {
-			records = append(records, manifestRecord{kind: manifestKindRetire, seq: seq, walID: data.walID})
-		}
+	if retireFloor > 0 {
+		records = append(records, manifestRecord{kind: manifestKindRetire, seq: retireFloor, walID: data.walID})
 	}
 	for _, seq := range seqs {
 		s := data.segments[seq]
@@ -647,11 +868,37 @@ func (m *manifest) rewrite(data manifestData) error {
 			})
 		}
 	}
-	if data.firstLSN > 0 {
+	if data.firstLSN > 1 {
+		// firstLSN == 1 is the default and needs no persisted truncate
+		// watermark; writing one would make every clean manifest stale. |
+		// firstLSN == 1 是默认值，无需持久化截断水位；写入会让每个干净
+		// MANIFEST 被误判为存在陈旧记录。
 		records = append(records, manifestRecord{kind: manifestKindTruncate, baseLSN: data.firstLSN, commitSeq: data.commitSeq, walID: data.walID})
 	}
 	if len(records) == 0 {
 		_ = os.Remove(filepath.Join(m.dir, ".rebuild"))
+		// An empty rebuild must also remove stale shards; otherwise a corrupt or
+		// obsolete shard survives forever for an empty WAL and every Open keeps
+		// falling back to a directory scan. | 空重建也必须删除陈旧 shard，否则空
+		// WAL 上损坏/过期的 shard 会永久残留，每次 Open 都回退目录扫描。
+		if entries, err := os.ReadDir(m.dir); err == nil {
+			for _, e := range entries {
+				if !e.IsDir() && filepath.Ext(e.Name()) == ".mf" {
+					_ = os.Remove(filepath.Join(m.dir, e.Name()))
+				}
+			}
+		}
+		m.current = 0
+		m.offset = 0
+		m.count = 0
+		m.total = nil
+		m.stale = false
+		m.summaryMu.Lock()
+		m.data = data
+		m.summaryMu.Unlock()
+		if _, err := os.Stat(m.dir); err == nil {
+			return syncDir(m.dir)
+		}
 		return nil
 	}
 	if err := ensureDir(m.dir, 0o700); err != nil {
@@ -693,6 +940,7 @@ func (m *manifest) rewrite(data manifestData) error {
 	m.offset = 0
 	m.count = 0
 	m.total = nil
+	m.stale = false
 	m.summaryMu.Lock()
 	m.data = data
 	m.summaryMu.Unlock()
@@ -714,6 +962,7 @@ func (m *manifest) snapshot() manifestData {
 	out := manifestData{
 		segments:      make(map[uint64]*segment, len(m.data.segments)),
 		retired:       make(map[uint64]bool, len(m.data.retired)),
+		retireFloor:   m.data.retireFloor,
 		maxSeq:        m.data.maxSeq,
 		maxCreatedSeq: m.data.maxCreatedSeq,
 		firstLSN:      m.data.firstLSN,
@@ -721,21 +970,8 @@ func (m *manifest) snapshot() manifestData {
 		walID:         m.data.walID,
 		walIDSet:      m.data.walIDSet,
 	}
-	walDir := filepath.Dir(m.dir)
 	for k, v := range m.data.segments {
-		v.metaMu.RLock()
-		n := newSegmentSummary(v.seq, v.baseLSN, v.lastLSN, v.size, v.walID, walDir)
-		n.recordCount = v.recordCount
-		n.minTime = v.minTime
-		n.maxTime = v.maxTime
-		n.crc = v.crc
-		n.idxCRC = v.idxCRC
-		n.commitSeq = v.commitSeq
-		n.createdNano = v.createdNano
-		v.metaMu.RUnlock()
-		n.setState(v.currentState())
-		n.retired = v.retired
-		out.segments[k] = n
+		out.segments[k] = v.cloneSummary()
 	}
 	for k, v := range m.data.retired {
 		out.retired[k] = v

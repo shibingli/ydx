@@ -5,30 +5,46 @@ import (
 	"time"
 )
 
+// dedupEntry identifies one dedup target and its original field split. The
+// digest is over key||data without length framing, so a target is only usable
+// when the referencing record has the same key/data lengths; otherwise
+// resolveRecord would reject the reference as corrupt. | dedupEntry 记录去重
+// 目标及其原始字段切分。摘要对 key||data 不带长度框架，因此只有引用记录的
+// key/data 长度一致时目标才可用，否则 resolveRecord 会判引用损坏。
+type dedupEntry struct {
+	offset  uint64
+	keyLen  uint32
+	dataLen uint32
+}
+
 // dedupTable maps a content digest to a record offset in the active segment. | dedupTable
 // 把内容摘要映射到活动段内的记录偏移。
 type dedupTable struct {
-	entries  map[[32]byte]uint64
+	entries  map[[32]byte]dedupEntry
 	max      int
 	overflow atomic.Uint64
 }
 
 // newDedupTable builds a bounded in-segment dedup table. | newDedupTable 构建有界段内去重表。
 func newDedupTable(max int) *dedupTable {
-	return &dedupTable{entries: make(map[[32]byte]uint64), max: max}
+	d := &dedupTable{max: max}
+	if max > 0 {
+		d.entries = make(map[[32]byte]dedupEntry)
+	}
+	return d
 }
 
-// lookup returns the target offset for a digest. | lookup 返回摘要对应的目标偏移。
-func (d *dedupTable) lookup(digest [32]byte) (uint64, bool) {
+// lookup returns the target entry for a digest. | lookup 返回摘要对应的目标条目。
+func (d *dedupTable) lookup(digest [32]byte) (dedupEntry, bool) {
 	if d == nil {
-		return 0, false
+		return dedupEntry{}, false
 	}
-	off, ok := d.entries[digest]
-	return off, ok
+	e, ok := d.entries[digest]
+	return e, ok
 }
 
 // add records a new ordinary record. | add 记录一条新的普通记录。
-func (d *dedupTable) add(digest [32]byte, off uint64) {
+func (d *dedupTable) add(digest [32]byte, off uint64, keyLen, dataLen uint32) {
 	if d == nil {
 		return
 	}
@@ -39,7 +55,7 @@ func (d *dedupTable) add(digest [32]byte, off uint64) {
 		d.overflow.Add(1)
 		return
 	}
-	d.entries[digest] = off
+	d.entries[digest] = dedupEntry{offset: off, keyLen: keyLen, dataLen: dataLen}
 }
 
 // clear drops every entry at rotation. | clear 在轮转时清空全部条目。
@@ -52,12 +68,12 @@ func (d *dedupTable) clear() {
 
 // idemEntry is one AppendOnce window entry. | idemEntry 是一个 AppendOnce 幂等窗口条目。
 type idemEntry struct {
-	key     [32]byte
-	content [32]byte
-	lsn     uint64
-	at      int64
 	prev    *idemEntry
 	next    *idemEntry
+	lsn     uint64
+	at      int64
+	key     [32]byte
+	content [32]byte
 }
 
 // idemTable is a true LRU with an optional TTL. | idemTable 是带可选 TTL 的真 LRU。

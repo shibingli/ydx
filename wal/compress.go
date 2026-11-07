@@ -27,9 +27,9 @@ type Codec interface {
 
 // Compression configures record-level compression. | Compression 配置记录级压缩。
 type Compression struct {
-	Active   byte
 	Codecs   []Codec
 	MinBytes int
+	Active   byte
 }
 
 // enabled reports whether new records should be compressed. | enabled 返回新记录是否应压缩。
@@ -104,8 +104,8 @@ func codecName(id byte) string {
 
 // flateCodec is the built-in stdlib flate codec. | flateCodec 是内置的 stdlib flate 算法。
 type flateCodec struct {
-	level int
 	pool  sync.Pool
+	level int
 }
 
 // FlateCodec returns the built-in flate codec with the given level. Levels

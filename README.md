@@ -32,7 +32,10 @@
 | `github.com/shibingli/ydx/regexpx` | `regexpx` | 自研正则引擎（线性 NFA + 惰性 DFA + 回溯 + SIMD 预过滤 + 启动预热 + 调用方缓冲区 API） |
 | `github.com/shibingli/ydx/router` | `router` | 基数树路由 + 原生 http 适配 |
 | `github.com/shibingli/ydx/raft` | `raft` | 高性能强一致 Raft：单组 Node + 多组 NodeHost、联合共识、ReadIndex、流式/分块快照、WAL、TCP/HTTP/RDMA 传输；HTTP 传输原生兼容 `ydx/router` 与 `net/http` |
-| `github.com/shibingli/ydx/wal` | `wal` | 分段预写日志：组提交、提交标记、MANIFEST/侧车、快照隔离事务、AES-GCM/SM4-GCM、压缩、去重、幂等、流、备份与自动保留 |
+| `github.com/shibingli/ydx/wal` | `wal` | 分段预写日志：组提交、提交标记、MANIFEST/侧车/恢复锚点、快照隔离事务、AES-GCM/SM4-GCM、压缩、去重、幂等、流、完整备份集与自动保留 |
+| `github.com/shibingli/ydx/wal/zstd` | `zstd` | WAL 记录级 Zstandard codec（ID 2）：纯 Go、池化编解码器、1 GiB 解码上限 |
+| `github.com/shibingli/ydx/wal/uring` | `uring` | WAL 可选 Linux io_uring IOEngine：原始系统调用 + mmap，纯 Go、无 cgo/liburing；其它平台为显式桩 |
+| `github.com/shibingli/ydx/wal/cronbackup` | `cronbackup` | 用 ydx/cron 定时调度 `wal.BackupNow`：校验备份目标、默认跳过重入、错误进入 cron 历史并支持管理路由；不 import wal |
 | `github.com/shibingli/ydx/rdma` | `rdma` | 纯 Go 零拷贝 RDMA：purego 运行时加载 libibverbs（无 cgo）、RoCE v1/v2/IB、RC/UC/UD、批量提交、预注册大页池与零拷贝消息连接 |
 | `github.com/shibingli/ydx/gorm` | `gorm` | GORM 装配、连接串预置与自动建库（MySQL / PostgreSQL / SQLite / 达梦 DM8）；四方言用法见 [yd 的方言指南](https://github.com/shibingli/yd/blob/main/docs/gorm-dialects.md) |
 | `github.com/shibingli/ydx/redis` | `redis` | go-redis 通用客户端、探活与读透缓存 |

@@ -7,22 +7,25 @@ import (
 
 // appendResult is the completion of one writer request. | appendResult 是单个写入请求的完成结果。
 type appendResult struct {
+	err        error
+	backupSet  *BackupSet
+	timestamps []int64
+	txnInfo    TxnInfo
 	lsn        uint64
 	firstLSN   uint64
 	lastLSN    uint64
-	duplicate  bool
-	err        error
-	txnInfo    TxnInfo
 	segments   int
-	timestamps []int64
+	duplicate  bool
 }
 
-// AppendFuture is the handle returned by AppendAsync. | AppendFuture 是 AppendAsync 返回的句柄。
+// AppendFuture is the handle returned by AppendAsync. The record's Key/Data
+// must stay unchanged until Done closes. | AppendFuture 是 AppendAsync 返回的
+// 句柄；Done 关闭前不得修改记录的 Key/Data。
 type AppendFuture struct {
 	done   chan struct{}
-	mu     sync.Mutex
 	result appendResult
 	once   sync.Once
+	mu     sync.Mutex
 }
 
 // newAppendFuture builds a pending future. | newAppendFuture 构建待完成的 future。

@@ -2,6 +2,7 @@ package wal
 
 import (
 	"encoding/binary"
+	"math"
 	"time"
 
 	"github.com/shibingli/ydx/errs"
@@ -37,26 +38,28 @@ func releasePrepared(arena []preparedRecord) {
 // preparedRecord is one encoded record waiting for the batch write. | preparedRecord
 // 是一条等待批写入的已编码记录。
 type preparedRecord struct {
-	header     [recordHeaderSizeEncrypted]byte
-	nonce      [nonceSize]byte
-	headerLen  int
-	parts      [3][]byte
-	nparts     int
-	payload    []byte
-	key        []byte
-	data       []byte
-	size       int
-	offset     int64
-	lsn        uint64
-	txnID      uint64
-	timestamp  int64
-	flags      uint16
-	digest     [32]byte
-	ordinary   bool
-	isRef      bool
-	refOffset  uint64
-	codec      byte
-	compressed bool
+	parts         [3][]byte
+	payload       []byte
+	key           []byte
+	data          []byte
+	headerLen     int
+	nparts        int
+	size          int
+	offset        int64
+	lsn           uint64
+	txnID         uint64
+	timestamp     int64
+	refOffset     uint64
+	flags         uint16
+	header        [recordHeaderSizeEncrypted]byte
+	digest        [32]byte
+	inlinePayload [markerPayloadSize]byte
+	nonce         [nonceSize]byte
+	hasDigest     bool
+	ordinary      bool
+	isRef         bool
+	codec         byte
+	compressed    bool
 }
 
 // commitBatch validates, plans, writes, and completes one group-commit batch. | commitBatch
@@ -70,22 +73,46 @@ func (w *WAL) commitBatch(reqs []*appendRequest) {
 		return
 	}
 	now := time.Now().UnixNano()
-	plans := make([]*reqPlan, len(reqs))
-	for i, req := range reqs {
-		plans[i] = &reqPlan{req: req, winner: -1}
-		req.plan = plans[i]
+	if cap(w.planArena) < len(reqs) {
+		w.planArena = make([]reqPlan, len(reqs))
 	}
-	// Validate every record before allocating an LSN. | 在分配 LSN 前校验全部记录。
+	planValues := w.planArena[:len(reqs)]
+	if cap(w.planPtrs) < len(reqs) {
+		w.planPtrs = make([]*reqPlan, len(reqs))
+	}
+	plans := w.planPtrs[:len(reqs)]
+	for i := range reqs {
+		planValues[i] = reqPlan{req: reqs[i], winner: -1}
+		plans[i] = &planValues[i]
+		reqs[i].plan = plans[i]
+	}
+	defer func() {
+		// Do not keep recycled request pointers in the unused arena tail. | 不
+		// 在复用区尾部保留已归还请求的指针。
+		for i := len(reqs); i < len(w.planArena); i++ {
+			w.planArena[i] = reqPlan{}
+		}
+	}()
+	// Validate every record before allocating an LSN. A malformed request fails
+	// alone; unrelated requests in the same group-commit batch must still
+	// commit. | 在分配 LSN 前校验全部记录；非法请求只失败自己，同一组提交批次
+	// 中的其它请求仍须提交。
 	for _, plan := range plans {
 		if err := w.validateRequest(plan.req); err != nil {
-			completeAll(reqs, appendResult{err: err})
-			return
+			plan.err = err
 		}
 	}
-	// Normalize timestamps and enforce the monotonic promise. | 归一化时间戳并执行单调承诺。
+	// Normalize timestamps and enforce the monotonic promise per request, so a
+	// rejected request cannot move the shared timestamp watermark or abort its
+	// batch peers. | 按请求归一化时间戳并执行单调承诺，使被拒请求既不能推进共享
+	// 时间戳水位，也不能中止同批其它请求。
 	lastTS := w.lastTimestamp
 	for _, plan := range plans {
+		if plan.err != nil {
+			continue
+		}
 		req := plan.req
+		reqTS := lastTS
 		if req.kind == kindTxnCommit && req.txn != nil {
 			if len(req.txn.timestamps) != len(req.txn.records) {
 				req.txn.timestamps = make([]int64, len(req.txn.records))
@@ -94,18 +121,21 @@ func (w *WAL) commitBatch(reqs []*appendRequest) {
 				ts := req.txn.records[i].rec.Timestamp
 				if ts == 0 {
 					ts = now
-					if w.opts.monotonicTimestamps && ts < lastTS {
-						ts = lastTS
+					if w.opts.monotonicTimestamps && ts < reqTS {
+						ts = reqTS
 					}
 				}
-				if w.opts.monotonicTimestamps && ts < lastTS {
-					completeAll(reqs, appendResult{err: errs.Detail(ErrInvalidRecord, "timestamp moved backwards | 时间戳倒退")})
-					return
+				if w.opts.monotonicTimestamps && ts < reqTS {
+					plan.err = errs.Detail(ErrInvalidRecord, "timestamp moved backwards | 时间戳倒退")
+					break
 				}
-				if ts > lastTS {
-					lastTS = ts
+				if ts > reqTS {
+					reqTS = ts
 				}
 				req.txn.timestamps[i] = ts
+			}
+			if plan.err == nil {
+				lastTS = reqTS
 			}
 			continue
 		}
@@ -113,25 +143,34 @@ func (w *WAL) commitBatch(reqs []*appendRequest) {
 			ts := req.recs[i].Timestamp
 			if ts == 0 {
 				ts = now
-				if w.opts.monotonicTimestamps && ts < lastTS {
-					ts = lastTS
+				if w.opts.monotonicTimestamps && ts < reqTS {
+					ts = reqTS
 				}
 			}
-			if w.opts.monotonicTimestamps && ts < lastTS {
-				completeAll(reqs, appendResult{err: errs.Detail(ErrInvalidRecord, "timestamp moved backwards | 时间戳倒退")})
-				return
+			if w.opts.monotonicTimestamps && ts < reqTS {
+				plan.err = errs.Detail(ErrInvalidRecord, "timestamp moved backwards | 时间戳倒退")
+				break
 			}
-			if ts > lastTS {
-				lastTS = ts
+			if ts > reqTS {
+				reqTS = ts
 			}
 			req.recs[i].Timestamp = ts
+		}
+		if plan.err == nil {
+			lastTS = reqTS
 		}
 	}
 	// Classify AppendOnce and run transaction OCC before any LSN allocation. | 在分配 LSN 前完成幂等分类与事务 OCC。
 	nextCommit := w.commitSeq
-	pendingOnce := make(map[[32]byte]int)
-	staged := make(map[[32]byte]uint64)
+	// Allocate these tables only when the batch actually uses them; ordinary
+	// Append/AppendBatch batches must not allocate. | 仅当批次实际使用幂等或
+	// Serializable 时才分配；普通批次不得分配。
+	var pendingOnce map[[32]byte]int
+	var staged map[[32]byte]uint64
 	for i, plan := range plans {
+		if plan.err != nil {
+			continue
+		}
 		req := plan.req
 		switch req.kind {
 		case kindData:
@@ -139,12 +178,12 @@ func (w *WAL) commitBatch(reqs []*appendRequest) {
 				continue
 			}
 			if len(req.recs) != 1 || w.idem == nil {
-				completeAll(reqs, appendResult{err: errs.Detail(ErrInvalidOptions, "AppendOnce requires one record and an idempotency window | AppendOnce 需要一条记录与幂等窗口")})
-				return
+				plan.err = errs.Detail(ErrInvalidOptions, "AppendOnce requires one record and an idempotency window | AppendOnce 需要一条记录与幂等窗口")
+				continue
 			}
 			rec := req.recs[0]
 			keyDigest := digestKeyData(w.hashAlg, req.dedupKey, nil)
-			contentDigest := digestKeyData(w.hashAlg, rec.Key, rec.Data)
+			contentDigest := digestRecordContent(w.hashAlg, rec.Key, rec.Data)
 			plan.keyDigest = keyDigest
 			plan.contentDigest = contentDigest
 			w.idem.dropIfBefore(keyDigest, w.firstLSN)
@@ -167,6 +206,9 @@ func (w *WAL) commitBatch(reqs []*appendRequest) {
 					plan.winner = winner
 				}
 				continue
+			}
+			if pendingOnce == nil {
+				pendingOnce = make(map[[32]byte]int)
 			}
 			pendingOnce[keyDigest] = i
 			plan.onceWinner = true
@@ -207,6 +249,9 @@ func (w *WAL) commitBatch(reqs []*appendRequest) {
 			plan.txnSeq = nextCommit
 			plan.txnAccepted = true
 			if tx.isolation == IsolationSerializable {
+				if staged == nil {
+					staged = make(map[[32]byte]uint64)
+				}
 				for _, k := range tx.writeKeys {
 					staged[k] = nextCommit
 				}
@@ -248,6 +293,13 @@ func (w *WAL) commitBatch(reqs []*appendRequest) {
 	baseCRC := active.crc
 	crc := baseCRC
 	nextLSN := w.nextLSN
+	if totalRecords > 0 && uint64(totalRecords) > math.MaxUint64-nextLSN {
+		// Leave MaxUint64 itself unused so nextLSN can never wrap to zero. |
+		// 保留 MaxUint64 不使用，确保 nextLSN 永远不会回绕为零。
+		err := errs.Detail(ErrTooLarge, "WAL LSN space is exhausted | WAL LSN 空间已耗尽")
+		completeAll(reqs, appendResult{err: err})
+		return
+	}
 	if cap(w.preparedArena) < totalRecords+totalControls {
 		w.preparedArena = make([]preparedRecord, totalRecords+totalControls)
 	}
@@ -260,8 +312,15 @@ func (w *WAL) commitBatch(reqs []*appendRequest) {
 		}
 		releasePrepared(arena)
 	}()
-	items := make([]*preparedRecord, 0, totalRecords+totalControls)
-	userItems := make([]*preparedRecord, 0, totalRecords)
+	totalItems := totalRecords + totalControls
+	if cap(w.itemBuf) < totalItems {
+		w.itemBuf = make([]*preparedRecord, 0, totalItems)
+	}
+	items := w.itemBuf[:0]
+	if cap(w.userItemBuf) < totalRecords {
+		w.userItemBuf = make([]*preparedRecord, 0, totalRecords)
+	}
+	userItems := w.userItemBuf[:0]
 	userCount := uint64(0)
 	lastUserLSN := active.lastLSN
 	var minTime, maxTime int64
@@ -357,11 +416,13 @@ func (w *WAL) commitBatch(reqs []*appendRequest) {
 			}
 		}
 	}
-	// Append the batch commit marker. | 追加批提交标记。
+	// Append the batch commit marker. The payload lives in the prepared-record
+	// arena so the steady-state path does not allocate a heap buffer. | 追加批
+	// 提交标记；负载放在已准备记录复用区中，稳态路径不分配堆缓冲。
 	markerOffset := off
-	var markerBuf [markerPayloadSize]byte
-	markerPayload := encodeCommitMarkerPayloadInto(markerBuf[:], uint64(markerOffset), lastUserLSN, active.recordCount+userCount, crc)
-	marker, err := w.prepareControlRecord(takePrepared(arena, &slot), active, markerOffset, 0, 0, recordFlagCommitMark, codecNone, 0, 0, markerPayload, now)
+	marker := takePrepared(arena, &slot)
+	encodeCommitMarkerPayloadInto(marker.inlinePayload[:], uint64(markerOffset), lastUserLSN, active.recordCount+userCount, crc)
+	marker, err := w.prepareControlRecord(marker, active, markerOffset, 0, 0, recordFlagCommitMark, codecNone, 0, 0, marker.inlinePayload[:], now)
 	if err != nil {
 		w.setPoison(err)
 		completeAll(reqs, appendResult{err: err})
@@ -375,12 +436,26 @@ func (w *WAL) commitBatch(reqs []*appendRequest) {
 	for _, p := range items {
 		nparts += p.nparts
 	}
-	parts := make([][]byte, 0, nparts)
+	if cap(w.partBuf) < nparts {
+		w.partBuf = make([][]byte, 0, nparts)
+	}
+	parts := w.partBuf[:0]
 	for _, p := range items {
 		for i := 0; i < p.nparts; i++ {
 			parts = append(parts, p.parts[i])
 		}
 	}
+	defer func() {
+		// partBuf holds caller Key/Data slices; clear them so a pooled buffer
+		// does not pin caller memory between batches. | partBuf 持有调用方
+		// Key/Data 切片；清空以免池化缓冲在批次之间钉住调用方内存。
+		for i := range parts {
+			parts[i] = nil
+		}
+		w.partBuf = parts[:0]
+		w.itemBuf = items[:0]
+		w.userItemBuf = userItems[:0]
+	}()
 	syncNow := w.opts.syncPolicy.Mode == SyncModeAlways
 	if err := w.engine.WriteAt(active.f, parts, baseOff, syncNow); err != nil {
 		w.setPoison(err)
@@ -395,6 +470,7 @@ func (w *WAL) commitBatch(reqs []*appendRequest) {
 	}
 	// Publish state only after a successful write. | 仅在写入成功后发布状态。
 	w.nextLSN = nextLSN
+	w.stateDirty.Store(true)
 	if nextCommit > w.commitSeq {
 		w.commitSeq = nextCommit
 	}
@@ -411,8 +487,8 @@ func (w *WAL) commitBatch(reqs []*appendRequest) {
 				w.counters.keyIndexOver.Add(1)
 			}
 		}
-		if w.opts.dedupEnabled && p.ordinary {
-			w.dedup.add(p.digest, uint64(p.offset))
+		if w.opts.dedupEnabled && p.ordinary && p.hasDigest {
+			w.dedup.add(p.digest, uint64(p.offset), uint32(len(p.key)), uint32(len(p.data)))
 		}
 		if p.isRef {
 			active.dedupRefs++
@@ -538,12 +614,23 @@ func (w *WAL) prepareUserRecord(p *preparedRecord, active *segment, off int64, r
 	var refOffset uint64
 	if w.opts.dedupEnabled && len(rec.Data) >= w.opts.dedup.MinBytes && len(rec.Data) > dedupRefBlockSize {
 		p.digest = digestKeyData(w.hashAlg, rec.Key, rec.Data)
-		if target, ok := w.dedup.lookup(p.digest); ok && target < uint64(active.size) {
-			refPayload := encodeDedupRefPayload(rec.Key, dedupRef{offset: target, hashAlg: byte(w.hashAlg), digest: p.digest})
-			plain = refPayload
-			isRef = true
-			refOffset = target
-			headerFlags |= recordFlagDedupRef
+		p.hasDigest = true
+		// Dedup references are forbidden inside transactions by the v1 format;
+		// store transaction records normally so they remain readable by older
+		// readers. Their digest is still recorded so later non-transaction
+		// records may reference them. | v1 格式禁止事务内的去重引用；事务记录按
+		// 普通记录存储以保持旧读者可读，同时记录摘要供之后的非事务记录引用。
+		if txnID == 0 {
+			if target, ok := w.dedup.lookup(p.digest); ok && target.offset < uint64(active.size) &&
+				target.keyLen == keyLen && target.dataLen == dataLen {
+				refPayload := encodeDedupRefPayload(rec.Key, dedupRef{offset: target.offset, hashAlg: byte(w.hashAlg), digest: p.digest})
+				plain = refPayload
+				isRef = true
+				refOffset = target.offset
+				headerFlags |= recordFlagDedupRef
+			} else {
+				p.ordinary = true
+			}
 		} else {
 			p.ordinary = true
 		}
@@ -632,6 +719,12 @@ func (w *WAL) prepareUserRecord(p *preparedRecord, active *segment, off int64, r
 
 // prepareControlRecord encodes one control record. | prepareControlRecord 编码一条控制记录。
 func (w *WAL) prepareControlRecord(p *preparedRecord, active *segment, off int64, lsn, txnID uint64, headerFlags uint16, codec byte, keyLen, dataLen uint32, payload []byte, timestamp int64) (*preparedRecord, error) {
+	if len(payload) <= len(p.inlinePayload) {
+		// Keep small control payloads (the commit marker) inside the arena. | 把
+		// 小控制负载（提交标记）保存在复用区内。
+		copy(p.inlinePayload[:], payload)
+		payload = p.inlinePayload[:len(payload)]
+	}
 	p.offset, p.lsn, p.txnID, p.timestamp, p.payload = off, lsn, txnID, timestamp, payload
 	headerLen := recordHeaderSize
 	cipher := cipherNone

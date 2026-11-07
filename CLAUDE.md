@@ -32,7 +32,7 @@ ydx 是 yd 全栈框架的可复用组件仓库；组件源码以本仓库为唯
 - 产品模块：`errs`、`sysinfo`、`gc`、`buffpool`、`pool`、`protocol`、`nodeid`、`base64`、`json`、`xml`、`afs`、
   `config`、`log`、`regexpx`、`router`、`gorm`、`redis`、`asynq`、`cron`、`cache`、`sse`、`websocket`、
   `webtransport`、`realtime`、`render`、`i18n`、`openapi`、`openapi/ydrouter`、`jwt`、`captcha`、`guomi`、
-  `workflow`、`waf`、`raft`、`rdma`、`wal`、`middleware` 及
+  `workflow`、`waf`、`raft`、`rdma`、`wal`、`wal/zstd`、`wal/uring`、`wal/cronbackup`、`middleware` 及
   `middleware/{accesslog,asyncafter,compress,cors,ratelimit,recovery,requestid,reqlog}`。
 - `waf`（根目录）是唯一的 WAF 实现：自研 SecLang 引擎，原生支持 `router` 与 `net/http`，
   带热更新、钩子、原生/WASM 插件与报警；热路径使用必需字面量/字节集/最小长度预过滤与
@@ -78,6 +78,19 @@ ydx 是 yd 全栈框架的可复用组件仓库；组件源码以本仓库为唯
   路径。`rdma` 不得 import `yd`，也不并入 `middleware`；`raft` 的可选 RDMA 传输
   已由 gordma 切换到 `ydx/rdma`，两端均为纯 Go。`raft/go.mod` 当前锁定
   `rdma/v0.1.5`；rdma 发布新标签时同步升级并重新生成 `go.sum`。
+- `wal/zstd` 是独立模块（`github.com/shibingli/ydx/wal/zstd`），提供 codec ID 2 的
+  纯 Go Zstandard 实现，依赖 `github.com/klauspost/compress`（BSD-3-Clause）；不
+  import `wal`，消费方显式引用才承担依赖。`wal/uring` 是独立模块
+  （`github.com/shibingli/ydx/wal/uring`），在 Linux amd64/arm64 用原始
+  `io_uring_setup/io_uring_enter` + mmap 实现 `wal.IOEngine`，纯 Go、无 cgo/
+  liburing；其它平台为返回 `ErrUnsupported` 的桩。两者均不 import `wal`，可先于
+  `wal` 标签独立构建与发布。
+- `wal/cronbackup` 是独立模块（`github.com/shibingli/ydx/wal/cronbackup`），用
+  `github.com/shibingli/ydx/cron` 定时调用 `wal.BackupNow`。它通过结构化
+  `Target` 接口校验 `BackupNow`、`BackupConfigured` 与 `SupportsSnapshotBackup`，
+  **不 import `wal`**，仅依赖 `cron` v0.1.2 与 `errs`；默认
+  `Overlap=SkipIfRunning`，错误交给 cron 记录/重试，可选择附加到既有调度器。
+  发布顺序在 `wal/v0.2.0` 之后，按 `wal/cronbackup/v0.1.0` 独立打标签。
 - `repotest` 会扫描本地 `replace`、旧包前缀、yd 依赖、标准库编解码直引、`fmt.Errorf`、
   直接 `panic`、外键、cgo SQLite 与基准位置。
 

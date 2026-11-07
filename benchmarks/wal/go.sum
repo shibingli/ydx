@@ -16,6 +16,8 @@ github.com/shibingli/ydx/guomi v0.1.2 h1:3oOMJ2poGpqBMgTk5tlaIdSRQuXBeRrjDEJSL2D
 github.com/shibingli/ydx/guomi v0.1.2/go.mod h1:4jBKXYmM3vkchqfvyEKVa1O/hc6olEzEsRJc/ZCeoiw=
 github.com/shibingli/ydx/sysinfo v0.1.4 h1:tskX01rpXsDkEmCCz+2s7FnSQqrQCY8SQUeWstPQhMk=
 github.com/shibingli/ydx/sysinfo v0.1.4/go.mod h1:31V/9KavYTLUNJwAsgCHuN6z2wvRpS20En5em99nmqE=
+github.com/shibingli/ydx/wal v0.1.0 h1:21cfgvl8YPkp/ottQAXZGSGewIM80OxvIGzORTmfQnk=
+github.com/shibingli/ydx/wal v0.1.0/go.mod h1:+iIFvKPcfRK+DtzJinA4mUK+m78glNLO9H1RcgBqdj4=
 github.com/stretchr/testify v1.9.0 h1:HtqpIVDClZ4nwg75+f6Lvsy/wHu+3BoSGCbBAcpTsTg=
 github.com/stretchr/testify v1.9.0/go.mod h1:r2ic/lqez/lEtzL7wO/rwa5dbSLXVDPFyf8C91i36aY=
 github.com/tidwall/gjson v1.10.2 h1:APbLGOM0rrEkd8WBw9C24nllro4ajFuJu0Sc9hRz8Bo=

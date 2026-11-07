@@ -5,16 +5,16 @@ import "github.com/shibingli/ydx/errs"
 // checkpointJob is an immutable synced-prefix index snapshot. | checkpointJob 是不可变的已同步前缀索引快照。
 type checkpointJob struct {
 	seg              *segment
+	keyIndex         map[string][]uint64
+	sparse           []sparseEntry
 	segmentBytes     int64
 	lastLSN          uint64
 	recordCount      uint64
 	minTime          int64
 	maxTime          int64
-	segmentCRC       uint32
 	commitSeq        uint64
+	segmentCRC       uint32
 	walID            [16]byte
-	sparse           []sparseEntry
-	keyIndex         map[string][]uint64
 	hasKeyIndex      bool
 	keyIndexOverflow bool
 }
@@ -38,6 +38,11 @@ func (w *WAL) checkpointLoop() {
 		}
 		if err := w.writeCheckpoint(job); err != nil {
 			w.counters.checkpointErr.Add(1)
+			if w.manifest != nil && w.manifest.poisonErr() != nil {
+				// An fsync failure leaves the MANIFEST state unknown; stop all
+				// further appends. | MANIFEST 同步失败后状态未知，停止追加。
+				w.setPoison(err)
+			}
 			w.reportAsync(err)
 		}
 	}

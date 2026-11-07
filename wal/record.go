@@ -170,6 +170,12 @@ func validateRecordHeader(rh recordHeader) error {
 		if rh.flags&recordFlagCompressed != 0 || rh.codec != codecNone {
 			return errs.Detail(ErrCorrupt, "dedup reference cannot be compressed | 去重引用不得压缩")
 		}
+		// Dedup references never belong to a transaction; this preserves the
+		// v1 on-disk format and read compatibility with v0.1.0. Transaction
+		// records are stored as ordinary records and can still be dedup targets
+		// for later non-transaction records. | 去重引用不属于事务，保持 v1 磁盘
+		// 格式与 v0.1.0 的读取兼容；事务记录按普通记录存储，仍可作为之后非事务
+		// 记录的去重目标。
 		if rh.lsn == 0 || rh.txnID != 0 {
 			return errs.Detail(ErrCorrupt, "dedup reference has lsn 0 or a transaction | 去重引用的 lsn 为 0 或带事务")
 		}
@@ -289,14 +295,14 @@ func parseCommitMarkerPayload(p []byte) (commitMarker, error) {
 
 // txnControl is the decoded transaction control payload. | txnControl 是解码后的事务控制负载。
 type txnControl struct {
-	kind        byte
-	hashAlg     byte
+	writeKeys   [][txnKeyDigestSize]byte
 	commitSeq   uint64
 	firstLSN    uint64
 	lastLSN     uint64
 	recordCount uint64
 	bytes       uint64
-	writeKeys   [][txnKeyDigestSize]byte
+	kind        byte
+	hashAlg     byte
 }
 
 // encodeTxnControlPayload encodes a transaction control payload. | encodeTxnControlPayload 编码事务控制负载。

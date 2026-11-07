@@ -2,6 +2,7 @@ package wal
 
 import (
 	"context"
+	"fmt"
 	"math/rand"
 	"os"
 	"testing"
@@ -281,6 +282,59 @@ func BenchmarkRosedbReadRandom(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		if _, err := w.Read(positions[rng.Intn(len(positions))]); err != nil {
 			b.Fatal(err)
+		}
+	}
+}
+
+func prefilledYdxKeyed(b *testing.B, count int, keyIndex bool) *ydxwal.WAL {
+	dir := b.TempDir()
+	opts := []ydxwal.Option{
+		ydxwal.WithSyncPolicy(ydxwal.SyncNever()),
+		ydxwal.WithSegmentMaxBytes(1 << 30),
+		ydxwal.WithKeyIndex(keyIndex),
+	}
+	w, err := ydxwal.Open(dir, opts...)
+	if err != nil {
+		b.Fatal(err)
+	}
+	ctx := context.Background()
+	batch := make([]ydxwal.Record, count)
+	for i := range batch {
+		batch[i] = ydxwal.Record{Key: []byte(fmt.Sprintf("k%05d", i)), Data: benchPayload}
+	}
+	if _, err := w.AppendBatch(ctx, batch); err != nil {
+		b.Fatal(err)
+	}
+	if err := w.Sync(); err != nil {
+		b.Fatal(err)
+	}
+	return w
+}
+
+func BenchmarkYdxQueryKeyIndex(b *testing.B) {
+	w := prefilledYdxKeyed(b, 10000, true)
+	defer w.Close()
+	ctx := context.Background()
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		count, err := w.Query(ctx, ydxwal.Query{Key: []byte("k05000")}, nil)
+		if err != nil || count != 1 {
+			b.Fatalf("count=%d err=%v", count, err)
+		}
+	}
+}
+
+func BenchmarkYdxQueryKeyLinear(b *testing.B) {
+	w := prefilledYdxKeyed(b, 10000, false)
+	defer w.Close()
+	ctx := context.Background()
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		count, err := w.Query(ctx, ydxwal.Query{Key: []byte("k05000")}, nil)
+		if err != nil || count != 1 {
+			b.Fatalf("count=%d err=%v", count, err)
 		}
 	}
 }

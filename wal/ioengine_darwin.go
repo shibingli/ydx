@@ -37,8 +37,8 @@ func (e *defaultEngine) writeAt(f *os.File, parts [][]byte, off int64, syncData 
 	fd := int(f.Fd())
 	for len(bufs) > 0 {
 		chunk := bufs
-		if len(chunk) > maxIovecs {
-			chunk = chunk[:maxIovecs]
+		if len(chunk) > e.maxIovecs {
+			chunk = chunk[:e.maxIovecs]
 		}
 		n, err := pwritevAll(fd, chunk, off)
 		if err != nil {
@@ -56,11 +56,16 @@ func (e *defaultEngine) writeAt(f *os.File, parts [][]byte, off int64, syncData 
 	return nil
 }
 
-// syncDataFile uses F_FULLFSYNC unless explicitly disabled. | syncDataFile
-// 默认使用 F_FULLFSYNC，除非显式关闭。
+// syncDataFile uses F_FULLFSYNC unless explicitly disabled. A filesystem that
+// does not implement it falls back to fsync. | syncDataFile 默认使用
+// F_FULLFSYNC，除非显式关闭；不支持它的文件系统回退到 fsync。
 func syncDataFile(f *os.File, fullFsync bool) error {
 	if fullFsync {
-		return f.Sync()
+		if _, err := unix.FcntlInt(f.Fd(), unix.F_FULLFSYNC, 0); err == nil {
+			return nil
+		} else if err != unix.ENOTSUP && err != unix.EINVAL && err != unix.ENOSYS {
+			return err
+		}
 	}
 	return unix.Fsync(int(f.Fd()))
 }

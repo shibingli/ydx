@@ -22,7 +22,20 @@ func acquireDirLock(path string, readOnly, noLock bool) (*dirLock, error) {
 	if noLock {
 		return &dirLock{noop: true}, nil
 	}
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
+	var f *os.File
+	var err error
+	if readOnly {
+		// A read-only open must not create or write any file. If the lock file
+		// does not exist, no writer has ever created the directory, so there is
+		// nothing to coordinate with. | 只读打开不得创建或写入任何文件；锁文件
+		// 不存在说明从未有写者创建该目录，无需协调。
+		f, err = os.Open(path)
+		if os.IsNotExist(err) {
+			return &dirLock{noop: true}, nil
+		}
+	} else {
+		f, err = os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
+	}
 	if err != nil {
 		return nil, errs.WrapDetail(err, ErrStorage, "open lock file %s | 打开锁文件 %s 失败", path, path)
 	}

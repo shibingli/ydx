@@ -1,0 +1,4 @@
+github.com/klauspost/compress v1.20.3 h1:zWNoFqq/lSuYQRim3dUXlXeA0IqwuZGicdG5ZTfY5j4=
+github.com/klauspost/compress v1.20.3/go.mod h1:LUdAzn7YLVvxLpc7y3V1m40wESHTgc1422pwwBSKYuI=
+github.com/shibingli/ydx/errs v0.1.4 h1:/hexB5eDFA/wWhRof5yxWEVeVlHn1P7IZmys9U4h1iA=
+github.com/shibingli/ydx/errs v0.1.4/go.mod h1:N6GNQq5eustT11WTdXOip9bXcIwrFd4c9UWG0gIDuwU=

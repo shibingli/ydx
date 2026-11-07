@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -20,30 +21,84 @@ import (
 // AppendOnce、异步写、Reader、Scan、Query、备份与截断调用；Reader 与 Tx 不能被
 // 多个协程并发使用。
 type WAL struct {
-	dir  string
-	opts options
+	reqPool sync.Pool
 
-	lock     *dirLock
-	meta     *metaStore
-	manifest *manifest
-	engine   IOEngine
-	fdcache  *fdCache
-	idxcache *indexCache
+	readBufPool     sync.Pool
+	readScratchPool sync.Pool
+	readHeaderPool  sync.Pool
+	engine          IOEngine
+	closeErr        error
+	indexer         Indexer
+	writerErr       error
+
+	backupCtx    context.Context
+	backupVerify BackupVerifier
+
+	retentionCtx context.Context
+
+	lock       *dirLock
+	meta       *metaStore
+	manifest   *manifest
+	anchor     *anchorState
+	anchorFile *anchorStore
+	gaps       *gapSet
+	fdcache    *fdCache
+	idxcache   *indexCache
+
+	closing  chan struct{}
+	closedCh chan struct{}
+	poison   atomic.Pointer[error]
+	segBySeq map[uint64]*segment
+	active   *segment
+
+	keyRing *KeyRing
+	bound   *boundRing
+	nonce   *nonceGen
+
+	dedup   *dedupTable
+	idem    *idemTable
+	occ     *occState
+	handler func(error)
+
+	appendQ           chan *appendRequest
+	writerDone        chan struct{}
+	notifyCh          chan struct{}
+	checkpointPending *checkpointJob
+	checkpointNotify  chan struct{}
+	checkpointStop    chan struct{}
+	cleanerCh         chan struct{}
+	cleanerStop       chan struct{}
+	backupCh          chan struct{}
+	backupCancel      context.CancelFunc
+	backupItems       map[uint64]*backupItem
+	retentionCancel   context.CancelFunc
+	retentionStop     chan struct{}
+	retentionTrigger  chan struct{}
+	dir               string
+	backupTarget      string
+
+	recoveryReports []error
+
+	segments      []*segment
+	aadScratch    []byte
+	preparedArena []preparedRecord
+	planArena     []reqPlan
+	planPtrs      []*reqPlan
+	itemBuf       []*preparedRecord
+	userItemBuf   []*preparedRecord
+	partBuf       [][]byte
+	batchBuf      []*appendRequest
+	cleanerQ      []*segment
+
+	opts options
 
 	counters counters
 
-	mu             sync.RWMutex
-	closed         bool
-	closedFlag     atomic.Bool
-	closing        chan struct{}
-	closedCh       chan struct{}
-	closeOnce      sync.Once
-	closeErr       error
-	poison         atomic.Pointer[error]
-	segments       []*segment
-	segBySeq       map[uint64]*segment
-	active         *segment
-	walID          [16]byte
+	checkpointWG sync.WaitGroup
+	cleanerWG    sync.WaitGroup
+	backupWG     sync.WaitGroup
+	retentionWG  sync.WaitGroup
+
 	createdNano    int64
 	firstLSN       uint64
 	firstLSNAtomic atomic.Uint64
@@ -55,79 +110,72 @@ type WAL struct {
 	snapCommit     atomic.Uint64
 	snapLast       atomic.Uint64
 
-	keyRing             *KeyRing
-	bound               *boundRing
-	activeKeyID         uint32
-	activeKCV           uint64
-	nonce               *nonceGen
-	encrypted           bool
-	serializableDurable bool
-	hashAlg             HashAlgorithm
-
-	dedup            *dedupTable
-	idem             *idemTable
-	occ              *occState
-	indexer          Indexer
-	handler          func(error)
-	lastTimestamp    int64
-	keyIndexOverflow bool
-	aadScratch       []byte
-	preparedArena    []preparedRecord
-
-	appendQ     chan *appendRequest
-	writerDone  chan struct{}
-	writerErrMu sync.Mutex
-	writerErr   error
-
-	notifyMu      sync.Mutex
+	activeKCV     uint64
+	lastTimestamp int64
 	notifyGen     uint64
-	notifyCh      chan struct{}
 	followReaders atomic.Int64
 
-	checkpointMu      sync.Mutex
-	checkpointPending *checkpointJob
-	checkpointNotify  chan struct{}
-	checkpointStop    chan struct{}
-	checkpointWG      sync.WaitGroup
 	checkpointBytes   int64
 	syncedSize        int64
 	syncedLSN         uint64
 	syncedRecordCount uint64
-	syncedCRC         uint32
 	syncedCommitSeq   uint64
-	pendingSync       bool
+	cleanerGen        uint64
+	backupGen         uint64
+	readLeases        int
 
-	cleanerMu   sync.Mutex
-	cleanerGen  uint64
-	cleanerCh   chan struct{}
-	cleanerStop chan struct{}
-	cleanerWG   sync.WaitGroup
-	cleanerQ    []*segment
+	mu              sync.RWMutex
+	closeOnce       sync.Once
+	engineCloseOnce sync.Once
+	anchorMu        sync.Mutex
+	writerErrMu     sync.Mutex
+
+	notifyMu sync.Mutex
+
+	workerMu sync.Mutex
+
+	checkpointMu sync.Mutex
+
+	cleanerMu sync.Mutex
+
+	backupMu sync.Mutex
+
+	readMu sync.Mutex
+	// idxWriteMu serializes on-demand sidecar upgrades with Close. A Query may
+	// rebuild a segment index concurrently with Close; Close waits here before
+	// releasing the directory lock so no sidecar write can land after a new
+	// process opens the directory. | idxWriteMu 串行化按需侧车升级与 Close：
+	// Query 可能在 Close 期间重建段索引，Close 在释放目录锁前先经过此屏障，
+	// 避免新进程打开目录后仍有侧车写入落盘。
+	idxWriteMu sync.Mutex
+	// stateDirty records that nextLSN/commitSeq/nextSeq changed since the last
+	// anchor write. Clean open/close without writes then avoids all anchor I/O.
+	// | stateDirty 表示自上次锚点写入后 nextLSN/commitSeq/nextSeq 已变化；
+	// 无写入的干净打开/关闭因此完全不触碰锚点。
+	stateDirty  atomic.Bool
+	closedFlag  atomic.Bool
+	activeKeyID uint32
+	syncedCRC   uint32
+	walID       [16]byte
+
+	recoveredFromAnchor bool
+	autoRepaired        bool
+	anchorPersisted     bool
+	closed              bool
+	encrypted           bool
+	serializableDurable bool
+	hashAlg             HashAlgorithm
+
+	keyIndexOverflow bool
+	workersStarted   bool
+
+	pendingSync bool
+
 	cleanerBusy bool
 
-	backupMu     sync.Mutex
-	backupGen    uint64
-	backupCh     chan struct{}
-	backupCtx    context.Context
-	backupCancel context.CancelFunc
-	backupWG     sync.WaitGroup
-	backupItems  map[uint64]*backupItem
-	backupTarget string
-	backupVerify BackupVerifier
+	backupWarned bool
 
-	retentionCtx     context.Context
-	retentionCancel  context.CancelFunc
-	retentionStop    chan struct{}
-	retentionTrigger chan struct{}
-	retentionWG      sync.WaitGroup
-
-	readMu          sync.Mutex
-	readLeases      int
-	readClosed      bool
-	readCond        *sync.Cond
-	engineCloseOnce sync.Once
-	readBufPool     sync.Pool
-	readScratchPool sync.Pool
+	readClosed bool
 }
 
 // Open opens or creates a WAL directory. | Open 打开或创建 WAL 目录。
@@ -162,9 +210,9 @@ func Open(dir string, opts ...Option) (*WAL, error) {
 		dir:              dir,
 		opts:             o,
 		lock:             lock,
+		gaps:             newGapSet(),
 		closing:          make(chan struct{}),
 		closedCh:         make(chan struct{}),
-		segBySeq:         make(map[uint64]*segment),
 		notifyCh:         make(chan struct{}),
 		checkpointNotify: make(chan struct{}, 1),
 		checkpointStop:   make(chan struct{}),
@@ -175,9 +223,10 @@ func Open(dir string, opts ...Option) (*WAL, error) {
 		retentionTrigger: make(chan struct{}, 1),
 		appendQ:          make(chan *appendRequest, o.queueSize),
 		writerDone:       make(chan struct{}),
-		backupItems:      make(map[uint64]*backupItem),
 	}
-	w.readCond = sync.NewCond(&w.readMu)
+	if o.backup != nil {
+		w.backupItems = make(map[uint64]*backupItem)
+	}
 	w.engine = defaultIOEngine(&o)
 	if o.ioEngine != nil {
 		w.engine = o.ioEngine
@@ -195,31 +244,98 @@ func Open(dir string, opts ...Option) (*WAL, error) {
 	w.aadScratch = make([]byte, 0, 32+recordHeaderSizeEncrypted)
 
 	if err := w.recover(); err != nil {
-		_ = lock.Close()
-		if w.meta != nil {
-			_ = w.meta.close()
-		}
-		if w.manifest != nil {
-			_ = w.manifest.close()
-		}
+		w.abortOpen()
 		return nil, err
 	}
 	if !o.readOnly {
+		// A clean default open defers the anchor read. If META already records
+		// that the anchor exists, no stat is needed; otherwise check once, and
+		// when the anchor is missing write it before META so the new META
+		// generation records its presence. | 干净的默认打开延迟读取锚点。META 已
+		// 记录锚点存在时无需 stat；否则检查一次，锚点缺失时先写锚点再写 META，
+		// 让新 META 代次记录其存在。
+		anchorMissing := false
+		if !w.anchorPersisted {
+			if w.meta != nil && w.meta.hasState && w.meta.state.flags&metaFlagAnchor != 0 {
+				w.anchorPersisted = true
+			} else if _, statErr := os.Stat(anchorPath(w.dir)); statErr == nil {
+				w.anchorPersisted = true
+			} else if os.IsNotExist(statErr) {
+				anchorMissing = true
+			}
+		}
+		if anchorMissing {
+			if err := w.persistAnchorIfChanged(); err != nil {
+				w.abortOpen()
+				return nil, err
+			}
+		}
 		if err := w.persistMetaIfChanged(); err != nil {
-			_ = w.meta.close()
-			_ = w.manifest.close()
-			_ = lock.Close()
+			w.abortOpen()
 			return nil, err
 		}
-		w.startWorkers()
+		writeAnchor := w.anchorFile != nil || w.stateDirty.Load() || anchorMissing
+		if writeAnchor {
+			if err := w.persistAnchorIfChanged(); err != nil {
+				w.abortOpen()
+				return nil, err
+			}
+		}
+		// Backup reconciliation must run even before the first write. Other
+		// workers start lazily on the first admission. | 备份对账必须在首次写入
+		// 前启动；其它 worker 在第一次准入时惰性启动。
+		if o.backup != nil {
+			w.startWorkers()
+		}
 	}
+	w.flushRecoveryReports()
 	return w, nil
+}
+
+// abortOpen releases every resource acquired before a failed Open without
+// rewriting META or compacting MANIFEST. | abortOpen 在 Open 失败时释放已获取的
+// 资源，且不重写 META、不压缩 MANIFEST。
+func (w *WAL) abortOpen() {
+	if w.active != nil {
+		w.active.closeWriter()
+		w.active = nil
+	}
+	for _, seg := range w.segments {
+		if seg.f != nil {
+			seg.closeWriter()
+		}
+	}
+	if w.fdcache != nil {
+		w.fdcache.closeAll()
+	}
+	if w.idxcache != nil {
+		w.idxcache.closeAll()
+	}
+	if w.engine != nil {
+		_ = w.engine.Close()
+	}
+	if w.bound != nil {
+		w.bound.close()
+		w.bound = nil
+	}
+	if w.meta != nil {
+		_ = w.meta.close()
+	}
+	if w.anchorFile != nil {
+		_ = w.anchorFile.close()
+	}
+	if w.manifest != nil {
+		w.manifest.closeHandle()
+	}
+	if w.lock != nil {
+		_ = w.lock.Close()
+	}
 }
 
 // metaCurrent reports whether persisted META already matches the in-memory
 // state. | metaCurrent 报告已持久化 META 是否已与内存状态一致。
 func (w *WAL) metaCurrent() bool {
-	if w.meta == nil || !w.meta.hasState {
+	if w.meta == nil || !w.meta.hasState || w.meta.upgrade {
 		return false
 	}
 	cur := w.metaSnapshot()
@@ -235,7 +351,14 @@ func (w *WAL) persistMetaIfChanged() error {
 	if w.metaCurrent() {
 		return nil
 	}
-	return w.meta.write(w.metaSnapshot())
+	if err := w.meta.write(w.metaSnapshot()); err != nil {
+		return err
+	}
+	// A META rewrite means the durable state changed; make sure Close mirrors
+	// it into the anchor even when no append happened. | META 重写意味着持久
+	// 状态变化；即使没有追加，Close 也必须把它镜像到锚点。
+	w.stateDirty.Store(true)
+	return nil
 }
 
 // metaSnapshot builds the current META state. | metaSnapshot 构建当前 META 状态。
@@ -257,6 +380,9 @@ func (w *WAL) metaSnapshot() metaState {
 	if w.serializableDurable {
 		st.flags |= metaFlagSerializable
 		st.setHashAlgorithm(w.hashAlg)
+	}
+	if w.anchorPersisted {
+		st.flags |= metaFlagAnchor
 	}
 	return st
 }
@@ -343,6 +469,12 @@ func (w *WAL) Stats() Stats {
 	s.IndexCacheEntries = uint64(entries)
 	s.IndexCacheBytes = uint64(indexBytes)
 	s.BackupPending = w.backupPendingCount()
+	if w.gaps != nil {
+		s.RecoveryGapIntervals = w.gaps.count()
+		s.RecoveryGapDegraded = w.gaps.isDegraded()
+	}
+	s.RecoveredFromAnchor = w.recoveredFromAnchor
+	s.AutoRepaired = w.autoRepaired
 	s.Poisoned = w.poisonedErr() != nil
 	return s
 }
@@ -363,7 +495,9 @@ func (w *WAL) EngineInfo() EngineInfo {
 	return info
 }
 
-// Append writes one record and returns its LSN. | Append 写入一条记录并返回其 LSN。
+// Append writes one record and returns its LSN. It returns only after the
+// record is durable, so the caller may reuse Key/Data afterwards. | Append 写入
+// 一条记录并返回其 LSN；返回时记录已持久化，调用方之后可复用 Key/Data。
 func (w *WAL) Append(ctx context.Context, rec Record) (uint64, error) {
 	if w.opts.readOnly {
 		return 0, ErrReadOnly
@@ -371,7 +505,10 @@ func (w *WAL) Append(ctx context.Context, rec Record) (uint64, error) {
 	if err := w.validateUserRecord(rec, false); err != nil {
 		return 0, err
 	}
-	req := &appendRequest{kind: kindData, recs: []Record{rec}, done: make(chan appendResult, 1)}
+	req := w.acquireRequest(kindData)
+	defer w.releaseRequest(req)
+	req.one[0] = rec
+	req.recs = req.one[:1]
 	if err := w.admit(ctx, req, false); err != nil {
 		return 0, err
 	}
@@ -396,6 +533,15 @@ func (w *WAL) AppendBatch(ctx context.Context, recs []Record) (uint64, error) {
 		return 0, ErrReadOnly
 	}
 	if len(recs) == 0 {
+		// An empty batch still observes the WAL lifecycle; returning success on a
+		// closed or poisoned WAL would hide a terminal state. | 空批次仍须反映 WAL
+		// 生命周期；在已关闭或 poisoned 的 WAL 上返回成功会掩盖终态。
+		if w.isClosed() {
+			return 0, ErrClosed
+		}
+		if err := w.poisonedErr(); err != nil {
+			return 0, err
+		}
 		return w.LastLSN(), nil
 	}
 	for _, rec := range recs {
@@ -406,7 +552,9 @@ func (w *WAL) AppendBatch(ctx context.Context, recs []Record) (uint64, error) {
 	// The caller's slice is borrowed only for the duration of this call; the
 	// writer encodes it before the result is delivered. | 仅在本次调用期间借用调用方
 	// 的切片；写入协程在结果投递前完成编码。
-	req := &appendRequest{kind: kindData, recs: recs, done: make(chan appendResult, 1)}
+	req := w.acquireRequest(kindData)
+	defer w.releaseRequest(req)
+	req.recs = recs
 	if err := w.admit(ctx, req, false); err != nil {
 		return 0, err
 	}
@@ -442,13 +590,17 @@ func (w *WAL) AppendOnce(ctx context.Context, dedupKey []byte, rec Record) (uint
 	if err := w.validateUserRecord(rec, false); err != nil {
 		return 0, false, err
 	}
-	req := &appendRequest{
-		kind:     kindData,
-		recs:     []Record{rec},
-		once:     true,
-		dedupKey: append([]byte(nil), dedupKey...),
-		done:     make(chan appendResult, 1),
+	req := w.acquireRequest(kindData)
+	defer w.releaseRequest(req)
+	if cap(req.dedupBuf) < len(dedupKey) {
+		req.dedupBuf = make([]byte, len(dedupKey))
 	}
+	req.dedupBuf = req.dedupBuf[:len(dedupKey)]
+	copy(req.dedupBuf, dedupKey)
+	req.one[0] = rec
+	req.recs = req.one[:1]
+	req.once = true
+	req.dedupKey = req.dedupBuf
 	if err := w.admit(ctx, req, false); err != nil {
 		return 0, false, err
 	}
@@ -466,8 +618,11 @@ func (w *WAL) AppendOnce(ctx context.Context, dedupKey []byte, rec Record) (uint
 	return res.lsn, res.duplicate, nil
 }
 
-// AppendAsync enqueues one record without waiting for the commit. | AppendAsync
-// 入队一条记录而不等待提交完成。
+// AppendAsync enqueues one record without waiting for the commit. The writer
+// encodes it asynchronously, so Key and Data must not be modified until the
+// returned future's Done channel closes (or Result returns). | AppendAsync 入队
+// 一条记录而不等待提交完成；写入协程会异步编码，因此 future 的 Done 通道关闭
+// （或 Result 返回）前不得修改 Key/Data。
 func (w *WAL) AppendAsync(rec Record) (*AppendFuture, error) {
 	if w.opts.readOnly {
 		return nil, ErrReadOnly
@@ -520,6 +675,7 @@ func (w *WAL) admit(ctx context.Context, req *appendRequest, async bool) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	w.ensureWorkers()
 	backoff := 50 * time.Microsecond
 	for {
 		w.mu.RLock()
@@ -552,6 +708,42 @@ func (w *WAL) admit(ctx context.Context, req *appendRequest, async bool) error {
 			backoff *= 2
 		}
 	}
+}
+
+// acquireRequest returns a reset append request with its buffered result
+// channel. Requests are pooled so the steady-state Append path does not
+// allocate. | acquireRequest 返回已重置的追加请求及其带缓冲结果通道；请求池化
+// 使稳态 Append 路径零分配。
+func (w *WAL) acquireRequest(kind reqKind) *appendRequest {
+	req, _ := w.reqPool.Get().(*appendRequest)
+	if req == nil {
+		return &appendRequest{kind: kind, done: make(chan appendResult, 1)}
+	}
+	done, dedupBuf := req.done, req.dedupBuf
+	*req = appendRequest{kind: kind, done: done, dedupBuf: dedupBuf}
+	return req
+}
+
+// releaseRequest drops caller references and returns req to the pool. It must
+// only run after the writer has delivered the result. | releaseRequest 清除调用方
+// 引用并把 req 归还请求池；必须在写入协程投递结果之后调用。
+func (w *WAL) releaseRequest(req *appendRequest) {
+	if req == nil || req.done == nil {
+		return
+	}
+	req.recs = nil
+	req.one[0] = Record{}
+	req.txn = nil
+	req.plan = nil
+	req.future = nil
+	req.async = false
+	req.once = false
+	req.allowStream = false
+	req.dedupKey = nil
+	if cap(req.dedupBuf) > 4096 {
+		req.dedupBuf = nil
+	}
+	w.reqPool.Put(req)
 }
 
 // control enqueues a control request and waits for the writer. | control 入队控制请求并等待写入协程。
@@ -634,28 +826,40 @@ func (w *WAL) doClose() error {
 	w.mu.Unlock()
 
 	if !w.opts.readOnly {
-		// Stop retention first so it cannot enqueue a truncate after the writer exits. | 先停止保留 worker，避免 writer 退出后再入队截断。
-		if w.retentionCancel != nil {
-			close(w.retentionStop)
-			w.retentionCancel()
-			w.retentionWG.Wait()
-		}
+		w.workerMu.Lock()
+		started := w.workersStarted
+		w.workerMu.Unlock()
+		if started {
+			// Stop retention first so it cannot enqueue a truncate after the writer exits. | 先停止保留 worker，避免 writer 退出后再入队截断。
+			if w.retentionCancel != nil {
+				close(w.retentionStop)
+				w.retentionCancel()
+				w.retentionWG.Wait()
+			}
 
-		closeReq := &appendRequest{kind: kindClose, done: make(chan appendResult, 1)}
-		w.appendQ <- closeReq
-		<-w.writerDone
-		<-closeReq.done
+			closeReq := &appendRequest{kind: kindClose, done: make(chan appendResult, 1)}
+			w.appendQ <- closeReq
+			<-w.writerDone
+			<-closeReq.done
 
-		close(w.checkpointStop)
-		w.checkpointWG.Wait()
+			close(w.checkpointStop)
+			w.checkpointWG.Wait()
 
-		close(w.cleanerStop)
-		w.notifyCleaner()
-		w.cleanerWG.Wait()
+			close(w.cleanerStop)
+			w.notifyCleaner()
+			w.cleanerWG.Wait()
 
-		if w.backupCancel != nil {
-			w.backupCancel()
-			w.backupWG.Wait()
+			if w.backupCancel != nil {
+				w.backupCancel()
+				w.backupWG.Wait()
+			}
+		} else if w.active != nil {
+			// No worker was ever started, so no writer drained the active
+			// segment. Recovery only leaves an empty segment here; close it. |
+			// 从未启动 worker 时没有 writer 排空活动段；恢复在此只会留下空段，
+			// 直接关闭句柄。
+			w.active.closeWriter()
+			w.active = nil
 		}
 	}
 	close(w.closedCh)
@@ -671,7 +875,18 @@ func (w *WAL) doClose() error {
 			firstErr = err
 		}
 	}
-	if w.manifest != nil && !w.opts.readOnly && w.poisonedErr() == nil {
+	// The recovery anchor is a redundant copy: attempt it even if the META
+	// write above failed, because either copy can heal the other. | 恢复锚点是
+	// 冗余副本：即使上面的 META 写入失败也尝试写入，任一副本都能修复另一份。
+	if !w.opts.readOnly && w.poisonedErr() == nil && (w.stateDirty.Load() || w.anchorFile != nil) {
+		if err := w.persistAnchorIfChanged(); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	if w.manifest != nil && !w.opts.readOnly {
+		// Always release the shard handle; a poisoned manifest skips compaction
+		// internally but must still be closed. | 始终释放分片句柄；poisoned 的
+		// MANIFEST 内部跳过压缩，但仍须关闭文件。
 		if err := w.manifest.close(); err != nil && firstErr == nil {
 			firstErr = err
 		}
@@ -681,6 +896,15 @@ func (w *WAL) doClose() error {
 			firstErr = err
 		}
 	}
+	if w.anchorFile != nil {
+		if err := w.anchorFile.close(); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	// Wait for any in-flight on-demand sidecar upgrade before releasing the
+	// directory lock. | 释放目录锁前等待所有按需侧车升级结束。
+	w.idxWriteMu.Lock()
+	w.idxWriteMu.Unlock()
 	if w.lock != nil {
 		if err := w.lock.Close(); err != nil && firstErr == nil {
 			firstErr = err
@@ -785,13 +1009,7 @@ func (w *WAL) cleanerChannel() (uint64, chan struct{}) {
 func (w *WAL) backupPendingCount() uint64 {
 	w.backupMu.Lock()
 	defer w.backupMu.Unlock()
-	n := uint64(0)
-	for _, item := range w.backupItems {
-		if item.state == backupPending || item.state == backupRunning {
-			n++
-		}
-	}
-	return n
+	return uint64(w.backupPendingLocked())
 }
 
 // notifyBackup wakes backup waiters. | notifyBackup 唤醒备份等待者。
@@ -823,9 +1041,34 @@ func (w *WAL) reportAsync(err error) {
 	}()
 }
 
-// startWorkers launches writer, checkpoint, cleaner, backup, and retention. | startWorkers
-// 启动 writer、checkpoint、cleaner、backup 与 retention。
+// ensureWorkers starts the worker set on first use. It must not start after
+// Close has set the closed flag. | ensureWorkers 在首次使用时启动 worker 集合；
+// Close 置位后不得再启动。
+func (w *WAL) ensureWorkers() {
+	w.workerMu.Lock()
+	defer w.workerMu.Unlock()
+	if w.workersStarted || w.closedFlag.Load() {
+		return
+	}
+	w.startWorkersLocked()
+}
+
+// startWorkers starts the workers eagerly (used for backup reconciliation). |
+// startWorkers 立即启动 worker（用于备份对账）。
 func (w *WAL) startWorkers() {
+	w.workerMu.Lock()
+	defer w.workerMu.Unlock()
+	if w.workersStarted || w.closedFlag.Load() {
+		return
+	}
+	w.startWorkersLocked()
+}
+
+// startWorkersLocked launches writer, checkpoint, cleaner, backup, and
+// retention. The caller holds workerMu. | startWorkersLocked 启动 writer、
+// checkpoint、cleaner、backup 与 retention；调用方持有 workerMu。
+func (w *WAL) startWorkersLocked() {
+	w.workersStarted = true
 	w.checkpointWG.Add(1)
 	go w.checkpointLoop()
 	w.cleanerWG.Add(1)
@@ -848,6 +1091,25 @@ func (w *WAL) startWorkers() {
 		go w.retentionLoop()
 	}
 	go w.writerLoop()
+}
+
+// segmentForLSNLocked returns the first live segment whose lastLSN is at or
+// above lsn. The caller holds w.mu.RLock. Segment ranges are monotonically
+// ordered, so this is a binary search instead of a full scan. | segmentForLSNLocked
+// 返回 lastLSN 不低于 lsn 的第一个存活分段。调用方持有 w.mu.RLock；分段 LSN
+// 区间单调有序，因此使用二分而不是全表扫描。
+func (w *WAL) segmentForLSNLocked(lsn uint64) *segment {
+	idx := sort.Search(len(w.segments), func(i int) bool {
+		s := w.segments[i]
+		s.metaMu.RLock()
+		last := s.lastLSN
+		s.metaMu.RUnlock()
+		return last >= lsn
+	})
+	if idx == len(w.segments) {
+		return nil
+	}
+	return w.segments[idx]
 }
 
 // runtimeOS returns the runtime OS name. | runtimeOS 返回运行时 OS 名称。

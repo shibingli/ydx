@@ -26,23 +26,23 @@ const (
 
 // Key is one master key in a KeyRing. | Key 是 KeyRing 中的一个主密钥。
 type Key struct {
+	Bytes []byte
 	ID    uint32
 	Suite Suite
-	Bytes []byte
 }
 
 // KeyRing is an immutable set of master keys. | KeyRing 是不可变的主密钥集合。
 type KeyRing struct {
-	suggested uint32
 	keys      map[uint32]*keyMaterial
 	order     []uint32
+	suggested uint32
 }
 
 // keyMaterial is one deep-copied master key. | keyMaterial 是一个深拷贝的主密钥。
 type keyMaterial struct {
+	master []byte
 	id     uint32
 	suite  Suite
-	master []byte
 }
 
 // NewKeyRing validates and deep-copies master keys. The suggestedActiveID is
@@ -101,11 +101,11 @@ func (r *KeyRing) has(id uint32) bool {
 
 // boundKey holds per-WAL derived material. | boundKey 保存每个 WAL 派生的密钥材料。
 type boundKey struct {
+	aead  cipher.AEAD
+	key   []byte
+	kcv   uint64
 	id    uint32
 	suite Suite
-	key   []byte
-	aead  cipher.AEAD
-	kcv   uint64
 }
 
 // boundRing holds keys derived with one WAL ID. | boundRing 保存以某个 WAL ID 派生的一组密钥。

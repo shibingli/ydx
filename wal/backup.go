@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"github.com/shibingli/ydx/buffpool"
@@ -27,10 +28,10 @@ const (
 
 // backupItem tracks one sealed segment. | backupItem 跟踪一个封段。
 type backupItem struct {
-	seg      *segment
-	state    backupState
-	attempts int
 	nextTry  time.Time
+	seg      *segment
+	attempts int
+	state    backupState
 }
 
 // errBackupDeleted marks a segment removed before upload. | errBackupDeleted 标记上传前已删除的分段。
@@ -47,9 +48,30 @@ func (w *WAL) enqueueBackup(seg *segment) {
 		return
 	}
 	w.backupItems[seg.seq] = &backupItem{seg: seg}
+	pending := w.backupPendingLocked()
+	warn := w.opts.backupMaxPending > 0 && pending > w.opts.backupMaxPending && !w.backupWarned
+	if warn {
+		w.backupWarned = true
+	}
 	w.backupMu.Unlock()
 	w.counters.backupQueued.Add(1)
+	if warn {
+		w.reportAsync(errs.Detail(ErrBackup, "backup backlog %[1]d exceeds %[2]d | 备份积压 %[1]d 超过阈值 %[2]d",
+			pending, w.opts.backupMaxPending))
+	}
 	w.notifyBackup()
+}
+
+// backupPendingLocked counts pending/running items; the caller holds backupMu. |
+// backupPendingLocked 统计待办/运行中的条目；调用方持有 backupMu。
+func (w *WAL) backupPendingLocked() int {
+	n := 0
+	for _, item := range w.backupItems {
+		if item.state == backupPending || item.state == backupRunning {
+			n++
+		}
+	}
+	return n
 }
 
 // startBackupReconciliation enqueues every sealed segment; workers skip ones
@@ -105,17 +127,10 @@ func (w *WAL) backupLoop() {
 			w.finishBackup(item, backupDeleted, nil)
 		default:
 			w.counters.backupFailed.Add(1)
-			w.reportAsync(err)
-			select {
-			case <-w.backupCtx.Done():
-				// Leave the item pending for the next Open. | 留给下一次 Open。
-				w.backupMu.Lock()
-				item.state = backupPending
-				w.backupMu.Unlock()
-				item.seg.release(w)
-				return
-			case <-time.After(backoffFor(item)):
-			}
+			// Schedule a retry without blocking this worker or reporting the
+			// error twice; finishBackup sets nextTry and reports once. | 只安排
+			// 重试，不阻塞 worker，也不重复上报；finishBackup 设置 nextTry 并
+			// 只上报一次。
 			w.finishBackup(item, backupPending, err)
 		}
 	}
@@ -175,7 +190,8 @@ func (w *WAL) runBackup(item *backupItem) error {
 	meta := SegmentMeta{
 		Seq: seg.seq, BaseLSN: seg.baseLSN, LastLSN: seg.lastLSN,
 		Records: seg.recordCount, Bytes: uint64(seg.size), MinTime: seg.minTime,
-		MaxTime: seg.maxTime, SegmentCRC: seg.crc, WalID: seg.walID,
+		MaxTime: seg.maxTime, SegmentCRC: seg.crc, IdxCRC: seg.idxCRC,
+		CommitSeq: seg.commitSeq, CreatedNano: seg.createdNano, WalID: seg.walID,
 	}
 	seg.metaMu.RUnlock()
 	targetID := backupTargetID(w.backupTarget)
@@ -190,6 +206,9 @@ func (w *WAL) runBackup(item *backupItem) error {
 		return errs.WrapDetail(err, ErrBackup, "open %s | 打开 %s 失败", seg.path, seg.path)
 	}
 	defer f.Close()
+	if err := validateSegmentIdentity(seg, f); err != nil {
+		return err
+	}
 	var idx *os.File
 	if idf, err := os.Open(seg.idxPath); err == nil {
 		idx = idf
@@ -214,10 +233,25 @@ func (w *WAL) finishBackup(item *backupItem, state backupState, cause error) {
 	item.state = state
 	if state == backupPending {
 		item.nextTry = time.Now().Add(backoffFor(item))
+	} else {
+		// Done/deleted items need no durable in-memory record; the .bak marker
+		// is the durable evidence. Keeping every historical item would pin
+		// segments and make takeBackup O(total segments). | 完成/已删除条目无需
+		// 常驻内存；.bak 标记是持久证据。保留全部历史条目会钉住分段并使
+		// takeBackup 退化为 O(总段数)。
+		delete(w.backupItems, item.seg.seq)
+	}
+	if w.opts.backupMaxPending > 0 && w.backupPendingLocked() <= w.opts.backupMaxPending {
+		w.backupWarned = false
 	}
 	w.backupMu.Unlock()
 	if state == backupDone {
 		w.counters.backupDone.Add(1)
+	}
+	if state == backupDone {
+		// Drop page cache before retention can delete the segment. | 在保留策略
+		// 可能删除分段前回收页缓存。
+		w.maybeFadvise(item.seg)
 	}
 	item.seg.release(w)
 	w.notifyBackup()
@@ -233,11 +267,29 @@ func (w *WAL) finishBackup(item *backupItem, state backupState, cause error) {
 // 把条目标记为已被截断删除。
 func (w *WAL) markBackupDeleted(seq uint64) {
 	w.backupMu.Lock()
-	if item, ok := w.backupItems[seq]; ok {
-		item.state = backupDeleted
+	delete(w.backupItems, seq)
+	if w.opts.backupMaxPending > 0 && w.backupPendingLocked() <= w.opts.backupMaxPending {
+		w.backupWarned = false
 	}
 	w.backupMu.Unlock()
 	w.notifyBackup()
+}
+
+// BackupConfigured reports whether a backup target was configured at Open. |
+// BackupConfigured 报告 Open 时是否配置了备份目标。
+func (w *WAL) BackupConfigured() bool {
+	return w.opts.backup != nil
+}
+
+// SupportsSnapshotBackup reports whether the configured backup target
+// implements SnapshotBackup, which BackupNow requires. | SupportsSnapshotBackup
+// 报告配置的备份目标是否实现 BackupNow 所需的 SnapshotBackup。
+func (w *WAL) SupportsSnapshotBackup() bool {
+	if w.opts.backup == nil {
+		return false
+	}
+	_, ok := w.opts.backup.(SnapshotBackup)
+	return ok
 }
 
 // FlushBackups waits for the backups queued before the barrier. | FlushBackups
@@ -266,8 +318,11 @@ func (w *WAL) FlushBackups(ctx context.Context) error {
 	return w.waitBackups(ctx, seqs, false)
 }
 
-// BackupNow rotates the active segment and waits for its backup. | BackupNow
-// 轮转活动段并等待其备份完成。
+// BackupNow rotates the active segment, waits for every referenced segment,
+// and atomically publishes a restore-complete BackupSet. Targets that do not
+// implement SnapshotBackup return ErrUnsupported. | BackupNow 轮转活动段、等待
+// 所有引用分段完成备份，并原子发布可完整恢复的 BackupSet；未实现
+// SnapshotBackup 的目标返回 ErrUnsupported。
 func (w *WAL) BackupNow(ctx context.Context) error {
 	if w.opts.readOnly {
 		return ErrReadOnly
@@ -275,10 +330,84 @@ func (w *WAL) BackupNow(ctx context.Context) error {
 	if w.opts.backup == nil {
 		return nil
 	}
+	sb, ok := w.opts.backup.(SnapshotBackup)
+	if !ok {
+		return errs.Detail(ErrUnsupported, "BackupNow requires a SnapshotBackup target | BackupNow 需要支持 SnapshotBackup 的备份目标")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	if err := w.Rotate(); err != nil {
 		return err
 	}
-	return w.FlushBackups(ctx)
+	if err := w.FlushBackups(ctx); err != nil {
+		return err
+	}
+	res, err := w.control(ctx, kindBackupSnapshot)
+	if err != nil {
+		return err
+	}
+	set := res.backupSet
+	if set == nil {
+		return errs.Detail(ErrBackup, "no backup set was captured | 未捕获到备份集")
+	}
+	if err := w.waitBackups(ctx, backupSetSeqs(set), true); err != nil {
+		return err
+	}
+	if err := w.verifyBackupSet(ctx, set); err != nil {
+		return err
+	}
+	if err := safeSnapshotBackup(ctx, sb, *set); err != nil {
+		w.counters.backupSnapshotErr.Add(1)
+		return errs.WrapDetail(err, ErrBackup, "publish backup snapshot | 发布备份快照失败")
+	}
+	w.counters.backupSnapshots.Add(1)
+	return nil
+}
+
+// backupSetSeqs returns the set's segment sequences. | backupSetSeqs 返回集合的
+// 分段序号。
+func backupSetSeqs(set *BackupSet) []uint64 {
+	seqs := make([]uint64, 0, len(set.Segments))
+	for _, m := range set.Segments {
+		seqs = append(seqs, m.Seq)
+	}
+	return seqs
+}
+
+// verifyBackupSet proves that every segment in the set has a durable .bak
+// marker and, when the target implements BackupVerifier, still exists at the
+// target. | verifyBackupSet 证明集合内每个分段都有持久 .bak 标记；目标实现
+// BackupVerifier 时还要证明目标对象仍存在。
+func (w *WAL) verifyBackupSet(ctx context.Context, set *BackupSet) error {
+	targetID := backupTargetID(w.backupTarget)
+	for _, m := range set.Segments {
+		if !validBackupMarker(backupPath(w.dir, m.Seq), targetID, m) {
+			return errs.Detail(ErrBackup, "segment %[1]d has no valid backup marker | 分段 %[1]d 没有有效备份标记", m.Seq)
+		}
+	}
+	if v, ok := w.opts.backup.(BackupVerifier); ok {
+		for _, m := range set.Segments {
+			vctx, cancel := context.WithTimeout(ctx, w.opts.backupVerifyTimeout)
+			err := safeVerify(vctx, v, m)
+			cancel()
+			if err != nil {
+				return errs.WrapDetail(err, ErrBackup, "verify segment %d at backup target | 在备份目标校验分段 %d 失败", m.Seq, m.Seq)
+			}
+		}
+	}
+	return nil
+}
+
+// safeSnapshotBackup isolates user callback panics. | safeSnapshotBackup 隔离
+// 用户回调 panic。
+func safeSnapshotBackup(ctx context.Context, b SnapshotBackup, set BackupSet) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = errs.Detail(ErrBackup, "snapshot backup callback panicked: %v | 快照备份回调 panic：%v", r, r)
+		}
+	}()
+	return b.BackupSnapshot(ctx, set)
 }
 
 // waitBackups waits for the given sequences to reach a terminal state. | waitBackups
@@ -403,6 +532,12 @@ func validBackupMarker(path string, targetID [16]byte, meta SegmentMeta) bool {
 type dirBackup struct {
 	dir    string
 	target string
+	// snapshotMu serializes BACKUP.snap publication. Concurrent BackupNow calls
+	// share the fixed BACKUP.snap.tmp path, so an unlocked write could mix two
+	// snapshots and publish a corrupt commit point. | snapshotMu 串行化
+	// BACKUP.snap 发布；并发 BackupNow 共用固定的 BACKUP.snap.tmp 路径，未加锁
+	// 的写入可能混合两份快照并发布损坏的提交点。
+	snapshotMu sync.Mutex
 }
 
 // DirBackup returns a local-directory backup implementation. | DirBackup 返回本地目录备份实现。
@@ -423,20 +558,76 @@ func (b *dirBackup) Backup(ctx context.Context, bundle SegmentBundle) error {
 		return err
 	}
 	walPath := filepath.Join(b.dir, fmt.Sprintf("%020d.wal", bundle.Meta.Seq))
-	if info, err := os.Stat(walPath); err != nil || uint64(info.Size()) != bundle.Meta.Bytes {
+	copyNeeded := true
+	if info, err := os.Stat(walPath); err == nil && uint64(info.Size()) == bundle.Meta.Bytes {
+		// A same-size destination is only trustworthy when its CRC matches the
+		// source summary; otherwise retention could delete the only good copy. |
+		// 只有 CRC 与源摘要一致时才能信任同尺寸目标；否则保留策略可能删掉唯一
+		// 的好副本。
+		if crc, err := segmentFileCRC(ctx, walPath); err == nil && crc == bundle.Meta.SegmentCRC {
+			copyNeeded = false
+		}
+	}
+	if copyNeeded {
 		if err := copyBackupFile(ctx, walPath, bundle.Data); err != nil {
 			return errs.WrapDetail(err, ErrBackup, "copy wal %d | 复制 wal %d 失败", bundle.Meta.Seq, bundle.Meta.Seq)
 		}
 	}
 	if bundle.Index != nil {
 		idxPath := filepath.Join(b.dir, fmt.Sprintf("%020d.idx", bundle.Meta.Seq))
-		if _, err := os.Stat(idxPath); err != nil {
+		copyIdx := true
+		if data, err := os.ReadFile(idxPath); err == nil && bundle.Meta.IdxCRC != 0 && checksum(data) == bundle.Meta.IdxCRC {
+			copyIdx = false
+		}
+		if copyIdx {
 			if err := copyBackupFile(ctx, idxPath, bundle.Index); err != nil {
 				return errs.WrapDetail(err, ErrBackup, "copy idx %d | 复制 idx %d 失败", bundle.Meta.Seq, bundle.Meta.Seq)
 			}
 		}
 	}
 	return nil
+}
+
+// BackupSnapshot verifies every referenced segment and atomically publishes
+// BACKUP.snap. The verification makes the snapshot the commit point of a
+// restore-complete set: a partially uploaded segment can never be referenced. |
+// BackupSnapshot 校验每个引用分段并原子发布 BACKUP.snap。校验使快照成为完整
+// 恢复集的提交点：未完整上传的分段永远不会被引用。
+func (b *dirBackup) BackupSnapshot(ctx context.Context, set BackupSet) error {
+	b.snapshotMu.Lock()
+	defer b.snapshotMu.Unlock()
+	if err := ensureDir(b.dir, 0o700); err != nil {
+		return err
+	}
+	for _, m := range set.Segments {
+		path := filepath.Join(b.dir, fmt.Sprintf("%020d.wal", m.Seq))
+		info, err := os.Stat(path)
+		if err != nil {
+			return errs.WrapDetail(err, ErrBackup, "stat backup segment %d | 检查备份分段 %d 失败", m.Seq, m.Seq)
+		}
+		if uint64(info.Size()) != m.Bytes {
+			return errs.Detail(ErrBackup, "backup segment %[1]d size %[2]d, want %[3]d | 备份分段 %[1]d 大小 %[2]d，期望 %[3]d",
+				m.Seq, info.Size(), m.Bytes)
+		}
+		crc, err := segmentFileCRC(ctx, path)
+		if err != nil {
+			return errs.WrapDetail(err, ErrBackup, "checksum backup segment %d | 校验备份分段 %d 失败", m.Seq, m.Seq)
+		}
+		if crc != m.SegmentCRC {
+			return errs.Detail(ErrBackup, "backup segment %[1]d CRC mismatch | 备份分段 %[1]d CRC 不匹配", m.Seq)
+		}
+		if m.IdxCRC != 0 {
+			idxPath := filepath.Join(b.dir, fmt.Sprintf("%020d.idx", m.Seq))
+			if data, err := os.ReadFile(idxPath); err == nil && checksum(data) != m.IdxCRC {
+				return errs.Detail(ErrBackup, "backup sidecar %[1]d CRC mismatch | 备份侧车 %[1]d CRC 不匹配", m.Seq)
+			}
+		}
+	}
+	data, err := EncodeBackupSet(set)
+	if err != nil {
+		return err
+	}
+	return writeFileAtomic(filepath.Join(b.dir, "BACKUP.snap"), data, 0o600)
 }
 
 // Verify checks the target segment and its header. | Verify 校验目标分段及其段头。
@@ -457,7 +648,49 @@ func (b *dirBackup) Verify(ctx context.Context, meta SegmentMeta) error {
 	if h.seq != meta.Seq || h.walID != meta.WalID {
 		return errs.Detail(ErrBackup, "backup %s header mismatch | 备份 %s 段头不匹配", path, path)
 	}
+	crc, err := segmentFileCRC(ctx, path)
+	if err != nil {
+		return errs.WrapDetail(err, ErrBackup, "checksum backup %s | 校验备份 %s 失败", path, path)
+	}
+	if crc != meta.SegmentCRC {
+		return errs.Detail(ErrBackup, "backup %[1]s CRC mismatch | 备份 %[1]s CRC 不匹配", path)
+	}
 	return nil
+}
+
+// segmentFileCRC computes the segment CRC over [64, size), honoring ctx during
+// the read so a verifier timeout can interrupt a large target. | segmentFileCRC
+// 计算 [64, size) 区间的分段 CRC 并在读取期间响应 ctx，使校验超时可中断大文件。
+func segmentFileCRC(ctx context.Context, path string) (uint32, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return 0, err
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		return 0, err
+	}
+	size := info.Size()
+	buf := buffpool.Get(64 << 10)
+	buf = buf[:64<<10]
+	defer buffpool.Put(buf[:0])
+	crc := uint32(0)
+	for off := int64(segmentHeaderSize); off < size; {
+		if err := ctx.Err(); err != nil {
+			return 0, err
+		}
+		n := int64(len(buf))
+		if off+n > size {
+			n = size - off
+		}
+		if err := readFullAt(f, buf[:n], off); err != nil {
+			return 0, err
+		}
+		crc = appendCRC(crc, buf[:n])
+		off += n
+	}
+	return crc, nil
 }
 
 // copyBackupFile copies src to dst atomically, preferring reflink. | copyBackupFile
@@ -542,8 +775,8 @@ func copyBackupFile(ctx context.Context, dst string, src io.Reader) error {
 
 // backupFunc adapts a function to Backup. | backupFunc 把函数适配为 Backup。
 type backupFunc struct {
-	target string
 	fn     func(context.Context, SegmentBundle) error
+	target string
 }
 
 // BackupFunc adapts fn to the Backup interface. | BackupFunc 把 fn 适配为 Backup 接口。

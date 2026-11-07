@@ -60,8 +60,12 @@ func (w *WAL) runRetention(ctx context.Context) error {
 	removed := int64(0)
 	for _, seg := range candidates {
 		seg.metaMu.RLock()
-		lastLSN, size, maxTime, created := seg.lastLSN, seg.size, seg.maxTime, seg.createdNano
+		lastLSN, recordCount := seg.lastLSN, seg.recordCount
+		size, minTime, maxTime := seg.size, seg.minTime, seg.maxTime
+		crc := seg.crc
+		created := seg.createdNano
 		walID := seg.walID
+		baseLSN := seg.baseLSN
 		seg.metaMu.RUnlock()
 		byAge := false
 		if r.MaxAge > 0 {
@@ -76,7 +80,14 @@ func (w *WAL) runRetention(ctx context.Context) error {
 			break
 		}
 		if w.opts.backup != nil {
-			meta := SegmentMeta{Seq: seg.seq, LastLSN: lastLSN, Bytes: uint64(size), WalID: walID}
+			// Verify against the full segment metadata; an incomplete meta would
+			// make validBackupMarker compare SegmentCRC with zero and always fail. |
+			// 使用完整段元数据校验；缺少 SegmentCRC 会让有效标记永远匹配失败。
+			meta := SegmentMeta{
+				Seq: seg.seq, BaseLSN: baseLSN, LastLSN: lastLSN, Records: recordCount,
+				Bytes: uint64(size), MinTime: minTime, MaxTime: maxTime,
+				SegmentCRC: crc, WalID: walID,
+			}
 			if !validBackupMarker(seg.bakPath, backupTargetID(w.backupTarget), meta) {
 				w.counters.retentionSkip.Add(1)
 				break

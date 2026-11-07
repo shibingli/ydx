@@ -16,9 +16,10 @@ const (
 	sidecarTrailer    = 4
 	sidecarEntrySize  = 24
 
-	sidecarFlagKeyIndex   = uint16(1 << 0)
-	sidecarFlagCheckpoint = uint16(1 << 1)
-	sidecarKnownFlags     = sidecarFlagKeyIndex | sidecarFlagCheckpoint
+	sidecarFlagKeyIndex         = uint16(1 << 0)
+	sidecarFlagCheckpoint       = uint16(1 << 1)
+	sidecarFlagKeyIndexComplete = uint16(1 << 2)
+	sidecarKnownFlags           = sidecarFlagKeyIndex | sidecarFlagCheckpoint | sidecarFlagKeyIndexComplete
 
 	maxSidecarBytes = int64(formatHardLimit)
 )
@@ -47,23 +48,24 @@ const (
 
 // sidecar is the decoded .idx file. | sidecar 是解码后的 .idx 文件。
 type sidecar struct {
-	seq          uint64
-	baseLSN      uint64
-	lastLSN      uint64
-	recordCount  uint64
-	segmentBytes uint64
-	minTime      int64
-	maxTime      int64
-	segmentCRC   uint32
-	dedupRefs    uint32
-	compressed   uint32
-	walID        [16]byte
-	commitSeq    uint64
-	checkpoint   bool
-	hasKeyIndex  bool
-	sparse       []sparseEntry
-	keyIndex     map[string][]uint64
-	keyOrder     []string
+	keyIndex         map[string][]uint64
+	sparse           []sparseEntry
+	keyOrder         []string
+	seq              uint64
+	baseLSN          uint64
+	lastLSN          uint64
+	recordCount      uint64
+	segmentBytes     uint64
+	minTime          int64
+	maxTime          int64
+	commitSeq        uint64
+	segmentCRC       uint32
+	dedupRefs        uint32
+	compressed       uint32
+	walID            [16]byte
+	checkpoint       bool
+	hasKeyIndex      bool
+	keyIndexComplete bool
 }
 
 // encodeSidecar encodes one .idx file. | encodeSidecar 编码一个 .idx 文件。
@@ -85,6 +87,11 @@ func encodeSidecar(s *sidecar) []byte {
 	var flags uint16
 	if s.hasKeyIndex {
 		flags |= sidecarFlagKeyIndex
+		// New sidecars only carry complete key indexes; the distinct flag lets
+		// readers distrust old sidecars that silently dropped overflowed keys. |
+		// 新侧车只携带完整 Key 索引；独立标志让读取方不信任旧侧车中因溢出被
+		// 静默丢弃的键。
+		flags |= sidecarFlagKeyIndexComplete
 	}
 	if s.checkpoint {
 		flags |= sidecarFlagCheckpoint
@@ -148,24 +155,28 @@ func decodeSidecar(data []byte) (*sidecar, error) {
 	if flags&^sidecarKnownFlags != 0 {
 		return nil, errs.Detail(ErrUnsupported, "unknown sidecar flags 0x%[1]04x | 未知侧车 flags 0x%[1]04x", flags)
 	}
+	if flags&sidecarFlagKeyIndexComplete != 0 && flags&sidecarFlagKeyIndex == 0 {
+		return nil, errs.Detail(ErrCorrupt, "sidecar marks a complete key index without a key index | 侧车标记完整 Key 索引但未标记存在 Key 索引")
+	}
 	body := data[:len(data)-sidecarTrailer]
 	if got, want := binary.LittleEndian.Uint32(data[len(data)-sidecarTrailer:]), checksum(body); got != want {
 		return nil, errs.Detail(ErrCorrupt, "sidecar CRC mismatch | 侧车 CRC 不匹配")
 	}
 	s := &sidecar{
-		seq:          binary.LittleEndian.Uint64(data[idxOffSeq:]),
-		baseLSN:      binary.LittleEndian.Uint64(data[idxOffBaseLSN:]),
-		lastLSN:      binary.LittleEndian.Uint64(data[idxOffLastLSN:]),
-		recordCount:  binary.LittleEndian.Uint64(data[idxOffRecordCount:]),
-		segmentBytes: binary.LittleEndian.Uint64(data[idxOffSegmentBytes:]),
-		minTime:      int64(binary.LittleEndian.Uint64(data[idxOffMinTime:])),
-		maxTime:      int64(binary.LittleEndian.Uint64(data[idxOffMaxTime:])),
-		segmentCRC:   binary.LittleEndian.Uint32(data[idxOffSegmentCRC:]),
-		dedupRefs:    binary.LittleEndian.Uint32(data[idxOffDedupRefs:]),
-		compressed:   binary.LittleEndian.Uint32(data[idxOffCompressed:]),
-		commitSeq:    binary.LittleEndian.Uint64(data[idxOffCommitSeq:]),
-		checkpoint:   flags&sidecarFlagCheckpoint != 0,
-		hasKeyIndex:  flags&sidecarFlagKeyIndex != 0,
+		seq:              binary.LittleEndian.Uint64(data[idxOffSeq:]),
+		baseLSN:          binary.LittleEndian.Uint64(data[idxOffBaseLSN:]),
+		lastLSN:          binary.LittleEndian.Uint64(data[idxOffLastLSN:]),
+		recordCount:      binary.LittleEndian.Uint64(data[idxOffRecordCount:]),
+		segmentBytes:     binary.LittleEndian.Uint64(data[idxOffSegmentBytes:]),
+		minTime:          int64(binary.LittleEndian.Uint64(data[idxOffMinTime:])),
+		maxTime:          int64(binary.LittleEndian.Uint64(data[idxOffMaxTime:])),
+		segmentCRC:       binary.LittleEndian.Uint32(data[idxOffSegmentCRC:]),
+		dedupRefs:        binary.LittleEndian.Uint32(data[idxOffDedupRefs:]),
+		compressed:       binary.LittleEndian.Uint32(data[idxOffCompressed:]),
+		commitSeq:        binary.LittleEndian.Uint64(data[idxOffCommitSeq:]),
+		checkpoint:       flags&sidecarFlagCheckpoint != 0,
+		hasKeyIndex:      flags&sidecarFlagKeyIndex != 0,
+		keyIndexComplete: flags&sidecarFlagKeyIndexComplete != 0,
 	}
 	copy(s.walID[:], data[idxOffWalID:])
 	if s.seq == 0 || s.baseLSN == 0 || s.segmentBytes < uint64(segmentHeaderSize) || s.walID == ([16]byte{}) {

@@ -67,30 +67,62 @@
 // # Operational notes | 运维说明
 //
 // The WAL is a single directory with no external service. It uses a directory
-// lock so one writer owns the directory; read-only opens take a shared lock.
+// lock so one writer owns the directory; read-only opens take a shared lock
+// when the lock file already exists and never create it. Write workers start on
+// first admission, so an opened-but-never-written WAL starts no goroutines.
 // Use multiple WAL instances for horizontal scaling; there is no cross-instance
 // global LSN ordering. | WAL 是单目录、零外部服务的。目录锁保证单写者；只读打开
-// 使用共享锁。水平扩展请使用多个 WAL 实例；不提供跨实例的全局 LSN 排序。
+// 在锁文件已存在时使用共享锁，且从不创建锁文件。写 worker 在首次准入时启动，
+// 打开后从未写入的 WAL 不启动协程。水平扩展请使用多个 WAL 实例；不提供跨实例
+// 的全局 LSN 排序。
 //
 // Encryption and compression are record-level. Unencrypted, uncompressed writes
 // reference caller bytes directly on Unix. | 加密与压缩均为记录级。未加密、
 // 未压缩的写入在 Unix 上直接引用调用方字节。
 //
+// # Recovery | 恢复
+//
+// META (two files, two slots), the sharded MANIFEST, and a two-slot recovery
+// anchor are independent durable copies of the high-water state. When META,
+// MANIFEST, and the anchor are all lost, Open rebuilds them from segment
+// headers, sidecars, and a bounded scan; WithAutoRepair(false) restores the
+// strict refusal behavior. Discovered LSN gaps are stored as intervals in the
+// anchor and reported through Stats and ErrorHandler. |
+// META（双文件双槽）、分片 MANIFEST 与双槽恢复锚点是高水位状态的独立副本。
+// 三者全部丢失时，Open 从段头、侧车与有界扫描重建；WithAutoRepair(false) 恢复
+// 严格拒绝行为。发现的 LSN 缺口以区间形式写入锚点，并通过 Stats 与
+// ErrorHandler 报告。
+//
+// BackupNow publishes a restore-complete BackupSet containing metadata and all
+// referenced segment summaries; RestoreDir/RestoreBackup restore it atomically.
+// FlushBackups remains the segment-only drain API. | BackupNow 发布包含元数据与
+// 全部引用分段摘要的完整恢复集；RestoreDir/RestoreBackup 原子还原。
+// FlushBackups 仍是仅排空分段的 API。
+//
 // # Limits | 限制
 //
-// The META double mirror plus the sharded MANIFEST are the durable metadata.
-// Losing both is a disaster-recovery event, not a routine path; backups contain
-// segments and sidecars, not META/MANIFEST snapshots (see README). |
-// META 双副本与分片 MANIFEST 是持久元数据；两者同时丢失属于灾难恢复场景，
-// 不是常规路径；备份包含分段与侧车，不包含 META/MANIFEST 快照（见 README）。
+// If the highest created segment is missing and no persisted lastLSN proves
+// its high water, Open returns ErrMissingSegment even with auto repair, because
+// continuing could reuse an acknowledged LSN. If every metadata copy and
+// sidecar is lost, segment scanning cannot reconstruct a truncation watermark
+// that occurred after the last surviving anchor write. | 最高创建分段缺失且没有
+// 持久 lastLSN 证明其高水位时，即使开启自动修复也返回 ErrMissingSegment，因为
+// 继续写入可能复用已确认 LSN。若所有元数据副本与侧车全部丢失，段扫描无法重建
+// 最后一次存活锚点写入之后发生的截断水位。
 //
-// A commit-marker CRC chain cannot distinguish a bit-rotten confirmed record
-// from an unconfirmed torn tail once the corruption is outside the last
-// checkpoint prefix. Verify reports such corruption; zero RPO is promised for
-// crashes on storage that honors flush semantics, not for arbitrary media
-// corruption. | 一旦损坏落在最后一个检查点前缀之外，提交标记 CRC 链无法区分
-// “已确认记录位腐”与“未确认撕裂尾”；Verify 会报告这类损坏。零 RPO 承诺针对
-// 遵守 flush 语义的存储上的崩溃，不针对任意介质位腐。
+// A damaged record followed by a self-CRC-valid commit marker is reported as
+// ErrCorrupt instead of being truncated, even when the damage lies beyond a
+// checkpoint prefix. Only damage with no later valid marker is treated as an
+// unconfirmed torn tail. Verify re-checks every record and proves each segment
+// summary describes its file. Zero RPO is promised for crashes on storage that
+// honors flush semantics, not for arbitrary media corruption. | 损坏记录之后若
+// 存在自身 CRC 有效的提交标记，即使损坏位于检查点前缀之后也返回 ErrCorrupt，
+// 而不是截断；只有其后没有任何有效标记时才按未确认撕裂尾处理。Verify 会重新
+// 校验每条记录，并证明每个分段摘要描述的就是该文件。零 RPO 承诺针对遵守 flush
+// 语义的存储上的崩溃，不针对任意介质位腐。
+//
+// Append returns ErrTooLarge before the LSN or segment-sequence counter can
+// wrap to zero. | Append 在 LSN 或分段序号计数器回绕为零之前返回 ErrTooLarge。
 //
 // WithReadOnly opens never write, truncate, or delete files. Readers created
 // before Close may continue reading, but WAL.Close releases the directory lock;

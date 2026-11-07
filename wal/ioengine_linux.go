@@ -40,8 +40,9 @@ func (e *defaultEngine) writeAt(f *os.File, parts [][]byte, off int64, syncData 
 		return nil
 	}
 	fd := int(f.Fd())
-	if e.pwritev2.Load() && len(bufs) <= maxIovecs {
-		n, err := pwritev2All(fd, bufs, off)
+	limit := e.maxIovecs
+	if e.pwritev2.Load() && len(bufs) <= limit {
+		n, err := pwritev2All(fd, bufs, off, syncData)
 		if err == nil {
 			if n == lenParts(bufs) {
 				return nil
@@ -51,7 +52,7 @@ func (e *defaultEngine) writeAt(f *os.File, parts [][]byte, off int64, syncData 
 			if len(bufs) == 0 {
 				return nil
 			}
-			if err := pwritevAllChunks(fd, bufs, off); err != nil {
+			if err := pwritevAllChunks(fd, bufs, off, limit); err != nil {
 				return err
 			}
 			if syncData {
@@ -64,7 +65,7 @@ func (e *defaultEngine) writeAt(f *os.File, parts [][]byte, off int64, syncData 
 		}
 		e.pwritev2.Store(false)
 	}
-	if err := pwritevAllChunks(fd, bufs, off); err != nil {
+	if err := pwritevAllChunks(fd, bufs, off, limit); err != nil {
 		return err
 	}
 	if syncData {
@@ -93,10 +94,17 @@ func fadviseDontNeed(f *os.File) error {
 	return unix.Fadvise(int(f.Fd()), 0, 0, unix.FADV_DONTNEED)
 }
 
-// pwritev2All retries EINTR around Pwritev2 with RWF_DSYNC. | pwritev2All 在 EINTR 时重试 Pwritev2(RWF_DSYNC)。
-func pwritev2All(fd int, bufs [][]byte, off int64) (int, error) {
+// pwritev2All retries EINTR around Pwritev2. RWF_DSYNC is used only when the
+// caller asked for durable data; SyncInterval/SyncNever must not force a disk
+// flush on every write. | pwritev2All 在 EINTR 时重试 Pwritev2；只有调用方要求
+// 持久化时才使用 RWF_DSYNC，SyncInterval/SyncNever 不得强制每次写盘。
+func pwritev2All(fd int, bufs [][]byte, off int64, syncData bool) (int, error) {
+	var flags int
+	if syncData {
+		flags = unix.RWF_DSYNC
+	}
 	for {
-		n, err := unix.Pwritev2(fd, bufs, off, unix.RWF_DSYNC)
+		n, err := unix.Pwritev2(fd, bufs, off, flags)
 		if err == unix.EINTR {
 			continue
 		}
@@ -104,13 +112,13 @@ func pwritev2All(fd int, bufs [][]byte, off int64) (int, error) {
 	}
 }
 
-// pwritevAllChunks writes bufs in at most maxIovecs chunks. | pwritevAllChunks
-// 以最多 maxIovecs 个分片为一组写入 bufs。
-func pwritevAllChunks(fd int, bufs [][]byte, off int64) error {
+// pwritevAllChunks writes bufs in groups of at most limit iovecs. |
+// pwritevAllChunks 以每组最多 limit 个分片写入 bufs。
+func pwritevAllChunks(fd int, bufs [][]byte, off int64, limit int) error {
 	for len(bufs) > 0 {
 		chunk := bufs
-		if len(chunk) > maxIovecs {
-			chunk = chunk[:maxIovecs]
+		if len(chunk) > limit {
+			chunk = chunk[:limit]
 		}
 		n, err := pwritevAll(fd, chunk, off)
 		if err != nil {

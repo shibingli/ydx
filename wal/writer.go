@@ -1,6 +1,8 @@
 package wal
 
 import (
+	"errors"
+	"math"
 	"os"
 	"time"
 
@@ -18,44 +20,47 @@ const (
 	kindRotate
 	kindSetActiveKey
 	kindTruncate
+	kindBackupSnapshot
 	kindClose
 )
 
 // appendRequest is one unit of work for the single writer. | appendRequest 是单写协程的一个工作单元。
 type appendRequest struct {
-	kind        reqKind
-	recs        []Record
-	once        bool
-	allowStream bool
-	dedupKey    []byte
-	txn         *Tx
-	async       bool
-	future      *AppendFuture
-	done        chan appendResult
-
-	keyID     uint32
-	beforeLSN uint64
-	internal  bool
+	txn    *Tx
+	future *AppendFuture
+	done   chan appendResult
 
 	// Writer-local planning state. | 写入协程本地规划状态。
-	plan *reqPlan
+	plan      *reqPlan
+	recs      []Record
+	dedupKey  []byte
+	dedupBuf  []byte
+	one       [1]Record
+	beforeLSN uint64
+
+	keyID       uint32
+	kind        reqKind
+	once        bool
+	allowStream bool
+	async       bool
+	internal    bool
 }
 
 // reqPlan carries one request's batch outcome. | reqPlan 保存单个请求在批次中的结果。
 type reqPlan struct {
-	req             *appendRequest
 	err             error
+	req             *appendRequest
 	immediate       *appendResult
-	winner          int
-	pendingDup      bool
-	pendingConflict bool
-	txnSeq          uint64
-	txnAccepted     bool
 	txnInfo         TxnInfo
+	winner          int
+	txnSeq          uint64
 	writeFirst      uint64
 	writeLast       uint64
 	keyDigest       [32]byte
 	contentDigest   [32]byte
+	pendingDup      bool
+	pendingConflict bool
+	txnAccepted     bool
 	onceWinner      bool
 }
 
@@ -124,10 +129,21 @@ func (w *WAL) writerLoop() {
 // control or over-limit data request. | drainBatch 收集组提交批次，并返回第一个被
 // 延后的控制请求或超限数据请求。
 func (w *WAL) drainBatch(first *appendRequest) ([]*appendRequest, *appendRequest) {
-	batch := []*appendRequest{first}
+	if cap(w.batchBuf) == 0 {
+		w.batchBuf = make([]*appendRequest, 0, 8)
+	}
+	batch := w.batchBuf[:0]
+	// Clear the backing array so the pool does not pin previous requests. | 清空
+	// 底层数组，避免复用区钉住上一批请求。
+	full := batch[:cap(batch)]
+	for i := range full {
+		full[i] = nil
+	}
+	batch = append(batch, first)
+	defer func() { w.batchBuf = batch }()
 	records := requestRecordCount(first)
 	bytes := requestByteCount(first)
-	for len(batch) < w.opts.maxBatchRecords && bytes < w.opts.maxBatchBytes {
+	for len(batch) < w.opts.maxBatchRecords && records < w.opts.maxBatchRecords && bytes < w.opts.maxBatchBytes {
 		select {
 		case r := <-w.appendQ:
 			if r.kind != kindData && r.kind != kindTxnCommit {
@@ -135,7 +151,7 @@ func (w *WAL) drainBatch(first *appendRequest) ([]*appendRequest, *appendRequest
 			}
 			n := requestRecordCount(r)
 			b := requestByteCount(r)
-			if len(batch)+n > w.opts.maxBatchRecords || bytes+b > w.opts.maxBatchBytes {
+			if records+n > w.opts.maxBatchRecords || bytes+b > w.opts.maxBatchBytes {
 				return batch, r
 			}
 			batch = append(batch, r)
@@ -189,13 +205,24 @@ func (w *WAL) handleControl(req *appendRequest) {
 		res.err = w.setActiveKey(req.keyID)
 	case kindTruncate:
 		res.segments, res.err = w.truncate(req.beforeLSN)
+	case kindBackupSnapshot:
+		res.backupSet = w.captureBackupSet()
 	default:
 		res.err = errs.Detail(ErrInvalidOptions, "unknown writer request %[1]d | 未知写入请求 %[1]d", req.kind)
 	}
-	if res.err != nil {
+	if res.err != nil && !benignControlError(res.err) {
 		w.setPoison(res.err)
 	}
 	req.done <- res
+}
+
+// benignControlError reports caller-input control errors that must not poison
+// the WAL. A bad SetActiveKey ID is not a storage failure and previous state is
+// unchanged. | benignControlError 返回不应 poison WAL 的调用方输入错误；错误的
+// SetActiveKey ID 不是存储故障，原状态未被改变。
+func benignControlError(err error) bool {
+	return errors.Is(err, ErrInvalidKey) || errors.Is(err, ErrKeyNotFound) ||
+		errors.Is(err, ErrCipherMismatch) || errors.Is(err, ErrInvalidOptions)
 }
 
 // finishWriter seals the final segment without writing META. | finishWriter 封存最终分段但不写 META。
@@ -308,12 +335,15 @@ func (w *WAL) buildCheckpointJob(seg *segment) *checkpointJob {
 		maxTime:      seg.maxTime,
 		walID:        seg.walID,
 	}
-	for _, sp := range seg.sparse {
-		if sp.offset < w.syncedSize {
-			job.sparse = append(job.sparse, sp)
+	if seg.sparseComplete || (len(seg.sparse) > 0 && seg.sparse[0].lsn == seg.baseLSN) {
+		for _, sp := range seg.sparse {
+			if sp.offset < w.syncedSize {
+				job.sparse = append(job.sparse, sp)
+			}
 		}
 	}
-	if seg.keyIndex != nil {
+	job.hasKeyIndex = w.opts.keyIndex && seg.keyIndexComplete && !seg.keyIndexOverflow
+	if job.hasKeyIndex && seg.keyIndex != nil {
 		job.keyIndex = make(map[string][]uint64, len(seg.keyIndex))
 		for k, lsns := range seg.keyIndex {
 			for _, lsn := range lsns {
@@ -326,7 +356,6 @@ func (w *WAL) buildCheckpointJob(seg *segment) *checkpointJob {
 			}
 		}
 	}
-	job.hasKeyIndex = w.opts.keyIndex
 	job.keyIndexOverflow = seg.keyIndexOverflow
 	return job
 }
@@ -350,6 +379,9 @@ func (w *WAL) rotate() error {
 	old := w.active
 	if old == nil || old.size <= int64(segmentHeaderSize) {
 		return nil
+	}
+	if w.nextSeq == math.MaxUint64 {
+		return errs.Detail(ErrTooLarge, "WAL segment sequence space is exhausted | WAL 分段序号空间已耗尽")
 	}
 	if err := w.flushPendingSync(); err != nil {
 		return err
@@ -376,11 +408,20 @@ func (w *WAL) rotate() error {
 			kind: manifestKindCreated, seq: seq, baseLSN: base, lastLSN: base - 1,
 			segmentBytes: uint64(segmentHeaderSize), walID: w.walID, createdNano: seg.createdNano,
 		}); err != nil {
+			seg.closeWriter()
 			return err
 		}
 	}
 	// Step 7: persist nextSeq/nextLSN. | 第 7 步：持久化 nextSeq/nextLSN。
 	if err := w.meta.write(w.metaSnapshot()); err != nil {
+		seg.closeWriter()
+		return err
+	}
+	// Step 7b: mirror the high-water state into the independent recovery
+	// anchor before the new segment can accept records. | 第 7b 步：在新段接受
+	// 记录前，把高水位镜像到独立恢复锚点。
+	if err := w.persistAnchorIfChanged(); err != nil {
+		seg.closeWriter()
 		return err
 	}
 	// Step 8: publish the new active segment. | 第 8 步：发布新的活动段。
@@ -445,7 +486,25 @@ func (w *WAL) sealSegment(seg *segment) error {
 	}
 	seg.setState(segmentSealed)
 	seg.closeWriter()
+	if w.opts.backup == nil {
+		w.maybeFadvise(seg)
+	}
 	return nil
+}
+
+// maybeFadvise drops a sealed segment's clean page cache when explicitly
+// enabled in FastPathCustom. | maybeFadvise 在 FastPathCustom 显式启用时回收
+// 封段的干净页缓存。
+func (w *WAL) maybeFadvise(seg *segment) {
+	if seg == nil || w.opts.fastPath.Mode != FastPathCustom || !w.opts.fastPath.FadviseDontNeed {
+		return
+	}
+	f, err := os.Open(seg.path)
+	if err != nil {
+		return
+	}
+	_ = fadviseDontNeed(f)
+	_ = f.Close()
 }
 
 // buildFullSidecar encodes a complete .idx. | buildFullSidecar 编码完整 .idx。
@@ -464,10 +523,12 @@ func (w *WAL) buildFullSidecar(seg *segment) ([]byte, uint32) {
 		compressed:   seg.compressed,
 		walID:        seg.walID,
 		commitSeq:    seg.commitSeq,
-		hasKeyIndex:  w.opts.keyIndex,
+		hasKeyIndex:  w.opts.keyIndex && seg.keyIndexComplete && !seg.keyIndexOverflow,
 	}
-	s.sparse = append([]sparseEntry(nil), seg.sparse...)
-	if seg.keyIndex != nil {
+	if seg.sparseComplete {
+		s.sparse = append([]sparseEntry(nil), seg.sparse...)
+	}
+	if s.hasKeyIndex && seg.keyIndex != nil {
 		s.keyIndex = make(map[string][]uint64, len(seg.keyIndex))
 		for k, v := range seg.keyIndex {
 			s.keyIndex[k] = append([]uint64(nil), v...)
@@ -506,7 +567,7 @@ func (w *WAL) setActiveKey(id uint32) error {
 	if err := w.meta.write(w.metaSnapshot()); err != nil {
 		return err
 	}
-	return nil
+	return w.persistAnchorIfChanged()
 }
 
 // truncate implements the logical truncation sequence. | truncate 实现逻辑截断序列。
@@ -517,6 +578,18 @@ func (w *WAL) truncate(beforeLSN uint64) (int, error) {
 	}
 	if effective <= w.firstLSN {
 		return 0, nil
+	}
+	if err := w.poisonedErr(); err != nil {
+		return 0, err
+	}
+	// META below persists the in-memory nextLSN high-water. Under SyncInterval
+	// or SyncNever the acknowledged records may still be unsynced; sync them
+	// first so a power loss cannot leave META ahead of the recovered segment
+	// and make the next Open return ErrCorrupt. | 下面写入 META 的 nextLSN 高水位
+	// 来自内存；SyncInterval/SyncNever 下已确认记录可能尚未落盘，必须先同步，
+	// 否则掉电后 META 会超前于恢复结果，导致下次 Open 返回 ErrCorrupt。
+	if err := w.flushPendingSync(); err != nil {
+		return 0, err
 	}
 	if w.manifest.enabled {
 		if err := w.manifest.append(manifestRecord{
@@ -546,6 +619,14 @@ func (w *WAL) truncate(beforeLSN uint64) (int, error) {
 		}
 	}
 	w.mu.Unlock()
+	// Persist the truncation watermark in the independent anchor before any
+	// segment becomes unreachable, so losing META and MANIFEST cannot resurrect
+	// a partially deleted prefix. | 在任一分段变为不可读前，把截断水位写入独立
+	// 锚点，使 META 与 MANIFEST 同时丢失也不会复活部分删除的前缀。
+	w.gaps.pruneBefore(effective)
+	if err := w.persistAnchorIfChanged(); err != nil {
+		return 0, err
+	}
 	count := 0
 	for _, seg := range candidates {
 		if w.manifest.enabled {
@@ -610,6 +691,9 @@ func (w *WAL) ensureActive() error {
 		return nil
 	}
 	seq := w.nextSeq
+	if seq == 0 || seq == math.MaxUint64 {
+		return errs.Detail(ErrTooLarge, "WAL segment sequence space is exhausted | WAL 分段序号空间已耗尽")
+	}
 	base := w.nextLSN
 	seg, err := createSegmentFile(w.dir, seq, base, w.walID, w.opts.fileMode, w.preallocateBytes())
 	if err != nil {
@@ -626,6 +710,10 @@ func (w *WAL) ensureActive() error {
 		}
 	}
 	if err := w.meta.write(w.metaSnapshot()); err != nil {
+		seg.closeWriter()
+		return err
+	}
+	if err := w.persistAnchorIfChanged(); err != nil {
 		seg.closeWriter()
 		return err
 	}

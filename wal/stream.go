@@ -12,6 +12,9 @@ type streamOptions struct {
 	chunkSize int
 }
 
+// streamIDSize is the fixed stream key length. | streamIDSize 是固定流 Key 长度。
+const streamIDSize = 16
+
 // StreamOption customizes AppendStream or Tx.AppendStream. | StreamOption 定制
 // AppendStream 或 Tx.AppendStream。
 type StreamOption func(*streamOptions)
@@ -37,7 +40,13 @@ func (w *WAL) AppendStream(ctx context.Context, r io.Reader, opts ...StreamOptio
 	if so.chunkSize <= 0 {
 		so.chunkSize = w.opts.streamChunkSize
 	}
-	maxChunk := w.opts.maxRecordBytes - recordHeaderSizeEncrypted - aeadTagSize
+	// The 16-byte stream ID is the record Key, so it counts against
+	// MaxRecordBytes together with the header and AEAD tag. | 16 字节流 ID 是
+	// 记录 Key，与记录头和 AEAD tag 一样计入 MaxRecordBytes。
+	if w.opts.maxRecordBytes < recordHeaderSizeEncrypted+aeadTagSize+streamIDSize+1 {
+		return StreamInfo{}, errs.Detail(ErrInvalidOptions, "MaxRecordBytes is too small for a stream chunk | MaxRecordBytes 不足以容纳流分块")
+	}
+	maxChunk := w.opts.maxRecordBytes - recordHeaderSizeEncrypted - aeadTagSize - streamIDSize
 	if maxChunk < 1 {
 		maxChunk = 1
 	}
@@ -58,8 +67,11 @@ func (w *WAL) AppendStream(ctx context.Context, r io.Reader, opts ...StreamOptio
 		}
 		n, rerr := io.ReadFull(r, buf)
 		if n > 0 {
-			chunk := append([]byte(nil), buf[:n]...)
-			lsn, err := w.appendStreamRecord(ctx, Record{Flags: FlagStreamChunk, Key: id[:], Data: chunk})
+			// appendStreamRecord blocks until the writer has encoded the chunk,
+			// so the reusable buffer can be borrowed without a per-chunk copy. |
+			// appendStreamRecord 会阻塞到写入协程完成编码，因此可直接借用复用
+			// 缓冲，无需每块复制。
+			lsn, err := w.appendStreamRecord(ctx, Record{Flags: FlagStreamChunk, Key: id[:], Data: buf[:n]})
 			if err != nil {
 				return info, err
 			}
@@ -96,7 +108,11 @@ func (w *WAL) appendStreamRecord(ctx context.Context, rec Record) (uint64, error
 	if err := w.validateUserRecord(rec, true); err != nil {
 		return 0, err
 	}
-	req := &appendRequest{kind: kindData, recs: []Record{rec}, allowStream: true, done: make(chan appendResult, 1)}
+	req := w.acquireRequest(kindData)
+	defer w.releaseRequest(req)
+	req.one[0] = rec
+	req.recs = req.one[:1]
+	req.allowStream = true
 	if err := w.admit(ctx, req, false); err != nil {
 		return 0, err
 	}
@@ -105,7 +121,11 @@ func (w *WAL) appendStreamRecord(ctx context.Context, rec Record) (uint64, error
 		return 0, res.err
 	}
 	if w.indexer != nil {
-		w.runIndexer(RecordMeta{LSN: res.lsn, Timestamp: rec.Timestamp, Flags: rec.Flags,
+		ts := rec.Timestamp
+		if len(res.timestamps) > 0 {
+			ts = res.timestamps[0]
+		}
+		w.runIndexer(RecordMeta{LSN: res.lsn, Timestamp: ts, Flags: rec.Flags,
 			KeyLen: len(rec.Key), DataLen: len(rec.Data)}, rec.Key, rec.Data)
 	}
 	return res.lsn, nil
@@ -114,9 +134,9 @@ func (w *WAL) appendStreamRecord(ctx context.Context, rec Record) (uint64, error
 // StreamReader decodes one chunked stream. | StreamReader 解码一个分块流。
 type StreamReader struct {
 	w      *WAL
-	info   StreamInfo
 	reader *Reader
 	buf    []byte
+	info   StreamInfo
 	pos    int
 	end    bool
 	closed bool

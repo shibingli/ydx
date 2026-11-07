@@ -52,7 +52,16 @@ const (
 
 // options is the normalized, private Open configuration. | options 是归一化后的私有 Open 配置。
 type options struct {
+	backup                 Backup
+	indexer                Indexer
+	ioEngine               IOEngine
+	keyRing                *KeyRing
+	errorHandler           func(error)
+	compression            Compression
 	syncPolicy             SyncPolicy
+	dedup                  DedupOptions
+	idempotency            IdempotencyOptions
+	retention              Retention
 	segmentMaxBytes        int64
 	segmentMaxAge          time.Duration
 	segmentMaxRecords      uint64
@@ -65,50 +74,43 @@ type options struct {
 	checkpointBytes        int64
 	indexCacheBytes        int64
 	readFDCacheSize        int
-	manifestEnabled        bool
 	manifestShardRecords   int
 	manifestCompactRatio   float64
 	manifestGapProbeMax    int
 	streamChunkSize        int
-	defaultIsolation       IsolationLevel
 	txnMaxBytes            int64
 	txnMaxRecords          uint64
 	txnConflictWindow      uint64
-	serializableDurability bool
 	txnMaxKeys             int
 	txnConflictMaxEntries  int
 	txnConflictScanBytes   int64
-	keyIndex               bool
 	keyIndexMaxEntries     int
 	keyIndexMaxKeyBytes    int
-	plaintextKeyIndex      bool
-	keyRing                *KeyRing
-	allowPlaintext         bool
-	skipKeyCheck           bool
-	compression            Compression
-	hashAlgorithm          HashAlgorithm
-	dedup                  DedupOptions
-	dedupEnabled           bool
-	idempotency            IdempotencyOptions
-	idempotencyEnabled     bool
-	backup                 Backup
 	backupWorkers          int
 	backupMaxPending       int
 	backupVerifyTimeout    time.Duration
-	retention              Retention
-	retentionEnabled       bool
 	retentionVerifyTimeout time.Duration
-	indexer                Indexer
-	errorHandler           func(error)
-	monotonicTimestamps    bool
+	fileMode               os.FileMode
+	dirMode                os.FileMode
 	fastPath               FastPathOptions
-	ioEngine               IOEngine
+	manifestEnabled        bool
+	defaultIsolation       IsolationLevel
+	serializableDurability bool
+	keyIndex               bool
+	plaintextKeyIndex      bool
+	allowPlaintext         bool
+	skipKeyCheck           bool
+	hashAlgorithm          HashAlgorithm
+	hashAlgorithmSet       bool
+	dedupEnabled           bool
+	idempotencyEnabled     bool
+	retentionEnabled       bool
+	monotonicTimestamps    bool
 	macFullFsync           bool
 	readOnly               bool
 	noLock                 bool
 	allowLSNGaps           bool
-	fileMode               os.FileMode
-	dirMode                os.FileMode
+	autoRepair             bool
 }
 
 // Option customizes Open. | Option 定制 Open 行为。
@@ -147,6 +149,7 @@ func defaultOptions() options {
 		retentionVerifyTimeout: defaultVerifyTimeout,
 		fastPath:               FastPathOptions{Mode: FastPathAuto, Pwritev2DSync: true},
 		macFullFsync:           true,
+		autoRepair:             true,
 		fileMode:               defaultFileMode,
 		dirMode:                defaultDirMode,
 	}
@@ -274,8 +277,16 @@ func WithCompression(c Compression) Option {
 	}
 }
 
-// WithHashAlgorithm selects the content and idempotency digest. | WithHashAlgorithm 选择内容与幂等摘要算法。
-func WithHashAlgorithm(h HashAlgorithm) Option { return func(o *options) { o.hashAlgorithm = h } }
+// WithHashAlgorithm selects the content and idempotency digest. When omitted,
+// a persisted Serializable hash algorithm is adopted from META; an explicit
+// value must match it. | WithHashAlgorithm 选择内容与幂等摘要算法。未显式设置时
+// 采用 META 中持久化的 Serializable 哈希算法；显式值必须与之一致。
+func WithHashAlgorithm(h HashAlgorithm) Option {
+	return func(o *options) {
+		o.hashAlgorithm = h
+		o.hashAlgorithmSet = true
+	}
+}
 
 // WithContentDedup enables in-segment content deduplication. | WithContentDedup 启用段内内容去重。
 func WithContentDedup(d DedupOptions) Option {
@@ -355,6 +366,16 @@ func WithNoLock(enabled bool) Option { return func(o *options) { o.noLock = enab
 // lost. | WithAllowLSNGaps 在分段或目录项丢失时允许有损恢复。
 func WithAllowLSNGaps(enabled bool) Option { return func(o *options) { o.allowLSNGaps = enabled } }
 
+// WithAutoRepair controls automatic metadata repair (default true). When META,
+// MANIFEST, and the recovery anchor are all lost, Open rebuilds them from
+// segment headers, sidecars, and a bounded scan. Discovered LSN gaps are
+// recorded in the recovery anchor and reported through Stats and ErrorHandler.
+// Set it to false to restore the strict v1 behavior that refuses to open. |
+// WithAutoRepair 控制元数据自动修复（默认 true）。META、MANIFEST 与恢复锚点
+// 全部丢失时，Open 从段头、侧车与有界扫描重建；发现的 LSN 缺口写入恢复锚点，
+// 并通过 Stats 与 ErrorHandler 报告。设为 false 可恢复 v1 的严格拒绝行为。
+func WithAutoRepair(enabled bool) Option { return func(o *options) { o.autoRepair = enabled } }
+
 // WithFileMode sets the mode of newly created files. | WithFileMode 设置新建文件的权限。
 func WithFileMode(mode os.FileMode) Option { return func(o *options) { o.fileMode = mode } }
 
@@ -415,7 +436,7 @@ func (o *options) normalize() error {
 	if o.streamChunkSize <= 0 {
 		o.streamChunkSize = defaultStreamChunkSize
 	}
-	maxChunk := o.maxRecordBytes - recordHeaderSizeEncrypted - aeadTagSize
+	maxChunk := o.maxRecordBytes - recordHeaderSizeEncrypted - aeadTagSize - streamIDSize
 	if maxChunk < 1 {
 		maxChunk = 1
 	}

@@ -10,12 +10,12 @@ import (
 
 // fdEntry is one cached read-only file handle. | fdEntry 是一个缓存的只读文件句柄。
 type fdEntry struct {
-	seq   uint64
 	f     *os.File
-	refs  int
-	evict bool
 	elem  *list.Element
 	cache *fdCache
+	seq   uint64
+	refs  int
+	evict bool
 }
 
 // release decrements the handle lease. | release 减少句柄租约。
@@ -25,11 +25,11 @@ func (e *fdEntry) release() {
 
 // fdCache is the bounded read-only fd LRU. | fdCache 是有界只读 fd LRU。
 type fdCache struct {
-	mu      sync.Mutex
-	dir     string
-	max     int
 	entries map[uint64]*fdEntry
 	lru     *list.List
+	dir     string
+	max     int
+	mu      sync.Mutex
 	closed  bool
 }
 
@@ -57,6 +57,9 @@ func (c *fdCache) acquire(seq uint64) (*fdEntry, error) {
 
 	f, err := os.Open(segmentPath(c.dir, seq))
 	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, errs.Detail(ErrMissingSegment, "segment %d is missing | 分段 %d 缺失", seq, seq)
+		}
 		return nil, errs.WrapDetail(err, ErrStorage, "open segment %d | 打开分段 %d 失败", seq, seq)
 	}
 	c.mu.Lock()
@@ -139,11 +142,22 @@ func (c *fdCache) evictLocked() {
 				}
 			}
 			if !found {
-				return
+				break
 			}
 			continue
 		}
 		c.closeEntryLocked(e)
+	}
+	if len(c.entries) > c.max {
+		// Every remaining handle is leased. Mark them for close when their
+		// leases end so a concurrent burst cannot permanently exceed the fd
+		// budget. | 剩余句柄都在租用中；标记为租约结束后关闭，避免并发突发永久
+		// 超出 fd 预算。
+		for _, e := range c.entries {
+			if e.refs > 0 {
+				e.evict = true
+			}
+		}
 	}
 }
 

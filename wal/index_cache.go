@@ -7,16 +7,22 @@ import (
 
 // indexEntry is one cached sparse/Key index. | indexEntry 是一个缓存的稀疏/Key 索引。
 type indexEntry struct {
-	seq              uint64
+	keyIndex map[string][]uint64
+	elem     *list.Element
+	cache    *indexCache
+	// seg/gen identify the segment fields installed from this entry so an
+	// eviction can drop them without clearing a newer index. | seg/gen 标识
+	// 由本条目安装的分段字段，使淘汰时不会清除更新的索引。
+	seg              *segment
 	sparse           []sparseEntry
-	keyIndex         map[string][]uint64
-	keyIndexOverflow bool
-	hasKeyIndex      bool
+	seq              uint64
 	size             int64
 	refs             int
+	gen              uint64
+	keyIndexOverflow bool
+	hasKeyIndex      bool
+	keyIndexComplete bool
 	evict            bool
-	elem             *list.Element
-	cache            *indexCache
 }
 
 // release drops one cache lease. | release 释放一个缓存租约。
@@ -24,11 +30,11 @@ func (e *indexEntry) release() { e.cache.release(e) }
 
 // indexCache is the bounded sparse-index LRU. | indexCache 是有界稀疏索引 LRU。
 type indexCache struct {
-	mu      sync.Mutex
-	max     int64
-	size    int64
 	entries map[uint64]*indexEntry
 	lru     *list.List
+	max     int64
+	size    int64
+	mu      sync.Mutex
 }
 
 // newIndexCache builds a cache with a byte budget. | newIndexCache 构建带字节预算的缓存。
@@ -75,6 +81,20 @@ func (c *indexCache) acquire(seq uint64, load func() (*indexEntry, error)) (*ind
 	return e, e.release, nil
 }
 
+// bind associates a cached entry with the segment fields it installed. It is
+// called under the segment lock, so the cache mutex orders the write against
+// eviction. | bind 把缓存条目与它安装的分段字段关联；调用方持有分段锁，缓存
+// 互斥量负责与淘汰路径排序。
+func (c *indexCache) bind(e *indexEntry, seg *segment, gen uint64) {
+	if e == nil {
+		return
+	}
+	c.mu.Lock()
+	e.seg = seg
+	e.gen = gen
+	c.mu.Unlock()
+}
+
 // release drops one lease and removes evicted idle entries. | release 释放一个租约并移除已淘汰的空闲条目。
 func (c *indexCache) release(e *indexEntry) {
 	c.mu.Lock()
@@ -106,11 +126,22 @@ func (c *indexCache) evictLocked() {
 				}
 			}
 			if !found {
-				return
+				break
 			}
 			continue
 		}
 		c.removeLocked(e)
+	}
+	if c.size > c.max {
+		// Every remaining entry is leased. Mark them for removal when their
+		// leases end so a single oversized index cannot permanently exceed the
+		// configured budget. | 剩余条目都在租用中；标记为租约结束后移除，避免单个
+		// 超大索引永久超出预算。
+		for el := c.lru.Front(); el != nil; el = el.Next() {
+			if cand := el.Value.(*indexEntry); cand.refs > 0 {
+				cand.evict = true
+			}
+		}
 	}
 }
 
@@ -124,6 +155,21 @@ func (c *indexCache) removeLocked(e *indexEntry) {
 	c.size -= e.size
 	if c.size < 0 {
 		c.size = 0
+	}
+	if s := e.seg; s != nil {
+		// Lock order: indexCache.mu -> segment.metaMu. No path holds metaMu
+		// while acquiring the cache. | 锁顺序：indexCache.mu -> segment.metaMu；
+		// 没有路径在持有 metaMu 时获取索引缓存。
+		s.metaMu.Lock()
+		if s.indexGen == e.gen {
+			s.sparse = nil
+			s.sparseLoaded = false
+			s.sparseComplete = false
+			s.keyIndex = nil
+			s.keyIndexLoaded = false
+			s.keyIndexComplete = false
+		}
+		s.metaMu.Unlock()
 	}
 }
 

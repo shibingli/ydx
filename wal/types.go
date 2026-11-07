@@ -15,12 +15,12 @@ import (
 // 填充。TxnID 在普通 Append 时被忽略，通过 Tx 提交的记录读取时由 WAL 填充。
 // Timestamp 为 UnixNano，写入时 0 表示使用当前时间。
 type Record struct {
+	Key       []byte
+	Data      []byte
 	LSN       uint64
 	Timestamp int64
 	TxnID     uint64
 	Flags     uint16
-	Key       []byte
-	Data      []byte
 }
 
 // Time returns the record timestamp as a time.Time. | Time 以 time.Time 返回记录时间戳。
@@ -68,7 +68,7 @@ const (
 	SyncModeAlways SyncMode = iota
 	// SyncModeInterval acknowledges writes and synchronizes on a timer. | SyncModeInterval 先确认写入，再按定时器同步。
 	SyncModeInterval
-	// SyncModeNever synchronizes only on Sync, rotation, or Close. | SyncModeNever 仅在 Sync、轮转或 Close 时同步。
+	// SyncModeNever synchronizes only on Sync, rotation, truncation, or Close. | SyncModeNever 仅在 Sync、轮转、截断或 Close 时同步。
 	SyncModeNever
 )
 
@@ -88,7 +88,8 @@ func SyncInterval(d time.Duration) SyncPolicy {
 }
 
 // SyncNever returns a policy that synchronizes only on explicit Sync, rotation,
-// or Close. | SyncNever 返回仅在显式 Sync、轮转或 Close 时同步的策略。
+// truncation, or Close. | SyncNever 返回仅在显式 Sync、轮转、截断或 Close 时
+// 同步的策略。
 func SyncNever() SyncPolicy { return SyncPolicy{Mode: SyncModeNever} }
 
 // HashAlgorithm selects the content and idempotency digest. | HashAlgorithm 选择内容与幂等摘要算法。
@@ -131,13 +132,13 @@ type StreamInfo struct {
 
 // TxnInfo is returned by Tx.Commit. | TxnInfo 由 Tx.Commit 返回。
 type TxnInfo struct {
+	Streams           []StreamInfo
 	TxnID             uint64
 	CommitSeq         uint64
 	FirstLSN          uint64
 	LastLSN           uint64
 	Records           uint64
 	Bytes             uint64
-	Streams           []StreamInfo
 	CommittedUnixNano int64
 }
 
@@ -166,14 +167,23 @@ type Stats struct {
 	IndexCacheEntries          uint64
 	IndexCacheBytes            uint64
 	KeyIndexOverflow           uint64
+	KeyIndexRebuilds           uint64
+	KeyIndexScans              uint64
 	CheckpointErrors           uint64
 	BackupQueued               uint64
 	BackupDone                 uint64
 	BackupFailed               uint64
 	BackupPending              uint64
+	BackupSnapshots            uint64
+	BackupSnapshotErrors       uint64
 	RetentionSkipped           uint64
+	CleanupErrors              uint64
 	RecoveryTruncatedBytes     int64
 	RecoveryMissingLSNs        uint64
+	RecoveryGapIntervals       int
+	RecoveryGapDegraded        bool
+	RecoveredFromAnchor        bool
+	AutoRepaired               bool
 	Poisoned                   bool
 }
 
@@ -181,17 +191,17 @@ type Stats struct {
 type EngineInfo struct {
 	OS                string
 	Arch              string
+	HashAlgorithm     string
+	CompressionCodecs []string
+	BuildTags         []string
 	CRC32CHardware    bool
 	AESGCMHardware    bool
 	SM3Hardware       bool
 	SM4Hardware       bool
-	HashAlgorithm     string
 	IOUring           bool
 	Pwritev2DSync     bool
 	DirSyncDurable    bool
 	Reflink           bool
-	CompressionCodecs []string
-	BuildTags         []string
 }
 
 // DedupOptions configures in-segment content deduplication. | DedupOptions 配置段内内容去重。
@@ -250,15 +260,60 @@ type IOEngine interface {
 
 // SegmentMeta describes one sealed segment for backup. | SegmentMeta 描述一个用于备份的封段。
 type SegmentMeta struct {
-	Seq        uint64
-	BaseLSN    uint64
-	LastLSN    uint64
-	Records    uint64
-	Bytes      uint64
-	MinTime    int64
-	MaxTime    int64
-	SegmentCRC uint32
-	WalID      [16]byte
+	Seq         uint64
+	BaseLSN     uint64
+	LastLSN     uint64
+	Records     uint64
+	Bytes       uint64
+	MinTime     int64
+	MaxTime     int64
+	SegmentCRC  uint32
+	IdxCRC      uint32
+	CommitSeq   uint64
+	CreatedNano int64
+	WalID       [16]byte
+}
+
+// BackupGap is one accepted missing LSN interval captured in a backup set. |
+// BackupGap 是备份集里记录的一个已接受缺失 LSN 区间。
+type BackupGap struct {
+	Start uint64
+	End   uint64
+}
+
+// BackupSet is a consistent, restore-complete backup snapshot: the metadata
+// needed to rebuild META, MANIFEST, and the recovery anchor together with the
+// sealed segments that cover [FirstLSN, LastLSN]. | BackupSet 是一个一致、
+// 可完整恢复的备份快照：包含重建 META、MANIFEST 与恢复锚点所需的元数据，以及
+// 覆盖 [FirstLSN,LastLSN] 的封段清单。
+type BackupSet struct {
+	Segments      []SegmentMeta
+	Gaps          []BackupGap
+	CreatedNano   int64
+	FirstLSN      uint64
+	LastLSN       uint64
+	NextLSN       uint64
+	NextSeq       uint64
+	CommitSeq     uint64
+	ActiveKeyKCV  uint64
+	ActiveKeyID   uint32
+	WalID         [16]byte
+	Encrypted     bool
+	Serializable  bool
+	HashAlgorithm HashAlgorithm
+}
+
+// SnapshotBackup is implemented by backup targets that can atomically publish
+// a restore-complete backup set. BackupSnapshot is called after every segment
+// in the set has been uploaded; implementations must write the set metadata
+// last and atomically (tmp + fsync + rename + directory fsync). It runs on the
+// BackupNow caller goroutine and must not call back into blocking WAL methods. |
+// SnapshotBackup 由能够原子发布完整恢复集的备份目标实现。集合中每个分段上传
+// 成功后才会调用 BackupSnapshot；实现必须最后写入集合元数据，并保证原子性
+// （tmp + fsync + rename + 目录 fsync）。它运行在 BackupNow 调用方协程上，
+// 不得回调会阻塞的 WAL 方法。
+type SnapshotBackup interface {
+	BackupSnapshot(ctx context.Context, set BackupSet) error
 }
 
 // SegmentBundle carries the readers for one sealed segment. | SegmentBundle 携带一个封段的读取器。
@@ -268,12 +323,17 @@ type SegmentMeta struct {
 // | Data 与 Index 仅在 Backup 调用期间有效；需要异步上传的实现必须先复制，或在
 // 调用内完成。
 type SegmentBundle struct {
-	Meta  SegmentMeta
 	Data  io.Reader
 	Index io.Reader
+	Meta  SegmentMeta
 }
 
 // Backup is the pluggable asynchronous backup target. | Backup 是可插拔的异步备份目标。
+//
+// Backup and Verify callbacks run on backup workers; they must not call back
+// into blocking WAL methods such as Close, FlushBackups, or BackupNow. |
+// Backup 与 Verify 回调运行在备份 worker 上；不得回调 Close、FlushBackups 或
+// BackupNow 等会阻塞的 WAL 方法。
 type Backup interface {
 	// Target returns a stable target identifier; changing it invalidates old
 	// .bak markers and triggers re-upload. | Target 返回稳定的目标标识；返回值
@@ -313,11 +373,11 @@ type RecordMeta struct {
 
 // Query filters a WAL scan. | Query 过滤 WAL 扫描。
 type Query struct {
-	From     uint64
-	To       uint64
 	Since    time.Time
 	Until    time.Time
 	Key      []byte
 	Contains []byte
+	From     uint64
+	To       uint64
 	Limit    int
 }

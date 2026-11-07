@@ -31,13 +31,13 @@ type occState struct {
 
 // occCommit records the write keys of one committed transaction. | occCommit 记录一个已提交事务的写键。
 type occCommit struct {
-	seq  uint64
 	keys [][32]byte
+	seq  uint64
 }
 
 // newOCC builds an empty conflict window. | newOCC 构建空冲突窗口。
 func newOCC(window uint64, maxEntries int) *occState {
-	return &occState{versions: make(map[[32]byte]uint64), window: window, maxEntries: maxEntries}
+	return &occState{window: window, maxEntries: maxEntries}
 }
 
 // version returns the last commit sequence that wrote key. | version 返回最后写入 key 的提交序号。
@@ -47,6 +47,9 @@ func (o *occState) version(key [32]byte) uint64 { return o.versions[key] }
 // window. | apply 记录一个已提交的可串行化事务并淘汰旧窗口。
 func (o *occState) apply(seq uint64, keys [][32]byte) {
 	if len(keys) > 0 {
+		if o.versions == nil {
+			o.versions = make(map[[32]byte]uint64)
+		}
 		for _, k := range keys {
 			o.versions[k] = seq
 		}
@@ -109,18 +112,18 @@ type txStream struct {
 // Tx is a log-level ACID transaction. | Tx 是日志级 ACID 事务。
 type Tx struct {
 	w            *WAL
-	isolation    IsolationLevel
-	snapshot     Snapshot
+	keySet       map[[32]byte]struct{}
 	records      []txRecord
-	bytes        int64
-	payloadBytes int64
 	readKeys     [][32]byte
 	writeKeys    [][32]byte
-	keySet       map[[32]byte]struct{}
 	streams      []*txStream
 	timestamps   []int64
 	lsns         []uint64
+	snapshot     Snapshot
+	bytes        int64
+	payloadBytes int64
 	commitSeq    uint64
+	isolation    IsolationLevel
 	state        txnState
 }
 
@@ -206,6 +209,19 @@ func (tx *Tx) AppendStream(ctx context.Context, r io.Reader, opts ...StreamOptio
 	}
 	if so.chunkSize <= 0 {
 		so.chunkSize = tx.w.opts.streamChunkSize
+	}
+	if tx.w.opts.maxRecordBytes < recordHeaderSizeEncrypted+aeadTagSize+streamIDSize+1 {
+		return StreamInfo{}, errs.Detail(ErrInvalidOptions, "MaxRecordBytes is too small for a stream chunk | MaxRecordBytes 不足以容纳流分块")
+	}
+	maxChunk := tx.w.opts.maxRecordBytes - recordHeaderSizeEncrypted - aeadTagSize - streamIDSize
+	if budget := tx.w.opts.txnMaxBytes - txnRecordOverhead; budget > 0 && int64(maxChunk) > budget {
+		maxChunk = int(budget)
+	}
+	if maxChunk < 1 {
+		maxChunk = 1
+	}
+	if so.chunkSize > maxChunk {
+		so.chunkSize = maxChunk
 	}
 	id, err := newStreamID()
 	if err != nil {
@@ -330,9 +346,8 @@ func (tx *Tx) Commit(ctx context.Context) (TxnInfo, error) {
 	if res.err != nil {
 		tx.state = txnFailed
 		tx.w.counters.openTxns.Add(-1)
-		if res.err == ErrTxnConflict {
-			tx.w.counters.txnConflicts.Add(1)
-		}
+		// commitBatch already counted ErrTxnConflict/ErrTxnTooOld. | commitBatch
+		// 已统计 ErrTxnConflict/ErrTxnTooOld，这里不得重复计数。
 		return TxnInfo{}, res.err
 	}
 	tx.state = txnCommitted
