@@ -162,6 +162,13 @@ func TestFastStructDecRejectsCustomUnmarshaler(t *testing.T) {
 	if len(got) != 1 || got[0].Value != "decoded:x" {
 		t.Fatalf("custom Unmarshaler was not called: %#v", got)
 	}
+	// Decoding a []customDecodeItem builds and caches the element decoder; the fast-plan cache
+	// must not retain a direct-memory plan that would bypass the pointer-receiver method on a
+	// later top-level decode. | 解码 []customDecodeItem 会构建并缓存元素解码器；快速计划缓存不得
+	// 留下会绕过指针接收者方法的按内存计划，否则后续顶层解码会跳过自定义方法。
+	if fastStructDecFor(reflect.TypeOf(customDecodeItem{})) != nil {
+		t.Fatal("slice decode installed a fast struct plan for a custom Unmarshaler | 切片解码为自定义 Unmarshaler 安装了快速结构体计划")
+	}
 	var one customDecodeItem
 	if err := Unmarshal([]byte(`{"value":"x"}`), &one); err != nil {
 		t.Fatalf("Unmarshal single failed | 单值 Unmarshal 失败: %v", err)

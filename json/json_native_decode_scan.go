@@ -210,11 +210,16 @@ func (d *decoder) parseCleanString(start int) (string, bool) {
 		written += 8
 		i += 8
 	}
-	// Reserving the tail once turns the per-byte capacity check into a single append of the
-	// remaining run. The tail is at most seven bytes after the word loop, so one reservation
-	// covers it. | 一次性预留尾部空间，把逐字节容量检查变成一次连续 append。字循环之后的尾部
-	// 最多七个字节，因此一次预留即可覆盖。
-	d.ensureArenaSpare(8)
+	// The tail is at most seven bytes after the word loop. If the current chunk cannot hold it,
+	// fall back to the slow string parser instead of asking ensureArenaSpare for a new chunk:
+	// that helper replaces the arena with an empty slice, which would invalidate arenaStart and
+	// make the return below slice past the new arena. | 字循环之后的尾部最多七个字节。如果当前
+	// 块容纳不下，就回退到慢速字符串解析器，而不是让 ensureArenaSpare 换新块：该辅助函数会把
+	// arena 替换为空切片，使 arenaStart 失效，并让下面的返回越界切片。
+	if cap(d.arena)-len(d.arena) < len(data)-i {
+		d.arena = chunk[:arenaStart]
+		return "", false
+	}
 	for j := i; j < len(data); j++ {
 		c := data[j]
 		if c == '"' {

@@ -756,14 +756,7 @@ func lookupFastStructDec(t reflect.Type) *fastStructDecInfo {
 	if v, ok := fastStructDecCache.Load(t); ok {
 		return v.(*fastStructDecInfo)
 	}
-	if t.Kind() != reflect.Struct {
-		return nil
-	}
-	tr := cachedTraits(t)
-	if tr.unmarshaler || tr.unmarshalerFrom || tr.textUnmarshaler ||
-		reflect.PointerTo(t).Implements(unmarshalerType) ||
-		reflect.PointerTo(t).Implements(unmarshalerFromType) ||
-		reflect.PointerTo(t).Implements(textUnmarshalerType) {
+	if t.Kind() != reflect.Struct || !fastStructDecEligible(t) {
 		return nil
 	}
 	decoderFor(t)
@@ -771,6 +764,24 @@ func lookupFastStructDec(t reflect.Type) *fastStructDecInfo {
 		return v.(*fastStructDecInfo)
 	}
 	return nil
+}
+
+// fastStructDecEligible reports whether t may use the direct-memory struct decoder. Types with a
+// custom unmarshal method, including pointer-receiver methods, must keep the generic wrapper so
+// the method is never bypassed. | fastStructDecEligible 报告 t 是否可以使用直接按内存的结构体解码器。
+// 带自定义解码方法（包括指针接收者方法）的类型必须保留通用包装，不能被绕过。
+func fastStructDecEligible(t reflect.Type) bool {
+	if t.Kind() != reflect.Struct {
+		return false
+	}
+	tr := cachedTraits(t)
+	if tr.unmarshaler || tr.unmarshalerFrom || tr.textUnmarshaler {
+		return false
+	}
+	p := reflect.PointerTo(t)
+	return !p.Implements(unmarshalerType) &&
+		!p.Implements(unmarshalerFromType) &&
+		!p.Implements(textUnmarshalerType)
 }
 
 func buildStructDecoder(t reflect.Type) decodeFunc {
@@ -1108,7 +1119,9 @@ func buildStructDecoder(t reflect.Type) decodeFunc {
 				}
 			}
 		}
-		fastStructDecCache.Store(t, &fastStructDecInfo{dec: fastDec, size: t.Size()})
+		if fastStructDecEligible(t) {
+			fastStructDecCache.Store(t, &fastStructDecInfo{dec: fastDec, size: t.Size()})
+		}
 	}
 	return func(d *decoder, v reflect.Value) error {
 		if allFast && v.CanAddr() && !d.v2DisallowsFastStructDec() {
