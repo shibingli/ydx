@@ -33,14 +33,12 @@ type Node struct {
 	futures *futureStore
 
 	// Channels. Sizes come from Config. | 通道；大小来自 Config。
-	recvCh          chan Message
-	controlCh       chan Message
+	recvCh          chan *Message
+	controlCh       chan *Message
 	proposals       *proposalQueue
 	readCh          chan *readRequest
 	tickCh          chan struct{}
 	outCh           chan outboundBatch
-	persistMu       sync.Mutex
-	persistQueue    []*persistRequest
 	persistNotify   chan struct{}
 	persistAckCh    chan persistAck
 	snapshotReadyCh chan snapshotReady
@@ -78,6 +76,7 @@ type Node struct {
 	// Event-loop state. | 事件循环状态。
 	electionTimer     *time.Timer
 	electionRankConf  *membership
+	persistQueue      []*persistRequest
 	preVoteRemaining  []NodeID
 	pendingReads      []*readRequest
 	pendingRemoteRead []remoteReadResponse
@@ -152,6 +151,7 @@ type Node struct {
 	electionRank int
 	closeOnce    sync.Once
 	stopOnce     sync.Once
+	persistMu    sync.Mutex
 	fatalMu      sync.Mutex
 
 	stopped atomic.Bool
@@ -328,8 +328,8 @@ func New(cfg Config) (*Node, error) {
 		appliedNotify:      newAppliedNotifier(),
 		remoteReads:        newRemoteReadStore(),
 		remoteEpoch:        newRemoteReadEpoch(),
-		recvCh:             make(chan Message, cfg.MessageQueue),
-		controlCh:          make(chan Message, controlQueueSize(cfg.MessageQueue)),
+		recvCh:             make(chan *Message, cfg.MessageQueue),
+		controlCh:          make(chan *Message, controlQueueSize(cfg.MessageQueue)),
 		proposals:          newProposalQueue(cfg.ProposalQueue),
 		readCh:             make(chan *readRequest, 256),
 		tickCh:             make(chan struct{}, 1),
@@ -402,10 +402,16 @@ func New(cfg Config) (*Node, error) {
 		n.immediateTransport = true
 	}
 	n.updatePeerAddresses()
-	if err := n.transport.Start(n.Step); err != nil {
+	var startErr error
+	if sink, ok := n.transport.(messageSink); ok {
+		startErr = sink.StartSink(n.stepPtr)
+	} else {
+		startErr = n.transport.Start(n.Step)
+	}
+	if startErr != nil {
 		_ = n.transport.Close()
 		_ = n.storage.Close()
-		return nil, errs.Wrap(err, ErrInvalidConfig)
+		return nil, errs.Wrap(startErr, ErrInvalidConfig)
 	}
 	n.autoCampaign = n.singleVoter() && !cfg.Join
 	n.wg.Add(5)
@@ -813,12 +819,34 @@ func (n *Node) Step(m Message) {
 		n.metrics.messagesDropped.Add(1)
 		return
 	}
+	pm := acquireMessage()
+	*pm = m
+	n.stepPtr(pm)
+}
+
+// stepPtr validates and enqueues one pooled inbound message. Ownership either
+// transfers to the event loop or is released here. | stepPtr 校验并入队一条池化
+// 入站消息；所有权要么移交给事件循环，要么在此释放。
+func (n *Node) stepPtr(m *Message) {
+	if m == nil {
+		return
+	}
+	if n.stopped.Load() || m.To != n.id || m.From == 0 || m.Group != n.group {
+		releaseMessage(m)
+		return
+	}
+	if m.Type < MsgHup || m.Type > maxMessageType || m.Type == MsgHup {
+		n.metrics.messagesDropped.Add(1)
+		releaseMessage(m)
+		return
+	}
 	n.metrics.messagesIn.Add(1)
 	if isControlMessage(m.Type) {
 		select {
 		case n.controlCh <- m:
 		default:
 			n.metrics.messagesDropped.Add(1)
+			releaseMessage(m)
 		}
 		return
 	}
@@ -826,6 +854,7 @@ func (n *Node) Step(m Message) {
 	case n.recvCh <- m:
 	default:
 		n.metrics.messagesDropped.Add(1)
+		releaseMessage(m)
 	}
 }
 

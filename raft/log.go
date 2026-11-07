@@ -121,6 +121,25 @@ func (l *raftLog) slice(lo, hi uint64, maxBytes int) ([]Entry, error) {
 	return l.entries[start:end], nil
 }
 
+// growEntries returns a copy of s with room for n more entries. Capacity
+// doubles from the current length instead of Go's 1.25x growth for large
+// slices, which cuts the cumulative copied volume on the append-only hot path
+// roughly in half. | growEntries 返回可再容纳 n 条日志项的副本。容量按当前长度
+// 翻倍，而非 Go 对大切片的 1.25 倍增长，使只追加热路径上的累计复制量约减半。
+func growEntries(s []Entry, n int) []Entry {
+	need := len(s) + n
+	capacity := 2 * len(s)
+	if capacity < need {
+		capacity = need
+	}
+	if capacity < 8 {
+		capacity = 8
+	}
+	out := make([]Entry, len(s), capacity)
+	copy(out, s)
+	return out
+}
+
 // append adds contiguous entries. | append 追加连续日志项。
 func (l *raftLog) append(entries []Entry) error {
 	if len(entries) == 0 {
@@ -128,6 +147,9 @@ func (l *raftLog) append(entries []Entry) error {
 	}
 	if entries[0].Index != l.lastIndex+1 {
 		return errs.Detail(ErrUnavailable, "append at %d after %d", entries[0].Index, l.lastIndex)
+	}
+	if cap(l.entries)-len(l.entries) < len(entries) {
+		l.entries = growEntries(l.entries, len(entries))
 	}
 	l.entries = append(l.entries, entries...)
 	l.lastIndex = entries[len(entries)-1].Index

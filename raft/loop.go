@@ -33,8 +33,36 @@ func (n *Node) run() {
 	}
 	n.advanceApply()
 	for {
-		n.drainControl()
+		// The fast drain handles work that is already queued with non-blocking
+		// single-channel operations. Those compile to plain channel sends and
+		// receives, so a busy node never pays selectgo's lock ordering for every
+		// message. The multi-channel select below is only entered when the loop
+		// is idle. | 快速排空用非阻塞的单通道操作处理已排队工作，编译为普通通道
+		// 收发，繁忙节点因此无需为每条消息支付 selectgo 的锁排序开销。只有空闲时
+		// 才进入下面的多通道 select。
+		select {
+		case <-n.stopCh:
+			n.failWaiters(ErrStopped)
+			return
+		case err := <-n.fatalCh:
+			n.failWaiters(err)
+			n.stopped.Store(true)
+			n.stateAtomic.Store(uint32(StateShutdown))
+			n.stop()
+			return
+		default:
+		}
+		worked := n.drainControl()
+		worked = n.drainMessages() || worked
+		worked = n.drainPersistAcks() || worked
+		worked = n.drainProposalNotify() || worked
+		worked = n.drainTick() || worked
+		worked = n.drainElectionTimer() || worked
+		worked = n.drainLocalRequests() || worked
 		n.flushOutbound()
+		if worked {
+			continue
+		}
 		select {
 		case <-n.stopCh:
 			n.failWaiters(ErrStopped)
@@ -43,8 +71,12 @@ func (n *Node) run() {
 			n.tick()
 		case <-n.electionTimer.C:
 			n.handleElectionTimer()
+		case m := <-n.controlCh:
+			n.step(m)
+			releaseMessage(m)
 		case m := <-n.recvCh:
 			n.step(m)
+			releaseMessage(m)
 		case <-n.proposals.notify:
 			n.handleProposalIntake()
 		case r := <-n.readCh:
@@ -79,18 +111,156 @@ func (n *Node) run() {
 	}
 }
 
+// fastDrainBatch bounds how much queued work one fast-drain pass handles, so
+// ticks, elections, reads and control traffic stay responsive under a flood of
+// replication messages. | fastDrainBatch 限制单次快速排空处理的工作量，保证在复制
+// 消息洪峰下 tick、选举、读请求与控制流量仍能及时处理。
+const fastDrainBatch = 64
+
+// drainMessages processes queued peer messages without entering the blocking
+// select. | drainMessages 不进入阻塞 select 处理已排队的对端消息。
+func (n *Node) drainMessages() bool {
+	worked := false
+	for i := 0; i < fastDrainBatch; i++ {
+		select {
+		case m := <-n.recvCh:
+			n.step(m)
+			releaseMessage(m)
+			worked = true
+		default:
+			return worked
+		}
+	}
+	return true
+}
+
+// drainPersistAcks reaps completed persistence batches. | drainPersistAcks 回收已
+// 完成的持久化批次。
+func (n *Node) drainPersistAcks() bool {
+	worked := false
+	for i := 0; i < fastDrainBatch; i++ {
+		select {
+		case ack := <-n.persistAckCh:
+			n.handlePersistAck(ack)
+			worked = true
+		default:
+			return worked
+		}
+	}
+	return true
+}
+
+// drainProposalNotify consumes one proposal wakeup. handleProposalIntake
+// re-signals when more work remains. | drainProposalNotify 消费一次提案唤醒；
+// 仍有工作时 handleProposalIntake 会重新发信号。
+func (n *Node) drainProposalNotify() bool {
+	select {
+	case <-n.proposals.notify:
+		n.handleProposalIntake()
+		return true
+	default:
+		return false
+	}
+}
+
+// drainTick consumes one queued tick. | drainTick 消费一个已排队的 tick。
+func (n *Node) drainTick() bool {
+	select {
+	case <-n.tickCh:
+		n.tick()
+		return true
+	default:
+		return false
+	}
+}
+
+// drainElectionTimer consumes an expired election timer. | drainElectionTimer 消费
+// 已到期的选举定时器。
+func (n *Node) drainElectionTimer() bool {
+	select {
+	case <-n.electionTimer.C:
+		n.handleElectionTimer()
+		return true
+	default:
+		return false
+	}
+}
+
+// drainLocalRequests serves queued client-facing requests. These are rare, so
+// each is polled once per pass. | drainLocalRequests 处理已排队的客户端请求。它们
+// 很少，因此每轮各轮询一次。
+func (n *Node) drainLocalRequests() bool {
+	worked := false
+	select {
+	case r := <-n.readCh:
+		n.handleRead(r)
+		worked = true
+	default:
+	}
+	select {
+	case req := <-n.campaignCh:
+		n.handleCampaignRequest(req)
+		worked = true
+	default:
+	}
+	select {
+	case req := <-n.transferCh:
+		n.handleTransferRequest(req)
+		worked = true
+	default:
+	}
+	select {
+	case req := <-n.snapshotCh:
+		n.handleSnapshotRequest(req)
+		worked = true
+	default:
+	}
+	select {
+	case ready := <-n.snapshotReadyCh:
+		n.handleSnapshotReady(ready)
+		worked = true
+	default:
+	}
+	select {
+	case req := <-n.snapshotConfCh:
+		select {
+		case req.reply <- n.configAt(req.index).confState():
+		default:
+		}
+		worked = true
+	default:
+	}
+	select {
+	case result := <-n.snapshotFileCh:
+		n.handleSnapshotFileResult(result)
+		worked = true
+	default:
+	}
+	select {
+	case reply := <-n.statusCh:
+		reply <- n.buildStatus()
+		worked = true
+	default:
+	}
+	return worked
+}
+
 // drainControl processes queued control messages before ordinary traffic. The
 // cap prevents a flood of control traffic from starving replication. | drainControl
 // 在普通流量之前处理排队的控制消息。上限避免控制流量洪峰饿死复制。
-func (n *Node) drainControl() {
+func (n *Node) drainControl() bool {
+	worked := false
 	for i := 0; i < 256; i++ {
 		select {
 		case m := <-n.controlCh:
 			n.step(m)
+			releaseMessage(m)
+			worked = true
 		default:
-			return
+			return worked
 		}
 	}
+	return true
 }
 
 // tickerLoop turns wall time into Raft ticks. Missed ticks are coalesced: a busy
@@ -287,7 +457,7 @@ func (n *Node) broadcast(m Message) {
 }
 
 // step dispatches one inbound message. | step 分发一条入站消息。
-func (n *Node) step(m Message) {
+func (n *Node) step(m *Message) {
 	if m.To != n.id || m.From == 0 {
 		return
 	}

@@ -100,7 +100,7 @@ func (n *Node) maybeSendAppend(to NodeID) {
 // handleAppend processes an AppendEntries request. Log mutations and the new
 // term are persisted before the success or rejection response is sent. | handleAppend
 // 处理 AppendEntries 请求。日志变更与新任期在发送成功或拒绝响应之前持久化。
-func (n *Node) handleAppend(m Message) {
+func (n *Node) handleAppend(m *Message) {
 	n.metrics.appendsIn.Add(1)
 	if m.Term < n.term {
 		n.send(Message{Type: MsgAppResp, To: m.From, Term: n.term, Reject: true,
@@ -185,25 +185,26 @@ func (n *Node) handleAppend(m Message) {
 		}
 	}
 	batchHS := n.hardState()
+	term, sender := m.Term, m.From
 	seq := n.persist(PersistBatch{HardState: &batchHS, Truncate: truncatedAt, Entries: m.Entries}, 0, nil)
 	if truncatedAt > 0 || lastNew > n.persistPendingIndex {
 		n.persistPendingIndex = lastNew
 	}
 	n.deferAction(seq, func(err error) {
-		if err != nil || n.term != m.Term {
+		if err != nil || n.term != term {
 			return
 		}
 		n.persistedIndex = max64(n.persistedIndex, lastNew)
 		n.advanceApply()
 		n.maybeCompleteConf()
-		n.send(Message{Type: MsgAppResp, To: m.From, Term: n.term, Index: lastNew})
+		n.send(Message{Type: MsgAppResp, To: sender, Term: n.term, Index: lastNew})
 	})
 }
 
 // handleAppendResp processes a follower's append result, including fast
 // backtracking on a rejected consistency check. | handleAppendResp 处理跟随者的追加
 // 结果，包括一致性检查失败时的快速回退。
-func (n *Node) handleAppendResp(m Message) {
+func (n *Node) handleAppendResp(m *Message) {
 	if n.state != StateLeader {
 		return
 	}
@@ -262,7 +263,7 @@ func (n *Node) handleAppendResp(m Message) {
 }
 
 // handleHeartbeat processes a leader heartbeat. | handleHeartbeat 处理领导者心跳。
-func (n *Node) handleHeartbeat(m Message) {
+func (n *Node) handleHeartbeat(m *Message) {
 	n.metrics.heartbeatsIn.Add(1)
 	if m.Term < n.term {
 		n.send(Message{Type: MsgHeartbeatResp, To: m.From, Term: n.term, Reject: true})
@@ -296,8 +297,9 @@ func (n *Node) handleHeartbeat(m Message) {
 		Context:  m.Context,
 	}
 	if seq > 0 {
+		term := m.Term
 		n.deferAction(seq, func(err error) {
-			if err == nil && n.term == m.Term {
+			if err == nil && n.term == term {
 				n.advanceApply()
 				n.send(resp)
 			}
@@ -309,7 +311,7 @@ func (n *Node) handleHeartbeat(m Message) {
 
 // handleHeartbeatResp processes heartbeat acknowledgements, lease rounds and
 // follower catch-up. | handleHeartbeatResp 处理心跳确认、租约轮次与跟随者追赶。
-func (n *Node) handleHeartbeatResp(m Message) {
+func (n *Node) handleHeartbeatResp(m *Message) {
 	if n.state != StateLeader {
 		return
 	}

@@ -45,11 +45,25 @@ Linux 上 `syncFile` 使用 `fdatasync`，避免 fsync 的元数据日志开销�
 
 `TestAsyncSnapshotDoesNotBlockProposals` 验证快照文件 fsync 被阻塞时，提案仍能提交和应用。
 
-### 3.2 WAL 组提交
+### 3.2 WAL 组提交与 ydx/wal 委托
 
-- 单个 WAL 批次一次 `write` 后一次 `fdatasync`。
-- `PersistBatchDelay` 可开启额外组提交窗口；并发请求合并为一组，fsync 成本按批次数摊销。
-- `wal.append` 复用记录缓冲区，避免每批重新分配。
+- 每个 `PersistBatch` 编码为一条 `ydx/wal` 记录；`Append` 在记录与提交标记
+  同步完成后返回，默认策略即零 RPO。
+- `PersistBatchDelay` 可开启额外组提交窗口；并发请求在 raft 持久化协程合并为
+  一组，再由一次 `ydx/wal` 追加写入。
+- `FileStorage` 通过 `wal.AppendDirect` 在持久化协程内直接提交，省去写队列往返；
+  `ydx/wal` 的 `commitMu` 保证它与轮转、截断、关闭串行。
+- `NoSync` 映射为 `SyncNever` 并设置 `WithSyncOnRotate(false)`，避免每次轮转
+  刷新整个封段；raft 同时把活动段检查点间隔设得足够大（实际关闭），因为恢复
+  总是全量重放记录。
+- `walStore.append` 复用编码缓冲区；`ydx/wal` 负责分段轮转、组提交、稀疏索引、
+  META/MANIFEST/RECOVERY 与尾部撕裂截断。
+- Windows 引擎只在文件或预期偏移变化时 `Seek` 一次，随后用 `Write` 追加：
+  ≤64 KiB 的批次合并为一次 `Write`，更大批次顺序 `Write` 分片。这避免了
+  `os.File.WriteAt` 在阻塞句柄上每次写入保存/恢复文件指针的两次 `Seek`。
+  ≥128 KiB 的记录复用负载 CRC 计算分段校验，省去第二次扫描。
+- 恢复分两遍：第一遍只查找最新快照标记，第二遍按 LSN 重放。异步本地快照的标记
+  可能晚于其基点之后的日志项，预设基点可避免把有效 WAL 误判为缺口。
 
 ### 3.3 快照文件读写
 
@@ -144,13 +158,13 @@ FileStorage 新增独立 `HARDSTATE` 文件，保存 term/vote/commit：
 
 ### 3.11 WAL 向量写
 
-Linux、Darwin、OpenBSD、illumos 上，大日志项批次使用 `writev` 从条目切片直接
-写出：
+大日志项的写入路径由 `ydx/wal` 的平台 I/O 引擎实现：
 
-- 记录头/元数据与条目头仍然编码到小缓冲区；条目负载不再复制进 WAL 缓冲区。
-- 仅在负载 ≥64 KiB 且 iovec 数量 ≤512 时启用；小批次继续走单次缓冲写。
-- Windows 等平台自动回退到原路径。
-- 记录字节与旧编码逐字节一致，由 `TestWALRecordPartsMatchContiguous` 校验。
+- Unix 上未加密、未压缩的记录直接引用调用方字节，经 `writev`/`pwritev2`
+  写出，避免把负载复制进 WAL 缓冲区。
+- Windows 引擎把不超过 4 MiB 的分片合并到池化暂存缓冲区后一次写出；更大批次
+  按分片顺序写出。
+- 具体阈值与平台能力由 `ydx/wal` 维护，raft 不再保留独立的向量写实现。
 
 ### 3.12 快照校验策略
 
@@ -164,18 +178,27 @@ Linux、Darwin、OpenBSD、illumos 上，大日志项批次使用 `writev` 从�
 
 ## 4. 实测（Windows/i9-10980HK，Go 1.27.3）
 
-### WAL fsync
+### WAL fsync（旧实现 vs ydx/wal + 联动优化）
 
-`benchmarks/raft/BenchmarkYdxFileStoragePersist`，1s 采样：
+`benchmarks/raft`，交替运行新旧实现，`-benchtime=1s -count=4`，benchstat 中位数。
+同机同期对比，避免 SSD 状态漂移：
 
-| 模式 | 批大小 | ns/op | 吞吐 |
-|---|---:|---:|---:|
-| sync | 1 | ~0.915 ms | 0.07 MB/s |
-| sync | 32 | ~0.920 ms | 2.23 MB/s |
-| sync | 128 | ~0.916 ms | 8.94 MB/s |
-| nosync | 128 | ~11 µs | 747 MB/s |
+| 模式 | 批大小 | 旧实现 ns/op | 新实现 ns/op | 变化 |
+|---|---:|---:|---:|---:|
+| sync | 1 | 1,671,000 | 1,673,000 | ~0% |
+| sync | 128 | 1,728,000 | 1,932,000 | +12% |
+| nosync | 1 | 4,093 | 800 | **-80%** |
+| nosync | 128 | 13,310 | 6,400 | **-52%** |
 
-单次 fsync 约 0.9 ms；批大小从 1 到 128 时 fsync 次数不变、有效吞吐随批量线性提升。这正是组提交的核心收益。
+同步路径由设备同步主导；本机 SSD 在压测期间波动可达 2×，sync 批 1 持平，
+批 128 的差异不具统计显著性（p=0.886）。第二轮优化为 NoSync 增加自适应写缓冲：
+`wal.SizePolicy` 自动模式按 CRC 扫描/合并成本、观测写延迟与批次大小直方图决定
+CRC 合并阈值、暂存合并阈值与写缓冲大小，所有阈值也可用 `wal.WithSizePolicy`
+手动固定。缓冲让未同步追加先复制进用户态缓冲，并按“复制成本对比写系统调用成本”
+限制吸收的最大批次，仅在 Sync、轮转、截断、备份捕获、打开读取器或 Close 时写出；
+读取器存在期间暂停缓冲。此前 4.1 µs 的 batch1 成本中 86% 是 `WriteFile` 系统
+调用，缓冲后降到约 0.8 µs。`SyncAlways` 绕过缓冲区。上表 nosync 行采用当前
+Windows 16 逻辑核主机的 `-count=3` 中位数。
 
 ### 快照文件
 
@@ -189,18 +212,43 @@ Linux、Darwin、OpenBSD、illumos 上，大日志项批次使用 `writev` 从�
 
 这些数值受本机磁盘与页缓存影响，仅用于比较路径；正式发布应使用 Linux NVMe 与 benchstat。
 
-### 大日志项向量写
+### 大日志项
 
-`BenchmarkYdxFileStorageLargeEntry`，NoSync，50 次迭代：
+`BenchmarkYdxFileStorageLargeEntry`，同一组交替运行（n=4 中位数）：
 
-| 平台 / 路径 | 64 KiB | 256 KiB | 1 MiB | allocs/op |
+| 模式 | 大小 | 旧实现 | 新实现 | 变化 |
 |---|---:|---:|---:|---:|
-| Windows 缓冲写 | 718 MB/s | 1.46 GB/s | 1.67 GB/s | 3.9–53 KB |
-| WSL Linux `writev` | 3.2 GB/s | 4.0 GB/s | 3.6–5.0 GB/s | **156–159 B** |
+| nosync | 256 KiB | 164.1 µs | 144.7 µs | **-12%** |
+| nosync | 1 MiB | 680.0 µs | 653.2 µs | **-4%** |
+| sync | 256 KiB | 1.957 ms | 1.774 ms | **-9%** |
+| sync | 1 MiB | 2.848 ms | 3.607 ms | +27%（fsync 波动） |
 
-不同文件系统的绝对带宽不可直接比较；关键是 `writev` 把每条大日志项的分配从复制
-整条负载降到约 160 B 的记录头/元数据。fsync 开启时 Linux 单条 1 MiB 约
-3.2–3.4 ms（约 300–330 MB/s），瓶颈回到设备同步。
+Windows 引擎在文件或预期偏移变化时只 `Seek` 一次，随后用 `Write` 追加；≤64 KiB
+合并为一次写，更大批次顺序写分片。≥128 KiB 的记录复用负载 CRC 计算分段校验，
+省去第二次扫描。Unix 上未加密/未压缩记录直接引用调用方字节并经 writev 写出。
+大日志项整体已与旧实现持平或更快。
+
+### 恢复
+
+`BenchmarkYdxFileStorageRecovery`（新增，NoSync，64 B 日志项，单条记录/批）：
+
+| 批数 | 恢复耗时 | 分配 |
+|---:|---:|---:|
+| 1,000 | 2.63 ms | 5,174 allocs |
+| 10,000 | 14.9 ms | 50,197 allocs |
+| 50,000 | 57.8 ms | 250,221 allocs |
+
+恢复分两遍扫描：第一遍只定位最新快照标记，第二遍重放；第二遍每条记录一次
+Clone，供解码后的 `Entry.Data` 安全持有。
+
+### 三节点持久化
+
+`BenchmarkYdxThreeNodeDurable`，1s 采样：
+
+| 模式 | 顺序 ns/op | 并发 ns/op |
+|---|---:|---:|
+| sync | 2.51 ms（约 398 ops/s） | 1.74 ms（约 576 ops/s） |
+| nosync | 51.7 µs（约 19.3k ops/s） | 5.44 µs（约 184k ops/s） |
 
 ## 5. 后续可继续优化的方向
 

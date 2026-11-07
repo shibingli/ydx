@@ -78,6 +78,12 @@ func (s *MemStorage) Persist(batch PersistBatch) error {
 	if batch.Truncate > 0 {
 		s.truncateLocked(batch.Truncate)
 	}
+	if len(batch.Entries) > 0 && cap(s.entries)-len(s.entries) < len(batch.Entries) {
+		// Grow once with a doubling policy; the per-entry append below then never
+		// reallocates on the common append-only path. | 一次性按翻倍策略扩容，下面的
+		// 逐项追加在常见的只追加路径上不再重新分配。
+		s.entries = growEntries(s.entries, len(batch.Entries))
+	}
 	for i := range batch.Entries {
 		e := batch.Entries[i]
 		if e.Index == 0 {

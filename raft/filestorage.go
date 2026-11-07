@@ -7,6 +7,7 @@ import (
 	"sync"
 
 	"github.com/shibingli/ydx/errs"
+	"github.com/shibingli/ydx/wal"
 )
 
 const (
@@ -66,25 +67,31 @@ type FileStorageOptions struct {
 	// SnapshotChecksum 选择新快照镜像的完整性校验。已有的 v1 与 v2 文件仍可读取。
 	// 默认 CRC32C + SHA-256。
 	SnapshotChecksum SnapshotChecksum
+	// SizePolicy overrides ydx/wal's size-dependent write thresholds (CRC
+	// combination, staging join, write buffer). The zero value learns them from
+	// measured costs. | SizePolicy 覆盖 ydx/wal 与数据大小相关的写阈值（CRC 合并、
+	// 暂存合并、写缓冲）。零值根据实测成本自动学习。
+	SizePolicy wal.SizePolicy
 }
 
 // FileStorage is a crash-safe Storage backed by WAL segments and snapshot files.
 // | FileStorage 是由 WAL 分段与快照文件支撑的崩溃安全 Storage。
 type FileStorage struct {
-	wal              *wal
+	wlog             *walStore
 	snapshot         *Snapshot
 	lockFile         *os.File
 	dir              string
 	walDir           string
 	snapDir          string
+	hsPath           string
 	recovery         Recovery
 	segmentSize      int64
 	snapshotKeep     int
-	snapshotChecksum SnapshotChecksum
-	hsPath           string
 	mu               sync.Mutex
 	hsMu             sync.Mutex
+	snapshotChecksum SnapshotChecksum
 	noSync           bool
+	sizePolicy       wal.SizePolicy
 	loaded           bool
 	closed           bool
 	hsClosed         bool
@@ -116,6 +123,7 @@ func NewFileStorage(opts FileStorageOptions) (*FileStorage, error) {
 		hsPath:           filepath.Join(opts.Dir, "HARDSTATE"),
 		noSync:           opts.NoSync,
 		segmentSize:      opts.SegmentSize,
+		sizePolicy:       opts.SizePolicy,
 		snapshotKeep:     opts.SnapshotKeep,
 		snapshotChecksum: opts.SnapshotChecksum,
 	}
@@ -177,7 +185,7 @@ func (s *FileStorage) Load() (Recovery, error) {
 // loadLocked opens the snapshot referenced by the WAL and replays segments.
 // | loadLocked 打开 WAL 引用的快照并重放分段。
 func (s *FileStorage) loadLocked() (Recovery, error) {
-	w, rec, marker, err := openWAL(s.walDir, s.noSync, s.segmentSize)
+	w, rec, marker, err := openWALStore(s.walDir, s.noSync, s.segmentSize, s.sizePolicy)
 	if err != nil {
 		return Recovery{}, err
 	}
@@ -199,7 +207,7 @@ func (s *FileStorage) loadLocked() (Recovery, error) {
 		_ = w.close()
 		return Recovery{}, err
 	}
-	s.wal = w
+	s.wlog = w
 	s.snapshot = snap
 	s.recovery = Recovery{HardState: rec.hs, Snapshot: snap, Entries: rec.entries}
 	s.loaded = true
@@ -219,7 +227,7 @@ func (s *FileStorage) Persist(batch PersistBatch) error {
 		}
 	}
 	if batch.Snapshot == nil {
-		return s.wal.append(batch)
+		return s.wlog.append(batch)
 	}
 	// Snapshots are monotonic. Ignoring an older image here protects the WAL
 	// marker and in-memory base from a late local snapshot completing after a
@@ -228,7 +236,7 @@ func (s *FileStorage) Persist(batch PersistBatch) error {
 	// 回退 WAL 标记与内存基点；其硬状态仍会持久化。
 	if s.snapshot != nil && batch.Snapshot.Index <= s.snapshot.Index {
 		if batch.HardState != nil {
-			return s.wal.append(PersistBatch{HardState: batch.HardState})
+			return s.wlog.append(PersistBatch{HardState: batch.HardState})
 		}
 		return nil
 	}
@@ -239,24 +247,20 @@ func (s *FileStorage) Persist(batch PersistBatch) error {
 	if err := s.writeSnapshotFile(batch.Snapshot, s.noSync); err != nil {
 		return err
 	}
-	// A local compaction snapshot can share the current segment: entries after
+	// A local compaction snapshot can share the active segment: entries after
 	// the snapshot base are still valid and recovery skips older ones. An
-	// InstallSnapshot replaces the whole prior log, so rotate first; otherwise
-	// stale entries already in the active segment would survive compactAll.
-	// | 本地压缩快照可与当前分段共用：快照基点之后的日志项仍有效，恢复会跳过更旧的
-	// 日志项。InstallSnapshot 替换整段旧日志，必须先轮转；否则活动分段中已有的过期
-	// 日志项会在 compactAll 后残留。
-	if batch.SnapshotReplacesLog {
-		if err := s.wal.rotateLocked(); err != nil {
-			return err
-		}
-	}
+	// InstallSnapshot replaces the whole prior log; compactAll below drops every
+	// record before the new marker, including records already written to the
+	// active segment, so no physical rotation is required. | 本地压缩快照可与活动
+	// 分段共用：快照基点之后的日志项仍有效，恢复会跳过更旧的日志项。InstallSnapshot
+	// 替换此前整段日志；下面的 compactAll 会删除新标记之前的全部记录，包括已写入活动
+	// 分段的记录，因此无需物理轮转。
 	marker := PersistBatch{
 		HardState:           batch.HardState,
 		Snapshot:            &Snapshot{Index: batch.Snapshot.Index, Term: batch.Snapshot.Term},
 		SnapshotReplacesLog: batch.SnapshotReplacesLog,
 	}
-	if err := s.wal.append(marker); err != nil {
+	if err := s.wlog.append(marker); err != nil {
 		return err
 	}
 	// Only the index and term of the newest snapshot are needed for staleness
@@ -266,13 +270,13 @@ func (s *FileStorage) Persist(batch PersistBatch) error {
 	s.snapshot = &Snapshot{Index: batch.Snapshot.Index, Term: batch.Snapshot.Term}
 	if batch.SnapshotReplacesLog {
 		// An InstallSnapshot replaces the entire prior log. Compact(index) keeps
-		// segments whose last entry is beyond the snapshot, including stale
-		// entries from before the marker, so the reset path must remove them now.
+		// records whose entries extend beyond the snapshot, including stale
+		// records from before the marker, so the reset path must remove them now.
 		// Local snapshots are compacted by the node through Storage.Compact.
-		// | InstallSnapshot 替换此前整段日志。Compact(index) 会保留末项超过快照的
-		// 分段，其中包括标记之前的过期日志项，因此重置路径必须立即删除；本地快照
+		// | InstallSnapshot 替换此前整段日志。Compact(index) 会保留日志项超过快照
+		// 的记录，其中包括标记之前的过期记录，因此重置路径必须立即删除；本地快照
 		// 由节点通过 Storage.Compact 压缩。
-		_ = s.wal.compactAll()
+		_ = s.wlog.compactAll()
 	}
 	s.pruneSnapshotsLocked()
 	return nil
@@ -290,7 +294,7 @@ func (s *FileStorage) Compact(index uint64) error {
 			return err
 		}
 	}
-	if err := s.wal.compact(index); err != nil {
+	if err := s.wlog.compact(index); err != nil {
 		return err
 	}
 	s.pruneSnapshotsLocked()
@@ -309,8 +313,8 @@ func (s *FileStorage) Close() error {
 	s.hsClosed = true
 	s.hsMu.Unlock()
 	var err error
-	if s.wal != nil {
-		err = s.wal.close()
+	if s.wlog != nil {
+		err = s.wlog.close()
 	}
 	if s.lockFile != nil {
 		if cerr := s.lockFile.Close(); cerr != nil && err == nil {

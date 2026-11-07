@@ -125,7 +125,7 @@ func TestStaleAppendRespDuringSnapshot(t *testing.T) {
 			2: {state: snapshot, match: 4, next: 5, inflights: newInflights(8, 1<<20)},
 		},
 	}
-	n.handleAppendResp(Message{Type: MsgAppResp, From: 2, To: 1, Term: 5, Index: 10})
+	n.handleAppendResp(&Message{Type: MsgAppResp, From: 2, To: 1, Term: 5, Index: 10})
 	pr := n.progress[2]
 	if pr.state != snapshot {
 		t.Fatalf("progress state = %s, want snapshot", pr.state)
@@ -133,7 +133,7 @@ func TestStaleAppendRespDuringSnapshot(t *testing.T) {
 	if pr.match != 4 || pr.next != 5 {
 		t.Fatalf("progress match=%d next=%d, want 4/5", pr.match, pr.next)
 	}
-	n.handleAppendResp(Message{Type: MsgAppResp, From: 2, To: 1, Term: 5, Index: 3, Reject: true, RejectHint: 3})
+	n.handleAppendResp(&Message{Type: MsgAppResp, From: 2, To: 1, Term: 5, Index: 3, Reject: true, RejectHint: 3})
 	if pr.state != snapshot || pr.match != 4 || pr.next != 5 {
 		t.Fatalf("reject changed snapshot progress: state=%s match=%d next=%d", pr.state, pr.match, pr.next)
 	}

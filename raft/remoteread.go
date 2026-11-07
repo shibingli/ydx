@@ -95,7 +95,7 @@ type remoteReadResponse struct {
 // valid lease answers immediately; otherwise the request joins the next
 // heartbeat confirmation round. | handleReadIndexMessage 应答转发的 ReadIndex
 // 请求。持有有效租约的领导者立即应答；否则请求加入下一次心跳确认轮次。
-func (n *Node) handleReadIndexMessage(m Message) {
+func (n *Node) handleReadIndexMessage(m *Message) {
 	if m.Term < n.term {
 		n.send(Message{Type: MsgReadIndexResp, To: m.From, Term: n.term, Reject: true,
 			Index: uint64(n.Leader()), Context: m.Context})
@@ -146,7 +146,7 @@ func (n *Node) answerForwardedRead(from NodeID, context []byte) {
 }
 
 // handleReadIndexResp completes a forwarded read. | handleReadIndexResp 完成转发读。
-func (n *Node) handleReadIndexResp(m Message) {
+func (n *Node) handleReadIndexResp(m *Message) {
 	epoch, id, ok := decodeRemoteReadContext(m.Context)
 	if !ok || epoch != n.remoteEpoch {
 		return

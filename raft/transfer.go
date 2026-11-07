@@ -85,7 +85,7 @@ func (n *Node) resolveTransfer(err error) {
 // use TransferLeader; this path keeps the protocol usable by custom clients.
 // | handleTransferMessage 接受来自对端的转移请求。本地调用方使用 TransferLeader；
 // 该路径让自定义客户端也能使用协议。
-func (n *Node) handleTransferMessage(m Message) {
+func (n *Node) handleTransferMessage(m *Message) {
 	if n.state != StateLeader || m.Term != n.term || !n.conf.isVoter(m.From) {
 		return
 	}

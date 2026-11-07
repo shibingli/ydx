@@ -82,6 +82,14 @@ func (f *Future) Wait(ctx context.Context) (Result, error) {
 		return r.result, r.err
 	default:
 	}
+	// A context without cancellation (Background, TODO, or a plain deadline-free
+	// context) cannot abort the wait, so a plain receive avoids selectgo on the
+	// blocking path. | 不可取消的上下文（Background、TODO 或无截止时间）无法中止
+	// 等待，因此阻塞路径用普通接收即可，省去 selectgo。
+	if ctx.Done() == nil {
+		r := <-f.ch
+		return r.result, r.err
+	}
 	select {
 	case r := <-f.ch:
 		return r.result, r.err

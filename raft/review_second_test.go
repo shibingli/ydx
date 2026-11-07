@@ -248,18 +248,18 @@ func TestForwardedReadRejectsStaleResponse(t *testing.T) {
 		remoteReads: newRemoteReadStore(),
 	}
 	ch := n.remoteReads.add(1)
-	n.handleReadIndexResp(Message{Type: MsgReadIndexResp, From: 3, Term: 5,
+	n.handleReadIndexResp(&Message{Type: MsgReadIndexResp, From: 3, Term: 5,
 		Index: 9, Context: encodeRemoteReadContext(42, 1)})
-	n.handleReadIndexResp(Message{Type: MsgReadIndexResp, From: 2, Term: 4,
+	n.handleReadIndexResp(&Message{Type: MsgReadIndexResp, From: 2, Term: 4,
 		Index: 9, Context: encodeRemoteReadContext(42, 1)})
-	n.handleReadIndexResp(Message{Type: MsgReadIndexResp, From: 2, Term: 5,
+	n.handleReadIndexResp(&Message{Type: MsgReadIndexResp, From: 2, Term: 5,
 		Index: 9, Context: encodeRemoteReadContext(41, 1)})
 	select {
 	case r := <-ch:
 		t.Fatalf("stale response completed read: %+v", r)
 	default:
 	}
-	n.handleReadIndexResp(Message{Type: MsgReadIndexResp, From: 2, Term: 5,
+	n.handleReadIndexResp(&Message{Type: MsgReadIndexResp, From: 2, Term: 5,
 		Index: 9, Context: encodeRemoteReadContext(42, 1)})
 	select {
 	case r := <-ch:
@@ -271,11 +271,11 @@ func TestForwardedReadRejectsStaleResponse(t *testing.T) {
 	}
 }
 
-// TestWALKeepsHardStateOnlySegment verifies compaction never deletes a segment
-// whose only record is a newer hard state, which would let recovery reuse an
-// older term or vote. | TestWALKeepsHardStateOnlySegment 验证压缩不会删除仅含更新
-// 硬状态的分段，否则恢复会复用更旧的任期或选票。
-func TestWALKeepsHardStateOnlySegment(t *testing.T) {
+// TestWALKeepsHardStateOnlyRecord verifies compaction never deletes a record
+// that carries only a newer hard state, which would let recovery reuse an
+// older term or vote. | TestWALKeepsHardStateOnlyRecord 验证压缩不会删除仅含更新
+// 硬状态的记录，否则恢复会复用更旧的任期或选票。
+func TestWALKeepsHardStateOnlyRecord(t *testing.T) {
 	dir := t.TempDir()
 	s, err := NewFileStorage(FileStorageOptions{Dir: dir, NoSync: true, SegmentSize: 64})
 	if err != nil {
@@ -286,17 +286,15 @@ func TestWALKeepsHardStateOnlySegment(t *testing.T) {
 		Entries: []Entry{{Index: 1, Term: 1, Type: EntryNormal}}}); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.wal.rotateLocked(); err != nil {
+	snap := &Snapshot{Index: 1, Term: 1, ConfState: ConfState{Voters: []NodeID{1}}}
+	if err := s.Persist(PersistBatch{HardState: &term1, Snapshot: snap}); err != nil {
 		t.Fatal(err)
 	}
 	term7 := HardState{Term: 7, Vote: 2, Commit: 1}
 	if err := s.Persist(PersistBatch{HardState: &term7}); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.wal.rotateLocked(); err != nil {
-		t.Fatal(err)
-	}
-	if err := s.wal.compact(1); err != nil {
+	if err := s.Compact(1); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.Close(); err != nil {

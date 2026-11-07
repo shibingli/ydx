@@ -21,6 +21,15 @@ type Transport interface {
 	Close() error
 }
 
+// messageSink is implemented by in-process transports that can hand off a
+// pooled message pointer without a value copy or per-message allocation. The
+// sink takes ownership: it must enqueue the message or release it. |
+// messageSink 由进程内传输实现，可直接移交池化消息指针，避免值复制与逐消息
+// 分配。接收方取得所有权：必须入队或释放该消息。
+type messageSink interface {
+	StartSink(handler func(*Message)) error
+}
+
 // noopTransport is used for a single-voter cluster. | noopTransport 用于单投票成员
 // 集群。
 type noopTransport struct{}

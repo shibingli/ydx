@@ -10,10 +10,10 @@ import (
 	"time"
 )
 
-// TestWALDropsCoveredMarkerSegments verifies local snapshots do not pin one WAL
-// segment each. | TestWALDropsCoveredMarkerSegments 验证本地快照不会各自永久钉住
-// 一个 WAL 分段。
-func TestWALDropsCoveredMarkerSegments(t *testing.T) {
+// TestWALDropsCoveredMarkerRecords verifies local snapshots do not pin one WAL
+// record each. | TestWALDropsCoveredMarkerRecords 验证本地快照不会各自永久钉住
+// 一条 WAL 记录。
+func TestWALDropsCoveredMarkerRecords(t *testing.T) {
 	dir := t.TempDir()
 	s, err := NewFileStorage(FileStorageOptions{Dir: dir, NoSync: true, SegmentSize: 128})
 	if err != nil {
@@ -30,6 +30,9 @@ func TestWALDropsCoveredMarkerSegments(t *testing.T) {
 		}
 		if err := s.Persist(PersistBatch{HardState: &HardState{Term: 1}, Snapshot: snap}); err != nil {
 			t.Fatalf("persist snapshot %d: %v", idx, err)
+		}
+		if err := s.Compact(idx); err != nil {
+			t.Fatalf("compact snapshot %d: %v", idx, err)
 		}
 	}
 	files, err := filepath.Glob(filepath.Join(dir, "wal", "*.wal"))
@@ -343,7 +346,7 @@ func TestTruncationLowersPersistedIndex(t *testing.T) {
 		persistNotify:  make(chan struct{}, 1),
 		stopCh:         make(chan struct{}),
 	}
-	n.handleAppend(Message{
+	n.handleAppend(&Message{
 		Type: MsgApp, From: 2, To: 1, Term: 2,
 		LogIndex: 2, LogTerm: 1, Commit: 3,
 		Entries: []Entry{{Index: 3, Term: 2, Type: EntryNormal}},

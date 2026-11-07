@@ -99,6 +99,41 @@ func (m MessageType) String() string {
 	}
 }
 
+// messagePool recycles Message structs on the in-process hot path. Only the
+// struct is pooled; Entries and Snapshot slices still reference the sender's
+// immutable data and must not be reused by the receiver. | messagePool 在进程内
+// 热路径复用 Message 结构体。只复用结构体；Entries 与 Snapshot 切片仍引用发送方的
+// 不可变数据，接收方不得复用它们。
+// freeMessages is a bounded free list. A channel is used instead of sync.Pool
+// because the pool is emptied at every GC cycle; under high message rates that
+// turns every handoff into a fresh allocation. | freeMessages 是有界空闲链表。
+// 使用通道而非 sync.Pool，因为池会在每次 GC 时清空；高消息速率下这会让每次交接
+// 都变成新分配。
+var freeMessages = make(chan *Message, 1<<15)
+
+// acquireMessage returns a zeroed message. | acquireMessage 返回清零的消息。
+func acquireMessage() *Message {
+	select {
+	case m := <-freeMessages:
+		return m
+	default:
+		return new(Message)
+	}
+}
+
+// releaseMessage drops the caller's references and recycles the struct. |
+// releaseMessage 清除调用方引用并回收结构体。
+func releaseMessage(m *Message) {
+	if m == nil {
+		return
+	}
+	*m = Message{}
+	select {
+	case freeMessages <- m:
+	default:
+	}
+}
+
 // Message is one Raft RPC. Entry data and snapshot data are immutable while a
 // message is in flight. For MsgSnapChunk, LogIndex is the payload byte offset
 // and LogTerm is the total payload size. For MsgSnapChunkResp, Index is the next

@@ -100,28 +100,28 @@ func TestChunkedSnapshotSenderState(t *testing.T) {
 	// A stale acknowledgement with the wrong echoed offset is ignored. |
 	// 回显偏移不匹配的过期确认会被忽略。
 	before := len(transport.msgs)
-	n.handleSnapshotChunkResp(Message{Type: MsgSnapChunkResp, From: 2, Term: 1,
+	n.handleSnapshotChunkResp(&Message{Type: MsgSnapChunkResp, From: 2, Term: 1,
 		Index: 64, LogIndex: 99, Commit: 5})
 	if len(transport.msgs) != before {
 		t.Fatal("stale chunk acknowledgement advanced the sender")
 	}
 	// Valid acknowledgements advance one chunk at a time. | 合法确认逐块推进。
-	n.handleSnapshotChunkResp(Message{Type: MsgSnapChunkResp, From: 2, Term: 1,
+	n.handleSnapshotChunkResp(&Message{Type: MsgSnapChunkResp, From: 2, Term: 1,
 		Index: 64, LogIndex: 0, Commit: 5})
 	if got := transport.msgs[len(transport.msgs)-1]; got.LogIndex != 64 || len(got.Snapshot.Data) != 64 {
 		t.Fatalf("second chunk offset=%d size=%d", got.LogIndex, len(got.Snapshot.Data))
 	}
-	n.handleSnapshotChunkResp(Message{Type: MsgSnapChunkResp, From: 2, Term: 1,
+	n.handleSnapshotChunkResp(&Message{Type: MsgSnapChunkResp, From: 2, Term: 1,
 		Index: 128, LogIndex: 64, Commit: 5})
 	if got := transport.msgs[len(transport.msgs)-1]; got.LogIndex != 128 || len(got.Snapshot.Data) != 64 {
 		t.Fatalf("third chunk offset=%d size=%d", got.LogIndex, len(got.Snapshot.Data))
 	}
-	n.handleSnapshotChunkResp(Message{Type: MsgSnapChunkResp, From: 2, Term: 1,
+	n.handleSnapshotChunkResp(&Message{Type: MsgSnapChunkResp, From: 2, Term: 1,
 		Index: 192, LogIndex: 128, Commit: 5})
 	if got := transport.msgs[len(transport.msgs)-1]; got.LogIndex != 192 || len(got.Snapshot.Data) != 8 {
 		t.Fatalf("last chunk offset=%d size=%d", got.LogIndex, len(got.Snapshot.Data))
 	}
-	n.handleSnapshotChunkResp(Message{Type: MsgSnapChunkResp, From: 2, Term: 1,
+	n.handleSnapshotChunkResp(&Message{Type: MsgSnapChunkResp, From: 2, Term: 1,
 		Index: 200, LogIndex: 192, Commit: 5})
 	if pr.snapshotOffset != 200 {
 		t.Fatalf("final offset = %d", pr.snapshotOffset)

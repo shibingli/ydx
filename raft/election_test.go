@@ -109,7 +109,7 @@ func TestPreVoteExpandsWhenFirstWaveExhausted(t *testing.T) {
 		preVoteRemaining: []NodeID{10, 11, 12},
 		preVoteReq:       Message{Type: MsgPreVote, Term: 4, LogIndex: 1, LogTerm: 1},
 	}
-	n.handlePreVoteResp(Message{Type: MsgPreVoteResp, From: 2, To: 1, Term: 3, Reject: true})
+	n.handlePreVoteResp(&Message{Type: MsgPreVoteResp, From: 2, To: 1, Term: 3, Reject: true})
 	if len(n.outBuf) != 3 {
 		t.Fatalf("expanded messages = %d, want 3", len(n.outBuf))
 	}

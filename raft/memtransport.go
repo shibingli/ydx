@@ -222,6 +222,12 @@ func (n *MemNetwork) deliver(from NodeID, m Message) {
 	// 只入队，因此不会递归进入发送方事件循环。Start 之前到达的消息仍走收件箱
 	// worker。
 	if t.started.Load() {
+		if sink := t.sink.Load(); sink != nil {
+			pm := acquireMessage()
+			*pm = m
+			(*sink)(pm)
+			return
+		}
 		if h := t.handler.Load(); h != nil {
 			(*h)(m)
 			return
@@ -237,6 +243,7 @@ type MemTransport struct {
 	inbox   chan Message
 	done    chan struct{}
 	handler atomic.Pointer[func(Message)]
+	sink    atomic.Pointer[func(*Message)]
 	id      NodeID
 	drops   atomic.Uint64
 	once    sync.Once
@@ -253,7 +260,23 @@ func (t *MemTransport) Start(handler func(Message)) error {
 		return ErrStopped
 	}
 	h := handler
+	t.sink.Store(nil)
 	t.handler.Store(&h)
+	if t.started.CompareAndSwap(false, true) {
+		go t.run()
+	}
+	return nil
+}
+
+// StartSink installs a pooled-message handler. It avoids the value copy and
+// per-message allocation of the generic Start path. | StartSink 安装池化消息
+// 处理器，避免通用 Start 路径的值复制与逐消息分配。
+func (t *MemTransport) StartSink(handler func(*Message)) error {
+	if t.closed.Load() {
+		return ErrStopped
+	}
+	h := handler
+	t.sink.Store(&h)
 	if t.started.CompareAndSwap(false, true) {
 		go t.run()
 	}
@@ -267,6 +290,12 @@ func (t *MemTransport) run() {
 		case <-t.done:
 			return
 		case m := <-t.inbox:
+			if sink := t.sink.Load(); sink != nil {
+				pm := acquireMessage()
+				*pm = m
+				(*sink)(pm)
+				continue
+			}
 			if h := t.handler.Load(); h != nil {
 				(*h)(m)
 			}

@@ -248,7 +248,7 @@ func (n *Node) broadcastVoters(m Message) {
 
 // handlePreVote decides a pre-vote request without changing the local term.
 // | handlePreVote 在不改变本地任期的情况下裁决预投票请求。
-func (n *Node) handlePreVote(m Message) {
+func (n *Node) handlePreVote(m *Message) {
 	grant := false
 	if m.Term > n.term && n.conf.isVoter(n.id) && n.conf.isVoter(m.From) &&
 		n.log.upToDate(m.LogIndex, m.LogTerm) {
@@ -275,7 +275,7 @@ func (n *Node) handlePreVote(m Message) {
 // handlePreVoteResp counts a pre-vote grant and starts a real election on a
 // majority of both voter sets. | handlePreVoteResp 统计预投票，并在两个投票集合都
 // 达到多数时发起真实选举。
-func (n *Node) handlePreVoteResp(m Message) {
+func (n *Node) handlePreVoteResp(m *Message) {
 	if n.state != StatePreCandidate {
 		return
 	}
@@ -303,7 +303,7 @@ func (n *Node) handlePreVoteResp(m Message) {
 // handleVote grants at most one vote per term, and only to an up-to-date
 // candidate. The grant is persisted before the response is sent. | handleVote
 // 每个任期最多投一票，且只投给日志足够新的候选者；响应前先持久化选票。
-func (n *Node) handleVote(m Message) {
+func (n *Node) handleVote(m *Message) {
 	if m.Term < n.term {
 		n.send(Message{Type: MsgVoteResp, To: m.From, Term: n.term, Reject: true})
 		return
@@ -317,19 +317,20 @@ func (n *Node) handleVote(m Message) {
 		n.send(Message{Type: MsgVoteResp, To: m.From, Term: n.term, Reject: true})
 		return
 	}
-	n.vote = m.From
+	term, from := m.Term, m.From
+	n.vote = from
 	n.resetElection()
 	seq := n.persistHardState()
 	n.deferAction(seq, func(err error) {
-		if err != nil || n.term != m.Term || n.vote != m.From {
+		if err != nil || n.term != term || n.vote != from {
 			return
 		}
-		n.send(Message{Type: MsgVoteResp, To: m.From, Term: n.term})
+		n.send(Message{Type: MsgVoteResp, To: from, Term: n.term})
 	})
 }
 
 // handleVoteResp counts a vote. | handleVoteResp 统计选票。
-func (n *Node) handleVoteResp(m Message) {
+func (n *Node) handleVoteResp(m *Message) {
 	if n.state != StateCandidate {
 		return
 	}
@@ -627,7 +628,7 @@ func (n *Node) resolveCampaign(err error) {
 
 // handleTimeoutNow starts an immediate election for a leader transfer. | handleTimeoutNow
 // 为领导权转移立即发起选举。
-func (n *Node) handleTimeoutNow(m Message) {
+func (n *Node) handleTimeoutNow(m *Message) {
 	if m.Term != n.term || n.leader != m.From || !n.conf.isVoter(m.From) {
 		return
 	}

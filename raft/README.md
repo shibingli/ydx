@@ -251,11 +251,18 @@ node.TransferLeader(ctx, 2)
 ```text
 <dir>/
   HARDSTATE
-  wal/00000000000000000001.wal
+  wal/
+    META  META.mirror  RECOVERY  wal.lock
+    manifest/
+    00000000000000000001.wal
   snapshots/00000000000000001234-00000000000000000009.snap
 ```
 
 `SnapshotDir` 非空时，快照文件写入该目录，WAL 仍在 `<dir>/wal`。
+
+> **格式变更**：WAL 目录自本次重构起由 `ydx/wal` 管理，与此前的 `YDRWAL01`
+> 分段不兼容。升级前必须备份目录；旧 `wal/*.wal` 不会被新版本读取，回退旧版本
+> 也无法读取新格式。快照文件与 `HARDSTATE` 的格式未变。
 
 - `HARDSTATE` 独立保存 term/vote/commit，恢复时与 WAL 硬状态合并取最高任期与
   对应选票。它使跟随者在安装大型快照镜像期间仍能持久化并应答选票，避免旧 leader
@@ -265,9 +272,10 @@ node.TransferLeader(ctx, 2)
   该文件的旧版本：旧版本可能只看到 WAL 中更旧的 term/vote，从而破坏选票安全。
   需要回退时必须保留目录备份并由维护者评估，不能直接在原目录上启动旧版本。
 
-- WAL 记录带长度、CRC32C、类型；尾部撕裂写会被安全截断。Unix 上大日志项批次
-  可通过 `writev` 从条目切片直接写出，避免先复制进 WAL 缓冲；Windows 等平台
-  自动回退到单次缓冲写。
+- WAL 由 `github.com/shibingli/ydx/wal` 提供：每个 `PersistBatch` 编码为一条
+  原子记录，`Append` 在记录与其提交标记同步完成后才返回；分段轮转、稀疏索引、
+  META/MANIFEST/RECOVERY 与尾部撕裂截断均由该模块维护。恢复按 LSN 重放记录，
+  大日志项使用其平台向量写路径。raft 仍自行维护快照文件与 `HARDSTATE`。
 - 快照文件包含索引、任期、配置、数据长度、CRC32C；默认还包含 SHA-256。仅 CRC
   模式使用版本 2 头部（带校验标志），恢复同时支持版本 1 与 2。
 - 快照先落盘，再写 WAL 标记；恢复只信任带标记的快照，避免“快照已写但未提交”
@@ -304,6 +312,22 @@ node.TransferLeader(ctx, 2)
 - Dragonboat 的对比使用其默认 Pebble LogDB（tmpfs 上），比纯内存存储更重；
   ydx 的 FileStorage 三节点并行在 tmpfs 上约 2.6–2.7 µs，与内存存储差距很小。
 
+2026-11-07 调度与内存优化后在 Windows 11（16 逻辑核）同机复测（中位数，
+`-benchtime=1s -count=3`）：
+
+| 场景 | ydx/raft | etcd raft v3.7 | hashicorp/raft v1.8 |
+|---|---:|---:|---:|
+| 单节点顺序 | **7,435 ns** (7) | 16,315 ns (39) | 9,031 ns (22) |
+| 单节点并行 | **1,618 ns** (5) | 5,440 ns (26) | 2,267 ns (15) |
+| 三节点顺序 | **22,237 ns** (25) | 38,777 ns (137) | 24,911 ns (110) |
+| 三节点并行 | **4,100 ns** (11) | 26,270 ns (129) | 4,667 ns (42) |
+
+三节点并行由优化前约 10.4 µs（落后 hashicorp ~5.0 µs）降到 4.1 µs。关键改动：
+事件循环快速排空（仅空闲时进入多路 `select`）、`Future.Wait` 对不可取消上下文
+使用普通通道接收、消息结构体空闲链表池与指针处理器、日志切片 2× 扩容。
+Dragonboat 的三节点并行在该 Windows 主机上阻塞于其自身 `SyncPropose`，未纳入
+本轮同机表。
+
 ### 并发与并行
 
 - 32 个客户端各保持 16 个在途提案（流水线）时，三节点单组达到 **2.16M ops/s**。
@@ -317,21 +341,34 @@ node.TransferLeader(ctx, 2)
   控制平面（选举/心跳/领导权转移/快照）走独立高优先级队列；复制积压不会饿死
   心跳或快照。
 
-### WAL 与持久化（NVMe ext4）
+### WAL 与持久化（Windows）
 
-| 模式 | 批量 | ns/op | 有效带宽 |
-|---|---:|---:|---:|
-| NoSync | 1 | 586 | 109 MB/s |
-| NoSync | 128 | 3,049 | **2.69 GB/s** |
-| fsync | 1 | 993,457 | 0.06 MB/s |
-| fsync | 128 | 908,633 | 9.02 MB/s |
+WAL 由 `ydx/wal` 提供。`benchmarks/raft` 交替运行新旧实现，1s 采样、n=4 中位数
+（Windows/i9-10980HK）：
 
-- WAL 记录一次 `write` 写出；Linux 使用 `fdatasync`；新分段同步目录项。
-- 三节点 FileStorage + NVMe + 32 并发客户端：默认组提交约 **8.1k ops/s**，设置
-  `PersistBatchDelay=100µs` 后约 **10.4k ops/s**；窗口只延迟持久化确认，不阻塞
-  事件循环。默认 0，fsync 主导的部署可设 50–100 µs。
-- tmpfs 上 fsync 是空操作，NoSync 与 fsync 均约 2.0 µs/128 条（4.1 GB/s），
-  说明编码/写入路径本身不是瓶颈。
+| 模式 | 批量 | 旧实现 ns/op | 新实现 ns/op | 变化 |
+|---|---:|---:|---:|---:|
+| fsync | 1 | 1,671,000 | 1,673,000 | ~0% |
+| fsync | 128 | 1,728,000 | 1,932,000 | +12%（不显著） |
+| NoSync | 1 | 4,093 | **800** | **-80%** |
+| NoSync | 128 | 13,310 | **6,400** | **-52%** |
+
+- 每次追加由 `ydx/wal` 写入记录及其提交标记；默认策略在返回前完成同步，新分段
+  与元数据由该模块维护。`FileStorage` 通过 `AppendDirect` 省去写队列往返，
+  NoSync 关闭轮转整段刷新，活动段检查点对 raft 关闭（恢复总是全量重放）。
+- NoSync 的小批量此前受每次追加一次写系统调用限制（4.1 µs 中 86% 是
+  `WriteFile`）。第二轮优化启用自适应写缓冲（`wal.WithWriteBuffer(-1)`）：未同步
+  追加先复制进用户态缓冲，只在 Sync、轮转、截断、备份捕获、打开读取器或 Close 时
+  写出；读取器存在期间暂停缓冲。缓冲目标由 `wal.SizePolicy` 按批次大小直方图与
+  “复制成本对比写系统调用成本”自动确定（默认 256 KiB–4 MiB，大于 1 MiB 的批次
+  直接写出），也可用 `wal.WithSizePolicy` 手动固定。batch1 4.09→0.8 µs，
+  batch128 13.3→6.4 µs（Windows 16 逻辑核，`-count=3` 中位数）。SyncAlways 绕过
+  缓冲区，fsync 路径不受影响。
+- 大日志项 NoSync（256 KiB/1 MiB）：164.1/680.0 µs → **144.7/653.2 µs**；
+  fsync 256 KiB：1.957 ms → **1.774 ms**（1 MiB fsync 受设备波动主导）。
+- 三节点 FileStorage + 本机磁盘：fsync 顺序约 2.30 ms/op、并发约 1.70 ms/op；
+  NoSync 顺序约 33 µs/op（30k ops/s）、并发约 3.9 µs/op（256k ops/s），
+  较优化前的 57 µs/5.1 µs 分别提升 1.7×/1.3×。完整数据见 `SNAPSHOT.md` §4。
 
 ### 跨主机 3 节点 TCP
 

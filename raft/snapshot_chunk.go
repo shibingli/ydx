@@ -175,7 +175,7 @@ func (n *Node) sendSnapshotChunk(to NodeID, snap *Snapshot) {
 
 // handleSnapshotChunkResp advances a chunk transfer. | handleSnapshotChunkResp
 // 推进分块传输。
-func (n *Node) handleSnapshotChunkResp(m Message) {
+func (n *Node) handleSnapshotChunkResp(m *Message) {
 	if n.state != StateLeader {
 		return
 	}
@@ -218,7 +218,7 @@ func (n *Node) handleSnapshotChunkResp(m Message) {
 
 // handleSnapshotChunk accepts one chunk and installs the image when complete.
 // | handleSnapshotChunk 接收一个分块，并在完整时安装镜像。
-func (n *Node) handleSnapshotChunk(m Message) {
+func (n *Node) handleSnapshotChunk(m *Message) {
 	if m.Snapshot == nil {
 		return
 	}
@@ -307,7 +307,7 @@ func (n *Node) handleSnapshotChunk(m Message) {
 	if inc.received == inc.total {
 		complete := inc.snap
 		n.incomingSnapshot = nil
-		n.handleSnapshot(Message{Type: MsgSnap, From: m.From, To: n.id,
+		n.handleSnapshot(&Message{Type: MsgSnap, From: m.From, To: n.id,
 			Term: m.Term, Snapshot: complete})
 	}
 }

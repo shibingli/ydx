@@ -12,7 +12,7 @@ import (
 // barrier so later entries can never be applied before it. | handleSnapshot 安装
 // 领导者快照。镜像在成功响应前持久化；状态机还原排在持久化屏障之后，保证后续日志项
 // 不会先于它被应用。
-func (n *Node) handleSnapshot(m Message) {
+func (n *Node) handleSnapshot(m *Message) {
 	if m.Term < n.term {
 		n.send(Message{Type: MsgSnapResp, To: m.From, Term: n.term, Reject: true, Index: n.committed})
 		return
@@ -97,7 +97,7 @@ func (n *Node) handleSnapshot(m Message) {
 }
 
 // handleSnapshotResp finishes a snapshot transfer. | handleSnapshotResp 结束快照传输。
-func (n *Node) handleSnapshotResp(m Message) {
+func (n *Node) handleSnapshotResp(m *Message) {
 	if n.state != StateLeader {
 		return
 	}

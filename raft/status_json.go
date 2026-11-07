@@ -5,6 +5,7 @@ import ydxjson "github.com/shibingli/ydx/json"
 // statusJSON is the stable JSON view of Status. | statusJSON 是 Status 的稳定 JSON
 // 视图。
 type statusJSON struct {
+	State            string           `json:"state"`
 	Voters           []NodeID         `json:"voters"`
 	Learners         []NodeID         `json:"learners"`
 	VotersOutgoing   []NodeID         `json:"voters_outgoing"`
@@ -12,7 +13,6 @@ type statusJSON struct {
 	Peers            []peerStatusJSON `json:"peers"`
 	ID               NodeID           `json:"id"`
 	Group            GroupID          `json:"group"`
-	State            string           `json:"state"`
 	Term             uint64           `json:"term"`
 	Leader           NodeID           `json:"leader"`
 	Commit           uint64           `json:"commit"`

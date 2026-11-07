@@ -197,20 +197,23 @@
 //
 // # Durability | 持久化
 //
-// FileStorage writes CRC-checked WAL segments with group commit and atomic
-// snapshot files protected by CRC32C and SHA-256. A snapshot file is trusted
-// only when a durable WAL marker names it, so a crash between the file write
-// and the marker leaves the previous log intact. InstallSnapshot markers reset
-// stale log entries; local compaction snapshots keep the valid tail. Local
-// compaction also retains up to SnapshotCatchUpEntries covered entries in
+// FileStorage stores each PersistBatch as one atomic record in a durable
+// ydx/wal directory. Append returns only after the record and its commit marker
+// are synchronized, and recovery replays records in LSN order. Snapshot files
+// remain separate and are protected by CRC32C and SHA-256. A snapshot file is
+// trusted only when a durable WAL marker names it, so a crash between the file
+// write and the marker leaves the previous log intact. InstallSnapshot markers
+// reset stale log entries; local compaction snapshots keep the valid tail.
+// Local compaction also retains up to SnapshotCatchUpEntries covered entries in
 // memory so slightly lagging followers can catch up with AppendEntries; that
 // window is not recovered after a restart. The storage directory is locked
-// against a second writer. | FileStorage 写入带 CRC 校验的 WAL 分段（组提交）以及
-// 由 CRC32C 与 SHA-256 保护的原子快照文件。只有持久 WAL 标记引用快照文件时才会
-// 信任它，因此文件写入与标记之间的崩溃会保留旧日志。InstallSnapshot 标记会丢弃
-// 陈旧日志项；本地压缩快照保留有效尾部，并在内存中额外保留最多
-// SnapshotCatchUpEntries 条已覆盖日志，使略落后的跟随者可用 AppendEntries 追上；
-// 该窗口重启后不会恢复。存储目录带进程级排他锁。
+// against a second writer. | FileStorage 把每个 PersistBatch 作为一条原子记录
+// 存入持久化的 ydx/wal 目录；Append 在记录及其提交标记同步完成后才返回，恢复按
+// LSN 顺序重放。快照文件仍独立存放，并由 CRC32C 与 SHA-256 保护。只有持久 WAL
+// 标记引用快照文件时才会信任它，因此文件写入与标记之间的崩溃会保留旧日志。
+// InstallSnapshot 标记会丢弃陈旧日志项；本地压缩快照保留有效尾部，并在内存中额外
+// 保留最多 SnapshotCatchUpEntries 条已覆盖日志，使略落后的跟随者可用 AppendEntries
+// 追上；该窗口重启后不会恢复。存储目录带进程级排他锁。
 //
 // # State machine contract | 状态机契约
 //

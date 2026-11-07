@@ -177,7 +177,7 @@ func TestVoteFromNonMemberRejected(t *testing.T) {
 		metrics:  newMetrics(),
 		progress: map[NodeID]*progress{},
 	}
-	n.handleVote(Message{Type: MsgVote, From: 3, To: 1, Term: 5, LogIndex: 1, LogTerm: 5})
+	n.handleVote(&Message{Type: MsgVote, From: 3, To: 1, Term: 5, LogIndex: 1, LogTerm: 5})
 	if len(n.outBuf) != 1 || !n.outBuf[0].Reject {
 		t.Fatalf("outbound = %+v, want one rejection", n.outBuf)
 	}
@@ -191,8 +191,8 @@ func TestVoteFromNonMemberRejected(t *testing.T) {
 // 伪造的 TimeoutNow 不会发起选举。
 func TestTimeoutNowRequiresCurrentLeader(t *testing.T) {
 	n := &Node{id: 1, state: StateFollower, term: 5, leader: 2}
-	n.handleTimeoutNow(Message{Type: MsgTimeoutNow, From: 3, To: 1, Term: 5})
-	n.handleTimeoutNow(Message{Type: MsgTimeoutNow, From: 2, To: 1, Term: 4})
+	n.handleTimeoutNow(&Message{Type: MsgTimeoutNow, From: 3, To: 1, Term: 5})
+	n.handleTimeoutNow(&Message{Type: MsgTimeoutNow, From: 2, To: 1, Term: 4})
 	if n.term != 5 || n.state != StateFollower {
 		t.Fatalf("stale timeout changed state: term=%d state=%s", n.term, n.state)
 	}
@@ -218,11 +218,11 @@ func TestHeartbeatResetsProgressForRestartedFollower(t *testing.T) {
 	n.progress[3] = pr
 	// A delayed reply that echoes an older match must not force a backtrack. | 回显
 	// 旧 match 的延迟响应不得造成回退。
-	n.handleHeartbeatResp(Message{Type: MsgHeartbeatResp, From: 3, To: 1, Term: 2, Index: 4, LogIndex: 51})
+	n.handleHeartbeatResp(&Message{Type: MsgHeartbeatResp, From: 3, To: 1, Term: 2, Index: 4, LogIndex: 51})
 	if pr.match != 52 {
 		t.Fatalf("stale heartbeat lowered match to %d", pr.match)
 	}
-	n.handleHeartbeatResp(Message{Type: MsgHeartbeatResp, From: 3, To: 1, Term: 2, Index: 4, LogIndex: 52})
+	n.handleHeartbeatResp(&Message{Type: MsgHeartbeatResp, From: 3, To: 1, Term: 2, Index: 4, LogIndex: 52})
 	if pr.match != 4 || pr.next != 5 || pr.state != probe {
 		t.Fatalf("progress match=%d next=%d state=%s, want 4/5/probe", pr.match, pr.next, pr.state)
 	}

@@ -85,11 +85,11 @@ func (s *FileStorage) PersistLocalSnapshotMarkerBatch(snap *Snapshot, batch Pers
 		if batch.HardState == nil && batch.Truncate == 0 && len(batch.Entries) == 0 {
 			return nil
 		}
-		return s.wal.append(batch)
+		return s.wlog.append(batch)
 	}
 	batch.Snapshot = &Snapshot{Index: snap.Index, Term: snap.Term}
 	batch.SnapshotReplacesLog = false
-	if err := s.wal.append(batch); err != nil {
+	if err := s.wlog.append(batch); err != nil {
 		return err
 	}
 	// Only metadata is retained; the image file itself is already durable. |
