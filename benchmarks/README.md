@@ -1,6 +1,6 @@
 # ydx 基准与主流实现对比
 
-本目录是 ydx 的基准模块集合，共 **22 个独立 Go 模块**（`benchmarks/xml` 依赖已发布的
+本目录是 ydx 的基准模块集合，共 **23 个独立 Go 模块**（`benchmarks/xml` 依赖已发布的
 `xml/v0.1.1` 子目录标签；`benchmarks/pool` 依赖 `pool/v0.1.1`；`benchmarks/raft`
 依赖 `raft/v0.1.6`；`benchmarks/rdma` 依赖 `rdma/v0.1.4`；`benchmarks/wal` 依赖
 `wal/v0.1.0`，这些标签发布前同样使用仓库外临时 `go.work`，不得提交）。原 yd 仓
@@ -13,7 +13,8 @@ template 模块，避免同一引擎在两处重复对比），yd 仓不再保�
 是 `cache` 模块内的子包。产品模块本身不包含任何 `Benchmark*`，也不依赖基准专用库。
 
 - 实测日期：2026-10-24；`router` 与 `workflow` 于 2026-11-01 在 v0.1.13 / v0.1.6 上复采；
-  `base64`、`json`、`xml` 于 2026-11-01 在 v0.1.13 / v0.1.15 / v0.1.1 上复采
+  `base64`、`json`、`xml` 于 2026-11-01 在 v0.1.13 / v0.1.15 / v0.1.1 上复采；
+  `auth` 于 2026-11-08 在 auth v0.1.0 上首采（Windows 环境，见 auth/README.md）
 - 主表运行环境：Linux AMD Ryzen AI MAX+ 395（Zen 5，16 核 32 线程，AVX-512
   VBMI/VBMI2），Ubuntu 26.04.1，Go **1.27.3** linux/amd64，`GOMAXPROCS=32`。
 - 架构补充：Linux Neoverse-N2（4 vCPU，arm64）与旧指令集 x86_64（4 vCPU）的冒烟结果见
@@ -29,6 +30,7 @@ template 模块，避免同一引擎在两处重复对比），yd 仓不再保�
 
 | 基准模块 | 对比的主流实现 | 指标文档 |
 |---|---|---|
+| `benchmarks/auth` | `go-jose/v4`、`jwx/v4`、`pquerna/otp`、`casbin`、`go-ldap/v3`、`goxmldsig`、`coreos/go-oidc` | [auth/README.md](auth/README.md) |
 | `benchmarks/base64` | `encoding/base64`、`cristalhq/base64`、`cloudwego/base64x` | [base64/README.md](base64/README.md) |
 | `benchmarks/buffpool` | `sync.Pool`、`valyala/bytebufferpool` | [buffpool/README.md](buffpool/README.md) |
 | `benchmarks/cache` | `bigcache`、`freecache`、`ristretto`、`sync.Map`、`go-cache`、`theine`、`ttlcache`、`golang-lru` | [cache/README.md](cache/README.md) |
@@ -60,6 +62,10 @@ README 与 [optimization-report.md](optimization-report.md)。
 
 | 模块 | 场景 | ydx | 对比实现 |
 |---|---|---:|---:|
+| auth | JWS HS256 签发 / 验签 | **2.43 / 4.10 µs（4 / 26 allocs）** | go-jose 4.79 / 5.02 µs（42 / 37）；jwx 2.98 / 6.56 µs（16 / 45） |
+| auth | TOTP 校验 | **1.60 µs / 8 allocs** | pquerna 1.94 µs / 12 allocs |
+| auth | RBAC 决策 | **1.56 µs** | casbin 4.00 µs |
+| auth | XMLDSig 验签（RSA-2048） | **85.9 µs / 265 allocs** | goxmldsig 169 µs / 745 allocs |
 | base64 | `Encode` 32 B | 5.82 ns | cloudwego 7.47 ns / cristalhq 9.57 ns / stdlib 14.52 ns |
 | base64 | `Decode` 32 B | 10.42 ns | cloudwego 11.67 ns / cristalhq 12.51 ns / stdlib 20.14 ns |
 | base64 | `Encode` 1 MiB | 56.1 GB/s | cloudwego 25.6 GB/s / cristalhq 5.04 GB/s / stdlib 2.39 GB/s |

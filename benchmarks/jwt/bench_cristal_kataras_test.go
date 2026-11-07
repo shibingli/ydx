@@ -12,7 +12,7 @@ import (
 	cristal "github.com/cristalhq/jwt/v5"
 	kjwt "github.com/kataras/jwt"
 
-	ydxjwt "github.com/shibingli/ydx/jwt"
+	ydxjwt "github.com/shibingli/ydx/auth/token/jwt"
 )
 
 // benchCompareSelected reports whether name passes the YD_BENCH_ONLY filter. | benchCompareSelected

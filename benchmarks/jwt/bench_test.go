@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	. "github.com/shibingli/ydx/jwt"
+	. "github.com/shibingli/ydx/auth/token/jwt"
 )
 
 // benchKey is the HMAC secret used by the symmetric benchmarks; it is longer than one SHA-256 block

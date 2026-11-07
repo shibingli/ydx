@@ -2,15 +2,18 @@
 
 > 环境、指标口径与公平性约定见 [../README.md](../README.md)。
 
-`ydx/jwt` 提供免反射的 JWS 签发、验签与声明校验，并可选 `Token.Release` 把令牌归还
-池中以实现零分配验签。本基准比较它与 `golang-jwt/jwt/v5`、`lestrrat-go/jwx/v4`、
-`go-jose/v4` 的 HS256/ES256 路径。
+> `auth/token/jwt` 所属的 `auth v0.1.0` 依赖 `ydx/json v0.1.17`（修复原生解码器字符串 arena
+> 越界 panic）；该标签发布前需通过仓库外文件代理或 `go.work` 解析 `json`。
+
+`github.com/shibingli/ydx/auth/token/jwt` 提供免反射的 JWS 签发、验签与声明校验，并可选
+`Token.Release` 把令牌归还池中以实现零分配验签。本基准比较它与
+`golang-jwt/jwt/v5`、`lestrrat-go/jwx/v4`、`go-jose/v4` 的 HS256/ES256 路径。
 
 ## 对比对象
 
 | 实现 | 版本 | 说明 |
 |---|---|---|
-| ydx/jwt | v0.1.9 | 免反射，支持 `Release` 复用 |
+| `github.com/shibingli/ydx/auth/token/jwt` | auth v0.1.0 | 免反射，支持 `Release` 复用；原 `jwt` 模块已迁入 auth |
 | `github.com/golang-jwt/jwt/v5` | v5.3.1 | 最常用的 JWT 库 |
 | `github.com/lestrrat-go/jwx/v4` | v4.5.0 | JWS/JWE/JWK 全家桶，默认校验声明 |
 | `github.com/go-jose/go-jose/v4` | v4.1.6 | JOSE 实现，只验签，声明需调用方校验 |
@@ -108,6 +111,22 @@
 | `ParseKataras/ES256` | 41.305 µs | 2.060 KiB | 34 |
 | `ParseParallelKataras` | 743.7 ns | 1.279 KiB | 19 |
 </details>
+
+## 2026-11-08 复采（Windows 11，i9-10980HK，Go 1.27.3）
+
+审计优化后在同一 Windows 主机复采，`-benchtime=500ms -count=3`，取中位数。绝对值不可与
+上表 Zen 5 数据直接横比，只看同表相对关系。
+
+| 场景 | auth/token/jwt | golang-jwt | jwx | go-jose |
+|---|---:|---:|---:|---:|
+| Sign HS256（map 声明） | **3.12 µs / 933 B / 19** | 5.99 µs / 2.2 KiB / 45 | 5.05 µs / 1.9 KiB / 38 | 7.96 µs / 3.7 KiB / 61 |
+| Sign HS256（结构体） | **1.85 µs / 476 B / 4** | — | — | — |
+| Parse HS256 | **2.35 µs / 288 B / 2** | 7.93 µs / 2.6 KiB / 49 | 11.6 µs / 3.8 KiB / 75 | 14.0 µs / 6.9 KiB / 96 |
+| Parse ES256 | **79.8 µs / 1.0 KiB / 13** | 86.3 µs / 3.5 KiB / 65 | 87.5 µs / 4.7 KiB / 90 | 88.7 µs / 7.8 KiB / 111 |
+
+- ES256 解析从审计前的明显落后优化到最快，分配数只有主流实现的 1/5–1/8；
+  ECDSA 标量乘仍是绝对耗时主体。
+- HS256 签发（结构体形态）、验签与并发路径保持领先；本轮没有回归。
 
 ## 复现
 

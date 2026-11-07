@@ -15,7 +15,7 @@ import (
 	jwxjwt "github.com/lestrrat-go/jwx/v4/jwt"
 
 	"github.com/shibingli/ydx/errs"
-	ydxjwt "github.com/shibingli/ydx/jwt"
+	ydxjwt "github.com/shibingli/ydx/auth/token/jwt"
 )
 
 // benchCompareToken is the output slot for signing benchmarks. | benchCompareToken 是签发基准的输出槽位。
