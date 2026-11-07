@@ -3,11 +3,15 @@
 package json
 
 import (
+	"bytes"
 	stdjson "encoding/json"
+	"encoding/json/jsontext"
+	stdjsonv2 "encoding/json/v2"
 	"math"
 	"reflect"
 	"strconv"
 	"time"
+	"unicode/utf8"
 	"unsafe"
 
 	"github.com/shibingli/ydx/errs"
@@ -99,19 +103,40 @@ func buildFastFieldEncoder(t reflect.Type) func(*encoder, unsafe.Pointer) error 
 	if t == numberType {
 		return nil
 	}
+	if t == durationType {
+		// time.Duration has no v2 default representation; the closure decides at call time. |
+		// time.Duration 在 v2 中没有默认表示；由闭包在调用时决定。
+		return func(e *encoder, p unsafe.Pointer) error {
+			if e.v2 != nil && !e.v2.formatDurationAsNano {
+				return newMarshalSemanticError(t, "no default representation")
+			}
+			e.buf = appendIntFast(e.buf, *(*int64)(p))
+			return nil
+		}
+	}
 	if t != timeType && t != stringSliceType {
 		tr := cachedTraits(t)
-		if tr.marshaler || tr.textMarshaler {
+		if tr.marshaler || tr.marshalerTo || tr.textMarshaler {
 			return nil
 		}
 		if t.Kind() != reflect.Pointer &&
-			(reflect.PointerTo(t).Implements(marshalerType) || reflect.PointerTo(t).Implements(textMarshalerType)) {
+			(reflect.PointerTo(t).Implements(marshalerType) || reflect.PointerTo(t).Implements(marshalerToType) ||
+				reflect.PointerTo(t).Implements(textMarshalerType)) {
 			return nil
 		}
 	}
 	if t == stringSliceType {
 		return func(e *encoder, p unsafe.Pointer) error {
-			e.buf = appendStringSlice(e.buf, *(*[]string)(p), e.escapeHTML)
+			ss := *(*[]string)(p)
+			if e.v2 != nil {
+				var valid bool
+				e.buf, valid = appendStringSliceChecked(e.buf, ss, e.escapeHTML, e.v2.escapeJS, nilSliceAsNull(e))
+				if !valid && !e.v2.allowInvalidUTF8 {
+					return newMarshalInvalidUTF8Error()
+				}
+				return nil
+			}
+			e.buf = appendStringSliceMode(e.buf, ss, e.escapeHTML, true, true)
 			return nil
 		}
 	}
@@ -243,23 +268,57 @@ func (e *encoder) marshaler(m stdjson.Marshaler) error {
 	if err != nil {
 		return err
 	}
+	if e.v2 != nil && !e.v2.allowInvalidUTF8 && !utf8.Valid(b) {
+		return newMarshalInvalidUTF8Error()
+	}
 	var cerr error
-	e.buf, cerr = appendCompactJSON(e.buf, b, e.escapeHTML)
+	if e.v2 != nil {
+		e.buf, cerr = appendV2Raw(e.buf, b, e.v2)
+	} else {
+		e.buf, cerr = appendCompactJSONMode(e.buf, b, e.escapeHTML, true)
+	}
 	return cerr
 }
 
-// appendCompactJSON appends src after removing insignificant whitespace, validating the value and
-// applying the same HTML / line-separator escaping as encoding/json does for Marshaler output.
-// | appendCompactJSON 去除无意义空白后追加 src，同时校验值的合法性，并按 encoding/json 对
+// marshalerTo executes the v2 MarshalerTo method against a jsontext encoder backed by a temporary
+// buffer, then validates and compacts the produced value with the call's escaping options. |
+// marshalerTo 在由临时缓冲支撑的 jsontext 编码器上执行 v2 的 MarshalerTo 方法，然后按本次调用的
+// 转义选项校验并压缩产出的值。
+func (e *encoder) marshalerTo(m stdjsonv2.MarshalerTo) error {
+	var buf bytes.Buffer
+	var opts Options
+	if e.v2 != nil {
+		opts = e.v2.opts
+	}
+	enc := jsontext.NewEncoder(&buf, opts)
+	if err := m.MarshalJSONTo(enc); err != nil {
+		return err
+	}
+	out := buf.Bytes()
+	if e.v2 != nil && !e.v2.allowInvalidUTF8 && !utf8.Valid(out) {
+		return newMarshalInvalidUTF8Error()
+	}
+	var cerr error
+	if e.v2 != nil {
+		e.buf, cerr = appendV2Raw(e.buf, out, e.v2)
+	} else {
+		e.buf, cerr = appendCompactJSONMode(e.buf, out, e.escapeHTML, true)
+	}
+	return cerr
+}
+
+// appendCompactJSONMode appends src after removing insignificant whitespace, validating the value
+// and applying HTML / line-separator escaping as encoding/json does for Marshaler output. |
+// appendCompactJSONMode 去除无意义空白后追加 src，同时校验值的合法性，并按 encoding/json 对
 // Marshaler 输出的口径做 HTML 与行分隔符转义。
-func appendCompactJSON(dst, src []byte, escapeHTML bool) ([]byte, error) {
+func appendCompactJSONMode(dst, src []byte, escapeHTML, escapeJS bool) ([]byte, error) {
 	if !Valid(src) {
 		return dst, syntaxErr("invalid JSON returned by Marshaler | Marshaler 返回了非法 JSON")
 	}
 	inString := false
 	for i := 0; i < len(src); {
 		if inString {
-			end := scanCompactInsideRun(src, i, escapeHTML)
+			end := scanCompactInsideRun(src, i, escapeHTML || escapeJS)
 			dst = append(dst, src[i:end]...)
 			i = end
 			if i >= len(src) {
@@ -281,7 +340,7 @@ func appendCompactJSON(dst, src []byte, escapeHTML bool) ([]byte, error) {
 			case escapeHTML && (c == '<' || c == '>' || c == '&'):
 				dst = append(dst, '\\', 'u', '0', '0', hexDigit(c>>4), hexDigit(c))
 				i++
-			case escapeHTML && c == 0xE2 && i+2 < len(src) && src[i+1] == 0x80 && src[i+2]&^1 == 0xA8:
+			case escapeJS && c == 0xE2 && i+2 < len(src) && src[i+1] == 0x80 && src[i+2]&^1 == 0xA8:
 				dst = append(dst, '\\', 'u', '2', '0', '2', hexDigit(src[i+2]&0xF))
 				i += 3
 			default:
@@ -311,6 +370,20 @@ func (e *encoder) float(f float64, bits int) error {
 	var err error
 	e.buf, err = appendFloat(e.buf, f, bits)
 	return err
+}
+
+// floatMode applies the v2 StringifyNumbers option around the normal float encoding. |
+// floatMode 在常规浮点编码外应用 v2 的 StringifyNumbers 选项。
+func (e *encoder) floatMode(f float64, bits int) error {
+	if e.v2 != nil && e.v2.stringifyNumbers {
+		e.buf = append(e.buf, '"')
+		if err := e.float(f, bits); err != nil {
+			return err
+		}
+		e.buf = append(e.buf, '"')
+		return nil
+	}
+	return e.float(f, bits)
 }
 
 // appendFloat appends one JSON float to buf. It is the buffer-returning form
@@ -484,23 +557,57 @@ func init() {
 }
 
 func (e *encoder) str(s string) {
+	if e.v2 != nil {
+		var valid bool
+		e.buf, valid = appendJSONStringChecked(e.buf, s, e.escapeHTML, e.v2.escapeJS)
+		if !valid && !e.v2.allowInvalidUTF8 && e.err == nil {
+			e.err = newMarshalInvalidUTF8Error()
+		}
+		return
+	}
 	e.buf = appendJSONString(e.buf, s, e.escapeHTML)
 }
 
-// appendStringSlice appends one JSON string array to buf. | appendStringSlice
-// 把单个 JSON 字符串数组追加到 buf。
-func appendStringSlice(buf []byte, ss []string, escapeHTML bool) []byte {
-	if ss == nil {
-		return append(buf, "null"...)
+// escapeJSFor reports whether the encoder escapes JavaScript line separators. A nil encoder is
+// the v1 plan path. | escapeJSFor 报告编码器是否转义 JavaScript 行分隔符；nil 编码器表示 v1 计划
+// 路径。
+func escapeJSFor(e *encoder) bool {
+	return e == nil || e.v2 == nil || e.v2.escapeJS
+}
+
+// nilSliceAsNull reports whether a nil slice is encoded as null, which is the v1 behavior and the
+// v2 behavior when FormatNilSliceAsNull is set. | nilSliceAsNull 报告 nil 切片是否编码为 null，
+// 这是 v1 行为，也是设置 FormatNilSliceAsNull 后的 v2 行为。
+func nilSliceAsNull(e *encoder) bool {
+	return e == nil || e.v2 == nil || e.v2.formatNilSliceAsNull
+}
+
+// appendStringSliceMode appends one JSON string array to buf. A nil slice becomes null when
+// nilAsNull is set and otherwise becomes an empty array, matching the v1/v2 default distinction. |
+// appendStringSliceMode 把单个 JSON 字符串数组追加到 buf。nilAsNull 为真时 nil 切片输出 null，
+// 否则输出空数组，对应 v1/v2 的默认差异。
+func appendStringSliceMode(buf []byte, ss []string, escapeHTML, escapeJS, nilAsNull bool) []byte {
+	buf, _ = appendStringSliceChecked(buf, ss, escapeHTML, escapeJS, nilAsNull)
+	return buf
+}
+
+// appendStringSliceChecked appends one JSON string array and reports whether every element was
+// valid UTF-8. | appendStringSliceChecked 追加一个 JSON 字符串数组并报告每个元素是否为合法 UTF-8。
+func appendStringSliceChecked(buf []byte, ss []string, escapeHTML, escapeJS, nilAsNull bool) ([]byte, bool) {
+	if ss == nil && nilAsNull {
+		return append(buf, "null"...), true
 	}
+	valid := true
 	buf = append(buf, '[')
 	for i, s := range ss {
 		if i > 0 {
 			buf = append(buf, ',')
 		}
-		buf = appendJSONString(buf, s, escapeHTML)
+		var ok bool
+		buf, ok = appendJSONStringChecked(buf, s, escapeHTML, escapeJS)
+		valid = valid && ok
 	}
-	return append(buf, ']')
+	return append(buf, ']'), valid
 }
 
 // appendTimeValue appends one RFC3339Nano-quoted time to buf, reusing the

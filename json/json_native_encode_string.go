@@ -4,12 +4,17 @@ package json
 
 import "unicode/utf8"
 
-// appendJSONStringSlow appends one JSON string literal with full escaping. It is the shared slow
-// path for the SWAR and NEON scanners. | appendJSONStringSlow 用完整转义追加一个 JSON 字符串
-// 字面量；它是 SWAR 与 NEON 扫描器共享的慢路径。
-func appendJSONStringSlow(buf []byte, s string, escapeHTML bool) []byte {
+// appendJSONStringSlowChecked is the slow escaping path with UTF-8 validation. |
+// appendJSONStringSlowChecked 是带 UTF-8 校验的慢转义路径。
+func appendJSONStringSlowChecked(buf []byte, s string, escapeHTML, escapeJS bool) ([]byte, bool) {
+	valid := true
 	buf = append(buf, '"')
-	for _, r := range s {
+	for i := 0; i < len(s); {
+		r, size := utf8.DecodeRuneInString(s[i:])
+		if r == utf8.RuneError && size == 1 {
+			valid = false
+		}
+		i += size
 		switch r {
 		case '"':
 			buf = append(buf, '\\', '"')
@@ -32,7 +37,11 @@ func appendJSONStringSlow(buf []byte, s string, escapeHTML bool) []byte {
 				buf = utf8.AppendRune(buf, r)
 			}
 		case ' ', ' ':
-			buf = append(buf, '\\', 'u', '2', '0', '2', hexDigit(byte(r)))
+			if escapeJS {
+				buf = append(buf, '\\', 'u', '2', '0', '2', hexDigit(byte(r)))
+			} else {
+				buf = utf8.AppendRune(buf, r)
+			}
 		default:
 			if r < 0x20 {
 				buf = append(buf, '\\', 'u', '0', '0', hexDigit(byte(r)>>4), hexDigit(byte(r)))
@@ -42,5 +51,5 @@ func appendJSONStringSlow(buf []byte, s string, escapeHTML bool) []byte {
 		}
 	}
 	buf = append(buf, '"')
-	return buf
+	return buf, valid
 }

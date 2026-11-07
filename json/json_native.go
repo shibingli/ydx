@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"encoding"
 	stdjson "encoding/json"
+	stdjsonv2 "encoding/json/v2"
 	"io"
 	"reflect"
 	"sync"
@@ -23,9 +24,12 @@ var (
 	numberType          = reflect.TypeOf(stdjson.Number(""))
 	rawMessageType      = reflect.TypeOf(stdjson.RawMessage(nil))
 	timeType            = reflect.TypeOf(time.Time{})
+	durationType        = reflect.TypeOf(time.Duration(0))
 	stringSliceType     = reflect.TypeOf([]string(nil))
 	marshalerType       = reflect.TypeOf((*stdjson.Marshaler)(nil)).Elem()
+	marshalerToType     = reflect.TypeOf((*stdjsonv2.MarshalerTo)(nil)).Elem()
 	unmarshalerType     = reflect.TypeOf((*stdjson.Unmarshaler)(nil)).Elem()
+	unmarshalerFromType = reflect.TypeOf((*stdjsonv2.UnmarshalerFrom)(nil)).Elem()
 	textMarshalerType   = reflect.TypeOf((*encoding.TextMarshaler)(nil)).Elem()
 	textUnmarshalerType = reflect.TypeOf((*encoding.TextUnmarshaler)(nil)).Elem()
 )
@@ -98,6 +102,20 @@ func getEncoder(escapeHTML bool) *encoder {
 	e.buf = e.buf[:0]
 	e.escapeHTML = escapeHTML
 	e.depth = 0
+	e.v2 = nil
+	e.err = nil
+	return e
+}
+
+// getEncoderV2 returns a pooled encoder configured for one v2 call. | getEncoderV2 返回一次 v2 调用
+// 配置好的池化编码器。
+func getEncoderV2(cfg *v2Config) *encoder {
+	e := encoderPool.Get().(*encoder)
+	e.buf = e.buf[:0]
+	e.escapeHTML = cfg.escapeHTML
+	e.depth = 0
+	e.v2 = cfg
+	e.err = nil
 	return e
 }
 
@@ -116,17 +134,32 @@ type emptyInterface struct {
 }
 
 // Marshal returns the JSON encoding of v. | Marshal 返回 v 的 JSON 编码。
-func Marshal(v any) ([]byte, error) {
-	b, err := marshal(v)
+//
+// With no options it keeps v1 semantics exactly. When options are given, the call starts from
+// DefaultOptionsV2 and applies the options as encoding/json/v2 does; pass DefaultOptionsV1 to
+// request v1 semantics explicitly. | 不传选项时完全保持 v1 语义。传入选项时，调用从
+// DefaultOptionsV2 开始并按 encoding/json/v2 的规则应用选项；显式需要 v1 语义时传入
+// DefaultOptionsV1。
+func Marshal(in any, opts ...Options) ([]byte, error) {
+	if len(opts) > 0 {
+		if cfg := parseV2Config(opts); cfg != nil {
+			b, err := marshalV2(in, cfg)
+			if err != nil {
+				return nil, v2MarshalError(in, cfg, err)
+			}
+			return b, nil
+		}
+	}
+	b, err := marshalMode(in, nil)
 	if err != nil {
-		return nil, standardMarshalError(v, err)
+		return nil, standardMarshalError(in, err)
 	}
 	return b, nil
 }
 
 // marshal is the hot path: it performs no error-path compatibility work. |
 // marshal 是热路径，不执行任何错误路径兼容处理。
-func marshal(v any) ([]byte, error) {
+func marshalMode(v any, cfg *v2Config) ([]byte, error) {
 	rv := reflect.ValueOf(v)
 	// A struct passed by value sits behind a non-addressable reflect.Value, which used to send
 	// the whole encoding through the reflective fallback. The interface's data word already
@@ -136,13 +169,17 @@ func marshal(v any) ([]byte, error) {
 	// 就指向该结构体，因此基于指针的快速编码器可直接读取，无需复制、不增加分配；嵌套值仍保持原有
 	// 的可寻址语义。
 	if rv.IsValid() && rv.Kind() == reflect.Struct && !rv.CanAddr() {
-		if info := fastStructFor(rv.Type()); info != nil {
+		if info := fastStructFor(rv.Type()); info != nil && fastStructAllowed(cfg) {
 			base := (*emptyInterface)(unsafe.Pointer(&v)).data
-			e := getEncoder(true)
+			e := getEncoderMode(cfg)
 			if info.encBuf != nil {
 				buf, err := info.encBuf(e, e.buf, base)
 				e.buf = buf
 				if err != nil {
+					putEncoder(e)
+					return nil, err
+				}
+				if err := finalizeBuf(e, cfg); err != nil {
 					putEncoder(e)
 					return nil, err
 				}
@@ -152,6 +189,10 @@ func marshal(v any) ([]byte, error) {
 				return out, nil
 			}
 			if err := info.enc(e, base); err != nil {
+				putEncoder(e)
+				return nil, err
+			}
+			if err := finalizeBuf(e, cfg); err != nil {
 				putEncoder(e)
 				return nil, err
 			}
@@ -189,8 +230,12 @@ func marshal(v any) ([]byte, error) {
 					// 中等载荷可放入池化缓冲：在其中编码后复制出精确大小的结果。一次精准分配
 					// 取代偏大的估算分配与编码器结构体分配，与代码生成型编码器的分配特征一致，
 					// 且复制的成本远低于所省下的分配。
-					e := getEncoder(true)
+					e := getEncoderMode(cfg)
 					if err := e.value(rv); err != nil {
+						putEncoder(e)
+						return nil, err
+					}
+					if err := finalizeBuf(e, cfg); err != nil {
 						putEncoder(e)
 						return nil, err
 					}
@@ -199,16 +244,24 @@ func marshal(v any) ([]byte, error) {
 					putEncoder(e)
 					return out, nil
 				}
-				e := &encoder{escapeHTML: true, buf: make([]byte, 0, est)}
+				e := &encoder{escapeHTML: cfgEscapeHTML(cfg), v2: cfg, buf: make([]byte, 0, est)}
 				if err := e.value(rv); err != nil {
+					return nil, err
+				}
+				if err := finalizeBuf(e, cfg); err != nil {
 					return nil, err
 				}
 				return e.buf, nil
 			}
-			e := getEncoder(true)
+			e := getEncoderMode(cfg)
 			pooled := e.buf
 			e.buf = make([]byte, 0, est)
 			if err := e.value(rv); err != nil {
+				e.buf = pooled[:0]
+				putEncoder(e)
+				return nil, err
+			}
+			if err := finalizeBuf(e, cfg); err != nil {
 				e.buf = pooled[:0]
 				putEncoder(e)
 				return nil, err
@@ -219,8 +272,12 @@ func marshal(v any) ([]byte, error) {
 			return out, nil
 		}
 	}
-	e := getEncoder(true)
+	e := getEncoderMode(cfg)
 	if err := e.value(rv); err != nil {
+		putEncoder(e)
+		return nil, err
+	}
+	if err := finalizeBuf(e, cfg); err != nil {
 		putEncoder(e)
 		return nil, err
 	}

@@ -11,13 +11,15 @@ import (
 
 // fieldInfo is one exported struct field. | fieldInfo 是一个可导出的结构体字段。
 type fieldInfo struct {
-	isZero    func(reflect.Value) bool
-	name      string
-	typ       reflect.Type
-	index     []int
-	omitEmpty bool
-	quoted    bool
-	omitZero  bool
+	isZero     func(reflect.Value) bool
+	name       string
+	typ        reflect.Type
+	index      []int
+	omitEmpty  bool
+	quoted     bool
+	omitZero   bool
+	caseIgnore bool
+	caseStrict bool
 }
 
 // hasUnmarshalMethod reports whether t resolves to a custom unmarshal method, either on the type
@@ -27,6 +29,9 @@ type fieldInfo struct {
 // 因此该字段不能走 destring 路径。
 func hasUnmarshalMethod(t reflect.Type) bool {
 	tr := cachedTraits(t)
+	// UnmarshalerFrom is a v2 extension and must not change v1 ,string precedence, so only the v1
+	// method families participate here; v2 dispatch is handled in buildDecoder. | UnmarshalerFrom
+	// 是 v2 扩展，不得改变 v1 的 ,string 优先级；这里只看 v1 方法族，v2 分派由 buildDecoder 处理。
 	if tr.unmarshaler || tr.textUnmarshaler {
 		return true
 	}
@@ -84,8 +89,10 @@ func makeIsZero(t reflect.Type) func(reflect.Value) bool {
 
 type typeTraits struct {
 	marshaler       bool
+	marshalerTo     bool
 	textMarshaler   bool
 	unmarshaler     bool
+	unmarshalerFrom bool
 	textUnmarshaler bool
 }
 
@@ -97,8 +104,10 @@ func cachedTraits(t reflect.Type) typeTraits {
 	}
 	tr := typeTraits{
 		marshaler:       t.Implements(marshalerType),
+		marshalerTo:     t.Implements(marshalerToType),
 		textMarshaler:   t.Implements(textMarshalerType),
 		unmarshaler:     t.Implements(unmarshalerType),
+		unmarshalerFrom: t.Implements(unmarshalerFromType),
 		textUnmarshaler: t.Implements(textUnmarshalerType),
 	}
 	traitCache.Store(t, tr)
@@ -110,7 +119,8 @@ func cachedTraits(t reflect.Type) typeTraits {
 // 一个结构体类型展平后的字段列表；字段名匹配由各解码器自行编译（精确映射加 EqualFold 扫描），
 // 因此这里不额外保存映射。
 type structInfo struct {
-	fields []fieldInfo
+	fallback *fieldInfo
+	fields   []fieldInfo
 }
 
 var fieldCache sync.Map
@@ -119,7 +129,8 @@ func cachedStruct(t reflect.Type) *structInfo {
 	if v, ok := fieldCache.Load(t); ok {
 		return v.(*structInfo)
 	}
-	info := &structInfo{fields: collectFields(t)}
+	fields, fallback := collectFields(t)
+	info := &structInfo{fields: fields, fallback: fallback}
 	fieldCache.Store(t, info)
 	return info
 }
@@ -127,13 +138,15 @@ func cachedStruct(t reflect.Type) *structInfo {
 // candidateField is a field found while flattening, before the dominance pass. | candidateField
 // 是展平过程中发现的字段，尚未经过支配规则筛选。
 type candidateField struct {
-	typ       reflect.Type
-	name      string
-	index     []int
-	omitEmpty bool
-	omitZero  bool
-	quoted    bool
-	tagged    bool
+	typ        reflect.Type
+	name       string
+	index      []int
+	omitEmpty  bool
+	omitZero   bool
+	quoted     bool
+	caseIgnore bool
+	caseStrict bool
+	tagged     bool
 }
 
 // collectFields flattens the fields of t using the same breadth-first traversal and dominance
@@ -141,7 +154,8 @@ type candidateField struct {
 // two equally ranked fields with the same name cancel each other. | collectFields 使用与
 // encoding/json 相同的广度优先遍历与支配规则展平 t 的字段：更浅的字段优先；同一深度下带 JSON
 // tag 的字段优先；同名的两个同等级字段互相抵消（该名字不参与编解码）。
-func collectFields(t reflect.Type) []fieldInfo {
+func collectFields(t reflect.Type) ([]fieldInfo, *fieldInfo) {
+	var fallback *fieldInfo
 	type scan struct {
 		typ   reflect.Type
 		index []int
@@ -198,19 +212,41 @@ func collectFields(t reflect.Type) []fieldInfo {
 					ft = ft.Elem()
 				}
 				quoted := hasTagOption(opts, "string") && isQuotableKind(ft.Kind())
-				if name != "" || !sf.Anonymous || ft.Kind() != reflect.Struct {
+				caseIgnore, caseStrict := parseCaseOption(opts)
+				if name != "" || !sf.Anonymous || ft.Kind() != reflect.Struct || hasTagOption(opts, "embed") {
 					tagged := name != ""
-					if name == "" {
+					if name == "" && !hasTagOption(opts, "embed") {
 						name = sf.Name
 					}
+					if hasTagOption(opts, "embed") {
+						// An explicit embed promotes a struct field exactly like an anonymous
+						// struct field. With an empty name, a string-keyed map or jsontext.Value
+						// field is the embedded fallback that captures unhandled members. |
+						// 显式 embed 与匿名结构体字段一样提升结构体字段。名称为空时，字符串键 map 或
+						// jsontext.Value 字段是捕获未处理成员的嵌入回退。
+						if ft.Kind() == reflect.Struct {
+							nextCount[ft]++
+							if nextCount[ft] == 1 {
+								next = append(next, scan{typ: ft, index: index})
+							}
+							continue
+						}
+						if name == "" {
+							fb := fieldInfo{typ: sf.Type, index: index}
+							fallback = &fb
+							continue
+						}
+					}
 					field := candidateField{
-						typ:       sf.Type,
-						name:      name,
-						index:     index,
-						omitEmpty: hasTagOption(opts, "omitempty"),
-						omitZero:  hasTagOption(opts, "omitzero"),
-						quoted:    quoted,
-						tagged:    tagged,
+						typ:        sf.Type,
+						name:       name,
+						index:      index,
+						omitEmpty:  hasTagOption(opts, "omitempty"),
+						omitZero:   hasTagOption(opts, "omitzero"),
+						quoted:     quoted,
+						caseIgnore: caseIgnore,
+						caseStrict: caseStrict,
+						tagged:     tagged,
 					}
 					fields = append(fields, field)
 					if count[f.typ] > 1 {
@@ -269,12 +305,25 @@ func collectFields(t reflect.Type) []fieldInfo {
 	sort.Slice(out, func(i, j int) bool { return lessIndex(out[i].index, out[j].index) })
 	resolved := make([]fieldInfo, len(out))
 	for i, f := range out {
-		resolved[i] = fieldInfo{name: f.name, typ: f.typ, index: f.index, omitEmpty: f.omitEmpty, quoted: f.quoted, omitZero: f.omitZero}
+		resolved[i] = fieldInfo{name: f.name, typ: f.typ, index: f.index, omitEmpty: f.omitEmpty, quoted: f.quoted, omitZero: f.omitZero, caseIgnore: f.caseIgnore, caseStrict: f.caseStrict}
 		if f.omitZero {
 			resolved[i].isZero = makeIsZero(f.typ)
 		}
 	}
-	return resolved
+	return resolved, fallback
+}
+
+// hasExplicitJSONTag reports whether t has any field carrying a json tag, which is v2's opt-in
+// signal that a struct with no JSON-representable fields still has a valid representation. |
+// hasExplicitJSONTag 报告 t 是否有任一带 json tag 的字段；这是 v2 用于声明「无可表示字段的结构体
+// 仍有合法表示」的显式信号。
+func hasExplicitJSONTag(t reflect.Type) bool {
+	for i := 0; i < t.NumField(); i++ {
+		if _, ok := t.Field(i).Tag.Lookup("json"); ok {
+			return true
+		}
+	}
+	return false
 }
 
 // lessIndex reports whether a sorts before b as index paths. | lessIndex 报告索引路径 a 是否排在 b 之前。
@@ -285,6 +334,22 @@ func lessIndex(a, b []int) bool {
 		}
 	}
 	return len(a) < len(b)
+}
+
+// parseCaseOption reports whether the v2 case:ignore or case:strict tag option is present. |
+// parseCaseOption 报告是否存在 v2 的 case:ignore 或 case:strict 标签选项。
+func parseCaseOption(opts string) (ignore, strict bool) {
+	for opts != "" {
+		var s string
+		s, opts, _ = strings.Cut(opts, ",")
+		switch s {
+		case "case:ignore":
+			ignore = true
+		case "case:strict":
+			strict = true
+		}
+	}
+	return ignore, strict
 }
 
 // hasTagOption reports whether opts contains name as an exact comma-separated option.

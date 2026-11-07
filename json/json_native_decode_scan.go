@@ -5,6 +5,8 @@ package json
 import (
 	"encoding/binary"
 	stdjson "encoding/json"
+	"encoding/json/jsontext"
+	"errors"
 	"math/bits"
 	"strconv"
 	"strings"
@@ -76,6 +78,11 @@ func (d *decoder) anyObject() (any, error) {
 		val, err := d.valueAny()
 		if err != nil {
 			return nil, err
+		}
+		if d.strictDuplicates() {
+			if _, dup := out[key]; dup {
+				return nil, d.duplicateName(key)
+			}
 		}
 		out[key] = val
 		d.skipSpace()
@@ -203,22 +210,23 @@ func (d *decoder) parseCleanString(start int) (string, bool) {
 		written += 8
 		i += 8
 	}
-	for ; i < len(data); i++ {
-		c := data[i]
+	// Reserving the tail once turns the per-byte capacity check into a single append of the
+	// remaining run. The tail is at most seven bytes after the word loop, so one reservation
+	// covers it. | 一次性预留尾部空间，把逐字节容量检查变成一次连续 append。字循环之后的尾部
+	// 最多七个字节，因此一次预留即可覆盖。
+	d.ensureArenaSpare(8)
+	for j := i; j < len(data); j++ {
+		c := data[j]
 		if c == '"' {
-			d.pos = i + 1
+			d.arena = append(d.arena, data[i:j]...)
+			written += j - i
+			d.pos = j + 1
 			return unsafe.String(unsafe.SliceData(d.arena[arenaStart:]), written), true
 		}
 		if c == '\\' || c < 0x20 || c >= utf8.RuneSelf {
 			d.arena = chunk[:arenaStart]
 			return "", false
 		}
-		if cap(d.arena)-len(d.arena) < 1 {
-			d.arena = chunk[:arenaStart]
-			return "", false
-		}
-		d.arena = append(d.arena, c)
-		written++
 	}
 	d.arena = chunk[:arenaStart]
 	return "", false
@@ -232,9 +240,15 @@ func (d *decoder) parseString() (string, error) {
 	if s, ok := d.parseCleanString(start); ok {
 		return s, nil
 	}
-	if end, slow, nonASCII := scanStringBody(d.data, start); !slow && (!nonASCII || utf8.Valid(d.data[start:end])) {
-		d.pos = end + 1
-		return d.copyString(d.data[start:end]), nil
+	if end, slow, nonASCII := scanStringBody(d.data, start); !slow {
+		valid := !nonASCII || utf8.Valid(d.data[start:end])
+		if nonASCII && !valid && d.v2 != nil && !d.v2.allowInvalidUTF8 {
+			return "", d.invalidUTF8(start + firstInvalidUTF8(d.data[start:end]))
+		}
+		if valid {
+			d.pos = end + 1
+			return d.copyString(d.data[start:end]), nil
+		}
 	}
 	d.pos = start
 	var b strings.Builder
@@ -285,6 +299,9 @@ func (d *decoder) parseString() (string, error) {
 			}
 			r, size := utf8.DecodeRune(d.data[d.pos:])
 			if r == utf8.RuneError && size == 1 {
+				if d.v2 != nil && !d.v2.allowInvalidUTF8 {
+					return "", d.invalidUTF8(d.pos)
+				}
 				b.WriteRune('�')
 				d.pos++
 				continue
@@ -303,11 +320,33 @@ func (d *decoder) parseKey() (string, error) {
 		return "", syntaxErr("expected string | 期望字符串")
 	}
 	start := d.pos + 1
-	if end, slow, _ := scanStringBody(d.data, start); !slow {
+	if end, slow, nonASCII := scanStringBody(d.data, start); !slow {
+		if nonASCII && d.v2 != nil && !d.v2.allowInvalidUTF8 && !utf8.Valid(d.data[start:end]) {
+			return "", d.invalidUTF8(start + firstInvalidUTF8(d.data[start:end]))
+		}
 		d.pos = end + 1
 		return unsafe.String(unsafe.SliceData(d.data[start:end]), end-start), nil
 	}
 	return d.parseString()
+}
+
+// firstInvalidUTF8 returns the offset of the first invalid UTF-8 byte in b, or 0 when b is
+// valid. | firstInvalidUTF8 返回 b 中首个非法 UTF-8 字节的偏移；b 合法时返回 0。
+func firstInvalidUTF8(b []byte) int {
+	for i := 0; i < len(b); {
+		r, size := utf8.DecodeRune(b[i:])
+		if r == utf8.RuneError && size == 1 {
+			return i
+		}
+		i += size
+	}
+	return 0
+}
+
+// invalidUTF8 builds the strict v2 error for an invalid UTF-8 byte at offset. |
+// invalidUTF8 构造严格 v2 模式下 offset 处非法 UTF-8 字节的错误。
+func (d *decoder) invalidUTF8(offset int) error {
+	return &jsontext.SyntacticError{ByteOffset: int64(offset), Err: errors.New("invalid UTF-8")}
 }
 
 // skipString validates one string token without allocating or decoding it. | skipString 在不分配、
@@ -317,7 +356,10 @@ func (d *decoder) skipString() error {
 		return syntaxErr("expected string | 期望字符串")
 	}
 	start := d.pos + 1
-	if end, slow, _ := scanStringBody(d.data, start); !slow {
+	if end, slow, nonASCII := scanStringBody(d.data, start); !slow {
+		if nonASCII && d.v2 != nil && !d.v2.allowInvalidUTF8 && !utf8.Valid(d.data[start:end]) {
+			return d.invalidUTF8(start + firstInvalidUTF8(d.data[start:end]))
+		}
 		d.pos = end + 1
 		return nil
 	}
@@ -511,9 +553,22 @@ func (d *decoder) skipValue() error {
 			d.pos++
 			return nil
 		}
+		var seen map[string]struct{}
+		if d.strictDuplicates() {
+			seen = make(map[string]struct{}, 4)
+		}
 		for {
 			d.skipSpace()
-			if err := d.skipString(); err != nil {
+			if seen != nil {
+				key, err := d.parseKey()
+				if err != nil {
+					return err
+				}
+				if _, dup := seen[key]; dup {
+					return d.duplicateName(key)
+				}
+				seen[key] = struct{}{}
+			} else if err := d.skipString(); err != nil {
 				return err
 			}
 			d.skipSpace()

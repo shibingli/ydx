@@ -11,6 +11,7 @@ package json
 
 import (
 	stdjson "encoding/json"
+	stdjsonv2 "encoding/json/v2"
 	"io"
 )
 
@@ -19,16 +20,25 @@ func Backend() string {
 	return "encoding/json"
 }
 
-// Marshal returns the JSON encoding of v (standard library encoding/json semantics). | Marshal 返回 v 的 JSON 编码（标准库 encoding/json 语义）。
-func Marshal(v any) ([]byte, error) {
-	return stdjson.Marshal(v)
+// Marshal returns the JSON encoding of v (standard library encoding/json semantics). |
+// Marshal 返回 v 的 JSON 编码（标准库 encoding/json 语义）。传入 v2 选项时使用
+// encoding/json/v2 语义。
+func Marshal(in any, opts ...Options) ([]byte, error) {
+	if len(opts) > 0 {
+		return stdjsonv2.Marshal(in, opts...)
+	}
+	return stdjson.Marshal(in)
 }
 
 // Unmarshal parses JSON-encoded data and stores the result in the value pointed to by v. | Unmarshal 解析 JSON 编码的数据并将其存入 v 指向的值。
 //
-// The error returned on failure can be matched with errors.Is against ErrSyntax or ErrTypeMismatch. | 出错时返回的错误可用 errors.Is 判定为 ErrSyntax 或 ErrTypeMismatch。
-func Unmarshal(data []byte, v any) error {
-	return wrapDecodeError(data, v, stdjson.Unmarshal(data, v))
+// The error returned on failure can be matched with errors.Is against ErrSyntax or ErrTypeMismatch. | 出错时返回的错误可用 errors.Is 判定为 ErrSyntax 或 ErrTypeMismatch。传入 v2 选项时使用
+// encoding/json/v2 语义。
+func Unmarshal(in []byte, out any, opts ...Options) error {
+	if len(opts) > 0 {
+		return stdjsonv2.Unmarshal(in, out, opts...)
+	}
+	return wrapDecodeError(in, out, stdjson.Unmarshal(in, out))
 }
 
 // MarshalIndent is like Marshal but indents the output according to prefix and indent. | MarshalIndent 与 Marshal 类似，但按 prefix 与 indent 缩进输出。

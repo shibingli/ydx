@@ -20,7 +20,7 @@ func buildFastFieldDecoder(t reflect.Type) fastFieldDec {
 	// must go through the generic decoder so the method is called. time.Time and []string keep
 	// their dedicated fast decoders. | json.Number 需要自身的校验；其余带自定义解码方法的类型必须
 	// 走通用解码器以调用该方法；time.Time 与 []string 保留专用快速解码器。
-	if t == numberType {
+	if t == numberType || t == durationType {
 		return nil
 	}
 	if t != timeType && t != stringSliceType && hasUnmarshalMethod(t) {

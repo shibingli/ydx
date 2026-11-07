@@ -7,11 +7,15 @@ import (
 	"encoding"
 	"encoding/binary"
 	stdjson "encoding/json"
+	"encoding/json/jsontext"
+	stdjsonv2 "encoding/json/v2"
 	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode"
+	"unicode/utf8"
 	"unsafe"
 
 	"github.com/shibingli/ydx/errs"
@@ -24,6 +28,7 @@ type decoder struct {
 	timeVal         time.Time
 	data            []byte
 	arena           []byte
+	v2              *v2Config
 	pos             int
 	depth           int
 	timeRaw         [40]byte
@@ -31,6 +36,89 @@ type decoder struct {
 	useNumber       bool
 	skipLen         bool
 	disallowUnknown bool
+}
+
+// matchCaseInsensitive reports whether field names are matched case-insensitively. v1 defaults
+// to true and v2 to false. | matchCaseInsensitive 报告字段名是否大小写不敏感匹配；v1 默认为 true，
+// v2 默认为 false。
+func (d *decoder) matchCaseInsensitive() bool {
+	return d.v2 == nil || d.v2.matchCaseInsensitiveNames
+}
+
+// strictDuplicates reports whether duplicate object member names must be rejected. |
+// strictDuplicates 报告是否必须拒绝重复的对象成员名。
+func (d *decoder) strictDuplicates() bool {
+	return d.v2 != nil && !d.v2.allowDuplicateNames
+}
+
+// duplicateName builds the v2 duplicate-member error for name at the current position. |
+// duplicateName 构造当前位置 name 的 v2 重复成员错误。
+func (d *decoder) duplicateName(name string) error {
+	return newDuplicateNameError(int64(d.pos), jsontext.Pointer("/"+escapePointerToken(name)))
+}
+
+// foldMatch reports whether key matches name under v2's case:ignore rule: case-insensitive and
+// ignoring dashes and underscores. | foldMatch 报告 key 是否按 v2 的 case:ignore 规则匹配 name：
+// 大小写不敏感并忽略连字符与下划线。
+func foldMatch(key, name string) bool {
+	for {
+		for len(key) > 0 && (key[0] == '-' || key[0] == '_') {
+			key = key[1:]
+		}
+		for len(name) > 0 && (name[0] == '-' || name[0] == '_') {
+			name = name[1:]
+		}
+		if len(key) == 0 || len(name) == 0 {
+			return len(key) == 0 && len(name) == 0
+		}
+		r1, s1 := utf8.DecodeRuneInString(key)
+		r2, s2 := utf8.DecodeRuneInString(name)
+		if !runesEqualFold(r1, r2) {
+			return false
+		}
+		key, name = key[s1:], name[s2:]
+	}
+}
+
+// runesEqualFold reports Unicode simple-fold equality of two runes. | runesEqualFold 报告两个 rune
+// 的 Unicode 简单折叠相等。
+func runesEqualFold(a, b rune) bool {
+	if a == b {
+		return true
+	}
+	for f := unicode.SimpleFold(a); f != a; f = unicode.SimpleFold(f) {
+		if f == b {
+			return true
+		}
+	}
+	return false
+}
+
+// escapePointerToken escapes one RFC 6901 reference token. | escapePointerToken 转义一个 RFC 6901
+// 引用记号。
+func escapePointerToken(s string) string {
+	needs := false
+	for i := 0; i < len(s); i++ {
+		if s[i] == '~' || s[i] == '/' {
+			needs = true
+			break
+		}
+	}
+	if !needs {
+		return s
+	}
+	b := make([]byte, 0, len(s)+4)
+	for i := 0; i < len(s); i++ {
+		switch s[i] {
+		case '~':
+			b = append(b, '~', '0')
+		case '/':
+			b = append(b, '~', '1')
+		default:
+			b = append(b, s[i])
+		}
+	}
+	return string(b)
 }
 
 // unknownField builds the error reported by Decoder.DisallowUnknownFields for key. |
@@ -150,7 +238,23 @@ func (d *decoder) copyString(b []byte) string {
 var decoderPool = sync.Pool{New: func() any { return new(decoder) }}
 
 // Unmarshal parses data and stores the result in the value pointed to by v. | Unmarshal 解析 data 并写入 v 指向的值。
-func Unmarshal(data []byte, v any) error {
+//
+// With no options it keeps v1 semantics exactly. When options are given, the call starts from
+// DefaultOptionsV2 and applies the options as encoding/json/v2 does; pass DefaultOptionsV1 to
+// request v1 semantics explicitly. | 不传选项时完全保持 v1 语义。传入选项时，调用从
+// DefaultOptionsV2 开始并按 encoding/json/v2 的规则应用选项；显式需要 v1 语义时传入
+// DefaultOptionsV1。
+func Unmarshal(in []byte, out any, opts ...Options) error {
+	if len(opts) > 0 {
+		if cfg := parseV2Config(opts); cfg != nil {
+			return unmarshalV2(in, out, cfg)
+		}
+	}
+	return unmarshalV1(in, out)
+}
+
+// unmarshalV1 is the v1 semantics path. | unmarshalV1 是 v1 语义路径。
+func unmarshalV1(data []byte, v any) error {
 	rv := reflect.ValueOf(v)
 	if !rv.IsValid() || rv.Kind() != reflect.Pointer || rv.IsNil() {
 		var t reflect.Type
@@ -229,12 +333,19 @@ func (d *decoder) unmarshal(rv reflect.Value) error {
 // decodeTarget 解码顶层目标：当目标是可寻址结构体且类型没有竞争的解码方法时，直接使用按内存的
 // 结构体解码器，省去稳态结构体解码原本要付出的解码器查找与反射包装。
 func (d *decoder) decodeTarget(target reflect.Value) error {
-	if target.Kind() == reflect.Struct && target.CanAddr() {
+	if target.Kind() == reflect.Struct && target.CanAddr() && !d.v2DisallowsFastStructDec() {
 		if info := fastStructDecFor(target.Type()); info != nil {
 			return info.dec(d, unsafe.Pointer(target.UnsafeAddr()))
 		}
 	}
 	return d.value(target)
+}
+
+// v2DisallowsFastStructDec reports whether the resolved options need per-field decisions that the
+// direct-memory struct decoder cannot make. | v2DisallowsFastStructDec 报告解析后的选项是否需要
+// 直接按内存结构体解码器无法做出的逐字段判定。
+func (d *decoder) v2DisallowsFastStructDec() bool {
+	return d.v2 != nil && (d.v2.stringifyNumbers || len(d.v2.unmarshalers) > 0)
 }
 
 // skipSpace advances past JSON whitespace. | skipSpace 跳过 JSON 空白。
@@ -303,7 +414,46 @@ func (d *decoder) value(v reflect.Value) error {
 	if d.pos >= len(d.data) {
 		return syntaxErr("unexpected end of JSON input | JSON 输入意外结束")
 	}
+	if d.v2 != nil && len(d.v2.unmarshalers) > 0 {
+		if u, target := d.unmarshalTarget(v); u != nil {
+			return d.applyUnmarshaler(u, target)
+		}
+	}
 	return decoderFor(v.Type())(d, v)
+}
+
+// unmarshalTarget resolves a type-specific unmarshal function for v. A function written for *T
+// applies to an addressable T as well, matching the standard library's dispatch. |
+// unmarshalTarget 为 v 解析类型专用解码函数。为 *T 编写的函数同样适用于可寻址的 T，与标准库分派
+// 一致。
+func (d *decoder) unmarshalTarget(v reflect.Value) (*unmarshalerEntry, reflect.Value) {
+	if u := d.v2.unmarshalerFor(v.Type()); u != nil {
+		return u, v
+	}
+	if v.CanAddr() {
+		if u := d.v2.unmarshalerFor(reflect.PointerTo(v.Type())); u != nil {
+			return u, v.Addr()
+		}
+	}
+	return nil, v
+}
+
+// applyUnmarshaler executes one type-specific unmarshal function over the raw value. |
+// applyUnmarshaler 在原始值上执行一个类型专用解码函数。
+func (d *decoder) applyUnmarshaler(u *unmarshalerEntry, v reflect.Value) error {
+	raw, err := d.captureValueView()
+	if err != nil {
+		return err
+	}
+	if u.unmarshal != nil {
+		return u.unmarshal(raw, v)
+	}
+	var opts Options
+	if d.v2 != nil {
+		opts = d.v2.opts
+	}
+	dec := jsontext.NewDecoder(bytes.NewReader(raw), opts)
+	return u.from(dec, v)
 }
 
 // lazyDecoder defers resolving an element decoder until the first value is decoded.
@@ -387,10 +537,39 @@ func buildDecoder(t reflect.Type) decodeFunc {
 			return typeErr("cannot unmarshal into non-empty interface %s | 无法解析进非空接口 %s", t, t)
 		}
 	}
+	if t == durationType {
+		intDecoder := buildKindDecoder(t)
+		return func(d *decoder, v reflect.Value) error {
+			if d.v2 != nil && !d.v2.formatDurationAsNano {
+				return newUnmarshalSemanticError(t, 0, nil, "no default representation")
+			}
+			return intDecoder(d, v)
+		}
+	}
 	tr := cachedTraits(t)
 	if t.Kind() == reflect.Pointer {
 		elem := lazyDecoder(t.Elem())
 		switch {
+		case tr.unmarshalerFrom:
+			return func(d *decoder, v reflect.Value) error {
+				if d.data[d.pos] == 'n' {
+					if err := d.literal("null"); err != nil {
+						return err
+					}
+					v.SetZero()
+					return nil
+				}
+				if v.IsNil() {
+					v.Set(reflect.New(t.Elem()))
+				}
+				if d.v2 != nil {
+					return decodeUnmarshalerFrom(d, v)
+				}
+				if tr.unmarshaler {
+					return decodeUnmarshaler(d, v)
+				}
+				return elem()(d, v.Elem())
+			}
 		case tr.unmarshaler:
 			return func(d *decoder, v reflect.Value) error {
 				if d.data[d.pos] == 'n' {
@@ -441,13 +620,39 @@ func buildDecoder(t reflect.Type) decodeFunc {
 			}
 		}
 	}
+	if tr.unmarshalerFrom {
+		return func(d *decoder, v reflect.Value) error {
+			if d.v2 != nil {
+				return decodeUnmarshalerFrom(d, v)
+			}
+			if tr.unmarshaler {
+				return decodeUnmarshaler(d, v)
+			}
+			return buildKindDecoder(t)(d, v)
+		}
+	}
 	if tr.unmarshaler {
 		return func(d *decoder, v reflect.Value) error {
 			return decodeUnmarshaler(d, v)
 		}
 	}
 	norm := buildKindDecoder(t)
-	if reflect.PointerTo(t).Implements(unmarshalerType) {
+	ptrUnmarshalerFrom := reflect.PointerTo(t).Implements(unmarshalerFromType)
+	ptrUnmarshaler := reflect.PointerTo(t).Implements(unmarshalerType)
+	if ptrUnmarshalerFrom {
+		return func(d *decoder, v reflect.Value) error {
+			if v.CanAddr() {
+				if d.v2 != nil {
+					return decodeUnmarshalerFrom(d, v.Addr())
+				}
+				if ptrUnmarshaler {
+					return decodeUnmarshaler(d, v.Addr())
+				}
+			}
+			return norm(d, v)
+		}
+	}
+	if ptrUnmarshaler {
 		return func(d *decoder, v reflect.Value) error {
 			if v.CanAddr() {
 				return decodeUnmarshaler(d, v.Addr())
@@ -489,6 +694,22 @@ func decodeUnmarshaler(d *decoder, v reflect.Value) error {
 		return err
 	}
 	return v.Interface().(stdjson.Unmarshaler).UnmarshalJSON(raw)
+}
+
+// decodeUnmarshalerFrom executes the v2 UnmarshalerFrom method against a jsontext decoder over
+// the raw bytes of the value. | decodeUnmarshalerFrom 在基于该值原始字节的 jsontext 解码器上执行
+// v2 的 UnmarshalerFrom 方法。
+func decodeUnmarshalerFrom(d *decoder, v reflect.Value) error {
+	raw, err := d.captureValueView()
+	if err != nil {
+		return err
+	}
+	var opts Options
+	if d.v2 != nil {
+		opts = d.v2.opts
+	}
+	dec := jsontext.NewDecoder(bytes.NewReader(raw), opts)
+	return v.Interface().(stdjsonv2.UnmarshalerFrom).UnmarshalJSONFrom(dec)
 }
 
 func decodeTextUnmarshaler(d *decoder, v reflect.Value) error {
@@ -539,8 +760,9 @@ func lookupFastStructDec(t reflect.Type) *fastStructDecInfo {
 		return nil
 	}
 	tr := cachedTraits(t)
-	if tr.unmarshaler || tr.textUnmarshaler ||
+	if tr.unmarshaler || tr.unmarshalerFrom || tr.textUnmarshaler ||
 		reflect.PointerTo(t).Implements(unmarshalerType) ||
+		reflect.PointerTo(t).Implements(unmarshalerFromType) ||
 		reflect.PointerTo(t).Implements(textUnmarshalerType) {
 		return nil
 	}
@@ -553,14 +775,18 @@ func lookupFastStructDec(t reflect.Type) *fastStructDecInfo {
 
 func buildStructDecoder(t reflect.Type) decodeFunc {
 	info := cachedStruct(t)
+	fallback := info.fallback
 	type decField struct {
-		fast      fastFieldDec
-		dec       func() decodeFunc
-		index     []int
-		offset    uintptr
-		fastOK    bool
-		quoted    bool
-		rawQuoted bool
+		fast       fastFieldDec
+		dec        func() decodeFunc
+		index      []int
+		offset     uintptr
+		idx        int
+		fastOK     bool
+		quoted     bool
+		rawQuoted  bool
+		caseIgnore bool
+		caseStrict bool
 	}
 	fields := make([]*decField, len(info.fields))
 	names := make([]string, len(info.fields))
@@ -576,8 +802,9 @@ func buildStructDecoder(t reflect.Type) decodeFunc {
 		destring := f.quoted && !hasUnmarshalMethod(f.typ)
 		isFast := fastOK && fast != nil && !destring
 		fields[i] = &decField{
-			index: f.index, offset: offset, fast: fast, dec: lazyDecoder(f.typ),
+			index: f.index, offset: offset, idx: i, fast: fast, dec: lazyDecoder(f.typ),
 			fastOK: isFast, quoted: destring, rawQuoted: f.quoted && !destring,
+			caseIgnore: f.caseIgnore, caseStrict: f.caseStrict,
 		}
 		names[i] = f.name
 		if isFast {
@@ -586,7 +813,7 @@ func buildStructDecoder(t reflect.Type) decodeFunc {
 			allFast = false
 		}
 	}
-	var lookup func(string) (*decField, bool)
+	var lookup func(*decoder, string) (*decField, bool)
 	var matchKey func(*decoder) (*decField, bool)
 	matchKey = func(*decoder) (*decField, bool) { return nil, false }
 	if len(names) <= 8 {
@@ -694,7 +921,7 @@ func buildStructDecoder(t reflect.Type) decodeFunc {
 			}
 			return nil, false
 		}
-		lookup = func(key string) (*decField, bool) {
+		lookup = func(d *decoder, key string) (*decField, bool) {
 			if l := len(key); l < len(byLen) {
 				for _, i := range byLen[l] {
 					if key == names[i] {
@@ -709,8 +936,21 @@ func buildStructDecoder(t reflect.Type) decodeFunc {
 				}
 			}
 			for i := range names {
-				if strings.EqualFold(key, names[i]) {
-					return fields[i], true
+				switch {
+				case fields[i].caseStrict:
+					continue
+				case fields[i].caseIgnore:
+					if foldMatch(key, names[i]) {
+						return fields[i], true
+					}
+				case d.matchCaseInsensitive():
+					if d.v2 != nil {
+						if foldMatch(key, names[i]) {
+							return fields[i], true
+						}
+					} else if strings.EqualFold(key, names[i]) {
+						return fields[i], true
+					}
 				}
 			}
 			return nil, false
@@ -725,17 +965,33 @@ func buildStructDecoder(t reflect.Type) decodeFunc {
 		// same relation as ToLower equality. | 精确匹配走映射；大小写不敏感匹配必须使用
 		// strings.EqualFold，而不能用转小写映射——Unicode 简单折叠（如 'ſ' 与 's'）与
 		// ToLower 相等的语义并不相同。
-		lookup = func(key string) (*decField, bool) {
+		lookup = func(d *decoder, key string) (*decField, bool) {
 			if i, ok := byName[key]; ok {
 				return fields[i], true
 			}
 			for i := range names {
-				if strings.EqualFold(key, names[i]) {
-					return fields[i], true
+				switch {
+				case fields[i].caseStrict:
+					continue
+				case fields[i].caseIgnore:
+					if foldMatch(key, names[i]) {
+						return fields[i], true
+					}
+				case d.matchCaseInsensitive():
+					if d.v2 != nil {
+						if foldMatch(key, names[i]) {
+							return fields[i], true
+						}
+					} else if strings.EqualFold(key, names[i]) {
+						return fields[i], true
+					}
 				}
 			}
 			return nil, false
 		}
+	}
+	if fallback != nil {
+		allFast = false
 	}
 	var fastDec func(*decoder, unsafe.Pointer) error
 	if allFast {
@@ -761,6 +1017,13 @@ func buildStructDecoder(t reflect.Type) decodeFunc {
 				d.leave()
 				return nil
 			}
+			strict := d.strictDuplicates()
+			var seen uint64
+			var seenLarge []bool
+			var unknown map[string]struct{}
+			if strict && len(fields) > 64 {
+				seenLarge = make([]bool, len(fields))
+			}
 			for {
 				if d.pos >= len(d.data) || d.data[d.pos] != '"' {
 					return syntaxErr("expected object key | 期望对象键")
@@ -778,7 +1041,29 @@ func buildStructDecoder(t reflect.Type) decodeFunc {
 						return syntaxErr("expected ':' after object key | 对象键之后期望 ':'")
 					}
 					d.pos++
-					f, ok = lookup(key)
+					f, ok = lookup(d, key)
+					if !ok && strict {
+						if unknown == nil {
+							unknown = make(map[string]struct{}, 4)
+						}
+						if _, dup := unknown[key]; dup {
+							return d.duplicateName(key)
+						}
+						unknown[key] = struct{}{}
+					}
+				}
+				if ok && strict {
+					if len(fields) <= 64 {
+						bit := uint64(1) << uint(f.idx)
+						if seen&bit != 0 {
+							return d.duplicateName(names[f.idx])
+						}
+						seen |= bit
+					} else if seenLarge[f.idx] {
+						return d.duplicateName(names[f.idx])
+					} else {
+						seenLarge[f.idx] = true
+					}
 				}
 				d.skipSpace()
 				if d.pos >= len(d.data) {
@@ -826,7 +1111,7 @@ func buildStructDecoder(t reflect.Type) decodeFunc {
 		fastStructDecCache.Store(t, &fastStructDecInfo{dec: fastDec, size: t.Size()})
 	}
 	return func(d *decoder, v reflect.Value) error {
-		if allFast && v.CanAddr() {
+		if allFast && v.CanAddr() && !d.v2DisallowsFastStructDec() {
 			return fastDec(d, unsafe.Pointer(v.UnsafeAddr()))
 		}
 		if d.data[d.pos] == 'n' {
@@ -849,10 +1134,19 @@ func buildStructDecoder(t reflect.Type) decodeFunc {
 			d.pos++
 			return nil
 		}
+		strict := d.strictDuplicates()
+		var seen uint64
+		var seenLarge []bool
+		var unknown map[string]struct{}
+		var fbMembers []byte
+		if strict && len(fields) > 64 {
+			seenLarge = make([]bool, len(fields))
+		}
 		for {
 			if d.pos >= len(d.data) || d.data[d.pos] != '"' {
 				return syntaxErr("expected object key | 期望对象键")
 			}
+			memberStart := d.pos
 			var key string
 			f, ok := matchKey(d)
 			if !ok {
@@ -866,20 +1160,68 @@ func buildStructDecoder(t reflect.Type) decodeFunc {
 					return syntaxErr("expected ':' after object key | 对象键之后期望 ':'")
 				}
 				d.pos++
-				f, ok = lookup(key)
+				f, ok = lookup(d, key)
+				if !ok && strict {
+					if unknown == nil {
+						unknown = make(map[string]struct{}, 4)
+					}
+					if _, dup := unknown[key]; dup {
+						return d.duplicateName(key)
+					}
+					unknown[key] = struct{}{}
+				}
+			}
+			if ok && strict {
+				if len(fields) <= 64 {
+					bit := uint64(1) << uint(f.idx)
+					if seen&bit != 0 {
+						return d.duplicateName(names[f.idx])
+					}
+					seen |= bit
+				} else if seenLarge[f.idx] {
+					return d.duplicateName(names[f.idx])
+				} else {
+					seenLarge[f.idx] = true
+				}
 			}
 			d.skipSpace()
 			if d.pos >= len(d.data) {
 				return syntaxErr("unexpected end of object | 对象意外结束")
 			}
 			if !ok {
-				if d.disallowUnknown {
+				switch {
+				case fallback != nil && fallback.typ.Kind() == reflect.Map && fallback.typ.Key().Kind() == reflect.String:
+					if err := d.decodeFallbackMap(fallback, v, key); err != nil {
+						return err
+					}
+				case fallback != nil:
+					if err := d.skipValue(); err != nil {
+						return err
+					}
+					if len(fbMembers) > 0 {
+						fbMembers = append(fbMembers, ',')
+					}
+					fbMembers = append(fbMembers, d.data[memberStart:d.pos]...)
+				case d.disallowUnknown:
 					return d.unknownField(key)
+				default:
+					if err := d.skipValue(); err != nil {
+						return err
+					}
 				}
-				if err := d.skipValue(); err != nil {
+			} else if d.v2 != nil && len(d.v2.unmarshalers) > 0 {
+				fv, fieldOK, ferr := fieldByIndexAlloc(v, f.index)
+				if ferr != nil {
+					return ferr
+				}
+				if !fieldOK {
+					if err := d.skipValue(); err != nil {
+						return err
+					}
+				} else if err := d.value(fv); err != nil {
 					return err
 				}
-			} else if base != nil && f.fastOK {
+			} else if base != nil && f.fastOK && !d.v2DisallowsFastStructDec() {
 				if err := f.fast(d, unsafe.Add(base, f.offset)); err != nil {
 					return err
 				}
@@ -919,6 +1261,9 @@ func buildStructDecoder(t reflect.Type) decodeFunc {
 					continue
 				case '}':
 					d.pos++
+					if fallback != nil {
+						d.setFallbackValue(fallback, v, fbMembers)
+					}
 					return nil
 				}
 			}
@@ -932,6 +1277,9 @@ func buildStructDecoder(t reflect.Type) decodeFunc {
 				d.skipSpace()
 			case '}':
 				d.pos++
+				if fallback != nil {
+					d.setFallbackValue(fallback, v, fbMembers)
+				}
 				return nil
 			default:
 				return syntaxErr("expected ',' or '}' in object | 对象中期望 ',' 或 '}'")

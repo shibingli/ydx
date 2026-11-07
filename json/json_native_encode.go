@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"encoding"
 	stdjson "encoding/json"
+	stdjsonv2 "encoding/json/v2"
 	"reflect"
 	"sort"
 	"strconv"
@@ -32,10 +33,12 @@ type timeCacheEntry struct {
 }
 
 type encoder struct {
+	err        error
+	v2         *v2Config
 	buf        []byte
 	timeCache  [4]timeCacheEntry
-	escapeHTML bool
 	depth      int
+	escapeHTML bool
 }
 
 // enter marks entry into one value level and enforces the encoder nesting limit. | enter 标记进入一层值并
@@ -125,6 +128,11 @@ func (e *encoder) value(v reflect.Value) error {
 		e.buf = append(e.buf, "null"...)
 		return nil
 	}
+	if e.v2 != nil && len(e.v2.marshalers) > 0 {
+		if m, target := e.marshalTarget(v); m != nil {
+			return e.applyMarshaler(m, target)
+		}
+	}
 	if err := e.enter(); err != nil {
 		return err
 	}
@@ -149,7 +157,25 @@ func buildEncoder(t reflect.Type) encodeFunc {
 			if !isValidNumber(s) {
 				return errs.Detail(errUnsupported, "invalid number %q | 非法数字 %q", s, s)
 			}
+			if e.v2 != nil && e.v2.stringifyNumbers {
+				e.buf = append(e.buf, '"')
+				e.buf = append(e.buf, s...)
+				e.buf = append(e.buf, '"')
+				return nil
+			}
 			e.buf = append(e.buf, s...)
+			return nil
+		}
+	}
+	if t == durationType {
+		return func(e *encoder, v reflect.Value) error {
+			if e.v2 != nil && !e.v2.formatDurationAsNano {
+				if e.err == nil {
+					e.err = newMarshalSemanticError(t, "no default representation")
+				}
+				return e.err
+			}
+			e.buf = strconv.AppendInt(e.buf, v.Int(), 10)
 			return nil
 		}
 	}
@@ -163,8 +189,35 @@ func buildEncoder(t reflect.Type) encodeFunc {
 		}
 	}
 	tr := cachedTraits(t)
+	// The ordinary kind encoder is built lazily: building it eagerly for a struct caches a fast
+	// struct plan, which the top-level non-addressable fast path would then pick even though the
+	// type's marshal method must take precedence. | 常规 kind 编码器延迟构建：对结构体提前构建会
+	// 缓存快速结构体计划，顶层不可寻址快速路径随后会选中它，从而绕过类型必须优先的编码方法。
+	var normOnce sync.Once
+	var norm encodeFunc
+	normFn := func() encodeFunc {
+		normOnce.Do(func() { norm = buildKindEncoder(t) })
+		return norm
+	}
 	if t.Kind() == reflect.Pointer {
 		switch {
+		case tr.marshalerTo:
+			return func(e *encoder, v reflect.Value) error {
+				if v.IsNil() {
+					encodeNull(e)
+					return nil
+				}
+				if e.v2 != nil {
+					return e.marshalerTo(v.Interface().(stdjsonv2.MarshalerTo))
+				}
+				if tr.marshaler {
+					return e.marshaler(v.Interface().(stdjson.Marshaler))
+				}
+				if tr.textMarshaler {
+					return encodeText(e, v)
+				}
+				return e.value(v.Elem())
+			}
 		case tr.marshaler:
 			return func(e *encoder, v reflect.Value) error {
 				if v.IsNil() {
@@ -191,6 +244,20 @@ func buildEncoder(t reflect.Type) encodeFunc {
 			}
 		}
 	}
+	if tr.marshalerTo {
+		return func(e *encoder, v reflect.Value) error {
+			if e.v2 != nil {
+				return e.marshalerTo(v.Interface().(stdjsonv2.MarshalerTo))
+			}
+			if tr.marshaler {
+				return e.marshaler(v.Interface().(stdjson.Marshaler))
+			}
+			if tr.textMarshaler {
+				return encodeText(e, v)
+			}
+			return normFn()(e, v)
+		}
+	}
 	if tr.marshaler {
 		return func(e *encoder, v reflect.Value) error {
 			return e.marshaler(v.Interface().(stdjson.Marshaler))
@@ -201,16 +268,30 @@ func buildEncoder(t reflect.Type) encodeFunc {
 			return encodeText(e, v)
 		}
 	}
-	norm := buildKindEncoder(t)
-	if reflect.PointerTo(t).Implements(marshalerType) {
+	ptrMarshalerTo := reflect.PointerTo(t).Implements(marshalerToType)
+	ptrMarshaler := reflect.PointerTo(t).Implements(marshalerType)
+	if ptrMarshalerTo {
+		return func(e *encoder, v reflect.Value) error {
+			if v.CanAddr() {
+				if e.v2 != nil {
+					return e.marshalerTo(v.Addr().Interface().(stdjsonv2.MarshalerTo))
+				}
+				if ptrMarshaler {
+					return e.marshaler(v.Addr().Interface().(stdjson.Marshaler))
+				}
+			}
+			return normFn()(e, v)
+		}
+	}
+	if ptrMarshaler {
 		return func(e *encoder, v reflect.Value) error {
 			if v.CanAddr() {
 				return e.marshaler(v.Addr().Interface().(stdjson.Marshaler))
 			}
-			return norm(e, v)
+			return normFn()(e, v)
 		}
 	}
-	return norm
+	return normFn()
 }
 
 func encodeText(e *encoder, v reflect.Value) error {
@@ -231,21 +312,33 @@ func buildKindEncoder(t reflect.Type) encodeFunc {
 		}
 	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
 		return func(e *encoder, v reflect.Value) error {
+			if e.v2 != nil && e.v2.stringifyNumbers {
+				e.buf = append(e.buf, '"')
+				e.buf = strconv.AppendInt(e.buf, v.Int(), 10)
+				e.buf = append(e.buf, '"')
+				return nil
+			}
 			e.buf = strconv.AppendInt(e.buf, v.Int(), 10)
 			return nil
 		}
 	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
 		return func(e *encoder, v reflect.Value) error {
+			if e.v2 != nil && e.v2.stringifyNumbers {
+				e.buf = append(e.buf, '"')
+				e.buf = strconv.AppendUint(e.buf, v.Uint(), 10)
+				e.buf = append(e.buf, '"')
+				return nil
+			}
 			e.buf = strconv.AppendUint(e.buf, v.Uint(), 10)
 			return nil
 		}
 	case reflect.Float32:
 		return func(e *encoder, v reflect.Value) error {
-			return e.float(v.Float(), 32)
+			return e.floatMode(v.Float(), 32)
 		}
 	case reflect.Float64:
 		return func(e *encoder, v reflect.Value) error {
-			return e.float(v.Float(), 64)
+			return e.floatMode(v.Float(), 64)
 		}
 	case reflect.String:
 		return func(e *encoder, v reflect.Value) error {
@@ -262,6 +355,9 @@ func buildKindEncoder(t reflect.Type) encodeFunc {
 		return buildStructEncoder(t)
 	default:
 		return func(e *encoder, v reflect.Value) error {
+			if e.v2 != nil {
+				return newMarshalSemanticError(t, "")
+			}
 			return errs.Detail(errUnsupported, "unsupported type %s | 不支持的类型 %s", t, t)
 		}
 	}
@@ -321,7 +417,7 @@ func lazyEncoder(t reflect.Type) func() encodeFunc {
 func buildSliceEncoder(t reflect.Type) encodeFunc {
 	if t.Elem().Kind() == reflect.Uint8 {
 		return func(e *encoder, v reflect.Value) error {
-			if v.IsNil() {
+			if v.IsNil() && nilSliceAsNull(e) {
 				encodeNull(e)
 				return nil
 			}
@@ -344,14 +440,18 @@ func buildSliceEncoder(t reflect.Type) encodeFunc {
 	}
 	return func(e *encoder, v reflect.Value) error {
 		if v.IsNil() {
-			encodeNull(e)
+			if nilSliceAsNull(e) {
+				encodeNull(e)
+			} else {
+				e.buf = append(e.buf, '[', ']')
+			}
 			return nil
 		}
 		if err := e.enter(); err != nil {
 			return err
 		}
 		e.buf = append(e.buf, '[')
-		if sf := fast(); sf.enc != nil {
+		if sf := fast(); sf.enc != nil && !e.v2DisallowsFastStruct() {
 			n := v.Len()
 			if n > 0 {
 				base := unsafe.Pointer(v.Pointer())
@@ -384,9 +484,15 @@ func buildSliceEncoder(t reflect.Type) encodeFunc {
 			if i > 0 {
 				e.buf = append(e.buf, ',')
 			}
-			if err := enc(e, v.Index(i)); err != nil {
+			var ferr error
+			if e.v2 != nil && len(e.v2.marshalers) > 0 {
+				ferr = e.elemValue(v.Index(i))
+			} else {
+				ferr = enc(e, v.Index(i))
+			}
+			if ferr != nil {
 				e.leave()
-				return err
+				return ferr
 			}
 		}
 		e.buf = append(e.buf, ']')
@@ -397,7 +503,7 @@ func buildSliceEncoder(t reflect.Type) encodeFunc {
 
 func buildArrayEncoder(t reflect.Type) encodeFunc {
 	elem := lazyEncoder(t.Elem())
-	return func(e *encoder, v reflect.Value) error {
+	encodeArray := func(e *encoder, v reflect.Value) error {
 		if err := e.enter(); err != nil {
 			return err
 		}
@@ -407,15 +513,47 @@ func buildArrayEncoder(t reflect.Type) encodeFunc {
 			if i > 0 {
 				e.buf = append(e.buf, ',')
 			}
-			if err := enc(e, v.Index(i)); err != nil {
+			var ferr error
+			if e.v2 != nil && len(e.v2.marshalers) > 0 {
+				ferr = e.elemValue(v.Index(i))
+			} else {
+				ferr = enc(e, v.Index(i))
+			}
+			if ferr != nil {
 				e.leave()
-				return err
+				return ferr
 			}
 		}
 		e.buf = append(e.buf, ']')
 		e.leave()
 		return nil
 	}
+	if t.Elem().Kind() == reflect.Uint8 {
+		return func(e *encoder, v reflect.Value) error {
+			if e.v2 != nil && !e.v2.formatByteArrayAsArray {
+				e.str(base64.StdEncoding.EncodeToString(arrayBytes(v)))
+				return nil
+			}
+			return encodeArray(e, v)
+		}
+	}
+	return encodeArray
+}
+
+// arrayBytes returns the bytes of a [N]byte value for base64 encoding. Addressable arrays are
+// viewed without copying; a non-addressable array (for example a value passed directly to
+// Marshal) is copied through its elements. | arrayBytes 返回 [N]byte 的字节用于 Base64 编码。可寻址
+// 数组零拷贝视图；不可寻址数组（例如直接传给 Marshal 的值）经元素复制。
+func arrayBytes(v reflect.Value) []byte {
+	n := v.Len()
+	if v.CanAddr() {
+		return v.Slice(0, n).Bytes()
+	}
+	b := make([]byte, n)
+	for i := 0; i < n; i++ {
+		b[i] = byte(v.Index(i).Uint())
+	}
+	return b
 }
 
 func buildMapKeyEncoder(t reflect.Type) func(reflect.Value) (string, error) {
@@ -450,7 +588,11 @@ func buildMapEncoder(t reflect.Type) encodeFunc {
 	}
 	return func(e *encoder, v reflect.Value) error {
 		if v.IsNil() {
-			encodeNull(e)
+			if e.v2 == nil || e.v2.formatNilMapAsNull {
+				encodeNull(e)
+			} else {
+				e.buf = append(e.buf, '{', '}')
+			}
 			return nil
 		}
 		if err := e.enter(); err != nil {
@@ -475,8 +617,14 @@ func buildMapEncoder(t reflect.Type) encodeFunc {
 			}
 			e.str(entry.key)
 			e.buf = append(e.buf, ':')
-			if err := enc(e, entry.val); err != nil {
-				return err
+			var ferr error
+			if e.v2 != nil && len(e.v2.marshalers) > 0 {
+				ferr = e.elemValue(entry.val)
+			} else {
+				ferr = enc(e, entry.val)
+			}
+			if ferr != nil {
+				return ferr
 			}
 		}
 		e.buf = append(e.buf, '}')
@@ -537,7 +685,20 @@ func lookupFastStruct(t reflect.Type) *fastStructInfo {
 }
 
 func buildStructEncoder(t reflect.Type) encodeFunc {
-	fields := cachedStruct(t).fields
+	info := cachedStruct(t)
+	fields, fallback := info.fields, info.fallback
+	if len(fields) == 0 && t.NumField() > 0 && !hasExplicitJSONTag(t) {
+		// v2 rejects a non-empty struct without any JSON-representable fields unless the type
+		// opts in with an explicit tag; v1 emits an empty object. | v2 拒绝没有任何可表示字段的
+		// 非空结构体，除非类型用显式 tag 声明可表示；v1 输出空对象。
+		return func(e *encoder, v reflect.Value) error {
+			if e.v2 != nil {
+				return newMarshalSemanticError(t, "Go struct has no exported fields")
+			}
+			e.buf = append(e.buf, '{', '}')
+			return nil
+		}
+	}
 	type encField struct {
 		typ         reflect.Type
 		fast        func(*encoder, unsafe.Pointer) error
@@ -566,7 +727,11 @@ func buildStructEncoder(t reflect.Type) encodeFunc {
 	}
 
 	list := make([]encField, len(fields))
-	allFast := true
+	nameSet := make(map[string]struct{}, len(fields))
+	for i := range fields {
+		nameSet[fields[i].name] = struct{}{}
+	}
+	allFast := fallback == nil
 	for i, f := range fields {
 		direct := -1
 		if len(f.index) == 1 {
@@ -611,7 +776,7 @@ func buildStructEncoder(t reflect.Type) encodeFunc {
 			}
 		}
 		kind := uint8(fieldKindNone)
-		if fastOK && fast != nil {
+		if fastOK && fast != nil && f.typ != durationType {
 			kind = fastFieldKind(f.typ)
 		}
 		var quotedEnc func(*encoder, reflect.Value) error
@@ -761,14 +926,14 @@ func buildStructEncoder(t reflect.Type) encodeFunc {
 	// fallback encoder. | encBody 把单个结构体编码进局部缓冲并返回：只回写一次 e.buf，而不是
 	// 每次 append 都回写，从而消除多核 Marshal 剖析中的主要写屏障。字段既不需要时间戳缓存、
 	// 也不需要回退编码器时，e 可以为 nil。
-	var encBody func([]byte, unsafe.Pointer, *encoder, bool) ([]byte, error)
+	var encBody func([]byte, unsafe.Pointer, *encoder, bool, bool) ([]byte, error)
 	var encBuf func(*encoder, []byte, unsafe.Pointer) ([]byte, error)
 	// encSlice encodes a whole []T by repeating encBody with one write-back per slice. |
 	// encSlice 通过重复调用 encBody 编码整个 []T，每个切片只回写一次。
 	var encSlice func(*encoder, []byte, unsafe.Pointer, int) ([]byte, error)
 	if allFast {
 		size := t.Size()
-		encBody = func(buf []byte, base unsafe.Pointer, e *encoder, escapeHTML bool) ([]byte, error) {
+		encBody = func(buf []byte, base unsafe.Pointer, e *encoder, escapeHTML, escapeJS bool) ([]byte, error) {
 			buf = append(buf, '{')
 			for j := range list {
 				f := &list[j]
@@ -782,7 +947,11 @@ func buildStructEncoder(t reflect.Type) encodeFunc {
 				}
 				switch f.kind {
 				case fieldKindString:
-					buf = appendJSONString(buf, *(*string)(p), escapeHTML)
+					var valid bool
+					buf, valid = appendJSONStringChecked(buf, *(*string)(p), escapeHTML, escapeJS)
+					if !valid && e != nil && e.v2 != nil && !e.v2.allowInvalidUTF8 {
+						return buf, newMarshalInvalidUTF8Error()
+					}
 				case fieldKindBool:
 					buf = strconv.AppendBool(buf, *(*bool)(p))
 				case fieldKindInt:
@@ -828,7 +997,11 @@ func buildStructEncoder(t reflect.Type) encodeFunc {
 							return buf, err
 						}
 					case stringSliceType:
-						buf = appendStringSlice(buf, *(*[]string)(p), escapeHTML)
+						var valid bool
+						buf, valid = appendStringSliceChecked(buf, *(*[]string)(p), escapeHTML, escapeJS, nilSliceAsNull(e))
+						if !valid && e != nil && e.v2 != nil && !e.v2.allowInvalidUTF8 {
+							return buf, newMarshalInvalidUTF8Error()
+						}
 					default:
 						if f.fast == nil {
 							return buf, errUnsupported
@@ -846,15 +1019,16 @@ func buildStructEncoder(t reflect.Type) encodeFunc {
 			return buf, nil
 		}
 		encBuf = func(e *encoder, buf []byte, base unsafe.Pointer) ([]byte, error) {
-			return encBody(buf, base, e, e.escapeHTML)
+			return encBody(buf, base, e, e.escapeHTML, escapeJSFor(e))
 		}
 		encSlice = func(e *encoder, buf []byte, base unsafe.Pointer, n int) ([]byte, error) {
+			js := escapeJSFor(e)
 			for i := 0; i < n; i++ {
 				if i > 0 {
 					buf = append(buf, ',')
 				}
 				var err error
-				buf, err = encBody(buf, unsafe.Add(base, uintptr(i)*size), e, e.escapeHTML)
+				buf, err = encBody(buf, unsafe.Add(base, uintptr(i)*size), e, e.escapeHTML, js)
 				if err != nil {
 					return buf, err
 				}
@@ -866,7 +1040,7 @@ func buildStructEncoder(t reflect.Type) encodeFunc {
 		fastStructCache.Store(t, &fastStructInfo{enc: fastEnc, encBuf: encBuf, encSlice: encSlice, size: t.Size()})
 	}
 	return func(e *encoder, v reflect.Value) error {
-		if allFast && v.CanAddr() {
+		if allFast && v.CanAddr() && !e.v2DisallowsFastStruct() {
 			return fastEnc(e, unsafe.Pointer(v.UnsafeAddr()))
 		}
 		var base unsafe.Pointer
@@ -891,7 +1065,14 @@ func buildStructEncoder(t reflect.Type) encodeFunc {
 				}
 			}
 			if f.omitEmpty {
-				if fieldPtr != nil && f.fastEmpty != nil {
+				if e.v2 != nil && !e.v2.omitEmptyWithLegacy {
+					if !fv.IsValid() {
+						fv = reflect.NewAt(f.typ, unsafe.Add(base, f.offset)).Elem()
+					}
+					if emptyV2(fv) {
+						continue
+					}
+				} else if fieldPtr != nil && f.fastEmpty != nil {
 					if f.fastEmpty(fieldPtr) {
 						continue
 					}
@@ -904,7 +1085,7 @@ func buildStructEncoder(t reflect.Type) encodeFunc {
 					}
 				}
 			}
-			if f.omitZero {
+			if f.omitZero || (e.v2 != nil && e.v2.omitZeroStructFields) {
 				if !fv.IsValid() {
 					fv = reflect.NewAt(f.typ, fieldPtr).Elem()
 				}
@@ -925,14 +1106,21 @@ func buildStructEncoder(t reflect.Type) encodeFunc {
 			} else {
 				e.buf = append(e.buf, f.key...)
 			}
-			if f.quotedEnc != nil {
+			if e.v2 != nil && len(e.v2.marshalers) > 0 {
+				if !fv.IsValid() {
+					fv = reflect.NewAt(f.typ, unsafe.Add(base, f.offset)).Elem()
+				}
+				if err := e.value(fv); err != nil {
+					return err
+				}
+			} else if f.quotedEnc != nil {
 				if !fv.IsValid() {
 					fv = reflect.NewAt(f.typ, fieldPtr).Elem()
 				}
 				if err := f.quotedEnc(e, fv); err != nil {
 					return err
 				}
-			} else if fieldPtr != nil && f.fast != nil {
+			} else if fieldPtr != nil && f.fast != nil && !e.v2FastFieldDisallowed() {
 				if err := f.fast(e, fieldPtr); err != nil {
 					return err
 				}
@@ -943,6 +1131,11 @@ func buildStructEncoder(t reflect.Type) encodeFunc {
 				if err := f.enc(e, fv); err != nil {
 					return err
 				}
+			}
+		}
+		if fallback != nil {
+			if err := e.encodeFallback(fallback, v, nameSet, &first); err != nil {
+				return err
 			}
 		}
 		e.buf = append(e.buf, '}')

@@ -4,6 +4,7 @@ package json
 
 import (
 	"encoding"
+	"encoding/json/jsontext"
 	"reflect"
 	"strconv"
 	"strings"
@@ -35,7 +36,25 @@ func buildKindDecoder(t reflect.Type) decodeFunc {
 				return d.literal("null")
 			}
 			if d.data[d.pos] == '"' {
-				return typeErr("cannot unmarshal string into %s | 无法把字符串解析进 %s", t, t)
+				if d.v2 == nil || !d.v2.stringifyNumbers {
+					return typeErr("cannot unmarshal string into %s | 无法把字符串解析进 %s", t, t)
+				}
+				s, err := d.parseString()
+				if err != nil {
+					return err
+				}
+				if strings.ContainsAny(s, ".eE") {
+					return typeErr("cannot unmarshal number %s into %s | 无法把数字 %s 解析进 %s", s, t, s, t)
+				}
+				n, err := strconv.ParseInt(s, 10, bits)
+				if err != nil {
+					return typeErr("number %s overflows %s | 数字 %s 超出 %s", s, t, s, t)
+				}
+				v.SetInt(n)
+				return nil
+			}
+			if d.v2 != nil && d.v2.stringifyNumbers {
+				return typeErr("cannot unmarshal unquoted number into %s | 无法把未加引号的数字解析进 %s", t, t)
 			}
 			b, err := d.parseNumberBytes()
 			if err != nil {
@@ -59,7 +78,25 @@ func buildKindDecoder(t reflect.Type) decodeFunc {
 				return d.literal("null")
 			}
 			if d.data[d.pos] == '"' {
-				return typeErr("cannot unmarshal string into %s | 无法把字符串解析进 %s", t, t)
+				if d.v2 == nil || !d.v2.stringifyNumbers {
+					return typeErr("cannot unmarshal string into %s | 无法把字符串解析进 %s", t, t)
+				}
+				s, err := d.parseString()
+				if err != nil {
+					return err
+				}
+				if strings.ContainsAny(s, ".eE-") {
+					return typeErr("cannot unmarshal number %s into %s | 无法把数字 %s 解析进 %s", s, t, s, t)
+				}
+				n, err := strconv.ParseUint(s, 10, bits)
+				if err != nil {
+					return typeErr("number %s overflows %s | 数字 %s 超出 %s", s, t, s, t)
+				}
+				v.SetUint(n)
+				return nil
+			}
+			if d.v2 != nil && d.v2.stringifyNumbers {
+				return typeErr("cannot unmarshal unquoted number into %s | 无法把未加引号的数字解析进 %s", t, t)
 			}
 			b, err := d.parseNumberBytes()
 			if err != nil {
@@ -82,11 +119,26 @@ func buildKindDecoder(t reflect.Type) decodeFunc {
 			if d.data[d.pos] == 'n' {
 				return d.literal("null")
 			}
-			b, err := d.parseNumberBytes()
-			if err != nil {
-				return err
+			var s string
+			if d.data[d.pos] == '"' {
+				if d.v2 == nil || !d.v2.stringifyNumbers {
+					return typeErr("cannot unmarshal string into %s | 无法把字符串解析进 %s", t, t)
+				}
+				parsed, err := d.parseString()
+				if err != nil {
+					return err
+				}
+				s = parsed
+			} else {
+				if d.v2 != nil && d.v2.stringifyNumbers {
+					return typeErr("cannot unmarshal unquoted number into %s | 无法把未加引号的数字解析进 %s", t, t)
+				}
+				b, err := d.parseNumberBytes()
+				if err != nil {
+					return err
+				}
+				s = bytesString(b)
 			}
-			s := bytesString(b)
 			n, err := strconv.ParseFloat(s, bits)
 			if err != nil {
 				return typeErr("number %s overflows %s | 数字 %s 超出 %s", s, t, s, t)
@@ -111,7 +163,7 @@ func buildKindDecoder(t reflect.Type) decodeFunc {
 		}
 	case reflect.Slice:
 		if t.Elem().Kind() == reflect.Uint8 {
-			return func(d *decoder, v reflect.Value) error {
+			byteDecoder := func(d *decoder, v reflect.Value) error {
 				if d.data[d.pos] == 'n' {
 					if err := d.literal("null"); err != nil {
 						return err
@@ -133,10 +185,44 @@ func buildKindDecoder(t reflect.Type) decodeFunc {
 				v.SetBytes(out)
 				return nil
 			}
+			arrayDecoder := buildSliceDecoder(t)
+			return func(d *decoder, v reflect.Value) error {
+				if d.v2 != nil && d.v2.formatByteArrayAsArray {
+					return arrayDecoder(d, v)
+				}
+				return byteDecoder(d, v)
+			}
 		}
 		return buildSliceDecoder(t)
 	case reflect.Array:
-		return buildArrayDecoder(t)
+		arrayDecoder := buildArrayDecoder(t)
+		if t.Elem().Kind() == reflect.Uint8 {
+			return func(d *decoder, v reflect.Value) error {
+				if d.v2 == nil || d.v2.formatByteArrayAsArray {
+					return arrayDecoder(d, v)
+				}
+				if d.data[d.pos] == 'n' {
+					return d.literal("null")
+				}
+				if d.data[d.pos] != '"' {
+					return typeErr("cannot unmarshal non-string into %s | 无法把非字符串解析进 %s", t, t)
+				}
+				s, err := d.parseString()
+				if err != nil {
+					return err
+				}
+				out, err := base64.StdEncoding.DecodeString(s)
+				if err != nil {
+					return errs.Wrap(err, ErrTypeMismatch)
+				}
+				if len(out) != v.Len() {
+					return newUnmarshalSemanticError(t, jsontext.KindString, nil, "decoded base64 data has incorrect length")
+				}
+				reflect.Copy(v, reflect.ValueOf(out))
+				return nil
+			}
+		}
+		return arrayDecoder
 	case reflect.Map:
 		return buildMapDecoder(t)
 	case reflect.Struct:
@@ -163,6 +249,9 @@ func buildSliceDecoder(t reflect.Type) decodeFunc {
 			return &structBufHolder{slice: reflect.MakeSlice(t, 0, 64)}
 		}
 		return func(d *decoder, v reflect.Value) error {
+			if d.v2DisallowsFastStructDec() {
+				return decodeSlice(d, v, t, elem)
+			}
 			if v.CanAddr() {
 				if v.IsNil() {
 					if len(d.data)-d.pos <= smallStructSliceBytes {
@@ -400,8 +489,14 @@ func decodeSlice(d *decoder, v reflect.Value, t reflect.Type, elem func() decode
 		if d.pos >= len(d.data) {
 			return syntaxErr("unexpected end of array | 数组意外结束")
 		}
-		if err := enc(d, v.Index(i)); err != nil {
-			return err
+		var derr error
+		if d.v2 != nil && len(d.v2.unmarshalers) > 0 {
+			derr = d.value(v.Index(i))
+		} else {
+			derr = enc(d, v.Index(i))
+		}
+		if derr != nil {
+			return derr
 		}
 		i++
 		if d.pos < len(d.data) {
@@ -561,6 +656,9 @@ func decodeFastStructSliceCap(d *decoder, v reflect.Value, t reflect.Type, info 
 
 func buildArrayDecoder(t reflect.Type) decodeFunc {
 	elem := lazyDecoder(t.Elem())
+	strictLength := func(d *decoder) bool {
+		return d.v2 != nil && !d.v2.unmarshalArrayFromAnyLength
+	}
 	return func(d *decoder, v reflect.Value) error {
 		if d.data[d.pos] == 'n' {
 			return d.literal("null")
@@ -577,6 +675,9 @@ func buildArrayDecoder(t reflect.Type) decodeFunc {
 		d.skipSpace()
 		if d.pos < len(d.data) && d.data[d.pos] == ']' {
 			d.pos++
+			if strictLength(d) && v.Len() > 0 {
+				return newUnmarshalSemanticError(t, jsontext.KindBeginArray, nil, "too few array elements")
+			}
 			return nil
 		}
 		i := 0
@@ -586,11 +687,22 @@ func buildArrayDecoder(t reflect.Type) decodeFunc {
 				return syntaxErr("unexpected end of array | 数组意外结束")
 			}
 			if i < v.Len() {
-				if err := enc(d, v.Index(i)); err != nil {
+				var derr error
+				if d.v2 != nil && len(d.v2.unmarshalers) > 0 {
+					derr = d.value(v.Index(i))
+				} else {
+					derr = enc(d, v.Index(i))
+				}
+				if derr != nil {
+					return derr
+				}
+			} else {
+				if strictLength(d) {
+					return newUnmarshalSemanticError(t, jsontext.KindBeginArray, nil, "too many array elements")
+				}
+				if err := d.skipValue(); err != nil {
 					return err
 				}
-			} else if err := d.skipValue(); err != nil {
-				return err
 			}
 			i++
 			d.skipSpace()
@@ -602,6 +714,9 @@ func buildArrayDecoder(t reflect.Type) decodeFunc {
 				d.pos++
 			case ']':
 				d.pos++
+				if strictLength(d) && i < v.Len() {
+					return newUnmarshalSemanticError(t, jsontext.KindBeginArray, nil, "too few array elements")
+				}
 				return nil
 			default:
 				return syntaxErr("expected ',' or ']' in array | 数组中期望 ',' 或 ']'")
@@ -695,6 +810,10 @@ func buildMapDecoder(t reflect.Type) decodeFunc {
 			d.pos++
 			return nil
 		}
+		var seen map[string]struct{}
+		if d.strictDuplicates() {
+			seen = make(map[string]struct{}, 4)
+		}
 		for {
 			d.skipSpace()
 			if d.pos >= len(d.data) || d.data[d.pos] != '"' {
@@ -703,6 +822,12 @@ func buildMapDecoder(t reflect.Type) decodeFunc {
 			key, err := d.parseString()
 			if err != nil {
 				return err
+			}
+			if seen != nil {
+				if _, dup := seen[key]; dup {
+					return d.duplicateName(key)
+				}
+				seen[key] = struct{}{}
 			}
 			d.skipSpace()
 			if d.pos >= len(d.data) || d.data[d.pos] != ':' {
@@ -714,8 +839,14 @@ func buildMapDecoder(t reflect.Type) decodeFunc {
 			if d.pos >= len(d.data) {
 				return syntaxErr("unexpected end of object | 对象意外结束")
 			}
-			if err := enc(d, elemValue); err != nil {
-				return err
+			var derr error
+			if d.v2 != nil && len(d.v2.unmarshalers) > 0 {
+				derr = d.value(elemValue)
+			} else {
+				derr = enc(d, elemValue)
+			}
+			if derr != nil {
+				return derr
 			}
 			mapKey := reflect.New(keyType).Elem()
 			if err := setKey(key, mapKey); err != nil {

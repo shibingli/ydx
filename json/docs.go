@@ -32,6 +32,40 @@
 // 辅助函数。各后端都配备对应的构建约束，互斥编译、符号唯一，因此任何受支持的目标平台都能直接
 // 构建。
 //
+// # v2 API | v2 API
+//
+// Marshal and Unmarshal take variadic Options. With no options they keep v1 semantics exactly;
+// with options they start from DefaultOptionsV2 and apply the options as encoding/json/v2 does.
+// Pass DefaultOptionsV1 (alone or joined) to request v1 semantics explicitly. The full v2 surface
+// is available: MarshalWrite, UnmarshalRead, MarshalEncode, UnmarshalDecode, every v2 option
+// constructor, Marshalers/Unmarshalers with MarshalFunc, MarshalToFunc, UnmarshalFunc and
+// UnmarshalFromFunc, plus the SemanticError and ErrUnknownName error identities. |
+// Marshal 与 Unmarshal 接受变参 Options。不传选项时完全保持 v1 语义；传入选项时从
+// DefaultOptionsV2 开始按 encoding/json/v2 的规则应用。显式需要 v1 语义时传入
+// DefaultOptionsV1（单独传入或经 JoinOptions 合并）。完整 v2 接口均可用：MarshalWrite、
+// UnmarshalRead、MarshalEncode、UnmarshalDecode，全部 v2 选项构造器，Marshalers/Unmarshalers
+// 与 MarshalFunc、MarshalToFunc、UnmarshalFunc、UnmarshalFromFunc，以及 SemanticError 与
+// ErrUnknownName 错误标识。
+//
+//	v2 := []json.Options{json.DefaultOptionsV2()}
+//	b, err := json.Marshal(value, v2...)
+//
+// The v2 semantics are implemented natively by this package, including the default differences
+// (no HTML/JS escaping, nil slice as [], nil map as {}, case-sensitive names, duplicate-name and
+// invalid-UTF-8 rejection, exact array lengths), the v2 struct tag options (case:ignore,
+// case:strict, embed and embedded map/jsontext.Value fallbacks), raw-value canonicalization, and
+// the standard SemanticError / SyntacticError types. No v2 semantic work is delegated to the
+// standard library engine. | 本包原生实现 v2 语义，包括默认差异（不转义 HTML/JS、nil 切片输出 []、
+// nil map 输出 {}、大小写敏感字段名、拒绝重复键与非法 UTF-8、精确数组长度）、v2 结构体标签选项
+// （case:ignore、case:strict、embed 与 map/jsontext.Value 嵌入回退）、原始值规范化，以及标准
+// SemanticError / SyntacticError 类型。v2 语义不转交标准库引擎执行。
+//
+// The v2 symbols rely on the encoding/json/v2 and encoding/json/jsontext packages, which are
+// enabled by default in Go 1.27. Builds with GOEXPERIMENT=none (or older toolchains) cannot
+// reference them; the v1 surface is unaffected. | v2 符号依赖 encoding/json/v2 与
+// encoding/json/jsontext 包，它们在 Go 1.27 中默认启用。GOEXPERIMENT=none（或更早工具链）下
+// 无法引用这些符号；v1 接口不受影响。
+//
 // The semantic baseline is encoding/json: strings are HTML-escaped, map keys are output in
 // sorted order, []byte goes through StdEncoding base64, time.Time goes through RFC3339Nano,
 // and json.Marshaler / json.TextMarshaler / json.RawMessage / omitempty are supported. | 语义基准是
