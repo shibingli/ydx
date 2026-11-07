@@ -58,8 +58,8 @@ type benchUnmarshaler struct {
 // benchMarshalers 返回编码器集合，自适应层与标准库排在最前作为参照。jsoniter 使用与标准库兼容
 // 的配置，使每个实现遵循相同的结构体标签与数值语义。
 func benchMarshalers() []benchMarshaler {
-	return []benchMarshaler{
-		{name: "jsonx", fn: jsonx.Marshal},
+	list := []benchMarshaler{
+		{name: "jsonx", fn: func(v any) ([]byte, error) { return jsonx.Marshal(v) }},
 		{name: "stdlib", fn: stdjson.Marshal},
 		{name: "goccy", fn: goccyjson.Marshal},
 		{name: "jsoniter", fn: jsoniter.ConfigCompatibleWithStandardLibrary.Marshal},
@@ -67,12 +67,13 @@ func benchMarshalers() []benchMarshaler {
 		{name: "segmentio", fn: segjson.Marshal},
 		{name: "go-json-v2", fn: func(v any) ([]byte, error) { return expjson.Marshal(v) }},
 	}
+	return append(list, extraMarshalers...)
 }
 
 // benchUnmarshalers returns the decoder set in the same order. | benchUnmarshalers 按相同顺序返回解码器集合。
 func benchUnmarshalers() []benchUnmarshaler {
-	return []benchUnmarshaler{
-		{name: "jsonx", fn: jsonx.Unmarshal},
+	list := []benchUnmarshaler{
+		{name: "jsonx", fn: func(data []byte, v any) error { return jsonx.Unmarshal(data, v) }},
 		{name: "stdlib", fn: stdjson.Unmarshal},
 		{name: "goccy", fn: goccyjson.Unmarshal},
 		{name: "jsoniter", fn: jsoniter.ConfigCompatibleWithStandardLibrary.Unmarshal},
@@ -80,7 +81,18 @@ func benchUnmarshalers() []benchUnmarshaler {
 		{name: "segmentio", fn: segjson.Unmarshal},
 		{name: "go-json-v2", fn: func(data []byte, v any) error { return expjson.Unmarshal(data, v) }},
 	}
+	return append(list, extraUnmarshalers...)
 }
+
+// extraMarshalers and extraUnmarshalers are populated by the jsonx_v2_bench build-tagged file.
+// The default build compares the published ydx/json v1 API only; the v2 entries need a newer
+// ydx/json than the version pinned in go.mod. | extraMarshalers 与 extraUnmarshalers 由
+// jsonx_v2_bench 构建标签文件填充。默认构建只对比已发布的 ydx/json v1 接口；v2 条目需要比
+// go.mod 固定版本更新的 ydx/json。
+var (
+	extraMarshalers   []benchMarshaler
+	extraUnmarshalers []benchUnmarshaler
+)
 
 // BenchmarkMarshal compares every encoder on the same single-object and 64-object payloads.
 // Each sub-benchmark performs one warm-up call outside the timed region so first-call caches and

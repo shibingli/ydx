@@ -64,13 +64,23 @@ type frameworkCodec struct {
 	unmarshal func([]byte, any) error
 }
 
-// codecs is the comparison set. | codecs 是参与对比的集合。
-var codecs = []frameworkCodec{
+// baseCodecs is the comparison set defined in this file. | baseCodecs 是本文件定义的对比集合。
+var baseCodecs = []frameworkCodec{
 	{name: "stdlib", marshal: stdjson.Marshal, unmarshal: stdjson.Unmarshal},
 	{name: "go-json", marshal: gojson.Marshal, unmarshal: gojson.Unmarshal},
 	{name: "sonic-std", marshal: sonic.ConfigStd.Marshal, unmarshal: sonic.ConfigStd.Unmarshal},
 	{name: "jsoniter-compat", marshal: benchFrameworkJsoniter.Marshal, unmarshal: benchFrameworkJsoniter.Unmarshal},
-	{name: "yd-jsonx", marshal: ydjson.Marshal, unmarshal: ydjson.Unmarshal},
+	{name: "yd-jsonx", marshal: func(v any) ([]byte, error) { return ydjson.Marshal(v) }, unmarshal: func(data []byte, v any) error { return ydjson.Unmarshal(data, v) }},
+}
+
+// extraCodecs is populated by the jsonx_v2_bench build-tagged file. | extraCodecs 由
+// jsonx_v2_bench 构建标签文件填充。
+var extraCodecs []frameworkCodec
+
+// frameworkCodecs returns the full comparison set, including build-tagged entries. |
+// frameworkCodecs 返回完整对比集合，包含构建标签引入的条目。
+func frameworkCodecs() []frameworkCodec {
+	return append(append([]frameworkCodec(nil), baseCodecs...), extraCodecs...)
 }
 
 // dataset is one record count with its pre-encoded payload. | dataset 是一种记录数量及其预编码载荷。
@@ -110,7 +120,7 @@ func buildFrameworkDatasets(tb testing.TB) []frameworkDataset {
 func BenchmarkFrameworkMarshal(b *testing.B) {
 	for _, ds := range buildFrameworkDatasets(b) {
 		ds := ds
-		for _, c := range codecs {
+		for _, c := range frameworkCodecs() {
 			c := c
 			if !benchFrameworkSelected(c.name) {
 				continue
@@ -146,7 +156,7 @@ func BenchmarkFrameworkMarshal(b *testing.B) {
 func BenchmarkFrameworkUnmarshal(b *testing.B) {
 	for _, ds := range buildFrameworkDatasets(b) {
 		ds := ds
-		for _, c := range codecs {
+		for _, c := range frameworkCodecs() {
 			c := c
 			if !benchFrameworkSelected(c.name) {
 				continue
@@ -180,7 +190,7 @@ func BenchmarkFrameworkUnmarshal(b *testing.B) {
 func BenchmarkFrameworkMarshalParallel(b *testing.B) {
 	for _, ds := range buildFrameworkDatasets(b) {
 		ds := ds
-		for _, c := range codecs {
+		for _, c := range frameworkCodecs() {
 			c := c
 			if !benchFrameworkSelected(c.name) {
 				continue
@@ -212,7 +222,7 @@ func BenchmarkFrameworkMarshalParallel(b *testing.B) {
 func BenchmarkFrameworkUnmarshalParallel(b *testing.B) {
 	for _, ds := range buildFrameworkDatasets(b) {
 		ds := ds
-		for _, c := range codecs {
+		for _, c := range frameworkCodecs() {
 			c := c
 			if !benchFrameworkSelected(c.name) {
 				continue
@@ -263,7 +273,7 @@ func TestFrameworkCodecFixtures(t *testing.T) {
 		if err := stdjson.Unmarshal(ds.raw, &wantAny); err != nil {
 			t.Fatalf("%s fixture: %v | 夹具解析失败", ds.name, err)
 		}
-		for _, c := range codecs {
+		for _, c := range frameworkCodecs() {
 			out, err := c.marshal(ds.records)
 			if err != nil {
 				t.Fatalf("%s/%s marshal: %v | 编码失败", ds.name, c.name, err)
