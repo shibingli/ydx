@@ -50,7 +50,7 @@
 | `github.com/shibingli/ydx/i18n` | `i18n` | 多语言目录加载、语言协商与路由中间件 |
 | `github.com/shibingli/ydx/openapi` | `openapi` | OpenAPI 3.0/3.1 文档构建、注解解析与自包含查看器（标准 `net/http`，不依赖路由） |
 | `github.com/shibingli/ydx/openapi/ydrouter` | `ydrouter` | `ydx/router` 适配：路由树转 OpenAPI 文档与路由处理器 |
-| `github.com/shibingli/ydx/jwt` | `jwt` | 免反射 JWT 签发、验签与中间件 |
+| `github.com/shibingli/ydx/auth` | `auth` | 认证与权限工具集总模块（身份、会话、密码、OAuth2/OIDC/SAML 2.0/LDAP/AD/SCIM/WebAuthn/OTP/RBAC/CAS/WS-Fed/联邦登录/RADIUS/KMS/KMIP/XML 安全/国密与中国实名校验，含 `auth/token/jwt`） |
 | `github.com/shibingli/ydx/captcha` | `captcha` | 多类型验证码、风险控制、防录屏/截屏、行为审计、短信/邮件插件与浏览器/Node SDK；内置 8 语言 i18n、明暗主题、内存与 Redis 多机状态 |
 | `github.com/shibingli/ydx/workflow` | `workflow` | BPMN 2.0 可执行子集、中国式审批（或签/会签/票签/加签/转办/委派/退回/撤回）、多版本、自动审批、通知 outbox、AI 决策（OpenAI / Anthropic）与 [GORM 存储](workflow/gormstore) |
 | `github.com/shibingli/ydx/guomi` | `guomi` | 纯 Go 国密套件（SM2/SM3/SM4） |
@@ -65,6 +65,13 @@
 | `github.com/shibingli/ydx/middleware/reqlog` | `reqlog` | 中间件共享的计数写入器与头处理（公开路径，无稳定性承诺） |
 | `github.com/shibingli/ydx/repotest` | `repotest` | 仓库级守卫（模块文件、命名、依赖与架构约束） |
 | `github.com/shibingli/ydx/waf` | `waf` | 自研 SecLang WAF：兼容 ModSecurity/Coraza/OWASP CRS 规则，热更新、自动并行纯求值、钩子、原生/WASM 插件、报警；原生支持 `ydx/router` 与 `net/http` |
+
+> `auth` 是认证与权限工具集总模块，按领域分组：`auth/token/`（`jwt`、`jose`）、
+> `auth/protocol/`（`oauth2`、`oidc`、`saml`、`cas`、`wsfed`、`federation`、`radius`）、
+> `auth/directory/`（`ldap`、`scim`、`ntlm`）、`auth/mfa/`（`otp`、`webauthn`）、`auth/authz/rbac`、
+> `auth/keymgmt/`（`kms`、`kmip`）、`auth/crypto/xmlsig` 与 `auth/identity/cn`。原根目录 `jwt`
+> 模块的实现已迁入 `auth/token/jwt`；新代码请使用 `github.com/shibingli/ydx/auth/token/jwt`。
+> 新包必须放入上述领域目录之一，不得新增平铺子包。
 
 > WAF 使用自研 SecLang 引擎，不依赖 Coraza；仅引入 libinjection-go 与 wazero（纯 Go、无 cgo）。
 > 它**不并入** `middleware` 聚合门面；需要 WAF 的服务直接依赖 `ydx/waf`，不需要的服务不付出

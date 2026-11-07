@@ -31,16 +31,27 @@ ydx 是 yd 全栈框架的可复用组件仓库；组件源码以本仓库为唯
   依赖基准专用库。基准模块的包名同样等于目录名。
 - 产品模块：`errs`、`sysinfo`、`gc`、`buffpool`、`pool`、`protocol`、`nodeid`、`base64`、`json`、`xml`、`afs`、
   `config`、`log`、`regexpx`、`router`、`gorm`、`redis`、`asynq`、`cron`、`cache`、`sse`、`websocket`、
-  `webtransport`、`realtime`、`render`、`i18n`、`openapi`、`openapi/ydrouter`、`jwt`、`captcha`、`guomi`、
+  `webtransport`、`realtime`、`render`、`i18n`、`openapi`、`openapi/ydrouter`、`auth`、`captcha`、`guomi`、
   `workflow`、`waf`、`raft`、`rdma`、`wal`、`wal/zstd`、`wal/uring`、`wal/cronbackup`、`middleware` 及
   `middleware/{accesslog,asyncafter,compress,cors,ratelimit,recovery,requestid,reqlog}`。
+- `auth` 是认证与权限工具集模块，子包共享一个 `go.mod`，并按领域分组：
+  `auth/token/{jwt,jose}`、`auth/protocol/{oauth2,oidc,saml,cas,wsfed,federation,radius}`、
+  `auth/directory/{ldap,scim,ntlm}`、`auth/mfa/{otp,webauthn}`、`auth/authz/rbac`、
+  `auth/keymgmt/{kms,kmip}`、`auth/crypto/xmlsig`、`auth/identity/cn`。**不得新增平铺子包**：
+  新包必须放入上述领域目录之一；目录名必须等于包名，且每个带实现的子包必须有同名主文件；
+  模块根目录提供 `docs.go`、`go.mod`、`go.sum`。`repotest` 会校验该布局。所有 HTTP 处理器以
+  `ydx/router` 为原生入口（`HandleRaw` 或 `router.HandlerFunc`），同时保持 `http.Handler`
+  兼容；不得反向依赖 `yd`。原根目录 `jwt` 模块的实现已迁入 `auth/token/jwt`。`auth/token/jwt`
+  的互操作测试可使用 `github.com/golang-jwt/jwt/v5` 作为仅测试对照，不得进入非测试代码；
+  `auth` 依赖 `ydx/json` v0.1.17（修复原生解码器字符串 arena 越界 panic），发布 `auth` 前必须
+  先发布 `json/v0.1.17`。
 - `waf`（根目录）是唯一的 WAF 实现：自研 SecLang 引擎，原生支持 `router` 与 `net/http`，
   带热更新、钩子、原生/WASM 插件与报警；热路径使用必需字面量/字节集/最小长度预过滤与
   独立规则并发纯求值，动作仍按源码顺序提交。原 `middleware/waf`（Coraza 封装的 v1）已移除；
   依赖方向仍为 yd → ydx，不得让 `waf` 反向依赖 `yd` 或重新引入 Coraza 引擎。
 - `openapi` 是独立模块：核心只接受 `openapi.Route` 并提供标准 `net/http` 处理器，
   **不得** import `ydx/router`；路由适配（`FromRouter` / `Handler`）只在 `openapi/ydrouter`。
-- 基准模块（22 个）：`benchmarks/{base64,buffpool,cache,compress,cron,crypto,json,jwt,log,middleware,pool,raft,rdma,regexpx,router,sse,template,waf,wal,websocket,workflow,xml}`。
+- 基准模块（23 个）：`benchmarks/{auth,base64,buffpool,cache,compress,cron,crypto,json,jwt,log,middleware,pool,raft,rdma,regexpx,router,sse,template,waf,wal,websocket,workflow,xml}`。
   `benchmarks/cache/compare` 是 `cache` 模块内的对比子包。`benchmarks/xml` 以 `xml/v0.1.0`
   子目录标签发布为运行门禁，标签发布前通过仓库外临时 `go.work` 运行。yd 仓库不再保留基准，所有最终结果以本仓为准。
 - 守卫模块：`repotest`。
@@ -54,6 +65,11 @@ ydx 是 yd 全栈框架的可复用组件仓库；组件源码以本仓库为唯
   已发布标签不可移动：组件变更时先提升版本（本次由 `v0.1.0` 提升到 `v0.1.1`），
   再让 yd 同步新版本，禁止用 `-f` 改写已推送的标签。
 - 外部依赖版本以 yd 根 `go.mod` 为准，不得在迁移或常规修改中擅自升级。
+- `auth` 不引入任何第三方认证框架。密码哈希使用 `golang.org/x/crypto`（Argon2id/bcrypt/
+  scrypt，仅 KDF）；国密 SM2/SM3/SM4 使用本仓 `github.com/shibingli/ydx/guomi`；
+  JSON/Base64/XML/JWT 分别使用 `ydx/json`、`ydx/base64`、`ydx/xml` 与模块内 `auth/token/jwt`。
+  OAuth2/OIDC/SAML/LDAP/SCIM/WebAuthn/CAS/RADIUS 均为自研实现。`auth` 的默认内存存储仅用于
+  单进程；多实例必须替换为共享存储实现。
 - `waf` 不依赖 Coraza 引擎；仅使用 `github.com/corazawaf/libinjection-go`（Apache-2.0，
   SQLi/XSS 检测）与 `github.com/tetratelabs/wazero`（Apache-2.0，纯 Go WASM 运行时，无 cgo）。
   两者版本由 `waf/go.mod` 锁定；升级需同步 `waf/README.md` 与 `waf/WASM.md`。`waf` 不并入

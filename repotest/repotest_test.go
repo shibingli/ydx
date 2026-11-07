@@ -514,3 +514,39 @@ func TestBenchmarksStayInBenchmarkModules(t *testing.T) {
 		}
 	}
 }
+
+// authDomains lists the allowed domain directories under auth/. | authDomains 列出 auth/ 下允许的领域目录。
+var authDomains = map[string]bool{
+	"token": true, "protocol": true, "directory": true, "mfa": true,
+	"authz": true, "keymgmt": true, "crypto": true, "identity": true,
+}
+
+// TestAuthPackagesFollowDomainLayout enforces the auth/<domain>/<package> layout. | TestAuthPackagesFollowDomainLayout
+// 强制 auth/<domain>/<package> 布局；新包不得平铺在 auth/ 下。
+func TestAuthPackagesFollowDomainLayout(t *testing.T) {
+	root := repositoryRoot(t)
+	fset := token.NewFileSet()
+	seen := make(map[string]bool)
+	for _, rel := range goFiles(walkFiles(t, root)) {
+		if isTestFile(rel) || !strings.HasPrefix(rel, "auth/") {
+			continue
+		}
+		dir := path.Dir(rel)
+		if dir == "auth" {
+			continue
+		}
+		parts := strings.Split(dir, "/")
+		if len(parts) != 3 || parts[0] != "auth" || !authDomains[parts[1]] {
+			t.Errorf("%s: auth packages must live under auth/<domain>/<package> | auth 包必须位于领域目录下", rel)
+			continue
+		}
+		file := parseFile(t, fset, filepath.Join(root, filepath.FromSlash(rel)))
+		if file.Name.Name != parts[2] {
+			t.Errorf("%s: package %q, want %q | 包名必须等于目录名", rel, file.Name.Name, parts[2])
+		}
+		seen[dir] = true
+	}
+	if len(seen) == 0 {
+		t.Fatal("no auth subpackages found | 未发现 auth 子包")
+	}
+}
