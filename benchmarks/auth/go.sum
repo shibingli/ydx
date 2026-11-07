@@ -66,7 +66,7 @@ github.com/shibingli/ydx/errs v0.1.4 h1:/hexB5eDFA/wWhRof5yxWEVeVlHn1P7IZmys9U4h
 github.com/shibingli/ydx/errs v0.1.4/go.mod h1:N6GNQq5eustT11WTdXOip9bXcIwrFd4c9UWG0gIDuwU=
 github.com/shibingli/ydx/guomi v0.1.2 h1:3oOMJ2poGpqBMgTk5tlaIdSRQuXBeRrjDEJSL2DXS2c=
 github.com/shibingli/ydx/guomi v0.1.2/go.mod h1:4jBKXYmM3vkchqfvyEKVa1O/hc6olEzEsRJc/ZCeoiw=
-github.com/shibingli/ydx/json v0.1.17 h1:908vXpQfXd8MzUFPZokLO+AuBQx5x6R+UT6dZNr9P/E=
+github.com/shibingli/ydx/json v0.1.17 h1:I/eADYHl0ADZ1gtW2PM0bQTKCHv9/XIrbBlfc8AqJBs=
 github.com/shibingli/ydx/json v0.1.17/go.mod h1:eI3oXq++MIcRQOhyJBz/IEEhl9FZoKN80EKM+Jzyj6Q=
 github.com/shibingli/ydx/log v0.1.12 h1:JEvTYP6OHnCLmRDq78m2c6P6AcmFstjaJcBGlQ8dobg=
 github.com/shibingli/ydx/log v0.1.12/go.mod h1:JwUz+k2xHzh7TGdzrj34TqxQ36fFAGEhY2TTs8ZNmps=
