@@ -58,7 +58,7 @@ github.com/russellhaering/goxmldsig v1.6.1 h1:SB7R5ttvrGIDB2juJAK/i7DQ2Ivr7agG+o
 github.com/russellhaering/goxmldsig v1.6.1/go.mod h1:haZkRcLs9W/Xp989fIjP3BrTdbFQveRF0QNZSYoH09w=
 github.com/shibingli/ydx/afs v0.1.6 h1:SCOdkG0X5xCHkaNUW3XjVyOTJXqSi5QOx+Jqbcqj3aY=
 github.com/shibingli/ydx/afs v0.1.6/go.mod h1:SAC2x4VE/zrJMUDfJm2371Zgx4VLi3lch3DPWk/ZVL0=
-github.com/shibingli/ydx/auth v0.1.0 h1:fXUiv+NOuNu8zrfbSRo1g1WwdDPtLBETbXMNYzG0Flo=
+github.com/shibingli/ydx/auth v0.1.0 h1:7/8n4Dwl61BgDI5DorLeO13RtpfYIF5RiCm3Rfl2pQc=
 github.com/shibingli/ydx/auth v0.1.0/go.mod h1:d4o2iYA3+iBQn/p5eQjfSSF0myXa0gfXWuyVjb4NdNk=
 github.com/shibingli/ydx/base64 v0.1.13 h1:S6yBxXASJsPoABqHrz9fkgj7deJYdVYws4Fen83dcEU=
 github.com/shibingli/ydx/base64 v0.1.13/go.mod h1:PaROcW7ashuUWtpu30D3TfA28lDCBop8D39ZrHuK/eE=
