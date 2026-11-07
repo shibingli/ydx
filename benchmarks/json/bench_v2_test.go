@@ -1,5 +1,3 @@
-//go:build jsonx_v2_bench
-
 package json
 
 import (
@@ -8,10 +6,8 @@ import (
 	jsonx "github.com/shibingli/ydx/json"
 )
 
-// The jsonx_v2_bench build tag enables the v2 comparison entries. They require a ydx/json newer
-// than the version pinned in go.mod, so they are opt-in: run with a workspace or a local
-// replace that points at the working tree. | jsonx_v2_bench 构建标签启用 v2 对比条目。它们需要
-// 比 go.mod 固定版本更新的 ydx/json，因此是可选启用：用工作区或指向工作树的本地 replace 运行。
+// The v2 comparison entries are part of the default set now that go.mod requires ydx/json
+// v0.1.16. | 由于 go.mod 已要求 ydx/json v0.1.16，v2 对比条目属于默认集合。
 func init() {
 	extraMarshalers = append(extraMarshalers,
 		benchMarshaler{name: "jsonx-v2", fn: func(v any) ([]byte, error) { return jsonx.Marshal(v, jsonx.DefaultOptionsV2()) }},

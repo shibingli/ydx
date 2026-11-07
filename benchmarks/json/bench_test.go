@@ -84,11 +84,9 @@ func benchUnmarshalers() []benchUnmarshaler {
 	return append(list, extraUnmarshalers...)
 }
 
-// extraMarshalers and extraUnmarshalers are populated by the jsonx_v2_bench build-tagged file.
-// The default build compares the published ydx/json v1 API only; the v2 entries need a newer
-// ydx/json than the version pinned in go.mod. | extraMarshalers 与 extraUnmarshalers 由
-// jsonx_v2_bench 构建标签文件填充。默认构建只对比已发布的 ydx/json v1 接口；v2 条目需要比
-// go.mod 固定版本更新的 ydx/json。
+// extraMarshalers and extraUnmarshalers are populated by bench_v2_test.go and extend the default
+// comparison set with the ydx/json v2 entry. | extraMarshalers 与 extraUnmarshalers 由
+// bench_v2_test.go 填充，用 ydx/json v2 条目扩展默认对比集合。
 var (
 	extraMarshalers   []benchMarshaler
 	extraUnmarshalers []benchUnmarshaler

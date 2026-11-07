@@ -73,8 +73,7 @@ var baseCodecs = []frameworkCodec{
 	{name: "yd-jsonx", marshal: func(v any) ([]byte, error) { return ydjson.Marshal(v) }, unmarshal: func(data []byte, v any) error { return ydjson.Unmarshal(data, v) }},
 }
 
-// extraCodecs is populated by the jsonx_v2_bench build-tagged file. | extraCodecs 由
-// jsonx_v2_bench 构建标签文件填充。
+// extraCodecs is populated by bench_v2_test.go. | extraCodecs 由 bench_v2_test.go 填充。
 var extraCodecs []frameworkCodec
 
 // frameworkCodecs returns the full comparison set, including build-tagged entries. |

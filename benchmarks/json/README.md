@@ -23,7 +23,7 @@ SWAR/标量路径。不需要 `GOEXPERIMENT=simd`，也不依赖 cgo；显式 `j
 
 > 基准模块通过仓库外临时 `go.work` 使用本地工作区的 `ydx/json`，不提交任何本地 `replace`。
 
-> 表中数值于 2026-11-01 在 v0.1.15 上重测（5 次中位数）；`FrameworkUnmarshal/n=1`
+> 表中数值于 2026-11-07 在 v0.1.16 上远程复测（5 次中位数）；`FrameworkUnmarshal/n=1`
 > 另用 10 次独立重测确认（见下文）。长小数与 `time.Time` 载荷的对照见
 > [`../yd-vs-ydx-analysis.md`](../yd-vs-ydx-analysis.md)。
 
@@ -34,10 +34,11 @@ SWAR/标量路径。不需要 `GOEXPERIMENT=simd`，也不依赖 cgo；显式 `j
 
 ## v2 API 对比
 
-v2 条目由 `jsonx_v2_bench` 构建标签启用（默认构建仍兼容 `go.mod` 固定的已发布 `ydx/json` 版本）。在仓库外临时 `go.work` 指向本地工作区后运行：
+v2 条目已包含在默认对比集合中（`go.mod` 要求 `ydx/json` v0.1.16）：
 
 ```bash
-GOWORK=/path/outside/repo/go.work go test -tags jsonx_v2_bench -run '^$' -bench . -benchmem
+cd benchmarks/json
+GOWORK=off go test -run '^$' -bench . -benchmem
 ```
 
 `bench_test.go` 的编码器/解码器集合新增两个条目：
@@ -256,8 +257,7 @@ json.Prewarm(User{}, (*User)(nil), (*[]User)(nil))
 cd benchmarks/json
 GOWORK=off go test -run '^$' -bench . -benchmem -count=3 -benchtime=500ms
 GOWORK=off go test -run '^$' -bench 'BenchmarkParallel' -cpu 16,32 -count=3
-# v2 对比需要本地工作区与构建标签。
-GOWORK=/path/outside/repo/go.work go test -tags jsonx_v2_bench -run '^$' -bench . -benchmem -count=3 -benchtime=500ms
+# v2 条目已包含在默认集合中。
 ```
 
 ## 口径与限制
