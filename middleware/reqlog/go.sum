@@ -8,6 +8,8 @@ github.com/shibingli/ydx/errs v0.1.4 h1:/hexB5eDFA/wWhRof5yxWEVeVlHn1P7IZmys9U4h
 github.com/shibingli/ydx/errs v0.1.4/go.mod h1:N6GNQq5eustT11WTdXOip9bXcIwrFd4c9UWG0gIDuwU=
 github.com/shibingli/ydx/json v0.1.15 h1:nz0SlV2HS46uFhn6YtbYs0yT8wiqir9uqPXlHp5fS+g=
 github.com/shibingli/ydx/json v0.1.15/go.mod h1:eI3oXq++MIcRQOhyJBz/IEEhl9FZoKN80EKM+Jzyj6Q=
+github.com/shibingli/ydx/json v0.1.16 h1:R4pF2vNcHRa32KdJzAv8I0xQeU7NM/0eVdE7Uaxjmz4=
+github.com/shibingli/ydx/json v0.1.16/go.mod h1:eI3oXq++MIcRQOhyJBz/IEEhl9FZoKN80EKM+Jzyj6Q=
 github.com/shibingli/ydx/log v0.1.11 h1:6b8LbcyuIuLAJNLj3GdfKA8hDH8I/PM5+T0/g9MIU60=
 github.com/shibingli/ydx/log v0.1.11/go.mod h1:5/gnsfDGe6vjDyOKXBUC+w5pwsrye0KcM+e9P2c76ac=
 github.com/shibingli/ydx/protocol v0.1.5 h1:+rXZJY3eb5lsArppW0H0T1TLCVO9qCVxJ9juOPvnvyI=

@@ -14,7 +14,7 @@ require (
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/shibingli/ydx/afs v0.1.6 // indirect
 	github.com/shibingli/ydx/base64 v0.1.13 // indirect
-	github.com/shibingli/ydx/json v0.1.15 // indirect
+	github.com/shibingli/ydx/json v0.1.16 // indirect
 	github.com/shibingli/ydx/protocol v0.1.5 // indirect
 	github.com/shibingli/ydx/sysinfo v0.1.4 // indirect
 	github.com/spf13/afero v1.15.0 // indirect

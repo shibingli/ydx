@@ -35,7 +35,7 @@ require (
 	github.com/shibingli/ydx/cron v0.1.2 // indirect
 	github.com/shibingli/ydx/errs v0.1.4 // indirect
 	github.com/shibingli/ydx/gorm v0.1.13 // indirect
-	github.com/shibingli/ydx/json v0.1.15 // indirect
+	github.com/shibingli/ydx/json v0.1.16 // indirect
 	github.com/shibingli/ydx/log v0.1.11 // indirect
 	github.com/shibingli/ydx/protocol v0.1.5 // indirect
 	github.com/shibingli/ydx/regexpx v0.1.13 // indirect

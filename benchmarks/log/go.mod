@@ -14,7 +14,7 @@ require (
 	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/shibingli/ydx/base64 v0.1.13 // indirect
 	github.com/shibingli/ydx/errs v0.1.4 // indirect
-	github.com/shibingli/ydx/json v0.1.15 // indirect
+	github.com/shibingli/ydx/json v0.1.16 // indirect
 	github.com/shibingli/ydx/sysinfo v0.1.4 // indirect
 	go.uber.org/multierr v1.10.0 // indirect
 	golang.org/x/sys v0.29.0 // indirect

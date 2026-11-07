@@ -20,6 +20,8 @@ github.com/shibingli/ydx/afs v0.1.5 h1:y1RHXGKWcrxKnV7IGDhCbrepae7hqWn5pi9uLdhVv
 github.com/shibingli/ydx/afs v0.1.5/go.mod h1:NTyA2McUo1Qze38hf6+Md0zPjOosBbZBL3vm3zBppmY=
 github.com/shibingli/ydx/base64 v0.1.12 h1:xUjtX6yZ/UMDb5DBwvE1a70FVZnX9gQVBgdlEzQ45KY=
 github.com/shibingli/ydx/base64 v0.1.12/go.mod h1:PaROcW7ashuUWtpu30D3TfA28lDCBop8D39ZrHuK/eE=
+github.com/shibingli/ydx/base64 v0.1.13 h1:S6yBxXASJsPoABqHrz9fkgj7deJYdVYws4Fen83dcEU=
+github.com/shibingli/ydx/base64 v0.1.13/go.mod h1:PaROcW7ashuUWtpu30D3TfA28lDCBop8D39ZrHuK/eE=
 github.com/shibingli/ydx/config v0.1.8 h1:vGgqju8UqN3Fq/mIwbN0JYCQJnMz8JrxTF2TJC8oZAQ=
 github.com/shibingli/ydx/config v0.1.8/go.mod h1:FCQCjq65sOQA7UBTuZTvv20GWDUwEJXtLB7oRpTXiTE=
 github.com/shibingli/ydx/cron v0.1.2 h1:qhaUZ7YWi0aEuRXlYuUXYcSQJhzppRBd4Ya2/b7yIrU=
@@ -28,6 +30,8 @@ github.com/shibingli/ydx/errs v0.1.4 h1:/hexB5eDFA/wWhRof5yxWEVeVlHn1P7IZmys9U4h
 github.com/shibingli/ydx/errs v0.1.4/go.mod h1:N6GNQq5eustT11WTdXOip9bXcIwrFd4c9UWG0gIDuwU=
 github.com/shibingli/ydx/json v0.1.14 h1:0K/hlI3/XpEboOB0xK1VBFQnRlbKiookuynNWqBcPxI=
 github.com/shibingli/ydx/json v0.1.14/go.mod h1:aycAqKxJDZK99KNKteoWRdh3dQaEodebSM4kBLfpmSk=
+github.com/shibingli/ydx/json v0.1.16 h1:R4pF2vNcHRa32KdJzAv8I0xQeU7NM/0eVdE7Uaxjmz4=
+github.com/shibingli/ydx/json v0.1.16/go.mod h1:eI3oXq++MIcRQOhyJBz/IEEhl9FZoKN80EKM+Jzyj6Q=
 github.com/shibingli/ydx/log v0.1.11 h1:6b8LbcyuIuLAJNLj3GdfKA8hDH8I/PM5+T0/g9MIU60=
 github.com/shibingli/ydx/log v0.1.11/go.mod h1:5/gnsfDGe6vjDyOKXBUC+w5pwsrye0KcM+e9P2c76ac=
 github.com/shibingli/ydx/protocol v0.1.5 h1:+rXZJY3eb5lsArppW0H0T1TLCVO9qCVxJ9juOPvnvyI=

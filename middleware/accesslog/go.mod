@@ -4,7 +4,7 @@ go 1.27.3
 
 require (
 	github.com/shibingli/ydx/errs v0.1.4
-	github.com/shibingli/ydx/json v0.1.15
+	github.com/shibingli/ydx/json v0.1.16
 	github.com/shibingli/ydx/log v0.1.11
 	github.com/shibingli/ydx/middleware/reqlog v0.1.12
 	github.com/shibingli/ydx/middleware/requestid v0.1.12

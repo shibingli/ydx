@@ -3,7 +3,7 @@ module github.com/shibingli/ydx/middleware/recovery
 go 1.27.3
 
 require (
-	github.com/shibingli/ydx/json v0.1.15
+	github.com/shibingli/ydx/json v0.1.16
 	github.com/shibingli/ydx/log v0.1.11
 	github.com/shibingli/ydx/middleware/requestid v0.1.12
 	github.com/shibingli/ydx/router v0.1.12

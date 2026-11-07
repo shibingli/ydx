@@ -8,7 +8,7 @@ require (
 	github.com/quic-go/quic-go v0.64.1
 	github.com/shibingli/ydx/base64 v0.1.13
 	github.com/shibingli/ydx/errs v0.1.4
-	github.com/shibingli/ydx/json v0.1.15
+	github.com/shibingli/ydx/json v0.1.16
 	github.com/shibingli/ydx/log v0.1.11
 	github.com/shibingli/ydx/protocol v0.1.5
 	github.com/shibingli/ydx/regexpx v0.1.13

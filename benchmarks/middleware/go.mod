@@ -31,7 +31,7 @@ require (
 	github.com/shibingli/ydx/cache v0.1.17 // indirect
 	github.com/shibingli/ydx/config v0.1.8 // indirect
 	github.com/shibingli/ydx/errs v0.1.4 // indirect
-	github.com/shibingli/ydx/json v0.1.15 // indirect
+	github.com/shibingli/ydx/json v0.1.16 // indirect
 	github.com/shibingli/ydx/middleware/accesslog v0.1.12 // indirect
 	github.com/shibingli/ydx/middleware/asyncafter v0.1.12 // indirect
 	github.com/shibingli/ydx/middleware/reqlog v0.1.12 // indirect
