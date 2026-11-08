@@ -2,8 +2,10 @@ package base64
 
 import (
 	"bytes"
+	"errors"
 	"sync"
 
+	"github.com/shibingli/ydx/errs"
 	"github.com/shibingli/ydx/sysinfo"
 )
 
@@ -188,6 +190,18 @@ func (e *Encoding) decodeParallel(dst, src []byte, workers int) (int, error) {
 		// | 后端 DecodedLen 每次调用都加余量时，分块会越过 dst；串行解码保持精确语义。
 		return e.Decode(dst, src)
 	}
+	if !e.raw {
+		// A padding group that ends exactly on a non-final chunk boundary is only valid as the
+		// end of the whole input. Chunk-local Decode would accept it and the following chunk
+		// would decode cleanly, hiding the trailing-data error the serial decoder reports. |
+		// 恰好结束于非末尾分块边界上的填充组只有作为整个输入的结尾才合法。分块内的 Decode 会接受
+		// 它，后续分块又能正常解码，从而掩盖串行解码器报告的填充后残余数据错误。
+		for i := 0; i+1 < len(chunks); i++ {
+			if n := len(chunks[i].src); n > 0 && chunks[i].src[n-1] == byte(e.pad) {
+				return e.Decode(dst, src)
+			}
+		}
+	}
 	type result struct {
 		err      error
 		n        int
@@ -228,24 +242,49 @@ func (e *Encoding) decodeParallel(dst, src []byte, workers int) (int, error) {
 	}
 	wg.Wait()
 	total := 0
+	srcOff := 0
 	var firstErr error
+	firstErrOff := 0
 	fallback := false
 	for i := range results {
 		r := results[i]
 		if r.fallback {
 			fallback = true
-			continue
 		}
-		if r.err != nil && firstErr == nil {
-			firstErr = r.err
+		if firstErr == nil {
+			// Only chunks up to and including the failing one contribute to the partial
+			// result, matching the serial decoder: it stops at the first error and later
+			// chunks are decoded concurrently but never exposed. | 只有失败分块及其之前的分块
+			// 计入部分结果，与串行解码器一致：串行在首个错误处停止，后续分块虽被并发解码但不会
+			// 暴露。
+			if r.err != nil {
+				firstErr = r.err
+				firstErrOff = srcOff
+			}
+			total += r.n
 		}
-		total += r.n
+		srcOff += len(chunks[i].src)
 	}
 	if fallback {
 		return e.Decode(dst, src)
 	}
 	if firstErr != nil {
-		return 0, firstErr
+		return total, shiftCorruptErr(firstErr, firstErrOff)
 	}
 	return total, nil
+}
+
+// shiftCorruptErr rewrites a chunk-relative CorruptInputError into an absolute input offset so
+// parallel errors carry the same position as the serial decoder. |
+// shiftCorruptErr 把分块相对偏移的 CorruptInputError 改写为绝对输入偏移，使并行错误与串行解码器
+// 携带相同位置。
+func shiftCorruptErr(err error, off int) error {
+	if off == 0 {
+		return err
+	}
+	var pos CorruptInputError
+	if errors.As(err, &pos) {
+		return errs.Wrap(CorruptInputError(int64(pos)+int64(off)), ErrInvalidData)
+	}
+	return err
 }

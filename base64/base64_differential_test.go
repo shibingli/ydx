@@ -513,3 +513,101 @@ func TestDifferentialLargeLengths(t *testing.T) {
 		})
 	}
 }
+
+// FuzzDifferentialStdlib feeds arbitrary bytes to every variant and requires Encode,
+// EncodeToString, Decode, DecodeString and AppendDecode to match encoding/base64, including the
+// partial result and CorruptInputError position on failure. Inputs at or above the parallel
+// threshold also compare DecodeParallel with the serial decoder. |
+// FuzzDifferentialStdlib 把任意字节送入每个变体，要求 Encode、EncodeToString、Decode、
+// DecodeString 与 AppendDecode 与 encoding/base64 一致，失败时连部分结果与 CorruptInputError
+// 偏移也必须一致。达到并行阈值的输入还会比较 DecodeParallel 与串行解码器。
+func FuzzDifferentialStdlib(f *testing.F) {
+	seeds := [][]byte{
+		{},
+		[]byte("A"),
+		[]byte("AA"),
+		[]byte("AAA"),
+		[]byte("AA=="),
+		[]byte("AA=A"),
+		[]byte("AA==AA"),
+		[]byte("AAAA="),
+		[]byte("!@#$%^&*()"),
+		[]byte("AAAA\r\nAAAA"),
+		[]byte("AA\r\n==\r\n"),
+		{0x00, 0x7F, 0x80, 0xFF, 'A', '+', '/', '-', '_', '='},
+		edgeBytes(257),
+		bytes.Repeat([]byte("QUJD"), 65*1024),              // exactly the parallel threshold | 恰好为并行阈值
+		append(bytes.Repeat([]byte("QUJD"), 65*1024), '!'), // invalid byte after the threshold | 阈值之后的非法字节
+	}
+	for _, seed := range seeds {
+		f.Add(seed)
+	}
+	f.Fuzz(func(t *testing.T, data []byte) {
+		for _, v := range codecVariants() {
+			want := v.std.EncodeToString(data)
+			if got := v.enc.EncodeToString(data); got != want {
+				t.Fatalf("%s: EncodeToString = %q, want %q | 编码结果不一致", v.name, got, want)
+			}
+			encoded := make([]byte, v.enc.EncodedLen(len(data)))
+			v.enc.Encode(encoded, data)
+			if string(encoded) != want {
+				t.Fatalf("%s: Encode = %q, want %q | 编码结果不一致", v.name, encoded, want)
+			}
+			stdEncoded := make([]byte, v.std.EncodedLen(len(data)))
+			v.std.Encode(stdEncoded, data)
+			if !bytes.Equal(encoded, stdEncoded) {
+				t.Fatalf("%s: Encode differs from stdlib | 编码与标准库不一致", v.name)
+			}
+			checkDecodeLikeStdlib(t, v.enc, v.std, data)
+			checkDecodeLikeStdlib(t, v.enc, v.std, encoded)
+			stdDecoded, stdErr := v.std.DecodeString(string(data))
+			ydDecoded, ydErr := v.enc.DecodeString(string(data))
+			if (ydErr == nil) != (stdErr == nil) {
+				t.Fatalf("%s: DecodeString err=%v, want %v | DecodeString 错误不一致", v.name, ydErr, stdErr)
+			}
+			if !bytes.Equal(ydDecoded, stdDecoded) {
+				t.Fatalf("%s: DecodeString result differs | DecodeString 结果不一致", v.name)
+			}
+			if stdErr != nil {
+				assertCorruptAt(t, ydErr, stdErr)
+			}
+			stdAppended, stdAppErr := v.std.AppendDecode(nil, data)
+			ydAppended, ydAppErr := v.enc.AppendDecode(nil, data)
+			if (ydAppErr == nil) != (stdAppErr == nil) || !bytes.Equal(ydAppended, stdAppended) {
+				t.Fatalf("%s: AppendDecode result differs | AppendDecode 结果不一致", v.name)
+			}
+			if stdAppErr != nil {
+				assertCorruptAt(t, ydAppErr, stdAppErr)
+			}
+			checkParallelLikeSerial(t, v.enc, data)
+		}
+	})
+}
+
+// checkParallelLikeSerial requires DecodeParallel to reproduce the serial decoder's count,
+// error position and decoded prefix once the input reaches the parallel threshold. |
+// checkParallelLikeSerial 要求输入达到并行阈值后，DecodeParallel 复现串行解码器的字节数、错误
+// 位置与已解码前缀。
+func checkParallelLikeSerial(t *testing.T, e *Encoding, src []byte) {
+	t.Helper()
+	if len(src) < parallelMinBytes || len(src) > 1<<20 {
+		return
+	}
+	need := e.DecodedLen(len(src))
+	wantOut := make([]byte, need)
+	wantN, wantErr := e.Decode(wantOut, src)
+	gotOut := make([]byte, need)
+	gotN, gotErr := e.decodeParallel(gotOut, src, 2)
+	if (gotErr == nil) != (wantErr == nil) {
+		t.Fatalf("DecodeParallel err=%v, want %v | 并行解码错误不一致", gotErr, wantErr)
+	}
+	if gotN != wantN || !bytes.Equal(gotOut[:gotN], wantOut[:wantN]) {
+		t.Fatalf("DecodeParallel n=%d, want %d | 并行解码字节数不一致", gotN, wantN)
+	}
+	if wantErr != nil {
+		var gotPos, wantPos CorruptInputError
+		if !errors.As(gotErr, &gotPos) || !errors.As(wantErr, &wantPos) || gotPos != wantPos {
+			t.Fatalf("DecodeParallel err=%v, want %v | 并行解码错误偏移不一致", gotErr, wantErr)
+		}
+	}
+}
