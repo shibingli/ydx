@@ -129,7 +129,7 @@ MANIFEST 分片索引、`.idx` 侧车、快照隔离事务、AES-256-GCM / SM4-G
 
 ## 运行方式
 
-本模块是运行门禁：`go.mod` 锁定已发布的 `github.com/shibingli/ydx/wal v0.2.0`，
+本模块是运行门禁：`go.mod` 锁定已发布的 `github.com/shibingli/ydx/wal v0.3.2`，
 **不得提交本地 `replace`**。直接运行：
 
 ```bash

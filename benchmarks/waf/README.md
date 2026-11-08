@@ -1,7 +1,7 @@
 # ydx/waf vs Coraza 性能与兼容性基准
 
 [`github.com/shibingli/ydx/waf`](../../waf) 是基于自研 SecLang 引擎的 WAF。本模块在同一
-`net/http` 请求路径上对比 `ydx/waf v0.1.5` 与 Coraza `v3.8.1`，并验证 OWASP CRS 4.29.0
+`net/http` 请求路径上对比 `ydx/waf v0.1.7` 与 Coraza `v3.8.1`，并验证 OWASP CRS 4.29.0
 全量规则下的检测一致性。组件模块本身不依赖 Coraza 或任何基准专用库。
 
 ## 环境与方法

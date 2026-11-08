@@ -16,6 +16,8 @@ github.com/shibingli/ydx/afs v0.1.6 h1:SCOdkG0X5xCHkaNUW3XjVyOTJXqSi5QOx+Jqbcqj3
 github.com/shibingli/ydx/afs v0.1.6/go.mod h1:SAC2x4VE/zrJMUDfJm2371Zgx4VLi3lch3DPWk/ZVL0=
 github.com/shibingli/ydx/auth v0.1.0 h1:7/8n4Dwl61BgDI5DorLeO13RtpfYIF5RiCm3Rfl2pQc=
 github.com/shibingli/ydx/auth v0.1.0/go.mod h1:d4o2iYA3+iBQn/p5eQjfSSF0myXa0gfXWuyVjb4NdNk=
+github.com/shibingli/ydx/auth v0.1.4 h1:DPs5nASzhOmqwNQiDj1jYMGgjNMW3IevIo50ADPioEw=
+github.com/shibingli/ydx/auth v0.1.4/go.mod h1:yScyXhcqZckPQITMGkGREquxdsdV58VK1nI7yS8EYv0=
 github.com/shibingli/ydx/base64 v0.1.13 h1:S6yBxXASJsPoABqHrz9fkgj7deJYdVYws4Fen83dcEU=
 github.com/shibingli/ydx/base64 v0.1.13/go.mod h1:PaROcW7ashuUWtpu30D3TfA28lDCBop8D39ZrHuK/eE=
 github.com/shibingli/ydx/base64 v0.1.14 h1:uDqr0ZW5kkmuHDjV74UrCtFm5NNC/7ZJLtzGCO5r0IM=
@@ -48,5 +50,7 @@ go.yaml.in/yaml/v3 v3.0.5 h1:N6y/pJk8buWs9NY5ERU2HSMfm+IuD/OtfdAnq6kESPw=
 go.yaml.in/yaml/v3 v3.0.5/go.mod h1:HVTZu1O7/Vkt2N+BFy8Zza+lnLsABggaTM2ZpNIGuKg=
 golang.org/x/crypto v0.58.0 h1:COkYLr4k7nDI4r6QtMML2AfzeIswWHAJthLS6K/M/54=
 golang.org/x/crypto v0.58.0/go.mod h1:Xh+kl5A+M0gMiWDytH2Hhr5Z7WbNCpv/eB/EFgfSk+w=
+golang.org/x/sys v0.49.0 h1:XbzkgYJHdqh/8m2Uu0W/dQv8nktxx4BFHp1M0gROTXA=
+golang.org/x/sys v0.49.0/go.mod h1:hNLxWAXmnKAxqDtdwIYC4bM9oQPEecfsnNMuSxOs3og=
 golang.org/x/text v0.43.0 h1:1QivrlhwAsnMOcqgOdl9my7s9OyZl8O5/UGUTJVXoWc=
 golang.org/x/text v0.43.0/go.mod h1:hbSIYA/amXcRXTFSZqh8tWHEoqRvvbKPJ2uz/KU+a+s=

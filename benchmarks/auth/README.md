@@ -23,9 +23,8 @@ CAS、WS-Federation、RADIUS、KMS/KMIP 与中国特色校验。本模块只对*
 JWT 的签发/验签对比（golang-jwt、jwx、go-jose、cristalhq、kataras）见
 [../jwt/README.md](../jwt/README.md)，本模块不重复。
 
-> `auth v0.1.0` 依赖 `ydx/json v0.1.17`（修复原生解码器字符串 arena 越界 panic）。
-> 在该标签发布前，本模块需通过仓库外文件代理或 `go.work` 解析 `json`；标签发布后可直接使用默认
-> `GOPROXY`。
+> `auth v0.1.4` 依赖 `ydx/base64 v0.1.14`、`ydx/json v0.1.18` 与 `ydx/xml v0.1.2`，
+> 均已发布，可直接使用默认 `GOPROXY`。
 
 ## 场景
 

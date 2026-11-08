@@ -60,6 +60,8 @@ github.com/shibingli/ydx/sysinfo v0.1.4 h1:tskX01rpXsDkEmCCz+2s7FnSQqrQCY8SQUeWs
 github.com/shibingli/ydx/sysinfo v0.1.4/go.mod h1:31V/9KavYTLUNJwAsgCHuN6z2wvRpS20En5em99nmqE=
 github.com/shibingli/ydx/waf v0.1.5 h1:kGPnws7b8PMpXVcjbLdzS0ZAmbsc9l3bR0g5jnTa4VI=
 github.com/shibingli/ydx/waf v0.1.5/go.mod h1:uQwVrcLUhqOjmrCD3qq9O+AiA5yMMb9NLoRanqoDLps=
+github.com/shibingli/ydx/waf v0.1.7 h1:f1q//obiQekLlEg2R3SxPfgXZApEpRics5MaGipKl0o=
+github.com/shibingli/ydx/waf v0.1.7/go.mod h1:2LvjbmdIdCjfvGMNzXyrR2wrWs+oDf3x92mESsdnzgI=
 github.com/shibingli/ydx/xml v0.1.1 h1:7HQET+xWIpkuGYIybHcbtAqoUNAZpaiPAuIBQsMgjE4=
 github.com/shibingli/ydx/xml v0.1.1/go.mod h1:Fhy+RjUDPao+aIPiBXdySTPonqMjjMc7pSTozcqIcKQ=
 github.com/shibingli/ydx/xml v0.1.2 h1:fFVLEwBRLXZWxF/Kg/bVmVP1gWph/wE21ESROzC+mqI=

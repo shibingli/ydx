@@ -11,7 +11,7 @@ require (
 	github.com/lestrrat-go/jwx/v4 v4.5.0
 	github.com/pquerna/otp v1.5.0
 	github.com/russellhaering/goxmldsig v1.6.1
-	github.com/shibingli/ydx/auth v0.1.0
+	github.com/shibingli/ydx/auth v0.1.4
 	github.com/shibingli/ydx/base64 v0.1.14
 	github.com/shibingli/ydx/json v0.1.18
 	github.com/shibingli/ydx/router v0.1.14

@@ -8,7 +8,7 @@ require (
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/kataras/jwt v0.3.0
 	github.com/lestrrat-go/jwx/v4 v4.5.0
-	github.com/shibingli/ydx/auth v0.1.0
+	github.com/shibingli/ydx/auth v0.1.4
 	github.com/shibingli/ydx/errs v0.1.4
 )
 
@@ -26,5 +26,6 @@ require (
 	github.com/spf13/afero v1.15.0 // indirect
 	github.com/valyala/fastjson v1.6.10 // indirect
 	golang.org/x/crypto v0.58.0 // indirect
+	golang.org/x/sys v0.49.0 // indirect
 	golang.org/x/text v0.43.0 // indirect
 )

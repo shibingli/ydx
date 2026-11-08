@@ -2,8 +2,8 @@
 
 > 环境、指标口径与公平性约定见 [../README.md](../README.md)。
 
-> `auth/token/jwt` 所属的 `auth v0.1.0` 依赖 `ydx/json v0.1.17`（修复原生解码器字符串 arena
-> 越界 panic）；该标签发布前需通过仓库外文件代理或 `go.work` 解析 `json`。
+> `auth/token/jwt` 所属的 `auth v0.1.4` 依赖 `ydx/base64 v0.1.14`、`ydx/json v0.1.18` 与
+> `ydx/xml v0.1.2`，均已发布，可直接使用默认 `GOPROXY`。
 
 `github.com/shibingli/ydx/auth/token/jwt` 提供免反射的 JWS 签发、验签与声明校验，并可选
 `Token.Release` 把令牌归还池中以实现零分配验签。本基准比较它与

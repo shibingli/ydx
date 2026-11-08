@@ -36,6 +36,8 @@ github.com/shibingli/ydx/afs v0.1.6 h1:SCOdkG0X5xCHkaNUW3XjVyOTJXqSi5QOx+Jqbcqj3
 github.com/shibingli/ydx/afs v0.1.6/go.mod h1:SAC2x4VE/zrJMUDfJm2371Zgx4VLi3lch3DPWk/ZVL0=
 github.com/shibingli/ydx/auth v0.1.3 h1:WTOxuyq7vWa2hxMbiNZb3Hx4Obmz9v6K/NckvHLKDjM=
 github.com/shibingli/ydx/auth v0.1.3/go.mod h1:VLjmnAoyY/AxnhD0E7d4C5/iatVQiqWBp42Zvz3ALyo=
+github.com/shibingli/ydx/auth v0.1.4 h1:DPs5nASzhOmqwNQiDj1jYMGgjNMW3IevIo50ADPioEw=
+github.com/shibingli/ydx/auth v0.1.4/go.mod h1:yScyXhcqZckPQITMGkGREquxdsdV58VK1nI7yS8EYv0=
 github.com/shibingli/ydx/base64 v0.1.13 h1:S6yBxXASJsPoABqHrz9fkgj7deJYdVYws4Fen83dcEU=
 github.com/shibingli/ydx/base64 v0.1.13/go.mod h1:PaROcW7ashuUWtpu30D3TfA28lDCBop8D39ZrHuK/eE=
 github.com/shibingli/ydx/base64 v0.1.14 h1:uDqr0ZW5kkmuHDjV74UrCtFm5NNC/7ZJLtzGCO5r0IM=

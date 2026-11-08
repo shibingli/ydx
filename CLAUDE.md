@@ -43,9 +43,9 @@ ydx 是 yd 全栈框架的可复用组件仓库；组件源码以本仓库为唯
   `ydx/router` 为原生入口（`HandleRaw` 或 `router.HandlerFunc`），同时保持 `http.Handler`
   兼容；不得反向依赖 `yd`。原根目录 `jwt` 模块的实现已迁入 `auth/token/jwt`。`auth/token/jwt`
   的互操作测试可使用 `github.com/golang-jwt/jwt/v5` 作为仅测试对照，不得进入非测试代码；
-  `auth` 依赖已发布的 `ydx/json` v0.1.17（修复原生解码器字符串 arena 越界 panic 与
-  fast-struct 解码计划缓存污染）。`auth v0.1.3` 起包含 Kerberos/GSSAPI、TPM 2.0 EK activation
-  与完整 JOSE 序列化。
+  `auth` 依赖已发布的 `ydx/base64` v0.1.14、`ydx/json` v0.1.18（修复原生解码器字符串 arena
+  越界、fast-struct 解码计划缓存污染与浮点编码差异）与 `ydx/xml` v0.1.2。`auth v0.1.4` 包含
+  Kerberos/GSSAPI、TPM 2.0 EK activation 与完整 JOSE 序列化。
 - `authstore` 是独立模块，提供 auth 各包 Store/Registry/Replay/Challenge/State 接口的 Redis
   多实例实现（`authstore/redis` 与 `authstore/{oauth2,oidc,saml,cas,scim,rbac,kms,kmip,wsfed,otp,webauthn}`）。
   依赖方向只能是 `authstore → auth`，auth 不得反向依赖 authstore/Redis；测试使用 miniredis，
@@ -87,7 +87,7 @@ ydx 是 yd 全栈框架的可复用组件仓库；组件源码以本仓库为唯
   `router.HandlerFuncRaw` 底层函数类型相同，可直接
   `r.HandleRaw(http.MethodPost, path, tr.Handler().ServeHTTP)`，原生 `net/http`
   使用 `tr.Handler()`，不再维护独立的 `raft/ydrouter` 包。
-- `raft` 的持久化 WAL 由 `github.com/shibingli/ydx/wal`（v0.2.0）提供：每个
+- `raft` 的持久化 WAL 由 `github.com/shibingli/ydx/wal`（v0.3.2）提供：每个
   `PersistBatch` 是一条原子记录，分段轮转、组提交、稀疏索引、META/MANIFEST/
   RECOVERY 与平台写路径（Unix `writev`/`pwritev2`，Windows 暂存合并）均由该模块
   维护；raft 只保留快照文件与 `HARDSTATE`，并通过 `AppendDirect` 单写者快路径
@@ -118,7 +118,7 @@ ydx 是 yd 全栈框架的可复用组件仓库；组件源码以本仓库为唯
   `Target` 接口校验 `BackupNow`、`BackupConfigured` 与 `SupportsSnapshotBackup`，
   **不 import `wal`**，仅依赖 `cron` v0.1.2 与 `errs`；默认
   `Overlap=SkipIfRunning`，错误交给 cron 记录/重试，可选择附加到既有调度器。
-  发布顺序在 `wal/v0.2.0` 之后，按 `wal/cronbackup/v0.1.0` 独立打标签。
+  发布顺序在 `wal/v0.3.2` 之后，按 `wal/cronbackup/v0.1.2` 独立打标签。
 - `repotest` 会扫描本地 `replace`、旧包前缀、yd 依赖、标准库编解码直引、`fmt.Errorf`、
   直接 `panic`、外键、cgo SQLite 与基准位置。
 
