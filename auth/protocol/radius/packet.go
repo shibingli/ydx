@@ -207,14 +207,18 @@ func parseAttributes(raw []byte) (Attributes, error) {
 // decodeVendorAttributes splits a Vendor-Specific value into sub-attributes. | decodeVendorAttributes
 // 将 Vendor-Specific 值拆分为子属性。
 //
-// A value carrying only the Vendor-Id is preserved verbatim so a round trip is lossless. Values
-// with structurally invalid sub-attribute lengths are rejected. | 仅携带 Vendor-Id 的值会原样保留，
-// 保证往返无损。子属性长度结构非法的值会被拒绝。
+// A value carrying only the Vendor-Id is preserved verbatim so a round trip is lossless. The
+// reserved Vendor-Id 0 is rejected consistently with MarshalPacket, and values with structurally
+// invalid sub-attribute lengths are rejected. | 仅携带 Vendor-Id 的值会原样保留，保证往返无损。
+// 保留值 Vendor-Id 0 与 MarshalPacket 一致地被拒绝；子属性长度结构非法的值也会被拒绝。
 func decodeVendorAttributes(value []byte) (Attributes, error) {
 	if len(value) < 4 {
 		return nil, errs.Detail(ErrInvalidAttribute, "vendor-specific value length %d is below 4", len(value))
 	}
 	vendorID := binary.BigEndian.Uint32(value[:4])
+	if vendorID == 0 {
+		return nil, errs.Detail(ErrInvalidAttribute, "vendor ID 0 is reserved")
+	}
 	if len(value) == 4 {
 		return Attributes{{
 			Type:     AttrVendorSpecific,

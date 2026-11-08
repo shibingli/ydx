@@ -141,9 +141,9 @@ func CtxPrincipalOrError(c *router.Ctx) (*Principal, error) {
 // BearerToken extracts an RFC 6750 bearer token from the Authorization header. | BearerToken 从
 // Authorization 头提取 RFC 6750 承载令牌。
 //
-// The scheme match is case-insensitive and exactly one space is skipped, matching common resource
-// server behavior. An empty token returns ErrUnauthorized. | 方案匹配不区分大小写，并跳过一个空格，
-// 与常见资源服务器行为一致。令牌为空时返回 ErrUnauthorized。
+// The scheme match is case-insensitive and the scheme must be followed by one space; leading and
+// trailing whitespace around the token is removed. An empty token returns ErrUnauthorized. | 方案匹配
+// 不区分大小写且方案后必须有一个空格；令牌前后的空白会被移除。令牌为空时返回 ErrUnauthorized。
 func BearerToken(r *http.Request) (string, error) {
 	if r == nil {
 		return "", ErrUnauthorized
@@ -190,16 +190,24 @@ type IntrospectedToken struct {
 	Scope string `json:"scope,omitempty"`
 	// ClientID, Username, TokenType, Sub, Aud, Iss, JTI mirror RFC 7662 fields. | ClientID、Username、
 	// TokenType、Sub、Aud、Iss、JTI 对应 RFC 7662 字段。
-	ClientID  string `json:"client_id,omitempty"`
-	Username  string `json:"username,omitempty"`
+	ClientID string `json:"client_id,omitempty"`
+	// Username is the resource owner login name. | Username 是资源所有者登录名。
+	Username string `json:"username,omitempty"`
+	// TokenType is the token type such as "Bearer". | TokenType 是令牌类型，例如 "Bearer"。
 	TokenType string `json:"token_type,omitempty"`
-	Sub       string `json:"sub,omitempty"`
-	Aud       any    `json:"aud,omitempty"`
-	Iss       string `json:"iss,omitempty"`
-	JTI       string `json:"jti,omitempty"`
-	// Exp, Iat and Nbf are NumericDate values. | Exp、Iat 与 Nbf 是 NumericDate 取值。
+	// Sub is the subject identifier. | Sub 是主体标识。
+	Sub string `json:"sub,omitempty"`
+	// Aud is the audience value or array. | Aud 是受众值或数组。
+	Aud any `json:"aud,omitempty"`
+	// Iss is the issuer identifier. | Iss 是签发方标识。
+	Iss string `json:"iss,omitempty"`
+	// JTI is the token identifier. | JTI 是令牌标识。
+	JTI string `json:"jti,omitempty"`
+	// Exp is the expiration NumericDate. | Exp 是过期 NumericDate。
 	Exp int64 `json:"exp,omitempty"`
+	// Iat is the issue NumericDate. | Iat 是签发 NumericDate。
 	Iat int64 `json:"iat,omitempty"`
+	// Nbf is the not-before NumericDate. | Nbf 是生效前 NumericDate。
 	Nbf int64 `json:"nbf,omitempty"`
 	// CNF is the confirmation claim, for example {"jkt": "..."} for DPoP. | CNF 是确认声明，例如 DPoP 的 {"jkt": "..."}。
 	CNF map[string]any `json:"cnf,omitempty"`

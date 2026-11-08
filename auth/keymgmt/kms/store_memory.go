@@ -306,7 +306,7 @@ func (s *MemoryStore) ListAudit(_ context.Context, filter AuditFilter) ([]*Audit
 	matched := make([]*AuditEvent, 0, len(s.audits))
 	for _, event := range s.audits {
 		if filter.matches(event) {
-			matched = append(matched, event.Clone())
+			matched = append(matched, event)
 		}
 	}
 	s.mu.RUnlock()
@@ -320,5 +320,12 @@ func (s *MemoryStore) ListAudit(_ context.Context, filter AuditFilter) ([]*Audit
 	if filter.Limit > 0 && filter.Limit < len(matched) {
 		matched = matched[:filter.Limit]
 	}
-	return matched, nil
+	// Clone only the page that is returned; events are append-only and immutable, so sharing the
+	// stored pointers during filtering and sorting is safe. | 只克隆返回页；事件只追加且不可变，
+	// 因此在过滤与排序期间共享存储指针是安全的。
+	out := make([]*AuditEvent, 0, len(matched))
+	for _, event := range matched {
+		out = append(out, event.Clone())
+	}
+	return out, nil
 }

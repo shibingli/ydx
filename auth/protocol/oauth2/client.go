@@ -432,14 +432,19 @@ type Introspection struct {
 	Username string `json:"username,omitempty"`
 	// TokenType is the token type. | TokenType 是令牌类型。
 	TokenType string `json:"token_type,omitempty"`
-	// Sub, Aud, Iss and JTI mirror the JWT claims. | Sub、Aud、Iss 与 JTI 对应 JWT 声明。
+	// Sub is the subject claim. | Sub 是主体声明。
 	Sub string `json:"sub,omitempty"`
-	Aud any    `json:"aud,omitempty"`
+	// Aud is the audience claim. | Aud 是受众声明。
+	Aud any `json:"aud,omitempty"`
+	// Iss is the issuer claim. | Iss 是签发方声明。
 	Iss string `json:"iss,omitempty"`
+	// JTI is the token identifier claim. | JTI 是令牌标识声明。
 	JTI string `json:"jti,omitempty"`
-	// Exp, Iat and Nbf are NumericDate values. | Exp、Iat 与 Nbf 是 NumericDate 取值。
+	// Exp is the expiry NumericDate. | Exp 是过期 NumericDate。
 	Exp int64 `json:"exp,omitempty"`
+	// Iat is the issue NumericDate. | Iat 是签发 NumericDate。
 	Iat int64 `json:"iat,omitempty"`
+	// Nbf is the not-before NumericDate. | Nbf 是生效前 NumericDate。
 	Nbf int64 `json:"nbf,omitempty"`
 	// CNF is the confirmation claim. | CNF 是确认声明。
 	CNF map[string]any `json:"cnf,omitempty"`
@@ -481,9 +486,10 @@ type DeviceAuthResponse struct {
 	VerificationURI string `json:"verification_uri"`
 	// VerificationURIComplete includes the user code. | VerificationURIComplete 包含用户码。
 	VerificationURIComplete string `json:"verification_uri_complete,omitempty"`
-	// ExpiresIn and Interval are seconds. | ExpiresIn 与 Interval 以秒为单位。
+	// ExpiresIn is the device-code lifetime in seconds. | ExpiresIn 是设备码寿命（秒）。
 	ExpiresIn int64 `json:"expires_in"`
-	Interval  int64 `json:"interval,omitempty"`
+	// Interval is the minimum polling interval in seconds. | Interval 是最小轮询间隔（秒）。
+	Interval int64 `json:"interval,omitempty"`
 }
 
 // DeviceAuthorization starts an RFC 8628 flow. | DeviceAuthorization 启动 RFC 8628 流程。

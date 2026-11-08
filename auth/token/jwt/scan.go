@@ -80,40 +80,91 @@ func isHex4(b []byte) bool {
 		return false
 	}
 	for _, c := range b {
-		if !('0' <= c && c <= '9' || 'a' <= c && c <= 'f' || 'A' <= c && c <= 'F') {
+		isDigit := '0' <= c && c <= '9'
+		isLowerHex := 'a' <= c && c <= 'f'
+		isUpperHex := 'A' <= c && c <= 'F'
+		if !isDigit && !isLowerHex && !isUpperHex {
 			return false
 		}
 	}
 	return true
 }
 
-// skipContainer skips the JSON object or array starting at b[i]. | skipContainer 跳过从 b[i] 开始的 JSON 对象或数组。
-func skipContainer(b []byte, i int) (int, bool) {
-	depth := 0
-	for ; i < len(b); i++ {
+// skipObject skips the body of an object after its opening brace at depth. | skipObject 跳过
+// 开括号之后、位于 depth 层的对象主体。
+func skipObject(b []byte, i, depth int) (int, bool) {
+	i = skipSpace(b, i)
+	if i < len(b) && b[i] == '}' {
+		return i + 1, true
+	}
+	for {
+		i = skipSpace(b, i)
+		if i >= len(b) || b[i] != '"' {
+			return i, false
+		}
+		end, ok := skipString(b, i)
+		if !ok {
+			return end, false
+		}
+		i = skipSpace(b, end)
+		if i >= len(b) || b[i] != ':' {
+			return i, false
+		}
+		i = skipSpace(b, i+1)
+		end, ok = skipValueDepth(b, i, depth)
+		if !ok {
+			return end, false
+		}
+		i = skipSpace(b, end)
+		if i >= len(b) {
+			return i, false
+		}
 		switch b[i] {
-		case '"':
-			end, ok := skipString(b, i)
-			if !ok {
-				return len(b), false
+		case ',':
+			// A comma must be followed by another member; a bare closing brace is a trailing comma. |
+			// 逗号之后必须还有成员；紧随闭合花括号就是尾随逗号。
+			i = skipSpace(b, i+1)
+			if i >= len(b) || b[i] != '"' {
+				return i, false
 			}
-			i = end - 1
-		case '{', '[':
-			depth++
-			if depth > maxJSONDepth {
-				return len(b), false
-			}
-		case '}', ']':
-			depth--
-			if depth == 0 {
-				return i + 1, true
-			}
-			if depth < 0 {
-				return len(b), false
-			}
+		case '}':
+			return i + 1, true
+		default:
+			return i, false
 		}
 	}
-	return len(b), false
+}
+
+// skipArray skips the body of an array after its opening bracket at depth. | skipArray 跳过
+// 开括号之后、位于 depth 层的数组主体。
+func skipArray(b []byte, i, depth int) (int, bool) {
+	i = skipSpace(b, i)
+	if i < len(b) && b[i] == ']' {
+		return i + 1, true
+	}
+	for {
+		end, ok := skipValueDepth(b, i, depth)
+		if !ok {
+			return end, false
+		}
+		i = skipSpace(b, end)
+		if i >= len(b) {
+			return i, false
+		}
+		switch b[i] {
+		case ',':
+			// A comma must be followed by another value; a bare closing bracket is a trailing comma. |
+			// 逗号之后必须还有取值；紧随闭合方括号就是尾随逗号。
+			i = skipSpace(b, i+1)
+			if i >= len(b) || b[i] == ']' {
+				return i, false
+			}
+		case ']':
+			return i + 1, true
+		default:
+			return i, false
+		}
+	}
 }
 
 // validPrimitive reports whether raw is a JSON literal or number. | validPrimitive 报告 raw 是否为 JSON 字面量或数字。
@@ -190,16 +241,37 @@ func skipPrimitive(b []byte, i int) (int, bool) {
 	return i, validPrimitive(b[start:i])
 }
 
-// skipValue skips any JSON value starting at b[i] and returns the index just past it. | skipValue 跳过从 b[i] 开始的任意 JSON 值，返回紧随其后的下标。
+// skipValue skips any JSON value starting at b[i] and returns the index just past it. | skipValue
+// 跳过从 b[i] 开始的任意 JSON 值，返回紧随其后的下标。
+//
+// Objects and arrays are validated recursively, not merely depth-balanced: a mismatched delimiter
+// or a missing member separator makes the whole document invalid, and accepting it would let this
+// parser disagree with every compliant JSON implementation. | 对象与数组会被递归校验，而不只是
+// 配平深度：定界符不匹配或缺少成员分隔符都会使整个文档非法，接受它会让本解析器与所有合规的 JSON
+// 实现产生分歧。
 func skipValue(b []byte, i int) (int, bool) {
+	return skipValueDepth(b, i, 0)
+}
+
+// skipValueDepth skips a value that starts at nesting depth. | skipValueDepth 跳过从指定嵌套层
+// 开始的取值。
+func skipValueDepth(b []byte, i, depth int) (int, bool) {
 	if i >= len(b) {
 		return i, false
 	}
 	switch b[i] {
 	case '"':
 		return skipString(b, i)
-	case '{', '[':
-		return skipContainer(b, i)
+	case '{':
+		if depth >= maxJSONDepth {
+			return i, false
+		}
+		return skipObject(b, i+1, depth+1)
+	case '[':
+		if depth >= maxJSONDepth {
+			return i, false
+		}
+		return skipArray(b, i+1, depth+1)
 	}
 	return skipPrimitive(b, i)
 }

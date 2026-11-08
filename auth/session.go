@@ -22,7 +22,8 @@ type SessionConfig struct {
 	CookieName string
 	// Domain and Path scope the cookie; Path defaults to "/". | Domain 与 Path 限定 Cookie 范围；Path 默认 "/"。
 	Domain string
-	Path   string
+	// Path is the cookie path. | Path 是 Cookie 路径。
+	Path string
 	// Secure marks the cookie HTTPS-only; production deployments must set it. | Secure 标记 Cookie 仅 HTTPS；生产部署必须设置。
 	Secure bool
 	// HTTPOnly prevents script access; it defaults to true and should only be disabled for a
@@ -234,10 +235,19 @@ func (m *SessionManager) Validate(ctx context.Context, id string) (*Session, err
 		return nil, errs.Detail(ErrSessionExpired, "id %[1]q | ID %[1]q", id)
 	}
 	session.LastSeenAt = now
+	storedIdleExpiresAt := session.IdleExpiresAt
 	if m.config.IdleTimeout > 0 {
 		session.IdleExpiresAt = now.Add(m.config.IdleTimeout)
 	}
-	if now.Sub(session.UpdatedAt) >= m.config.TouchInterval {
+	touch := now.Sub(session.UpdatedAt) >= m.config.TouchInterval
+	if !touch && m.config.IdleTimeout > 0 && !storedIdleExpiresAt.IsZero() &&
+		!storedIdleExpiresAt.After(now.Add(m.config.TouchInterval)) {
+		// The stored sliding deadline would lapse before the next interval-based touch, so persist
+		// the refreshed deadline now; otherwise an active client is logged out early. | 存储的滑动期限
+		// 会在下一次基于间隔的触碰前失效，因此立即持久化刷新后的期限，否则活跃客户端会被提前登出。
+		touch = true
+	}
+	if touch {
 		session.UpdatedAt = now
 		if err := m.store.UpdateSession(ctx, session); err != nil {
 			return nil, err
@@ -354,9 +364,16 @@ func (m *SessionManager) Cookie(session *Session) *http.Cookie {
 	if session == nil {
 		return m.ClearCookie()
 	}
-	maxAge := int(session.ExpiresAt.Sub(m.now()).Seconds())
-	if maxAge <= 0 {
-		maxAge = -1
+	// A zero ExpiresAt means the session has no absolute deadline (see Session.Active); such a
+	// session must stay a browser-session cookie instead of being deleted by MaxAge -1. | ExpiresAt
+	// 为零表示会话没有绝对期限（见 Session.Active）；此类会话必须保持浏览器会话 Cookie，不能被
+	// MaxAge -1 删除。
+	maxAge := 0
+	if !session.ExpiresAt.IsZero() {
+		maxAge = int(session.ExpiresAt.Sub(m.now()).Seconds())
+		if maxAge <= 0 {
+			maxAge = -1
+		}
 	}
 	return &http.Cookie{
 		Name:     m.config.CookieName,
@@ -542,8 +559,14 @@ func (m *SessionManager) HTTPMiddleware(opts SessionMiddlewareOptions) func(http
 	}
 }
 
-// failRouter renders a middleware failure. | failRouter 渲染中间件失败。
+// failRouter renders a middleware failure and aborts the remaining chain. | failRouter 渲染中间件失败并终止后续调用链。
 func (m *SessionManager) failRouter(c *router.Ctx, opts SessionMiddlewareOptions, err error) {
+	// ydx/router keeps dispatching after a middleware returns without Next, so denial must abort
+	// explicitly or the protected handler still runs. | ydx/router 在中间件不调用 Next 直接返回后仍会
+	// 继续调度，因此拒绝必须显式终止，否则受保护处理器仍会执行。
+	if c != nil {
+		c.Abort()
+	}
 	if opts.ErrorHandler != nil {
 		opts.ErrorHandler(c, err)
 		return

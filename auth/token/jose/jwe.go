@@ -57,14 +57,23 @@ const ZipDEF = "DEF"
 
 // jweHeader is the protected header of a compact JWE. | jweHeader 是紧凑 JWE 的受保护头部。
 type jweHeader struct {
+	// Alg is the key-management algorithm. | Alg 是密钥管理算法。
 	Alg string `json:"alg"`
+	// Enc is the content-encryption algorithm. | Enc 是内容加密算法。
 	Enc string `json:"enc"`
+	// Zip is the compression algorithm, empty or "DEF". | Zip 是压缩算法，取值为空或 "DEF"。
 	Zip string `json:"zip,omitempty"`
+	// Kid identifies the key used for key management. | Kid 标识密钥管理使用的密钥。
 	Kid string `json:"kid,omitempty"`
+	// Typ is the media type of the complete JWE. | Typ 是完整 JWE 的媒体类型。
 	Typ string `json:"typ,omitempty"`
+	// Cty is the media type of the encrypted plaintext. | Cty 是加密明文的媒体类型。
 	Cty string `json:"cty,omitempty"`
-	EPK *Key   `json:"epk,omitempty"`
+	// EPK is the ephemeral public key used by ECDH-ES. | EPK 是 ECDH-ES 使用的临时公钥。
+	EPK *Key `json:"epk,omitempty"`
+	// APU is the base64url-encoded agreement PartyUInfo value. | APU 是 base64url 编码的协商 PartyUInfo 值。
 	APU string `json:"apu,omitempty"`
+	// APV is the base64url-encoded agreement PartyVInfo value. | APV 是 base64url 编码的协商 PartyVInfo 值。
 	APV string `json:"apv,omitempty"`
 }
 
@@ -98,6 +107,12 @@ type DecryptOptions struct {
 	AllowRSA1_5 bool
 	// MaxDecompressedSize caps DEF output; zero uses DefaultJWEMaxDecompressedSize. | MaxDecompressedSize 限制 DEF 输出；零值使用 DefaultJWEMaxDecompressedSize。
 	MaxDecompressedSize int64
+	// MaxTokenSize caps the token length in bytes before any decoding; zero or a negative value
+	// uses DefaultMaxTokenSize. Raise it when ciphertexts legitimately exceed the default, and keep
+	// the HTTP layer's request body limit in sync. | MaxTokenSize 在解码前限制 token 字节长度；
+	// 零值或负值使用 DefaultMaxTokenSize。密文确实超过默认值时请调高，并同步调整 HTTP 层的请求体
+	// 上限。
+	MaxTokenSize int
 }
 
 // Encrypt builds a compact JWE over plaintext with key. | Encrypt 使用 key 对 plaintext 生成紧凑 JWE。
@@ -133,6 +148,9 @@ func Encrypt(plaintext []byte, key *Key, opts EncryptOptions) (string, error) {
 		return "", errs.Detail(ErrAlgNotAllowed, "key alg=%[1]q does not allow %[2]q | 密钥 alg=%[1]q 不允许 %[2]q", key.Alg, alg)
 	}
 	if err := checkKeyAlg(key, alg); err != nil {
+		return "", err
+	}
+	if err := checkKeyUse(key, "encrypt"); err != nil {
 		return "", err
 	}
 	if alg == AlgRSA15 && !opts.AllowRSA1_5 {
@@ -185,22 +203,29 @@ func Encrypt(plaintext []byte, key *Key, opts EncryptOptions) (string, error) {
 
 // Decrypt decrypts a compact JWE with key. | Decrypt 使用 key 解密紧凑 JWE。
 //
-// Decryption authenticates before releasing plaintext; CBC tags are compared in constant time
-// before any padding is examined, and GCM authentication happens inside the AEAD. Duplicate
-// header members, critical extensions, unknown alg/enc/zip values, ambiguous empty or non-empty
-// encrypted-key segments and RSA1_5 without opt-in are all refused. RSA1_5 is deprecated by RFC 7518
-// because RSA PKCS#1 v1.5 decryption is vulnerable to Bleichenbacher-style oracles; it is accepted
-// only through DecryptOptions.AllowRSA1_5, and every RSA key-transport failure is reported with the
-// same error and message so that padding and CEK-length failures cannot be distinguished. Callers
-// that do not need legacy interoperability should leave it disabled. | 解密在释放明文前完成认证；
-// CBC 标签在任何填充检查之前以常量时间比较，GCM 认证在 AEAD 内部完成。重复头部成员、关键扩展、
-// 未知 alg/enc/zip、与算法矛盾的加密密钥段（应空不空或应非空却空）以及未显式开启的 RSA1_5
-// 都会被拒绝。RFC 7518 因 RSA PKCS#1 v1.5 解密易受 Bleichenbacher 类预言机攻击而弃用 RSA1_5；
-// 本实现仅在 DecryptOptions.AllowRSA1_5 显式开启时接受，并让所有 RSA 密钥传输失败返回相同的错误
-// 与文案，使填充失败与 CEK 长度失败不可区分。无需兼容旧系统的调用方应保持关闭。
+// The input length is checked before any decoding: the limit is DecryptOptions.MaxTokenSize, or
+// DefaultMaxTokenSize when it is zero or negative, and an over-limit token is rejected with
+// ErrTokenTooLarge. Decryption authenticates before releasing plaintext; CBC tags are compared in
+// constant time before any padding is examined, and GCM authentication happens inside the AEAD.
+// Duplicate header members, critical extensions, unknown alg/enc/zip values, ambiguous empty or
+// non-empty encrypted-key segments and RSA1_5 without opt-in are all refused. RSA1_5 is deprecated
+// by RFC 7518 because RSA PKCS#1 v1.5 decryption is vulnerable to Bleichenbacher-style oracles; it
+// is accepted only through DecryptOptions.AllowRSA1_5, and every RSA key-transport failure is
+// reported with the same error and message so that padding and CEK-length failures cannot be
+// distinguished. Callers that do not need legacy interoperability should leave it disabled. |
+// 任何解码之前先检查输入长度：上限为 DecryptOptions.MaxTokenSize，零值或负值时使用
+// DefaultMaxTokenSize，超限返回 ErrTokenTooLarge。解密在释放明文前完成认证；CBC 标签在任何
+// 填充检查之前以常量时间比较，GCM 认证在 AEAD 内部完成。重复头部成员、关键扩展、未知
+// alg/enc/zip、与算法矛盾的加密密钥段（应空不空或应非空却空）以及未显式开启的 RSA1_5 都会被
+// 拒绝。RFC 7518 因 RSA PKCS#1 v1.5 解密易受 Bleichenbacher 类预言机攻击而弃用 RSA1_5；本实现
+// 仅在 DecryptOptions.AllowRSA1_5 显式开启时接受，并让所有 RSA 密钥传输失败返回相同的错误与
+// 文案，使填充失败与 CEK 长度失败不可区分。无需兼容旧系统的调用方应保持关闭。
 func Decrypt(token string, key *Key, opts DecryptOptions) ([]byte, error) {
 	if key == nil {
 		return nil, ErrInvalidKey
+	}
+	if err := checkTokenSize(token, opts.MaxTokenSize); err != nil {
+		return nil, err
 	}
 	parts := strings.Split(token, ".")
 	if len(parts) != 5 {
@@ -233,6 +258,9 @@ func Decrypt(token string, key *Key, opts DecryptOptions) ([]byte, error) {
 		return nil, errs.Detail(ErrAlgNotAllowed, "key alg=%[1]q does not allow %[2]q | 密钥 alg=%[1]q 不允许 %[2]q", key.Alg, h.Alg)
 	}
 	if err := checkKeyAlg(key, h.Alg); err != nil {
+		return nil, err
+	}
+	if err := checkKeyUse(key, "decrypt"); err != nil {
 		return nil, err
 	}
 	encryptedKey, err := DecodeSegment(parts[1])
@@ -511,7 +539,7 @@ func decodeOptionalB64(value string) ([]byte, error) {
 	if value == "" {
 		return nil, nil
 	}
-	out, err := base64.RawURLEncoding.DecodeString(value)
+	out, err := strictRawURLEncoding.DecodeString(value)
 	if err != nil {
 		return nil, errs.WrapDetail(err, ErrInvalidHeader, "apu/apv | apu/apv")
 	}

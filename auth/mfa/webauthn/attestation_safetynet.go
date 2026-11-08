@@ -76,13 +76,20 @@ func verifySafetyNetTrust(certs []*x509.Certificate, opts AttestationOptions) (b
 
 // safetyNetPayload is the JWS payload of an Android SafetyNet response. | safetyNetPayload 是 Android SafetyNet 响应的 JWS 载荷。
 type safetyNetPayload struct {
-	Nonce                   string   `json:"nonce"`
-	TimestampMs             int64    `json:"timestampMs"`
-	APKPackageName          string   `json:"apkPackageName"`
+	// Nonce is the base64-encoded nonce echoed from the request. | Nonce 是请求回显的 base64 编码 nonce。
+	Nonce string `json:"nonce"`
+	// TimestampMs is the attestation time in Unix milliseconds. | TimestampMs 是 Unix 毫秒表示的认证时间。
+	TimestampMs int64 `json:"timestampMs"`
+	// APKPackageName is the package whose integrity was attested. | APKPackageName 是被认证完整性的包名。
+	APKPackageName string `json:"apkPackageName"`
+	// APKCertificateDigestSHA holds the SHA-256 certificate digests of the APK. | APKCertificateDigestSHA 保存 APK 证书的 SHA-256 摘要。
 	APKCertificateDigestSHA []string `json:"apkCertificateDigestSha256"`
-	CTSProfileMatch         bool     `json:"ctsProfileMatch"`
-	BasicIntegrity          bool     `json:"basicIntegrity"`
-	EvaluationType          string   `json:"evaluationType"`
+	// CTSProfileMatch reports whether the device passed CTS compatibility testing. | CTSProfileMatch 报告设备是否通过 CTS 兼容性测试。
+	CTSProfileMatch bool `json:"ctsProfileMatch"`
+	// BasicIntegrity reports whether the device passed the basic integrity check. | BasicIntegrity 报告设备是否通过基本完整性检查。
+	BasicIntegrity bool `json:"basicIntegrity"`
+	// EvaluationType is the SafetyNet evaluation type. | EvaluationType 是 SafetyNet 评估类型。
+	EvaluationType string `json:"evaluationType"`
 }
 
 // safetyNetJWS is a parsed SafetyNet JWS. | safetyNetJWS 是解析后的 SafetyNet JWS。
@@ -96,7 +103,9 @@ type safetyNetJWS struct {
 
 // safetyNetHeader is the JWS protected header of a SafetyNet response. | safetyNetHeader 是 SafetyNet 响应的 JWS 保护头。
 type safetyNetHeader struct {
-	Alg string   `json:"alg"`
+	// Alg is the JWS signature algorithm name. | Alg 是 JWS 签名算法名称。
+	Alg string `json:"alg"`
+	// X5C is the base64 certificate chain. | X5C 是 base64 证书链。
 	X5C []string `json:"x5c"`
 }
 

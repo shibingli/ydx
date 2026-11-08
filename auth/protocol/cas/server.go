@@ -53,8 +53,7 @@ type LoginPageData struct {
 	Principal *auth.Principal
 	// Action is the login form target; empty means the current request path. | Action 是登录表单目标；空值表示当前请求路径。
 	Action string
-	// Service, Renew, Gateway, Warn and RememberMe round-trip the login parameters. | Service、
-	// Renew、Gateway、Warn 与 RememberMe 回传登录参数。
+	// Service is the service URL that receives the ticket. | Service 是接收票据的服务 URL。
 	Service string
 	// Username is echoed after a failed attempt. | Username 在失败尝试后回显。
 	Username string
@@ -65,10 +64,15 @@ type LoginPageData struct {
 	// Issuer is the configured CAS issuer. | Issuer 是配置的 CAS 签发方。
 	Issuer string
 	// Status is the HTTP status the renderer should send. | Status 是渲染器应发送的 HTTP 状态。
-	Status     int
-	Renew      bool
-	Gateway    bool
-	Warn       bool
+	Status int
+	// Renew reports a forced re-authentication request. | Renew 表示强制重新认证请求。
+	Renew bool
+	// Gateway reports a gateway request, which never shows the login form. | Gateway 表示 gateway
+	// 请求，它绝不显示登录表单。
+	Gateway bool
+	// Warn reports the warn parameter of the CAS protocol. | Warn 表示 CAS 协议的 warn 参数。
+	Warn bool
+	// RememberMe reports a persistent login request. | RememberMe 表示持久登录请求。
 	RememberMe bool
 	// LoggedIn reports an existing authenticated session without a service. | LoggedIn 表示存在已认证会话但没有服务。
 	LoggedIn bool

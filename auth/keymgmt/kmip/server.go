@@ -185,14 +185,7 @@ func (s *Server) ServeListener(listener net.Listener) error {
 			}
 			return err
 		}
-		if !s.registerConn(conn) {
-			_ = conn.Close()
-			return nil
-		}
-		s.wg.Add(1)
 		go func(c net.Conn) {
-			defer s.wg.Done()
-			defer s.unregisterConn(c)
 			if err := s.Serve(c); err != nil && !s.isClosed() && !errors.Is(err, io.EOF) && !errors.Is(err, net.ErrClosed) {
 				s.warn("kmip connection ended | KMIP 连接结束", log.Str("remote", c.RemoteAddr().String()), log.Err(err))
 			}
@@ -310,6 +303,17 @@ func (s *Server) Close() error {
 	return nil
 }
 
+// mutatingOperation reports whether op can change persisted state. | mutatingOperation 报告 op 是否
+// 可能改变持久化状态。
+func mutatingOperation(op Operation) bool {
+	switch op {
+	case OpGet, OpGetAttributes, OpGetAttributeList, OpLocate, OpQuery, OpDiscoverVersions, OpCheck:
+		return false
+	default:
+		return true
+	}
+}
+
 // handleMessage executes all batch items under the batch continuation policy. | handleMessage 按批处理继续策略执行全部批处理项。
 func (s *Server) handleMessage(conn net.Conn, request RequestMessage) ResponseMessage {
 	now := s.now()
@@ -336,18 +340,8 @@ func (s *Server) handleMessage(conn net.Conn, request RequestMessage) ResponseMe
 		request.Header.BatchErrorContinuationOption == BatchUndo
 	batchUndo := request.Header.BatchErrorContinuationOption == BatchUndo && !unsupportedVersion
 	var snapshot []ObjectRecord
-	if batchUndo {
-		records, err := s.store.List(s.ctx)
-		if err != nil {
-			item := request.BatchItems[0]
-			response.BatchItems = append(response.BatchItems, failureItem(item, errs.WrapDetail(err, ErrOperationFailed,
-				"batch undo snapshot | 批处理撤销快照失败")))
-			response.Header.BatchCount = len(response.BatchItems)
-			return response
-		}
-		snapshot = records
-		defer zeroizeRecords(snapshot)
-	}
+	hasSnapshot := false
+	defer func() { zeroizeRecords(snapshot) }()
 	credentials := credentialsFromHeader(request.Header.Authentication)
 	remote := ""
 	if conn != nil && conn.RemoteAddr() != nil {
@@ -367,11 +361,22 @@ func (s *Server) handleMessage(conn net.Conn, request RequestMessage) ResponseMe
 			response.BatchItems = append(response.BatchItems, failureItem(item, err))
 			if stopOnError {
 				if batchUndo {
-					s.undoBatch(&response, snapshot)
+					s.undoBatch(&response, snapshot, hasSnapshot)
 				}
 				break
 			}
 			continue
+		}
+		if batchUndo && !hasSnapshot && mutatingOperation(item.Operation) {
+			records, err := s.store.List(s.ctx)
+			if err != nil {
+				response.BatchItems = append(response.BatchItems, failureItem(item, errs.WrapDetail(err, ErrOperationFailed,
+					"batch undo snapshot | 批处理撤销快照失败")))
+				s.undoBatch(&response, nil, false)
+				break
+			}
+			snapshot = records
+			hasSnapshot = true
 		}
 		payload, err := s.dispatchForVersion(item, request.Header.ProtocolVersion)
 		if err != nil {
@@ -381,7 +386,7 @@ func (s *Server) handleMessage(conn net.Conn, request RequestMessage) ResponseMe
 			response.BatchItems = append(response.BatchItems, failureItem(item, err))
 			if stopOnError {
 				if batchUndo {
-					s.undoBatch(&response, snapshot)
+					s.undoBatch(&response, snapshot, hasSnapshot)
 				}
 				break
 			}
@@ -398,24 +403,27 @@ func (s *Server) handleMessage(conn net.Conn, request RequestMessage) ResponseMe
 	return response
 }
 
-// undoBatch restores the pre-batch store snapshot after a failure. Successful response items become Operation Undone
-// and their payloads are dropped so that no key material is exported for an operation that was rolled back. | undoBatch
-// 在失败后恢复批处理前的存储快照。成功的响应项变为 Operation Undone，并丢弃其负载，避免为已回滚的操作导出密钥材料。
-func (s *Server) undoBatch(response *ResponseMessage, snapshot []ObjectRecord) {
-	if err := s.restoreSnapshot(snapshot); err != nil {
-		s.warn("kmip batch undo failed | KMIP 批处理撤销失败", log.Err(err))
-		for i := range response.BatchItems {
-			if response.BatchItems[i].ResultStatus != ResultStatusSuccess {
-				continue
+// undoBatch restores the pre-batch store snapshot after a failure when one was taken. Successful
+// response items become Operation Undone and their payloads are dropped so that no key material is
+// exported for an operation that was rolled back. | undoBatch 在已拍摄快照时于失败后恢复批处理前的
+// 存储快照。成功的响应项变为 Operation Undone，并丢弃其负载，避免为已回滚的操作导出密钥材料。
+func (s *Server) undoBatch(response *ResponseMessage, snapshot []ObjectRecord, restore bool) {
+	if restore {
+		if err := s.restoreSnapshot(snapshot); err != nil {
+			s.warn("kmip batch undo failed | KMIP 批处理撤销失败", log.Err(err))
+			for i := range response.BatchItems {
+				if response.BatchItems[i].ResultStatus != ResultStatusSuccess {
+					continue
+				}
+				response.BatchItems[i].ResultStatus = ResultStatusOperationFailed
+				response.BatchItems[i].ResultReason = ResultReasonGeneralFailure
+				response.BatchItems[i].ResultMessage = "batch undo failed | 批处理撤销失败"
+				response.BatchItems[i].Payload = Item{}
 			}
-			response.BatchItems[i].ResultStatus = ResultStatusOperationFailed
-			response.BatchItems[i].ResultReason = ResultReasonGeneralFailure
-			response.BatchItems[i].ResultMessage = "batch undo failed | 批处理撤销失败"
-			response.BatchItems[i].Payload = Item{}
+			return
 		}
-		return
+		zeroizeRecords(snapshot)
 	}
-	zeroizeRecords(snapshot)
 	for i := range response.BatchItems {
 		if response.BatchItems[i].ResultStatus != ResultStatusSuccess {
 			continue
@@ -733,6 +741,10 @@ func readRequest(conn net.Conn, maxSize int) ([]byte, error) {
 	if Type(header[3]) != TypeStructure {
 		return nil, errs.Detail(ErrMalformed, "request message is not a structure | 请求消息不是结构")
 	}
+	tag := Tag(uint32(header[0])<<16 | uint32(header[1])<<8 | uint32(header[2]))
+	if tag != TagRequestMessage {
+		return nil, errs.Detail(ErrMalformed, "unexpected request tag 0x%06X | 请求标签 0x%06X 非预期", uint32(tag), uint32(tag))
+	}
 	raw := make([]byte, total)
 	copy(raw, header[:])
 	if length > 0 {
@@ -787,15 +799,28 @@ func (s *Server) registerConn(conn net.Conn) bool {
 	if s.closed {
 		return false
 	}
+	if _, exists := s.conns[conn]; exists {
+		return true
+	}
 	s.conns[conn] = struct{}{}
+	// The wait-group increment happens under the same lock that Close uses to publish closed, so it
+	// cannot race with Close's Wait on a zero counter. | 等待组计数与 Close 发布 closed 使用同一把锁，
+	// 因此不会与 Close 在计数归零时的 Wait 竞争。
+	s.wg.Add(1)
 	return true
 }
 
 // unregisterConn stops tracking a connection. | unregisterConn 停止跟踪连接。
 func (s *Server) unregisterConn(conn net.Conn) {
 	s.mu.Lock()
-	delete(s.conns, conn)
+	_, tracked := s.conns[conn]
+	if tracked {
+		delete(s.conns, conn)
+	}
 	s.mu.Unlock()
+	if tracked {
+		s.wg.Done()
+	}
 }
 
 // isClosed reports whether Close has run. | isClosed 报告 Close 是否已执行。

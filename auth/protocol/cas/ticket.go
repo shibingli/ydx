@@ -110,8 +110,9 @@ func NewTicketID(typ TicketType) (string, error) {
 // a single-use ticket is consumed. | 记录保存后不可变，只有 ConsumedAt 会在一次性票据被原子消费时由
 // 存储更新。
 type Ticket struct {
-	// IssuedAt and ExpiresAt bound the ticket lifetime. | IssuedAt 与 ExpiresAt 限定票据生命周期。
-	IssuedAt  time.Time
+	// IssuedAt is when the ticket was created. | IssuedAt 是票据创建时间。
+	IssuedAt time.Time
+	// ExpiresAt is the deadline after which the ticket is invalid. | ExpiresAt 是票据失效的截止时间。
 	ExpiresAt time.Time
 	// ConsumedAt is non-zero once the ticket has been used. | ConsumedAt 在票据被使用后非零。
 	ConsumedAt time.Time

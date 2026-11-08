@@ -46,8 +46,8 @@ func (s *Server) MetadataDocument() *ServerMetadata {
 	}
 	metadata := &ServerMetadata{
 		Issuer:                                     s.Issuer(),
-		AuthorizationEndpoint:                      s.Endpoint(s.Path(s.config.AuthorizationPath)),
-		TokenEndpoint:                              s.Endpoint(s.Path(s.config.TokenPath)),
+		AuthorizationEndpoint:                      s.Endpoint(s.config.AuthorizationPath),
+		TokenEndpoint:                              s.Endpoint(s.config.TokenPath),
 		JWKSURI:                                    s.config.JWKSURI,
 		RegistrationEndpoint:                       s.config.RegistrationEndpoint,
 		ScopesSupported:                            s.scopeList(),
@@ -60,14 +60,14 @@ func (s *Server) MetadataDocument() *ServerMetadata {
 		TokenEndpointAuthMethodsSupported:          authMethods,
 		RevocationEndpointAuthMethodsSupported:     append([]string(nil), authMethods...),
 		IntrospectionEndpointAuthMethodsSupported:  append([]string(nil), authMethods...),
-		RevocationEndpoint:                         s.Endpoint(s.Path(s.config.RevocationPath)),
-		IntrospectionEndpoint:                      s.Endpoint(s.Path(s.config.IntrospectionPath)),
-		PushedAuthorizationRequestEndpoint:         s.Endpoint(s.Path(s.config.PARPath)),
+		RevocationEndpoint:                         s.Endpoint(s.config.RevocationPath),
+		IntrospectionEndpoint:                      s.Endpoint(s.config.IntrospectionPath),
+		PushedAuthorizationRequestEndpoint:         s.Endpoint(s.config.PARPath),
 		CodeChallengeMethodsSupported:              pkceMethods,
 		AuthorizationResponseIssParameterSupported: !s.config.DisableIssuerParameter,
 	}
 	if !s.config.DisableDeviceFlow {
-		metadata.DeviceAuthorizationEndpoint = s.Endpoint(s.Path(s.config.DeviceAuthorizationPath))
+		metadata.DeviceAuthorizationEndpoint = s.Endpoint(s.config.DeviceAuthorizationPath)
 	}
 	if s.config.RequestObjects.Enabled && s.requestObjects != nil {
 		metadata.RequestObjectSigningAlgValuesSupported = append([]string(nil), s.requestObjects.config.SigningAlgs...)

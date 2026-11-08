@@ -152,18 +152,22 @@ type ProviderConfig struct {
 	Sessions *auth.SessionManager
 	// PathPrefix overrides the OAuth mount prefix. | PathPrefix 覆盖 OAuth 挂载前缀。
 	PathPrefix string
-	// DiscoveryPath, JWKSPath, UserInfoPath, EndSessionPath, RegistrationPath, CheckSessionPath,
-	// FrontchannelLogoutPath and BackchannelLogoutPath override the default paths. | DiscoveryPath、
-	// JWKSPath、UserInfoPath、EndSessionPath、RegistrationPath、CheckSessionPath、
-	// FrontchannelLogoutPath 与 BackchannelLogoutPath 覆盖默认路径。
-	DiscoveryPath          string
-	JWKSPath               string
-	UserInfoPath           string
-	EndSessionPath         string
-	RegistrationPath       string
-	CheckSessionPath       string
+	// DiscoveryPath overrides the discovery document path. | DiscoveryPath 覆盖发现文档路径。
+	DiscoveryPath string
+	// JWKSPath overrides the JWKS endpoint path. | JWKSPath 覆盖 JWKS 端点路径。
+	JWKSPath string
+	// UserInfoPath overrides the UserInfo endpoint path. | UserInfoPath 覆盖 UserInfo 端点路径。
+	UserInfoPath string
+	// EndSessionPath overrides the RP-initiated logout path. | EndSessionPath 覆盖 RP 发起登出路径。
+	EndSessionPath string
+	// RegistrationPath overrides the dynamic registration path. | RegistrationPath 覆盖动态注册路径。
+	RegistrationPath string
+	// CheckSessionPath overrides the session-management iframe path. | CheckSessionPath 覆盖会话管理 iframe 路径。
+	CheckSessionPath string
+	// FrontchannelLogoutPath overrides the front-channel logout path. | FrontchannelLogoutPath 覆盖前端通道登出路径。
 	FrontchannelLogoutPath string
-	BackchannelLogoutPath  string
+	// BackchannelLogoutPath overrides the back-channel logout path. | BackchannelLogoutPath 覆盖后端通道登出路径。
+	BackchannelLogoutPath string
 	// EnableRegistration enables RFC 7591 dynamic client registration. | EnableRegistration 启用 RFC 7591 动态客户端注册。
 	EnableRegistration bool
 	// RegistrationInitialAccessToken, when set, is the bearer token required to register. | RegistrationInitialAccessToken 设置时是注册所需的承载令牌。
@@ -178,9 +182,17 @@ type ProviderConfig struct {
 	// 重放登出令牌只会重复幂等的会话撤销，而带非幂等副作用的部署应启用它。单进程可使用
 	// NewMemoryLogoutReplayStore，多实例应使用共享实现。
 	LogoutReplay LogoutReplayStore
-	// FrontchannelLogout and BackchannelLogout enable the respective logout channels. | FrontchannelLogout 与 BackchannelLogout 启用对应登出通道。
+	// FrontchannelLogout enables front-channel logout. | FrontchannelLogout 启用前端通道登出。
 	FrontchannelLogout bool
-	BackchannelLogout  bool
+	// BackchannelLogout enables back-channel logout. | BackchannelLogout 启用后端通道登出。
+	BackchannelLogout bool
+	// BackchannelLogoutClientID is the OAuth client_id this deployment uses when acting as an RP
+	// that receives back-channel logout tokens. The receiver validates that aud contains this value
+	// and that azp equals it when required; without it the receiver fails closed. An OP that only
+	// sends logout tokens may leave it empty. | BackchannelLogoutClientID 是部署作为接收后端登出
+	// 令牌的 RP 时使用的 OAuth client_id。接收端校验 aud 包含该值，并在需要时校验 azp 等于该值；
+	// 未设置时接收端按失败关闭处理。仅发送登出令牌的 OP 可留空。
+	BackchannelLogoutClientID string
 	// SessionManagement enables the check_session_iframe endpoint. | SessionManagement 启用 check_session_iframe 端点。
 	SessionManagement bool
 	// SubjectType is "public" (default) or "pairwise". | SubjectType 取值为 "public"（默认）或 "pairwise"。
@@ -210,6 +222,10 @@ type Provider struct {
 	pathPrefix string
 	httpClient *http.Client
 	now        func() time.Time
+	// issuerOrigin is the scheme and authority of Issuer, used so Endpoint does not repeat an
+	// issuer path that already became the mount prefix. | issuerOrigin 是 Issuer 的协议与主机部分，
+	// 使 Endpoint 不会重复已成为挂载前缀的 issuer 路径。
+	issuerOrigin string
 }
 
 // NewProvider returns a Provider and installs it on the OAuth server. | NewProvider 返回 Provider 并安装到 OAuth 服务器。
@@ -225,6 +241,7 @@ func NewProvider(config ProviderConfig) (*Provider, error) {
 		return nil, errs.Detail(ErrInvalidConfig, "OIDC issuer must equal the OAuth issuer | OIDC issuer 必须等于 OAuth issuer")
 	}
 	config.Issuer = issuer
+	config.BackchannelLogoutClientID = strings.TrimSpace(config.BackchannelLogoutClientID)
 	keys := config.Keys
 	if keys == nil {
 		keys = &jose.KeySet{}
@@ -302,16 +319,21 @@ func NewProvider(config ProviderConfig) (*Provider, error) {
 	if httpClient == nil {
 		httpClient = &http.Client{Timeout: 10 * time.Second}
 	}
+	issuerURL, err := url.Parse(config.Issuer)
+	if err != nil || issuerURL.Scheme == "" || issuerURL.Host == "" {
+		return nil, errs.Detail(ErrInvalidConfig, "issuer must be an absolute URL | issuer 必须是绝对 URL")
+	}
 	provider := &Provider{
-		config:     config,
-		oauth:      config.OAuth,
-		keys:       keys,
-		signingKey: signingKey,
-		signingAlg: alg,
-		claims:     claims,
-		pathPrefix: config.PathPrefix,
-		httpClient: httpClient,
-		now:        config.Clock,
+		config:       config,
+		oauth:        config.OAuth,
+		keys:         keys,
+		signingKey:   signingKey,
+		signingAlg:   alg,
+		claims:       claims,
+		pathPrefix:   config.PathPrefix,
+		httpClient:   httpClient,
+		now:          config.Clock,
+		issuerOrigin: issuerURL.Scheme + "://" + issuerURL.Host,
 	}
 	if provider.now == nil {
 		provider.now = time.Now
@@ -353,8 +375,14 @@ func (p *Provider) Path(path string) string {
 	return p.pathPrefix + path
 }
 
-// Endpoint returns the absolute URL for path. | Endpoint 返回 path 的绝对 URL。
-func (p *Provider) Endpoint(path string) string { return p.config.Issuer + p.Path(path) }
+// Endpoint returns the absolute URL for an endpoint path that does not include the mount prefix.
+// It combines the issuer scheme and host with Path(path); Path returns the mounted path, so callers
+// must pass a configured path such as ProviderConfig.JWKSPath and must never call
+// Endpoint(Path(path)), which would apply the prefix twice. | Endpoint 返回未包含挂载前缀的端点路径
+// 的绝对 URL。它把 issuer 的协议与主机部分与 Path(path) 组合；Path 返回挂载后的路径，因此调用方
+// 必须传入配置路径（例如 ProviderConfig.JWKSPath），且绝不能调用 Endpoint(Path(path))，否则前缀
+// 会被应用两次。
+func (p *Provider) Endpoint(path string) string { return p.issuerOrigin + p.Path(path) }
 
 // Now returns the current time. | Now 返回当前时间。
 func (p *Provider) Now() time.Time { return p.now().UTC() }

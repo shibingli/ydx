@@ -98,9 +98,11 @@ type ServiceProviderConfig struct {
 	SuccessHandler func(w http.ResponseWriter, r *http.Request, result *ValidationResult)
 	// ErrorHandler renders validation failures; nil writes a 400. | ErrorHandler 渲染校验失败；空值写入 400。
 	ErrorHandler func(w http.ResponseWriter, r *http.Request, err error)
-	// ACSPath, SLOPath and MetadataPath are the local mount paths. | ACSPath、SLOPath 与 MetadataPath 是本地挂载路径。
-	ACSPath      string
-	SLOPath      string
+	// ACSPath is the local assertion consumer mount path. | ACSPath 是本地断言消费挂载路径。
+	ACSPath string
+	// SLOPath is the local single-logout mount path. | SLOPath 是本地单点登出挂载路径。
+	SLOPath string
+	// MetadataPath is the local metadata mount path. | MetadataPath 是本地元数据挂载路径。
 	MetadataPath string
 }
 

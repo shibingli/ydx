@@ -629,3 +629,23 @@ func itoa(v int64) string {
 	}
 	return string(buf[i:])
 }
+
+// TestDecodeSegmentRejectsNonZeroPadBits pins the canonical unpadded base64url requirement of RFC
+// 7515 §2: "AB" decodes to the same octet as "AA" under a tolerant decoder, but only "AA" is a
+// valid JOSE segment. | TestDecodeSegmentRejectsNonZeroPadBits 固定 RFC 7515 §2 的规范无填充
+// base64url 要求：宽容解码器会把 "AB" 解成与 "AA" 相同的字节，但只有 "AA" 是合法 JOSE 段。
+func TestDecodeSegmentRejectsNonZeroPadBits(t *testing.T) {
+	canonical := EncodeSegment([]byte{0x00})
+	if canonical != "AA" {
+		t.Fatalf("EncodeSegment(0x00) = %q, want AA", canonical)
+	}
+	if got, err := DecodeSegment(canonical); err != nil || len(got) != 1 || got[0] != 0 {
+		t.Fatalf("DecodeSegment(%q) = %v, %v", canonical, got, err)
+	}
+	if _, err := DecodeSegment("AB"); !errors.Is(err, ErrMalformed) {
+		t.Fatalf("DecodeSegment(AB) err = %v, want ErrMalformed", err)
+	}
+	if _, err := DecodeSegment("A"); !errors.Is(err, ErrMalformed) {
+		t.Fatalf("DecodeSegment(A) err = %v, want ErrMalformed", err)
+	}
+}

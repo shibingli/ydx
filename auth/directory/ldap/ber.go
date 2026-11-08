@@ -51,7 +51,10 @@ type berTag struct {
 // buffer and is only valid while that buffer is retained. | berElement 是一个解码后的
 // 标签-长度-值三元组。Value 引用源缓冲区，仅在源缓冲区保留期间有效。
 type berElement struct {
-	Tag   berTag
+	// Tag is the decoded BER tag. | Tag 是解码后的 BER 标签。
+	Tag berTag
+	// Value aliases the source buffer and is only valid while that buffer is
+	// retained. | Value 引用源缓冲区，仅在源缓冲区保留期间有效。
 	Value []byte
 }
 

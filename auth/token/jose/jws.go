@@ -142,6 +142,9 @@ func Sign(payload []byte, key *Key, opts SignOptions) (string, error) {
 	if err := checkKeyAlg(key, alg); err != nil {
 		return "", err
 	}
+	if err := checkKeyUse(key, "sign"); err != nil {
+		return "", err
+	}
 	kid := opts.Kid
 	if kid == "" {
 		kid = key.Kid
@@ -217,6 +220,12 @@ type VerifyOptions struct {
 	// Audience, when non-empty and ValidateClaims is set, must be contained in aud. | Audience
 	// 非空且启用 ValidateClaims 时必须包含于 aud。
 	Audience string
+	// MaxTokenSize caps the token length in bytes before any decoding; zero or a negative value
+	// uses DefaultMaxTokenSize. Raise it when payloads legitimately exceed the default, and keep
+	// the HTTP layer's request body limit in sync. | MaxTokenSize 在解码前限制 token 字节长度；
+	// 零值或负值使用 DefaultMaxTokenSize。载荷确实超过默认值时请调高，并同步调整 HTTP 层的请求体
+	// 上限。
+	MaxTokenSize int
 }
 
 // Verify verifies a compact JWS using resolver and the background context. | Verify 使用 resolver
@@ -228,16 +237,23 @@ func Verify(token string, resolver KeyResolver, opts VerifyOptions) (*Verified, 
 // VerifyContext verifies a compact JWS using resolver and ctx. | VerifyContext 使用 resolver 与
 // ctx 校验紧凑 JWS。
 //
-// The header is decoded first and its alg is checked against the allow list and key family before
-// the signature is validated; only then is the payload exposed. Critical extensions, duplicate
-// header members, alg=none and algorithm confusion are rejected. When ValidateClaims is set, a
-// JSON-object payload is additionally validated by ydx/auth/token/jwt, whose sentinels remain visible
-// through errors.Is. | 首先解码头部，并在校验签名之前检查 alg 是否在白名单内且与密钥族匹配；
-// 之后才暴露载荷。关键扩展、重复头部成员、alg=none 与算法混淆都会被拒绝。启用 ValidateClaims
-// 时，JSON 对象载荷还会经 ydx/auth/token/jwt 校验，其哨兵仍可通过 errors.Is 观察到。
+// The input length is checked before any decoding: the limit is VerifyOptions.MaxTokenSize, or
+// DefaultMaxTokenSize when it is zero or negative, and an over-limit token is rejected with
+// ErrTokenTooLarge. The header is then decoded and its alg is checked against the allow list and key
+// family before the signature is validated; only then is the payload exposed. Critical extensions,
+// duplicate header members, alg=none and algorithm confusion are rejected. When ValidateClaims is
+// set, a JSON-object payload is additionally validated by ydx/auth/token/jwt, whose sentinels remain
+// visible through errors.Is. | 任何解码之前先检查输入长度：上限为 VerifyOptions.MaxTokenSize，
+// 零值或负值时使用 DefaultMaxTokenSize，超限返回 ErrTokenTooLarge。随后解码头部，并在校验签名
+// 之前检查 alg 是否在白名单内且与密钥族匹配；之后才暴露载荷。关键扩展、重复头部成员、alg=none
+// 与算法混淆都会被拒绝。启用 ValidateClaims 时，JSON 对象载荷还会经 ydx/auth/token/jwt 校验，
+// 其哨兵仍可通过 errors.Is 观察到。
 func VerifyContext(ctx context.Context, token string, resolver KeyResolver, opts VerifyOptions) (*Verified, error) {
 	if resolver == nil {
 		return nil, errs.Detail(ErrInvalidConfig, "nil key resolver | 密钥解析器为 nil")
+	}
+	if err := checkTokenSize(token, opts.MaxTokenSize); err != nil {
+		return nil, err
 	}
 	first := strings.IndexByte(token, '.')
 	if first <= 0 {
@@ -286,6 +302,9 @@ func VerifyContext(ctx context.Context, token string, resolver KeyResolver, opts
 		return nil, errs.Detail(ErrAlgNotAllowed, "key alg=%[1]q does not allow %[2]q | 密钥 alg=%[1]q 不允许 %[2]q", key.Alg, header.Alg)
 	}
 	if err := checkKeyAlg(key, header.Alg); err != nil {
+		return nil, err
+	}
+	if err := checkKeyUse(key, "verify"); err != nil {
 		return nil, err
 	}
 

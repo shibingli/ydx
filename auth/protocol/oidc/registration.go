@@ -21,15 +21,20 @@ type ClientMetadata struct {
 	RedirectURIs []string `json:"redirect_uris,omitempty"`
 	// TokenEndpointAuthMethod is the token-endpoint authentication method. | TokenEndpointAuthMethod 是令牌端点认证方法。
 	TokenEndpointAuthMethod string `json:"token_endpoint_auth_method,omitempty"`
-	// GrantTypes and ResponseTypes list the allowed grants and responses. | GrantTypes 与 ResponseTypes 列出允许的授权与响应类型。
-	GrantTypes    []string `json:"grant_types,omitempty"`
+	// GrantTypes lists the allowed grant types. | GrantTypes 列出允许的授权类型。
+	GrantTypes []string `json:"grant_types,omitempty"`
+	// ResponseTypes lists the allowed response types. | ResponseTypes 列出允许的响应类型。
 	ResponseTypes []string `json:"response_types,omitempty"`
-	// ClientName, ClientURI, LogoURI, PolicyURI and TOSURI are display metadata. | ClientName、ClientURI、LogoURI、PolicyURI 与 TOSURI 是展示元数据。
+	// ClientName is the human-readable application name. | ClientName 是人类可读应用名。
 	ClientName string `json:"client_name,omitempty"`
-	ClientURI  string `json:"client_uri,omitempty"`
-	LogoURI    string `json:"logo_uri,omitempty"`
-	PolicyURI  string `json:"policy_uri,omitempty"`
-	TOSURI     string `json:"tos_uri,omitempty"`
+	// ClientURI points to the client home page. | ClientURI 指向客户端主页。
+	ClientURI string `json:"client_uri,omitempty"`
+	// LogoURI points to a client logo. | LogoURI 指向客户端徽标。
+	LogoURI string `json:"logo_uri,omitempty"`
+	// PolicyURI points to the client privacy policy. | PolicyURI 指向客户端隐私政策。
+	PolicyURI string `json:"policy_uri,omitempty"`
+	// TOSURI points to the client terms of service. | TOSURI 指向客户端服务条款。
+	TOSURI string `json:"tos_uri,omitempty"`
 	// Contacts lists administrative email addresses. | Contacts 列出管理邮箱地址。
 	Contacts []string `json:"contacts,omitempty"`
 	// Scope is the space-delimited default scope. | Scope 是空格分隔的默认作用域。
@@ -41,34 +46,46 @@ type ClientMetadata struct {
 	SectorIdentifierURI string `json:"sector_identifier_uri,omitempty"`
 	// ApplicationType is web or native. | ApplicationType 取值为 web 或 native。
 	ApplicationType string `json:"application_type,omitempty"`
-	// IDTokenSignedResponseAlg and related fields select per-client JOSE algorithms. | IDTokenSignedResponseAlg 及相关字段选择每客户端 JOSE 算法。
-	IDTokenSignedResponseAlg     string `json:"id_token_signed_response_alg,omitempty"`
-	IDTokenEncryptedResponseAlg  string `json:"id_token_encrypted_response_alg,omitempty"`
-	IDTokenEncryptedResponseEnc  string `json:"id_token_encrypted_response_enc,omitempty"`
-	UserInfoSignedResponseAlg    string `json:"userinfo_signed_response_alg,omitempty"`
+	// IDTokenSignedResponseAlg is the required ID-token signing algorithm. | IDTokenSignedResponseAlg 是要求的 ID 令牌签名算法。
+	IDTokenSignedResponseAlg string `json:"id_token_signed_response_alg,omitempty"`
+	// IDTokenEncryptedResponseAlg is the required ID-token key-management algorithm. | IDTokenEncryptedResponseAlg 是要求的 ID 令牌密钥管理算法。
+	IDTokenEncryptedResponseAlg string `json:"id_token_encrypted_response_alg,omitempty"`
+	// IDTokenEncryptedResponseEnc is the required ID-token content-encryption algorithm. | IDTokenEncryptedResponseEnc 是要求的 ID 令牌内容加密算法。
+	IDTokenEncryptedResponseEnc string `json:"id_token_encrypted_response_enc,omitempty"`
+	// UserInfoSignedResponseAlg is the required UserInfo signing algorithm. | UserInfoSignedResponseAlg 是要求的 UserInfo 签名算法。
+	UserInfoSignedResponseAlg string `json:"userinfo_signed_response_alg,omitempty"`
+	// UserInfoEncryptedResponseAlg is the required UserInfo key-management algorithm. | UserInfoEncryptedResponseAlg 是要求的 UserInfo 密钥管理算法。
 	UserInfoEncryptedResponseAlg string `json:"userinfo_encrypted_response_alg,omitempty"`
+	// UserInfoEncryptedResponseEnc is the required UserInfo content-encryption algorithm. | UserInfoEncryptedResponseEnc 是要求的 UserInfo 内容加密算法。
 	UserInfoEncryptedResponseEnc string `json:"userinfo_encrypted_response_enc,omitempty"`
-	RequestObjectSigningAlg      string `json:"request_object_signing_alg,omitempty"`
+	// RequestObjectSigningAlg is the required request-object signing algorithm. | RequestObjectSigningAlg 是要求的请求对象签名算法。
+	RequestObjectSigningAlg string `json:"request_object_signing_alg,omitempty"`
 	// RequestURIs are the RFC 9101 by-reference request object URLs the client may use. |
 	// RequestURIs 是客户端可使用的 RFC 9101 按引用请求对象 URL。
 	RequestURIs []string `json:"request_uris,omitempty"`
 	// AuthorizationSignedResponseAlg selects the JARM response JWS algorithm. | AuthorizationSignedResponseAlg
 	// 选择 JARM 响应 JWS 算法。
 	AuthorizationSignedResponseAlg string `json:"authorization_signed_response_alg,omitempty"`
-	TokenEndpointAuthSigningAlg    string `json:"token_endpoint_auth_signing_alg,omitempty"`
-	// JWKSURI and JWKS carry the client's public keys. | JWKSURI 与 JWKS 携带客户端公钥。
-	JWKSURI string         `json:"jwks_uri,omitempty"`
-	JWKS    map[string]any `json:"jwks,omitempty"`
+	// TokenEndpointAuthSigningAlg is the required client-assertion signing algorithm. | TokenEndpointAuthSigningAlg 是要求的客户端断言签名算法。
+	TokenEndpointAuthSigningAlg string `json:"token_endpoint_auth_signing_alg,omitempty"`
+	// JWKSURI points to the client's public keys. | JWKSURI 指向客户端公钥。
+	JWKSURI string `json:"jwks_uri,omitempty"`
+	// JWKS is an inline client key set. | JWKS 是内联客户端密钥集。
+	JWKS map[string]any `json:"jwks,omitempty"`
 	// PostLogoutRedirectURIs are the allowed logout redirect URIs. | PostLogoutRedirectURIs 是允许的登出重定向 URI。
 	PostLogoutRedirectURIs []string `json:"post_logout_redirect_uris,omitempty"`
-	// FrontchannelLogoutURI and BackchannelLogoutURI configure logout delivery. | FrontchannelLogoutURI 与 BackchannelLogoutURI 配置登出投递。
-	FrontchannelLogoutURI             string `json:"frontchannel_logout_uri,omitempty"`
-	FrontchannelLogoutSessionRequired bool   `json:"frontchannel_logout_session_required,omitempty"`
-	BackchannelLogoutURI              string `json:"backchannel_logout_uri,omitempty"`
-	BackchannelLogoutSessionRequired  bool   `json:"backchannel_logout_session_required,omitempty"`
-	// TLSClientAuthSubjectDN and TLSClientAuthSANs configure mTLS registration. | TLSClientAuthSubjectDN 与 TLSClientAuthSANs 配置 mTLS 注册。
-	TLSClientAuthSubjectDN string   `json:"tls_client_auth_subject_dn,omitempty"`
-	TLSClientAuthSANs      []string `json:"tls_client_auth_san_dns,omitempty"`
+	// FrontchannelLogoutURI is the front-channel logout endpoint. | FrontchannelLogoutURI 是前端通道登出端点。
+	FrontchannelLogoutURI string `json:"frontchannel_logout_uri,omitempty"`
+	// FrontchannelLogoutSessionRequired requires the sid parameter at logout. | FrontchannelLogoutSessionRequired 要求登出时携带 sid 参数。
+	FrontchannelLogoutSessionRequired bool `json:"frontchannel_logout_session_required,omitempty"`
+	// BackchannelLogoutURI is the back-channel logout endpoint. | BackchannelLogoutURI 是后端通道登出端点。
+	BackchannelLogoutURI string `json:"backchannel_logout_uri,omitempty"`
+	// BackchannelLogoutSessionRequired requires the sid parameter at logout. | BackchannelLogoutSessionRequired 要求登出时携带 sid 参数。
+	BackchannelLogoutSessionRequired bool `json:"backchannel_logout_session_required,omitempty"`
+	// TLSClientAuthSubjectDN is the allowed subject DN for tls_client_auth. | TLSClientAuthSubjectDN 是 tls_client_auth 允许的主体 DN。
+	TLSClientAuthSubjectDN string `json:"tls_client_auth_subject_dn,omitempty"`
+	// TLSClientAuthSANs are allowed DNS/IP SANs for tls_client_auth. | TLSClientAuthSANs 是 tls_client_auth 允许的 DNS/IP SAN。
+	TLSClientAuthSANs []string `json:"tls_client_auth_san_dns,omitempty"`
 }
 
 // RegistrationResponse is the RFC 7591 registration response. | RegistrationResponse 是 RFC 7591 注册响应。
@@ -77,8 +94,9 @@ type RegistrationResponse struct {
 	ClientID string `json:"client_id"`
 	// ClientSecret is returned once for confidential clients. | ClientSecret 对机密客户端返回一次。
 	ClientSecret string `json:"client_secret,omitempty"`
-	// ClientIDIssuedAt and ClientSecretExpiresAt are Unix seconds; zero means no expiry. | ClientIDIssuedAt 与 ClientSecretExpiresAt 是 Unix 秒；零表示不过期。
-	ClientIDIssuedAt      int64 `json:"client_id_issued_at"`
+	// ClientIDIssuedAt is the client-id issue time in Unix seconds. | ClientIDIssuedAt 是客户端标识签发时间（Unix 秒）。
+	ClientIDIssuedAt int64 `json:"client_id_issued_at"`
+	// ClientSecretExpiresAt is the secret expiry in Unix seconds; zero means no expiry. | ClientSecretExpiresAt 是密钥过期时间（Unix 秒）；零表示不过期。
 	ClientSecretExpiresAt int64 `json:"client_secret_expires_at"`
 	// RegistrationAccessToken protects the management endpoint. | RegistrationAccessToken 保护管理端点。
 	RegistrationAccessToken string `json:"registration_access_token,omitempty"`
@@ -286,6 +304,11 @@ func validateClientMetadata(metadata *ClientMetadata) error {
 	}
 	switch metadata.TokenEndpointAuthMethod {
 	case "", oauth2.ClientSecretBasic, oauth2.ClientSecretPost, oauth2.PrivateKeyJWT, oauth2.ClientAuthNone, oauth2.TLSClientAuth, oauth2.SelfSignedTLSClientAuth:
+	case oauth2.ClientSecretJWT:
+		// The client store keeps only a secret hash, so an HS256 assertion can never be verified;
+		// reject the registration instead of advertising a method that always fails. | 客户端存储
+		// 只保存密钥哈希，HS256 断言永远无法校验；因此拒绝注册，而不是公布一个总会失败的方法。
+		return errs.Detail(ErrInvalidRequest, "client_secret_jwt is not supported because only a secret hash is stored; use private_key_jwt or client_secret_basic | 不支持 client_secret_jwt，因为只保存密钥哈希；请使用 private_key_jwt 或 client_secret_basic")
 	default:
 		return errs.Detail(ErrInvalidRequest, "unsupported token_endpoint_auth_method | 不支持的 token_endpoint_auth_method")
 	}
@@ -485,6 +508,10 @@ func applyClientMetadata(client *oauth2.Client, metadata *ClientMetadata, issueS
 	client.BackchannelLogoutSessionRequired = metadata.BackchannelLogoutSessionRequired
 	client.TLSClientAuthSubjectDN = metadata.TLSClientAuthSubjectDN
 	client.TLSClientAuthSANs = append([]string(nil), metadata.TLSClientAuthSANs...)
+	// RFC 7592 PUT replaces the whole metadata document, so an omitted jwks must clear a value
+	// stored by an earlier registration instead of surviving next to a new jwks_uri. | RFC 7592
+	// PUT 替换整个元数据文档，因此省略的 jwks 必须清除先前注册保存的值，而不是与新 jwks_uri 并存。
+	client.JWKS = nil
 	if len(metadata.JWKS) > 0 {
 		raw, err := json.Marshal(metadata.JWKS)
 		if err != nil {

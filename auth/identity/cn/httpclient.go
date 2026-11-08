@@ -17,7 +17,14 @@ const defaultHTTPTimeout = 10 * time.Second
 // maxHTTPResponseBytes caps how much of a provider response is read. | maxHTTPResponseBytes 限制服务方响应的读取上限。
 const maxHTTPResponseBytes = 64 << 10
 
-// httpClientOrDefault returns client, or a client with the configured timeout. | httpClientOrDefault 返回 client，或带配置超时的新客户端。
+// httpClientOrDefault returns client, or a client with the configured timeout that refuses redirects. | httpClientOrDefault
+// 返回 client，或带配置超时且拒绝重定向的新客户端。
+//
+// The default client does not follow redirects: a provider redirect could forward static credential
+// headers such as an API key to another host or turn the request into a cross-origin probe. A 3xx
+// response is returned to the caller and rejected as non-success. | 默认客户端不跟随重定向：服务方
+// 重定向可能把 API Key 等静态凭据请求头转发到另一主机，或把请求变成跨源探测。3xx 响应会返回调用方
+// 并按非成功状态拒绝。
 func httpClientOrDefault(client *http.Client, timeout time.Duration) *http.Client {
 	if client != nil {
 		return client
@@ -25,7 +32,12 @@ func httpClientOrDefault(client *http.Client, timeout time.Duration) *http.Clien
 	if timeout <= 0 {
 		timeout = defaultHTTPTimeout
 	}
-	return &http.Client{Timeout: timeout}
+	return &http.Client{
+		Timeout: timeout,
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
 }
 
 // applyHTTPHeaders sets each configured header on req. | applyHTTPHeaders 在 req 上设置每个配置的请求头。

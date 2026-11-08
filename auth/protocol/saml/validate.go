@@ -431,15 +431,19 @@ func validateAssertion(ctx context.Context, entry assertionEntry, response Respo
 	}, nil
 }
 
-// audienceContains reports whether any audience restriction lists audience. | audienceContains
-// 报告是否有受众限制列出了 audience。
+// audienceContains reports whether every audience restriction lists audience, as required by SAML
+// Core 2.5.1.4 intersection semantics. | audienceContains 报告是否每个受众限制都列出了 audience，
+// 符合 SAML Core 2.5.1.4 的交集语义。
 func audienceContains(restrictions []AudienceRestriction, audience string) bool {
+	if len(restrictions) == 0 {
+		return false
+	}
 	for _, restriction := range restrictions {
-		if containsString(restriction.Audience, audience) {
-			return true
+		if !containsString(restriction.Audience, audience) {
+			return false
 		}
 	}
-	return false
+	return true
 }
 
 // SubjectConfirmationBearer is the SAML bearer confirmation method. | SubjectConfirmationBearer 是
@@ -669,10 +673,14 @@ func ValidateAuthnRequest(ctx context.Context, request *AuthnRequest, opts Authn
 			return errs.Wrap(err, ErrInvalidIssuer)
 		}
 		registered := metadata.ACSURL(request.ProtocolBinding)
-		if request.AssertionConsumerServiceURL != "" && registered != "" && request.AssertionConsumerServiceURL != registered {
+		// The response may only be delivered to an endpoint registered in SP metadata. Accepting a
+		// request-supplied URL when metadata registers none would let a requester exfiltrate the
+		// assertion. | 响应只能投递到 SP 元数据中注册的端点。元数据未注册时接受请求自带的 URL 会
+		// 使请求方能够窃取断言。
+		if request.AssertionConsumerServiceURL != "" && request.AssertionConsumerServiceURL != registered {
 			return errs.Detail(ErrInvalidRecipient, "ACS URL %[1]q is not registered | ACS URL %[1]q 未注册", request.AssertionConsumerServiceURL)
 		}
-		if request.AssertionConsumerServiceURL == "" && registered == "" {
+		if registered == "" {
 			return errs.Detail(ErrInvalidRecipient, "ACS URL cannot be resolved | 无法解析 ACS URL")
 		}
 	}

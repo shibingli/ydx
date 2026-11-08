@@ -203,7 +203,7 @@ func (s *Server) handleSign(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	algorithm := ""
-	if key, keyErr := s.service.GetKey(ctx, body.KeyID); keyErr == nil {
+	if key, keyErr := s.service.Resolve(ctx, body.KeyID); keyErr == nil {
 		algorithm = key.Algorithm
 	}
 	writeJSON(w, http.StatusOK, signatureResponse{Signature: base64.StdEncoding.EncodeToString(signature), Algorithm: algorithm})

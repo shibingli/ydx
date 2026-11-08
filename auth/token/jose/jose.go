@@ -22,6 +22,14 @@
 //   - Token headers with duplicate member names are refused before decoding, so two parsers can
 //     never disagree about which value is authoritative. | 成员名重复的令牌头部在解码前即被拒绝，
 //     因此任何两个解析器都不可能对哪个取值生效产生分歧。
+//   - KeySet.Handler omits symmetric "oct" keys, because publishing "k" would disclose the secret;
+//     enabling IncludeSymmetricKeys is reserved for trusted internal distribution. |
+//     KeySet.Handler 会省略对称 "oct" 密钥，因为发布 "k" 会泄露密钥；IncludeSymmetricKeys 仅供
+//     可信内部发布使用。
+//   - Verify and Decrypt reject inputs above DefaultMaxTokenSize before decoding, so a hostile
+//     caller cannot force unbounded allocation; large payloads raise MaxTokenSize explicitly. |
+//     Verify 与 Decrypt 在解码前拒绝超过 DefaultMaxTokenSize 的输入，恶意调用方无法强制无界分配；
+//     大载荷场景需显式调高 MaxTokenSize。
 //
 // # Example | 示例
 //
@@ -61,7 +69,9 @@ var (
 	ErrAlgNotAllowed = errs.New("jose: algorithm not allowed | jose：算法不被允许")
 	// ErrKeyTypeMismatch reports a key family that does not match the algorithm. | ErrKeyTypeMismatch 表示密钥族与算法不匹配。
 	ErrKeyTypeMismatch = errs.New("jose: key type does not match algorithm | jose：密钥类型与算法不匹配")
-	// ErrWeakKey reports an HMAC secret shorter than the algorithm hash output, or a symmetric key of the wrong size. | ErrWeakKey 表示 HMAC 密钥短于算法哈希输出，或对称密钥长度不符。
+	// ErrWeakKey reports an HMAC secret shorter than the algorithm hash output, a symmetric key of
+	// the wrong size, or an RSA key whose modulus is smaller than 2048 bits. | ErrWeakKey 表示
+	// HMAC 密钥短于算法哈希输出、对称密钥长度不符，或 RSA 密钥模数小于 2048 位。
 	ErrWeakKey = errs.New("jose: key is too weak | jose：密钥过弱")
 	// ErrUnsupportedCrit reports a non-empty crit header; no extension is understood. | ErrUnsupportedCrit 表示 crit 头部非空；本实现不支持任何扩展。
 	ErrUnsupportedCrit = errs.New("jose: unsupported critical header | jose：不支持的关键头部")
@@ -81,11 +91,47 @@ var (
 	ErrClaimsInvalid = errs.New("jose: invalid claims | jose：声明无效")
 	// ErrDecompressionLimit reports a DEF-compressed JWE whose plaintext exceeded the limit. | ErrDecompressionLimit 表示 DEF 压缩 JWE 的解压后明文超过上限。
 	ErrDecompressionLimit = errs.New("jose: decompressed size exceeds limit | jose：解压后大小超过上限")
+	// ErrTokenTooLarge reports a compact JWS or JWE whose input length exceeds the configured
+	// limit. | ErrTokenTooLarge 表示紧凑 JWS 或 JWE 的输入长度超过配置上限。
+	ErrTokenTooLarge = errs.New("jose: token exceeds size limit | jose：令牌超过大小上限")
 )
 
 // maxHeaderBytes bounds a decoded JOSE header; any legitimate header is far smaller. | maxHeaderBytes
 // 限制解码后的 JOSE 头部大小；任何合法头部都远小于该值。
 const maxHeaderBytes = 64 << 10
+
+// DefaultMaxTokenSize is the default input limit in bytes for Verify and Decrypt. It accepts
+// ordinary JWT and JWE tokens while bounding the memory a hostile caller can make the process
+// allocate; raise VerifyOptions.MaxTokenSize or DecryptOptions.MaxTokenSize for large payloads. |
+// DefaultMaxTokenSize 是 Verify 与 Decrypt 的默认输入上限（字节）。它能容纳常见的 JWT 与 JWE，
+// 同时限制恶意调用方让进程分配的内存；大载荷场景请调高 VerifyOptions.MaxTokenSize 或
+// DecryptOptions.MaxTokenSize。
+const DefaultMaxTokenSize = 1 << 20
+
+// tokenSizeLimit resolves a configured input limit; non-positive values select the default. |
+// tokenSizeLimit 解析配置的输入上限；非正值选择默认上限。
+func tokenSizeLimit(configured int) int {
+	if configured <= 0 {
+		return DefaultMaxTokenSize
+	}
+	return configured
+}
+
+// checkTokenSize rejects a token longer than the resolved input limit. | checkTokenSize 拒绝超过
+// 解析后输入上限的令牌。
+func checkTokenSize(token string, configured int) error {
+	limit := tokenSizeLimit(configured)
+	if len(token) > limit {
+		return errs.Detail(ErrTokenTooLarge, "token is %[1]d bytes, limit is %[2]d | 令牌为 %[1]d 字节，上限为 %[2]d 字节", len(token), limit)
+	}
+	return nil
+}
+
+// strictRawURLEncoding is the canonical unpadded base64url codec. RFC 7515 §2 requires the pad bits
+// to be zero; the tolerant default would accept several spellings of the same segment bytes. |
+// strictRawURLEncoding 是规范的无填充 base64url 编解码器。RFC 7515 §2 要求填充位为零；宽容的默认
+// 解码会接受同一段字节的多种拼写。
+var strictRawURLEncoding = base64.RawURLEncoding.Strict()
 
 // EncodeSegment encodes src with unpadded base64url, the JOSE segment encoding. | EncodeSegment
 // 使用 JOSE 段编码，即无填充 base64url，对 src 进行编码。
@@ -96,11 +142,12 @@ func EncodeSegment(src []byte) string {
 // DecodeSegment decodes an unpadded base64url JOSE segment. | DecodeSegment 解码无填充 base64url
 // 的 JOSE 段。
 //
-// Padding characters are rejected: RFC 7515 mandates the unpadded encoding, and accepting both
-// forms would give one token two encodings. | 填充字符会被拒绝：RFC 7515 规定使用无填充编码，
-// 同时接受两种形式会使同一 token 出现两种编码。
+// Padding characters and non-zero trailing pad bits are rejected: RFC 7515 mandates the canonical
+// unpadded encoding, and accepting aliases would give one token several encodings. | 填充字符与
+// 非零尾部填充位都会被拒绝：RFC 7515 规定使用规范的无填充编码，接受别名会使同一 token 出现多种
+// 编码。
 func DecodeSegment(seg string) ([]byte, error) {
-	out, err := base64.RawURLEncoding.DecodeString(seg)
+	out, err := strictRawURLEncoding.DecodeString(seg)
 	if err != nil {
 		return nil, errs.WrapDetail(err, ErrMalformed, "segment is not base64url | 段不是 base64url")
 	}
@@ -113,38 +160,15 @@ func appendSegment(dst, src []byte) []byte {
 	return base64.RawURLEncoding.AppendEncode(dst, src)
 }
 
-// unmarshal decodes JSON through ydx/json. When the last eight bytes contain a quote it appends
-// eight spaces first: ydx/json v0.1.16's parseCleanString keeps an arena offset that becomes
-// stale when its tail path replaces the arena, so a clean string closing within the final seven
-// bytes of the input can panic. Trailing whitespace is valid JSON and moves every closing quote
-// out of that tail path. | unmarshal 通过 ydx/json 解码 JSON。当最后八字节含引号时先追加八个空格：
-// ydx/json v0.1.16 的 parseCleanString 在其尾路径替换 arena 后仍使用旧偏移，因此结束引号落在输入
-// 最后七字节内的干净字符串可能 panic。尾随空白是合法 JSON，可让所有结束引号避开该尾路径。
+// unmarshal decodes JSON through ydx/json. | unmarshal 通过 ydx/json 解码 JSON。
+//
+// The copy that older code made for inputs whose last eight bytes contain a quote has been
+// removed: ydx/json v0.1.17 fixes the parseCleanString arena-offset bug that copy worked around,
+// and this module pins v0.1.17. | 旧代码会在最后八字节含双引号时复制输入并追加空格，这一复制已被
+// 移除：ydx/json v0.1.17 修复了该复制所规避的 parseCleanString arena 偏移缺陷，本模块锁定
+// v0.1.17。
 func unmarshal(data []byte, v any) error {
-	if !endsNearQuote(data) {
-		return json.Unmarshal(data, v)
-	}
-	padded := make([]byte, len(data)+8)
-	copy(padded, data)
-	for i := len(data); i < len(padded); i++ {
-		padded[i] = ' '
-	}
-	return json.Unmarshal(padded, v)
-}
-
-// endsNearQuote reports whether a double quote occurs in the last eight bytes of data. | endsNearQuote
-// 报告 data 最后八字节内是否出现双引号。
-func endsNearQuote(data []byte) bool {
-	start := len(data) - 8
-	if start < 0 {
-		start = 0
-	}
-	for _, c := range data[start:] {
-		if c == '"' {
-			return true
-		}
-	}
-	return false
+	return json.Unmarshal(data, v)
 }
 
 // Header is a decoded JOSE header as a generic parameter map. | Header 是以通用参数映射表示的

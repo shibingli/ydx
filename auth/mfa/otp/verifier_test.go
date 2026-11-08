@@ -277,6 +277,43 @@ func TestVerifierHOTP(t *testing.T) {
 	}
 }
 
+// TestVerifierHOTPRejectsCounterRollback checks that a code matching a counter below the stored
+// counter is rejected instead of rewinding the persisted counter. | TestVerifierHOTPRejectsCounterRollback
+// 检查匹配已存计数器之前计数器的口令会被拒绝，而不是回退已持久化计数器。
+func TestVerifierHOTPRejectsCounterRollback(t *testing.T) {
+	t.Parallel()
+	secret := testSecret("12345678901234567890")
+	stale, err := HOTP(secret, 3, Config{})
+	if err != nil {
+		t.Fatalf("HOTP: %v", err)
+	}
+	credential := &auth.Credential{
+		ID:     "hotp-rollback",
+		UserID: "user-1",
+		Type:   auth.CredentialHOTP,
+		Secret: secret,
+		Data:   map[string]string{"counter": "5", "skew": "2"},
+	}
+	verifier := NewVerifier()
+	if ok, err := verifier.Verify(context.Background(), nil, credential, stale); err != nil || ok {
+		t.Fatalf("Verify(stale code) = (%v, %v), want (false, nil) | 已用计数器口令未被拒绝", ok, err)
+	}
+	if got := credential.Data["counter"]; got != "5" {
+		t.Errorf("counter = %q, want 5 | 计数器发生回退", got)
+	}
+
+	forward, err := HOTP(secret, 6, Config{})
+	if err != nil {
+		t.Fatalf("HOTP: %v", err)
+	}
+	if ok, err := verifier.Verify(context.Background(), nil, credential, forward); err != nil || !ok {
+		t.Fatalf("Verify(forward code) = (%v, %v), want (true, nil) | 前向重同步应成功", ok, err)
+	}
+	if got := credential.Data["counter"]; got != "7" {
+		t.Errorf("counter = %q, want 7 | 前向校验后计数器未推进", got)
+	}
+}
+
 // TestVerifierReplayGuard checks TOTP replay protection and per-credential keys. | TestVerifierReplayGuard 检查 TOTP 重放保护与每凭据键。
 func TestVerifierReplayGuard(t *testing.T) {
 	t.Parallel()

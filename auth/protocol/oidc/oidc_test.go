@@ -80,13 +80,14 @@ func newOIDCFixture(t *testing.T, registration bool) *oidcFixture {
 		t.Fatalf("oauth server: %v", err)
 	}
 	provider, err := NewProvider(ProviderConfig{
-		OAuth:              oauthServer,
-		Keys:               keys,
-		SigningKey:         signingKey,
-		SigningAlg:         "RS256",
-		EnableRegistration: registration,
-		EnableLogout:       true,
-		SessionManagement:  true,
+		OAuth:                     oauthServer,
+		Keys:                      keys,
+		SigningKey:                signingKey,
+		SigningAlg:                "RS256",
+		EnableRegistration:        registration,
+		EnableLogout:              true,
+		SessionManagement:         true,
+		BackchannelLogoutClientID: "web",
 	})
 	if err != nil {
 		t.Fatalf("provider: %v", err)

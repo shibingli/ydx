@@ -45,7 +45,10 @@ var (
 	ErrMalformed = errs.New("jwt: malformed token | jwt：令牌格式非法")
 	// ErrSignatureInvalid reports that the signature did not verify, or that the key family does not match the algorithm. | ErrSignatureInvalid 表示签名校验未通过，或密钥族与算法不匹配。
 	ErrSignatureInvalid = errs.New("jwt: invalid signature | jwt：签名校验失败")
-	// ErrWeakKey reports an HMAC secret shorter than the algorithm's hash output (RFC 7518 §3.2). | ErrWeakKey 表示 HMAC 密钥短于算法哈希输出（RFC 7518 §3.2）。
+	// ErrWeakKey reports an HMAC secret shorter than the algorithm's hash output (RFC 7518 §3.2) or
+	// an RSA key whose modulus is smaller than 2048 bits (RFC 7518 §3.3 and §4.3). | ErrWeakKey
+	// 表示 HMAC 密钥短于算法哈希输出（RFC 7518 §3.2），或 RSA 密钥模数小于 2048 位
+	// （RFC 7518 §3.3 与 §4.3）。
 	ErrWeakKey = errs.New("jwt: HMAC key is too short | jwt：HMAC 密钥过短")
 	// ErrTokenExpired reports an exp claim in the past, beyond the leeway. | ErrTokenExpired 表示 exp 声明位于过去，且超出容差。
 	ErrTokenExpired = errs.New("jwt: token expired | jwt：令牌已过期")
@@ -63,6 +66,10 @@ var (
 	ErrClaimNotFound = errs.New("jwt: claim not found | jwt：声明不存在")
 	// ErrInvalidClaims reports claims that jsonx cannot serialize. | ErrInvalidClaims 表示 jsonx 无法序列化的声明。
 	ErrInvalidClaims = errs.New("jwt: claims cannot be encoded | jwt：声明无法编码")
+	// ErrInvalidHeader reports SignOptions.Header entries that would produce a header Parse rejects,
+	// currently the unsupported crit and b64 extensions. | ErrInvalidHeader 表示 SignOptions.Header
+	// 会产生 Parse 拒绝的头部，目前是尚未支持的 crit 与 b64 扩展。
+	ErrInvalidHeader = errs.New("jwt: invalid header | jwt：头部无效")
 	// ErrTokenNotFound reports that the middleware found no token at the configured lookup location. | ErrTokenNotFound 表示中间件在配置的提取位置没有找到 token。
 	ErrTokenNotFound = errs.New("jwt: token not found | jwt：未找到令牌")
 	// ErrNoKeyFunc reports a nil KeyFunc. | ErrNoKeyFunc 表示 KeyFunc 为空。

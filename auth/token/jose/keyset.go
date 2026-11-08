@@ -18,6 +18,20 @@ import (
 // KeySet.Handler 使用的 Cache-Control max-age。
 const DefaultJWKSMaxAge = time.Hour
 
+// HandlerOptions configures KeySet.HandlerWithOptions. | HandlerOptions 配置
+// KeySet.HandlerWithOptions。
+type HandlerOptions struct {
+	// MaxAge is the Cache-Control max-age; zero uses DefaultJWKSMaxAge and a negative value is
+	// encoded as max-age=0. | MaxAge 是 Cache-Control max-age；零值使用 DefaultJWKSMaxAge，负值
+	// 编码为 max-age=0。
+	MaxAge time.Duration
+	// IncludeSymmetricKeys publishes "oct" keys, including their "k" member. Enable it only on a
+	// trusted internal distribution channel: a public JWKS must never disclose a symmetric key. |
+	// IncludeSymmetricKeys 发布 "oct" 密钥及其 "k" 成员。仅应在可信的内部发布通道开启：公网
+	// JWKS 绝不能泄露对称密钥。
+	IncludeSymmetricKeys bool
+}
+
 // KeySet is a JSON Web Key Set (RFC 7517 §5). | KeySet 是 JSON Web Key Set（RFC 7517 §5）。
 //
 // A KeySet is not safe for concurrent mutation. Publish it through Cache when keys rotate under
@@ -171,6 +185,36 @@ func (s *KeySet) Public() *KeySet {
 	return c
 }
 
+// publishable returns the set projected for HTTP publication. Private key members are removed from
+// every key. Publication is an allow list: RSA, EC and OKP keys are always projectable, "oct" keys
+// only when includeSymmetric is set, and a malformed key with an empty or unknown kty is always
+// dropped because it cannot be classified and might carry "k" or private members. | publishable
+// 返回用于 HTTP 发布的投影集合。每个密钥的私钥成员都会被移除。发布采用白名单：RSA、EC 与 OKP
+// 密钥始终可以投影，"oct" 密钥仅在设置 includeSymmetric 时投影，kty 为空或未知的畸形密钥始终
+// 丢弃，因为无法判断其类型，且可能携带 "k" 或私钥成员。
+func (s *KeySet) publishable(includeSymmetric bool) *KeySet {
+	if s == nil {
+		return nil
+	}
+	out := &KeySet{Keys: make([]*Key, 0, len(s.Keys))}
+	for _, k := range s.Keys {
+		if k == nil {
+			continue
+		}
+		switch k.Kty {
+		case KeyTypeRSA, KeyTypeEC, KeyTypeOKP:
+		case KeyTypeOct:
+			if !includeSymmetric {
+				continue
+			}
+		default:
+			continue
+		}
+		out.Keys = append(out.Keys, k.Public())
+	}
+	return out
+}
+
 // Handler returns an http.Handler that publishes the set as application/jwk-set+json. | Handler
 // 返回以 application/jwk-set+json 发布该集合的 http.Handler。
 //
@@ -179,8 +223,14 @@ func (s *KeySet) Public() *KeySet {
 // router.HandleRaw or use it directly with net/http. | 响应携带强 ETag 与 DefaultJWKSMaxAge 的
 // Cache-Control max-age，并对 If-None-Match 返回 304。仅允许 GET 与 HEAD。可通过
 // router.HandleRaw 挂载到 ydx/router，也可直接用于 net/http。
+//
+// Symmetric "oct" keys are omitted because they have no public half: serializing "k" would hand the
+// HMAC or key-wrap secret to anyone who can read the endpoint. Use HandlerWithOptions with
+// IncludeSymmetricKeys only on a trusted internal channel. | 对称 "oct" 密钥会被省略，因为它们
+// 没有公开部分：序列化 "k" 会把 HMAC 或密钥包装密钥交给任何能读取该端点的人。仅在可信内部通道
+// 使用 HandlerWithOptions 并开启 IncludeSymmetricKeys。
 func (s *KeySet) Handler() http.Handler {
-	return s.HandlerWithMaxAge(DefaultJWKSMaxAge)
+	return s.handler(DefaultJWKSMaxAge, false)
 }
 
 // HandlerWithMaxAge is Handler with an explicit cache lifetime. | HandlerWithMaxAge 是使用显式
@@ -188,16 +238,40 @@ func (s *KeySet) Handler() http.Handler {
 //
 // A negative maxAge is encoded as max-age=0. Private key members are never published: every key is
 // projected to its public form before serialization, even when the set still holds private material
-// for signing. | 负的 maxAge 编码为 max-age=0。私钥成员绝不会被发布：即使集合仍保留用于签名的私钥
-// 材料，序列化前也会把每个密钥投影为公开形式。
+// for signing. Symmetric "oct" keys are omitted as in Handler. | 负的 maxAge 编码为 max-age=0。
+// 私钥成员绝不会被发布：即使集合仍保留用于签名的私钥材料，序列化前也会把每个密钥投影为公开形式。
+// 与 Handler 一样，对称 "oct" 密钥会被省略。
 func (s *KeySet) HandlerWithMaxAge(maxAge time.Duration) http.Handler {
+	return s.handler(maxAge, false)
+}
+
+// HandlerWithOptions is Handler with an explicit cache lifetime and projection policy. |
+// HandlerWithOptions 是使用显式缓存时长与投影策略的 Handler。
+//
+// Private key members are never published: every key is projected to its public form before
+// serialization, even when the set still holds private material for signing. Symmetric keys are
+// published only when IncludeSymmetricKeys is set, and that option belongs on a trusted internal
+// channel, never on a public endpoint. | 私钥成员绝不会被发布：即使集合仍保留用于签名的私钥材料，
+// 序列化前也会把每个密钥投影为公开形式。仅当设置 IncludeSymmetricKeys 时才发布对称密钥，且该
+// 选项只能用于可信内部通道，绝不能用于公网端点。
+func (s *KeySet) HandlerWithOptions(opts HandlerOptions) http.Handler {
+	maxAge := opts.MaxAge
+	if maxAge == 0 {
+		maxAge = DefaultJWKSMaxAge
+	}
+	return s.handler(maxAge, opts.IncludeSymmetricKeys)
+}
+
+// handler serves the set with the given cache lifetime and projection policy. | handler 以给定缓存
+// 时长与投影策略提供密钥集。
+func (s *KeySet) handler(maxAge time.Duration, includeSymmetric bool) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet && r.Method != http.MethodHead {
 			w.Header().Set("Allow", "GET, HEAD")
 			http.Error(w, "method not allowed | 方法不允许", http.StatusMethodNotAllowed)
 			return
 		}
-		body, err := s.Public().Marshal()
+		body, err := s.publishable(includeSymmetric).Marshal()
 		if err != nil {
 			http.Error(w, "key set unavailable | 密钥集不可用", http.StatusInternalServerError)
 			return

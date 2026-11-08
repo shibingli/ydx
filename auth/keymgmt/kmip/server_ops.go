@@ -191,6 +191,10 @@ func (s *Server) handleRegisterForVersion(request RegisterRequest, version Proto
 			if kb.Algorithm == 0 && parsed.algorithm != 0 {
 				kb.Algorithm = parsed.algorithm
 			}
+			if kb.Length > 0 && parsed.length > 0 && kb.Length != parsed.length {
+				return Item{}, errs.Detail(ErrInvalidRequest, "key length %d does not match material length %d | 密钥长度 %d 与材料长度 %d 不一致",
+					kb.Length, parsed.length, kb.Length, parsed.length)
+			}
 			if kb.Length == 0 && parsed.length > 0 {
 				kb.Length = parsed.length
 			}

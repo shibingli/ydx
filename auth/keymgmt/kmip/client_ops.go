@@ -8,12 +8,14 @@ import (
 
 // requestPayload is any typed KMIP request payload. | requestPayload 是任意类型化的 KMIP 请求负载。
 type requestPayload interface {
+	// Item encodes the payload into its TTLV structure. | Item 把负载编码为其 TTLV 结构。
 	Item() (Item, error)
 }
 
 // versionedRequestPayload is a request payload that can select the wire shape for a protocol version. |
 // versionedRequestPayload 是能够按协议版本选择线格式的请求负载。
 type versionedRequestPayload interface {
+	// ItemForVersion encodes the payload using the wire shape of version. | ItemForVersion 使用 version 的线格式编码负载。
 	ItemForVersion(ProtocolVersion) (Item, error)
 }
 

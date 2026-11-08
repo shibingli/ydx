@@ -476,7 +476,7 @@ func publicKeysEqual(a, b any) bool {
 		return ok && ak.N.Cmp(bk.N) == 0 && ak.E == bk.E
 	case *ecdsa.PublicKey:
 		bk, ok := b.(*ecdsa.PublicKey)
-		return ok && ak.Curve == bk.Curve && ak.X.Cmp(bk.X) == 0 && ak.Y.Cmp(bk.Y) == 0
+		return ok && ak.Equal(bk)
 	case ed25519.PublicKey:
 		bk, ok := b.(ed25519.PublicKey)
 		return ok && bytes.Equal(ak, bk)
@@ -489,7 +489,7 @@ func publicKeysEqual(a, b any) bool {
 		if ar == nil || br == nil {
 			return ar == nil && br == nil
 		}
-		return ar.Curve == br.Curve && ar.X.Cmp(br.X) == 0 && ar.Y.Cmp(br.Y) == 0
+		return ar.Equal(br)
 	default:
 		return false
 	}

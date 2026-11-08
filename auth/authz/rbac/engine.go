@@ -4,6 +4,7 @@ import (
 	"context"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/shibingli/ydx/auth"
@@ -42,12 +43,16 @@ func WithCombiningAlgorithm(algorithm CombiningAlgorithm) Option {
 
 // Engine evaluates roles and policies against authorization requests. | Engine 对授权请求求值角色与策略。
 //
-// An Engine is safe for concurrent use when its Store is safe for concurrent use. | 当 Store 并发安全时，
-// Engine 也并发安全。
+// An Engine is safe for concurrent use when its Store is safe for concurrent use. Snapshot loads
+// take an exclusive engine lock, so every Engine method observes either the state before a load or
+// the fully loaded state, never the intermediate Reset. | 当 Store 并发安全时，Engine 也并发安全。
+// 快照加载持有引擎排他锁，因此每个 Engine 方法只能观察到加载前状态或完整加载后的状态，绝不会观察到
+// 中间的 Reset。
 type Engine struct {
 	store     Store
 	algorithm CombiningAlgorithm
 	now       func() time.Time
+	stateMu   sync.RWMutex
 }
 
 // New returns an Engine with an in-memory store, deny-overrides combining and the system clock. | New
@@ -79,56 +84,78 @@ func (e *Engine) Store() Store {
 
 // AddRole stores a role. | AddRole 保存角色。
 func (e *Engine) AddRole(ctx context.Context, role Role) error {
+	e.stateMu.Lock()
+	defer e.stateMu.Unlock()
 	return e.store.AddRole(normalizeContext(ctx), role)
 }
 
 // RemoveRole removes a role together with its assignments. | RemoveRole 删除角色及其分配。
 func (e *Engine) RemoveRole(ctx context.Context, name string) error {
+	e.stateMu.Lock()
+	defer e.stateMu.Unlock()
 	return e.store.RemoveRole(normalizeContext(ctx), name)
 }
 
 // GetRole returns a deep copy of a role. | GetRole 返回角色的深拷贝。
 func (e *Engine) GetRole(ctx context.Context, name string) (Role, error) {
+	e.stateMu.RLock()
+	defer e.stateMu.RUnlock()
 	return e.store.GetRole(normalizeContext(ctx), name)
 }
 
 // Roles returns every role sorted by name. | Roles 按名称返回所有角色。
 func (e *Engine) Roles(ctx context.Context) ([]Role, error) {
+	e.stateMu.RLock()
+	defer e.stateMu.RUnlock()
 	return e.store.ListRoles(normalizeContext(ctx))
 }
 
 // Assign binds a subject to a role. | Assign 把主体绑定到角色。
 func (e *Engine) Assign(ctx context.Context, assignment Assignment) error {
+	e.stateMu.Lock()
+	defer e.stateMu.Unlock()
 	return e.store.Assign(normalizeContext(ctx), assignment)
 }
 
 // Unassign removes one exact subject-role-scope assignment. | Unassign 删除一条主体、角色与作用域完全匹配的分配。
 func (e *Engine) Unassign(ctx context.Context, subject, role, scope string) error {
+	e.stateMu.Lock()
+	defer e.stateMu.Unlock()
 	return e.store.Unassign(normalizeContext(ctx), subject, role, scope)
 }
 
 // Assignments returns a subject's assignments, including expired ones. | Assignments 返回某主体的分配，包含已过期项。
 func (e *Engine) Assignments(ctx context.Context, subject string) ([]Assignment, error) {
+	e.stateMu.RLock()
+	defer e.stateMu.RUnlock()
 	return e.store.Assignments(normalizeContext(ctx), subject)
 }
 
 // AddPolicy stores a policy. | AddPolicy 保存策略。
 func (e *Engine) AddPolicy(ctx context.Context, policy Policy) error {
+	e.stateMu.Lock()
+	defer e.stateMu.Unlock()
 	return e.store.AddPolicy(normalizeContext(ctx), policy)
 }
 
 // RemovePolicy removes a policy. | RemovePolicy 删除策略。
 func (e *Engine) RemovePolicy(ctx context.Context, id string) error {
+	e.stateMu.Lock()
+	defer e.stateMu.Unlock()
 	return e.store.RemovePolicy(normalizeContext(ctx), id)
 }
 
 // GetPolicy returns a deep copy of a policy. | GetPolicy 返回策略的深拷贝。
 func (e *Engine) GetPolicy(ctx context.Context, id string) (Policy, error) {
+	e.stateMu.RLock()
+	defer e.stateMu.RUnlock()
 	return e.store.GetPolicy(normalizeContext(ctx), id)
 }
 
 // Policies returns every policy sorted by identifier. | Policies 按标识返回所有策略。
 func (e *Engine) Policies(ctx context.Context) ([]Policy, error) {
+	e.stateMu.RLock()
+	defer e.stateMu.RUnlock()
 	return e.store.ListPolicies(normalizeContext(ctx))
 }
 
@@ -173,15 +200,17 @@ func (e *Engine) Authorize(ctx context.Context, request Request) (Decision, erro
 	default:
 		return Decision{}, errs.Detail(ErrInvalidAlgorithm, "%q | %q", string(e.algorithm), string(e.algorithm))
 	}
+	e.stateMu.RLock()
 	roleList, err := e.store.ListRoles(ctx)
-	if err != nil {
-		return Decision{}, err
+	var policyList []Policy
+	if err == nil {
+		policyList, err = e.store.ListPolicies(ctx)
 	}
-	policyList, err := e.store.ListPolicies(ctx)
-	if err != nil {
-		return Decision{}, err
+	var assignments []Assignment
+	if err == nil {
+		assignments, err = e.store.Assignments(ctx, request.Subject)
 	}
-	assignments, err := e.store.Assignments(ctx, request.Subject)
+	e.stateMu.RUnlock()
 	if err != nil {
 		return Decision{}, err
 	}
@@ -273,11 +302,13 @@ func (e *Engine) Permissions(ctx context.Context, subject, scope string) ([]stri
 	if strings.TrimSpace(subject) == "" {
 		return nil, errs.Detail(ErrInvalidRequest, "empty subject | 主体为空")
 	}
+	e.stateMu.RLock()
 	assignments, err := e.store.Assignments(ctx, subject)
-	if err != nil {
-		return nil, err
+	var roleList []Role
+	if err == nil {
+		roleList, err = e.store.ListRoles(ctx)
 	}
-	roleList, err := e.store.ListRoles(ctx)
+	e.stateMu.RUnlock()
 	if err != nil {
 		return nil, err
 	}

@@ -144,6 +144,38 @@ func TestCBORFloats(t *testing.T) {
 	}
 }
 
+// TestCBORFloatExactRoundTrip checks that Encode never downcasts a value whose binary16 or binary32
+// representation is inexact. | TestCBORFloatExactRoundTrip 检查 Encode 不会把 binary16 或 binary32
+// 表示不精确的值降宽。
+func TestCBORFloatExactRoundTrip(t *testing.T) {
+	values := []float64{
+		math.Ldexp(1, -31),
+		math.Ldexp(-1, -31),
+		math.Ldexp(1, -25),
+		math.Ldexp(-1, -25),
+		math.Ldexp(1, -24),
+		math.Ldexp(-1, -24),
+		float64(float32(0.1)),
+		1.0 / 3.0,
+	}
+	for _, want := range values {
+		if h, ok := float64ToHalf(want); ok && halfToFloat64(h) != want {
+			t.Errorf("float64ToHalf(%v) = %#04x claims an exact round trip | 声称精确往返", want, h)
+		}
+		encoded, err := Encode(NewFloat(want))
+		if err != nil {
+			t.Fatalf("Encode(%v): %v", want, err)
+		}
+		decoded, err := Decode(encoded)
+		if err != nil {
+			t.Fatalf("Decode(%v): %v", want, err)
+		}
+		if decoded.Float != want {
+			t.Errorf("float round trip = %v, want %v (encoded %x) | 浮点往返不等", decoded.Float, want, encoded)
+		}
+	}
+}
+
 func TestCBORMalformedInputNeverPanics(t *testing.T) {
 	inputs := [][]byte{
 		nil,

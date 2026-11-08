@@ -43,6 +43,24 @@ func registrationCall(t *testing.T, method, target, body, bearer string) (*http.
 	return resp, out
 }
 
+// TestRegistrationRejectsClientSecretJWT verifies that RFC 7591 registration refuses the
+// unsupported client_secret_jwt method with an error that names it. |
+// TestRegistrationRejectsClientSecretJWT 校验 RFC 7591 注册会拒绝不支持的 client_secret_jwt，
+// 并在错误中指明该方法。
+func TestRegistrationRejectsClientSecretJWT(t *testing.T) {
+	fixture := newOIDCFixture(t, true)
+	endpoint := fixture.server.URL + RegistrationPath
+	body := `{"redirect_uris":["https://client.example/cb"],"token_endpoint_auth_method":"client_secret_jwt"}`
+	resp, out := registrationCall(t, http.MethodPost, endpoint, body, "")
+	if resp.StatusCode != http.StatusBadRequest || out["error"] != "invalid_client_metadata" {
+		t.Fatalf("register = %d body=%v | 注册 = %d 正文 = %v", resp.StatusCode, out, resp.StatusCode, out)
+	}
+	description, _ := out["error_description"].(string)
+	if !strings.Contains(description, "client_secret_jwt") {
+		t.Fatalf("error_description = %q | error_description = %q", description, description)
+	}
+}
+
 func TestDynamicRegistrationLifecycle(t *testing.T) {
 	fixture := newOIDCFixture(t, true)
 	endpoint := fixture.server.URL + RegistrationPath

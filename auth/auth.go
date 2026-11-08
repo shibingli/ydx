@@ -112,20 +112,29 @@ type User struct {
 	// DisplayName is the human-readable name. | DisplayName 是展示名称。
 	DisplayName string `json:"displayName,omitempty"`
 	// GivenName and FamilyName follow the OIDC profile claim names. | GivenName 与 FamilyName 对应 OIDC profile 声明。
-	GivenName  string `json:"givenName,omitempty"`
+	GivenName string `json:"givenName,omitempty"`
+	// FamilyName is the family name. | FamilyName 是姓氏。
 	FamilyName string `json:"familyName,omitempty"`
 	// MiddleName, Nickname, Profile, Picture, Website, Gender, Birthdate, Zoneinfo and Locale are
 	// optional OIDC profile attributes. | MiddleName、Nickname、Profile、Picture、Website、Gender、
 	// Birthdate、Zoneinfo 与 Locale 是可选的 OIDC profile 属性。
 	MiddleName string `json:"middleName,omitempty"`
-	Nickname   string `json:"nickname,omitempty"`
-	Profile    string `json:"profile,omitempty"`
-	Picture    string `json:"picture,omitempty"`
-	Website    string `json:"website,omitempty"`
-	Gender     string `json:"gender,omitempty"`
-	Birthdate  string `json:"birthdate,omitempty"`
-	Zoneinfo   string `json:"zoneinfo,omitempty"`
-	Locale     string `json:"locale,omitempty"`
+	// Nickname is the casual name. | Nickname 是常用昵称。
+	Nickname string `json:"nickname,omitempty"`
+	// Profile is the URL of the profile page. | Profile 是个人资料页 URL。
+	Profile string `json:"profile,omitempty"`
+	// Picture is the URL of the profile picture. | Picture 是头像 URL。
+	Picture string `json:"picture,omitempty"`
+	// Website is the URL of the user's web page. | Website 是用户网页 URL。
+	Website string `json:"website,omitempty"`
+	// Gender is the OIDC gender claim. | Gender 是 OIDC gender 声明。
+	Gender string `json:"gender,omitempty"`
+	// Birthdate is the OIDC birthdate claim in ISO 8601 form. | Birthdate 是 ISO 8601 形式的 OIDC birthdate 声明。
+	Birthdate string `json:"birthdate,omitempty"`
+	// Zoneinfo is the time zone name. | Zoneinfo 是时区名称。
+	Zoneinfo string `json:"zoneinfo,omitempty"`
+	// Locale is the BCP 47 locale tag. | Locale 是 BCP 47 语言区域标签。
+	Locale string `json:"locale,omitempty"`
 	// Address is the OIDC address claim in its JSON form. | Address 是 JSON 形式的 OIDC address 声明。
 	Address map[string]string `json:"address,omitempty"`
 	// Status is the lifecycle state. | Status 是生命周期状态。
@@ -146,8 +155,9 @@ type User struct {
 	LastLoginAt time.Time `json:"lastLoginAt,omitempty"`
 	// LastLoginIP is the last successful authentication source address. | LastLoginIP 是最后一次成功认证来源地址。
 	LastLoginIP string `json:"lastLoginIp,omitempty"`
-	// CreatedAt and UpdatedAt are UTC timestamps. | CreatedAt 与 UpdatedAt 是 UTC 时间戳。
+	// CreatedAt is the creation time. | CreatedAt 是创建时间。
 	CreatedAt time.Time `json:"createdAt"`
+	// UpdatedAt is the last modification time. | UpdatedAt 是最后修改时间。
 	UpdatedAt time.Time `json:"updatedAt"`
 	// ExternalID is an optional provisioning identifier from an upstream directory. | ExternalID 是可选的上级目录预配标识。
 	ExternalID string `json:"externalId,omitempty"`
@@ -254,8 +264,9 @@ type Principal struct {
 	// IssuedAt is the credential issue time. | IssuedAt 是凭据签发时间。
 	IssuedAt time.Time `json:"iat,omitempty"`
 	// Email and EmailVerified mirror the OIDC email claims. | Email 与 EmailVerified 对应 OIDC email 声明。
-	Email         string `json:"email,omitempty"`
-	EmailVerified bool   `json:"email_verified,omitempty"`
+	Email string `json:"email,omitempty"`
+	// EmailVerified reports a verified email address. | EmailVerified 表示邮箱地址已验证。
+	EmailVerified bool `json:"email_verified,omitempty"`
 	// Username is the login name when one exists. | Username 是登录名（存在时）。
 	Username string `json:"preferred_username,omitempty"`
 	// DisplayName is the human-readable name. | DisplayName 是展示名称。
@@ -309,8 +320,9 @@ func (p *Principal) HasRole(want string) bool {
 	return false
 }
 
-// HasPermission reports whether the principal holds permission, honouring "*" and "prefix:*"
-// wildcards. | HasPermission 报告主体是否持有 permission，支持 "*" 与 "prefix:*" 通配。
+// HasPermission reports whether the principal holds permission, honouring "*", "prefix:*" and
+// generic trailing "*" wildcards. | HasPermission 报告主体是否持有 permission，支持 "*"、"prefix:*"
+// 与通用尾部 "*" 通配。
 func (p *Principal) HasPermission(permission string) bool {
 	if p == nil {
 		return false
@@ -329,8 +341,10 @@ func (p *Principal) Expired(now time.Time) bool {
 }
 
 // MatchPermission reports whether held grants want. A held value of "*" grants every permission;
-// a held value ending in ":*" grants every permission in that namespace. | MatchPermission 报告 held
-// 是否授予 want。held 为 "*" 时授予全部权限；以 ":*" 结尾时授予该命名空间下的全部权限。
+// a held value ending in ":*" grants every permission in that namespace; any other trailing "*"
+// grants every permission with the preceding prefix. | MatchPermission 报告 held 是否授予 want。
+// held 为 "*" 时授予全部权限；以 ":*" 结尾时授予该命名空间下的全部权限；其它尾部 "*" 授予以
+// 其前缀开头的全部权限。
 func MatchPermission(held, want string) bool {
 	if held == "" || want == "" {
 		return false
@@ -357,16 +371,20 @@ type Identity struct {
 	// UserID is the local user identifier. | UserID 是本地用户标识。
 	UserID string `json:"userId"`
 	// Email and EmailVerified mirror the provider's claim when available. | Email 与 EmailVerified 在可用时镜像提供方声明。
-	Email         string `json:"email,omitempty"`
-	EmailVerified bool   `json:"emailVerified,omitempty"`
+	Email string `json:"email,omitempty"`
+	// EmailVerified reports whether the provider verified the email address. | EmailVerified 表示提供方是否已验证邮箱地址。
+	EmailVerified bool `json:"emailVerified,omitempty"`
 	// Username, Name and AvatarURL are display attributes. | Username、Name 与 AvatarURL 是展示属性。
-	Username  string `json:"username,omitempty"`
-	Name      string `json:"name,omitempty"`
+	Username string `json:"username,omitempty"`
+	// Name is the provider display name. | Name 是提供方展示名称。
+	Name string `json:"name,omitempty"`
+	// AvatarURL is the provider avatar URL. | AvatarURL 是提供方头像 URL。
 	AvatarURL string `json:"avatarUrl,omitempty"`
 	// Raw holds provider-specific scalar attributes. | Raw 保存提供方相关的标量属性。
 	Raw map[string]string `json:"raw,omitempty"`
-	// CreatedAt and UpdatedAt are UTC timestamps. | CreatedAt 与 UpdatedAt 是 UTC 时间戳。
+	// CreatedAt is the creation time. | CreatedAt 是创建时间。
 	CreatedAt time.Time `json:"createdAt"`
+	// UpdatedAt is the last modification time. | UpdatedAt 是最后修改时间。
 	UpdatedAt time.Time `json:"updatedAt"`
 }
 
@@ -399,13 +417,16 @@ type Session struct {
 	IP string `json:"ip,omitempty"`
 	// UserAgent is the source user agent at creation time. | UserAgent 是创建时的来源 User-Agent。
 	UserAgent string `json:"userAgent,omitempty"`
-	// CreatedAt, UpdatedAt and LastSeenAt are UTC timestamps. | CreatedAt、UpdatedAt 与 LastSeenAt 是 UTC 时间戳。
-	CreatedAt  time.Time `json:"createdAt"`
-	UpdatedAt  time.Time `json:"updatedAt"`
+	// CreatedAt is the creation time. | CreatedAt 是创建时间。
+	CreatedAt time.Time `json:"createdAt"`
+	// UpdatedAt is the last persisted update time. | UpdatedAt 是最后持久化更新时间。
+	UpdatedAt time.Time `json:"updatedAt"`
+	// LastSeenAt is the last validation time. | LastSeenAt 是最后一次校验时间。
 	LastSeenAt time.Time `json:"lastSeenAt"`
 	// IdleExpiresAt and ExpiresAt are the idle and absolute deadlines. | IdleExpiresAt 与 ExpiresAt 是空闲与绝对期限。
 	IdleExpiresAt time.Time `json:"idleExpiresAt"`
-	ExpiresAt     time.Time `json:"expiresAt"`
+	// ExpiresAt is the absolute deadline; the zero value means no absolute deadline. | ExpiresAt 是绝对期限；零值表示没有绝对期限。
+	ExpiresAt time.Time `json:"expiresAt"`
 	// RevokedAt is set when the session is revoked. | RevokedAt 在会话被撤销时设置。
 	RevokedAt *time.Time `json:"revokedAt,omitempty"`
 	// RevokeReason is a diagnostic reason for revocation. | RevokeReason 是撤销的诊断原因。
@@ -490,9 +511,11 @@ type Credential struct {
 	Data map[string]string `json:"data,omitempty"`
 	// Disabled excludes the factor from authentication. | Disabled 表示该因素不参与认证。
 	Disabled bool `json:"disabled,omitempty"`
-	// CreatedAt, UpdatedAt and LastUsedAt are UTC timestamps. | CreatedAt、UpdatedAt 与 LastUsedAt 是 UTC 时间戳。
-	CreatedAt  time.Time `json:"createdAt"`
-	UpdatedAt  time.Time `json:"updatedAt"`
+	// CreatedAt is the creation time. | CreatedAt 是创建时间。
+	CreatedAt time.Time `json:"createdAt"`
+	// UpdatedAt is the last modification time. | UpdatedAt 是最后修改时间。
+	UpdatedAt time.Time `json:"updatedAt"`
+	// LastUsedAt is the last successful verification time. | LastUsedAt 是最后一次成功校验时间。
 	LastUsedAt time.Time `json:"lastUsedAt,omitempty"`
 }
 
@@ -532,9 +555,11 @@ type AuditEvent struct {
 	UserID string `json:"userId,omitempty"`
 	// SessionID and ClientID identify the session and client context. | SessionID 与 ClientID 标识会话与客户端上下文。
 	SessionID string `json:"sessionId,omitempty"`
-	ClientID  string `json:"clientId,omitempty"`
+	// ClientID is the application or OAuth client involved in the event. | ClientID 是事件涉及的应用或 OAuth 客户端。
+	ClientID string `json:"clientId,omitempty"`
 	// IP and UserAgent describe the request source. | IP 与 UserAgent 描述请求来源。
-	IP        string `json:"ip,omitempty"`
+	IP string `json:"ip,omitempty"`
+	// UserAgent is the request User-Agent. | UserAgent 是请求 User-Agent。
 	UserAgent string `json:"userAgent,omitempty"`
 	// Outcome is "success", "failure" or "denied". | Outcome 取值为 "success"、"failure" 或 "denied"。
 	Outcome string `json:"outcome,omitempty"`
@@ -571,10 +596,12 @@ type AuditQuery struct {
 	Outcome string
 	// Since and Until bound the event time. | Since 与 Until 限定事件时间。
 	Since time.Time
+	// Until is the inclusive upper time bound when non-zero. | Until 是非零时的包含式时间上限。
 	Until time.Time
 	// Offset and Limit paginate the result; Limit 0 means the store default. | Offset 与 Limit 分页；Limit 为 0 表示存储默认值。
 	Offset int
-	Limit  int
+	// Limit is the maximum page size; 0 means the store default. | Limit 是最大页大小；0 表示存储默认值。
+	Limit int
 	// Descending reverses the chronological order. | Descending 反转时间顺序。
 	Descending bool
 }
@@ -587,7 +614,8 @@ type UserQuery struct {
 	Status UserStatus
 	// Offset and Limit paginate the result. | Offset 与 Limit 分页。
 	Offset int
-	Limit  int
+	// Limit is the maximum page size; 0 means the store default. | Limit 是最大页大小；0 表示存储默认值。
+	Limit int
 }
 
 type principalKey struct{}

@@ -413,37 +413,46 @@ func float64ToHalf(f float64) (uint16, bool) {
 		return sign | 0x7c00, true
 	}
 	if exp == 0 {
-		// A subnormal float32 rounds to zero in binary16. | float32 次正规数在 binary16 中舍入为零。
+		// Every non-zero float32 subnormal is smaller than the smallest binary16 subnormal, so no
+		// binary16 value can represent it exactly. | 非零 float32 次正规数都小于 binary16 的最小
+		// 次正规数，因此任何 binary16 值都无法精确表示。
+		if mant != 0 {
+			return 0, false
+		}
 		return sign, true
 	}
 	e := exp - 127
-	if e > 15 {
+	var h uint16
+	switch {
+	case e > 15:
 		return 0, false
-	}
-	if e >= -14 {
+	case e >= -14:
 		m := mant >> 13
 		rem := mant & 0x1fff
-		h := uint16(e+15)<<10 | uint16(m)
+		h = uint16(e+15)<<10 | uint16(m)
 		if rem > 0x1000 || (rem == 0x1000 && m&1 == 1) {
 			h++
 		}
 		if (h>>10)&0x1f == 0x1f {
 			return 0, false
 		}
-		return sign | h, true
+	case e >= -24:
+		shift := uint(-e - 1)
+		base := uint32(1)<<23 | mant
+		h = uint16(base >> shift)
+		rem := base & ((uint32(1) << shift) - 1)
+		halfway := uint32(1) << (shift - 1)
+		if rem > halfway || (rem == halfway && h&1 == 1) {
+			h++
+		}
+	default:
+		return 0, false
 	}
-	if e < -31 {
-		return sign, true
+	h |= sign
+	if halfToFloat64(h) != f {
+		return 0, false
 	}
-	shift := uint(-e - 1)
-	base := uint32(1)<<23 | mant
-	h := base >> shift
-	rem := base & ((uint32(1) << shift) - 1)
-	half := uint32(1) << (shift - 1)
-	if rem > half || (rem == half && h&1 == 1) {
-		h++
-	}
-	return sign | uint16(h), true
+	return h, true
 }
 
 func halfToFloat64(h uint16) float64 {

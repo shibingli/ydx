@@ -535,3 +535,85 @@ func mustHex(t *testing.T, s string) []byte {
 	}
 	return out
 }
+
+// TestDecodeOptionalB64RejectsNonZeroPadBits pins that apu and apv are validated as canonical
+// base64url even when they are absent or empty. | TestDecodeOptionalB64RejectsNonZeroPadBits 固定
+// 「apu 与 apv 即使可缺省也按规范 base64url 校验」。
+func TestDecodeOptionalB64RejectsNonZeroPadBits(t *testing.T) {
+	if got, err := decodeOptionalB64(""); err != nil || len(got) != 0 {
+		t.Fatalf("decodeOptionalB64(empty) = %v, %v", got, err)
+	}
+	if _, err := decodeOptionalB64("AB"); err == nil {
+		t.Fatal("decodeOptionalB64(AB) accepted non-zero trailing bits")
+	}
+}
+
+// TestJWEEnforcesKeyUse pins that use=enc allows JWE key management while use=sig is refused for
+// both encryption and decryption. | TestJWEEnforcesKeyUse 固定「use=enc 允许 JWE 密钥管理，
+// 而 use=sig 在加密与解密两侧都会被拒绝」。
+func TestJWEEnforcesKeyUse(t *testing.T) {
+	key := testOctKey(t, 32)
+	plaintext := []byte("jwe key use")
+	token, err := Encrypt(plaintext, key, EncryptOptions{Alg: "dir", Enc: EncA256GCM})
+	if err != nil {
+		t.Fatalf("Encrypt with unbound key failed: %v", err)
+	}
+	if _, err := Decrypt(token, key, DecryptOptions{}); err != nil {
+		t.Fatalf("Decrypt with unbound key failed: %v", err)
+	}
+
+	encKey := key.Public()
+	encKey.Use = "enc"
+	token, err = Encrypt(plaintext, encKey, EncryptOptions{Alg: "dir", Enc: EncA256GCM})
+	if err != nil {
+		t.Fatalf("Encrypt(use=enc) failed: %v", err)
+	}
+	if got, err := Decrypt(token, encKey, DecryptOptions{}); err != nil || !bytes.Equal(got, plaintext) {
+		t.Fatalf("Decrypt(use=enc) = %q, %v", got, err)
+	}
+
+	sigKey := key.Public()
+	sigKey.Use = "sig"
+	if _, err := Encrypt(plaintext, sigKey, EncryptOptions{Alg: "dir", Enc: EncA256GCM}); !errors.Is(err, ErrInvalidKey) {
+		t.Errorf("Encrypt(use=sig) err = %v, want ErrInvalidKey", err)
+	}
+	if _, err := Decrypt(token, sigKey, DecryptOptions{}); !errors.Is(err, ErrInvalidKey) {
+		t.Errorf("Decrypt(use=sig) err = %v, want ErrInvalidKey", err)
+	}
+
+	decOps := key.Public()
+	decOps.KeyOps = []string{"decrypt"}
+	if got, err := Decrypt(token, decOps, DecryptOptions{}); err != nil || !bytes.Equal(got, plaintext) {
+		t.Fatalf("Decrypt(key_ops=[decrypt]) = %q, %v", got, err)
+	}
+	signOps := key.Public()
+	signOps.KeyOps = []string{"sign"}
+	if _, err := Decrypt(token, signOps, DecryptOptions{}); !errors.Is(err, ErrInvalidKey) {
+		t.Errorf("Decrypt(key_ops=[sign]) err = %v, want ErrInvalidKey", err)
+	}
+}
+
+// TestDecryptTokenSizeLimit covers the pre-decode input bound: the exact limit passes, one byte over
+// fails with ErrTokenTooLarge, and a zero option selects DefaultMaxTokenSize. |
+// TestDecryptTokenSizeLimit 覆盖解码前的输入上限：恰好等于上限通过，超出 1 字节返回
+// ErrTokenTooLarge，选项为零时使用 DefaultMaxTokenSize。
+func TestDecryptTokenSizeLimit(t *testing.T) {
+	key := testOctKey(t, 32)
+	token, err := Encrypt([]byte("payload"), key, EncryptOptions{Alg: "dir", Enc: EncA256GCM})
+	if err != nil {
+		t.Fatalf("Encrypt failed: %v", err)
+	}
+	if got, err := Decrypt(token, key, DecryptOptions{MaxTokenSize: len(token)}); err != nil || string(got) != "payload" {
+		t.Fatalf("Decrypt at exact limit = %q, %v", got, err)
+	}
+	if _, err := Decrypt(token, key, DecryptOptions{MaxTokenSize: len(token) - 1}); !errors.Is(err, ErrTokenTooLarge) {
+		t.Fatalf("Decrypt one byte over limit err = %v, want ErrTokenTooLarge", err)
+	}
+	if _, err := Decrypt(token, key, DecryptOptions{}); err != nil {
+		t.Fatalf("Decrypt under default limit failed: %v", err)
+	}
+	huge := strings.Repeat("A", DefaultMaxTokenSize+1)
+	if _, err := Decrypt(huge, key, DecryptOptions{}); !errors.Is(err, ErrTokenTooLarge) {
+		t.Fatalf("Decrypt over default limit err = %v, want ErrTokenTooLarge", err)
+	}
+}

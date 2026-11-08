@@ -2,6 +2,7 @@ package jwt
 
 import (
 	"bytes"
+	"crypto"
 	"crypto/ecdsa"
 	"crypto/ed25519"
 	"crypto/elliptic"
@@ -1440,5 +1441,156 @@ func TestScannerRejectsMalformedJSON(t *testing.T) {
 		if _, err := Parse(raw, hmacKeyFunc(testSecret), ParseOptions{ValidAlgs: []Alg{HS256}}); !errors.Is(err, ErrMalformed) {
 			t.Errorf("Parse(header=%s) err = %v, want ErrMalformed", header, err)
 		}
+	}
+}
+
+// TestParseRejectsEscapedReservedHeaderNames pins that JSON escapes in a header name cannot smuggle
+// crit or b64 past the fail-closed checks: RFC 7515 §4.1.11 names the parameter by its decoded
+// value, so a name that decodes to crit is crit. | TestParseRejectsEscapedReservedHeaderNames
+// 固定「头部名中的 JSON 转义不能把 crit 或 b64 偷渡过失败关闭检查」：RFC 7515 §4.1.11 按参数
+// 解码后的值识别参数，因此解码后等于 crit 的名字就是 crit。
+func TestParseRejectsEscapedReservedHeaderNames(t *testing.T) {
+	// backslash keeps the JSON escape sequences visible in this source without relying on Go string
+	// escaping. | backslash 让 JSON 转义序列在本源码中保持可见，而不依赖 Go 字符串转义。
+	backslash := string(rune(0x5c))
+	for _, header := range []string{
+		`{"alg":"HS256","cr` + backslash + `u0069t":["exp"]}`,
+		`{"alg":"HS256","b` + backslash + `u0036` + backslash + `u0034":false}`,
+		`{"alg":"HS256","` + backslash + `u0062` + backslash + `u0036` + backslash + `u0034":true}`,
+	} {
+		raw := resign(t, b64(header), b64(`{"exp":4102444800}`))
+		if _, err := Parse(raw, hmacKeyFunc(testSecret), ParseOptions{ValidAlgs: []Alg{HS256}}); !errors.Is(err, ErrMalformed) {
+			t.Errorf("Parse(header=%s) err = %v, want ErrMalformed", header, err)
+		}
+	}
+}
+
+// TestParseRejectsMalformedNestedContainers pins that inner arrays and objects are validated with
+// the same strict grammar as the top-level object: balanced braces are not enough, the delimiters
+// must match and member separators must be present. | TestParseRejectsMalformedNestedContainers
+// 固定「内层数组与对象使用与顶层对象相同的严格语法校验」：仅括号配平不够，定界符必须匹配，成员之间
+// 必须有分隔符。
+func TestParseRejectsMalformedNestedContainers(t *testing.T) {
+	payloads := []string{
+		`{"exp":4102444800,"x":[}}`,
+		`{"exp":4102444800,"x":{"a":1,]}`,
+		`{"exp":4102444800,"x":["a" "b"]}`,
+		`{"exp":4102444800,"x":{"a":1 "b":2}}`,
+		`{"exp":4102444800,"x":[1 2]}`,
+		`{"exp":4102444800,"x":{"a":}}`,
+	}
+	for _, payload := range payloads {
+		raw := resign(t, b64(`{"alg":"HS256"}`), b64(payload))
+		if _, err := Parse(raw, hmacKeyFunc(testSecret), ParseOptions{ValidAlgs: []Alg{HS256}}); !errors.Is(err, ErrMalformed) {
+			t.Errorf("Parse(payload=%s) err = %v, want ErrMalformed", payload, err)
+		}
+		if _, err := SignJSON([]byte(payload), testSecret, HS256, SignOptions{}); !errors.Is(err, ErrInvalidClaims) {
+			t.Errorf("SignJSON(payload=%s) err = %v, want ErrInvalidClaims", payload, err)
+		}
+	}
+}
+
+// TestParseRejectsNonCanonicalBase64url pins that all three segments use the canonical unpadded
+// base64url encoding required by RFC 7515 §2. A non-zero trailing pad bit must be rejected even
+// though it decodes to the same bytes; otherwise one token has many accepted spellings and a
+// string-keyed replay cache can be bypassed by editing the signature segment. |
+// TestParseRejectsNonCanonicalBase64url 固定「三个段都使用 RFC 7515 §2 要求的规范无填充 base64url
+// 编码」。即使解码字节相同，非零尾部填充位也必须拒绝；否则同一个 token 会有多种被接受的拼写，
+// 按字符串记录的防重放缓存可被改写签名段绕过。
+func TestParseRejectsNonCanonicalBase64url(t *testing.T) {
+	canonical := resign(t, b64(`{"alg":"HS256"}`), b64(`{"exp":4102444800}`))
+	dot := strings.LastIndexByte(canonical, '.')
+	if dot < 0 {
+		t.Fatal("malformed test token")
+	}
+	signature := canonical[dot+1:]
+	aliasedSignature := aliasedBase64url(t, signature)
+	mutatedToken := canonical[:dot+1] + aliasedSignature
+	t.Logf("canonical signature segment = %q, aliased = %q", signature, aliasedSignature)
+	if _, err := Parse(canonical, hmacKeyFunc(testSecret), ParseOptions{ValidAlgs: []Alg{HS256}}); err != nil {
+		t.Fatalf("Parse(canonical) err = %v", err)
+	}
+	if _, err := Parse(mutatedToken, hmacKeyFunc(testSecret), ParseOptions{ValidAlgs: []Alg{HS256}}); !errors.Is(err, ErrMalformed) {
+		t.Errorf("Parse(aliased signature) err = %v, want ErrMalformed", err)
+	}
+
+	// The check covers the signed segments too: a header segment with the same decoded bytes but a
+	// non-canonical spelling is still not a valid JOSE segment. | 该检查同样覆盖被签名的段：解码
+	// 字节相同但拼写不规范的头段仍不是合法 JOSE 段。
+	headerSegment := b64(`{"alg":"HS256"} `)
+	aliasedHeader := aliasedBase64url(t, headerSegment)
+	raw := resign(t, aliasedHeader, b64(`{"exp":4102444800}`))
+	if _, err := Parse(raw, hmacKeyFunc(testSecret), ParseOptions{ValidAlgs: []Alg{HS256}}); !errors.Is(err, ErrMalformed) {
+		t.Errorf("Parse(aliased header) err = %v, want ErrMalformed", err)
+	}
+}
+
+// aliasedBase64url returns a different unpadded base64url spelling of the same bytes as canonical. |
+// aliasedBase64url 返回与 canonical 解码字节相同、但拼写不同的无填充 base64url 字符串。
+func aliasedBase64url(t *testing.T, canonical string) string {
+	t.Helper()
+	const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+	if canonical == "" {
+		t.Fatal("empty base64url input")
+	}
+	idx := strings.IndexByte(alphabet, canonical[len(canonical)-1])
+	if idx < 0 {
+		t.Fatalf("invalid base64url tail in %q", canonical)
+	}
+	want, err := base64.RawURLEncoding.DecodeString(canonical)
+	if err != nil {
+		t.Fatalf("decode canonical %q: %v", canonical, err)
+	}
+	for delta := 1; delta < 16 && idx+delta < len(alphabet); delta++ {
+		candidate := canonical[:len(canonical)-1] + string(alphabet[idx+delta])
+		got, err := base64.RawURLEncoding.DecodeString(candidate)
+		if err == nil && bytes.Equal(got, want) {
+			return candidate
+		}
+	}
+	t.Fatalf("no aliased spelling for %q", canonical)
+	return ""
+}
+
+// TestSignRejectsUnsupportedExtensionHeaders pins that Sign refuses to mint a token carrying crit
+// or b64: this package supports neither extension, so Parse always rejects such a token. |
+// TestSignRejectsUnsupportedExtensionHeaders 固定「Sign 拒绝签发携带 crit 或 b64 的 token」：
+// 本包不支持这两个扩展，Parse 必定拒绝这类 token。
+func TestSignRejectsUnsupportedExtensionHeaders(t *testing.T) {
+	for _, name := range []string{"crit", "b64"} {
+		opts := SignOptions{Header: map[string]string{name: "x"}}
+		if _, err := Sign(map[string]any{"sub": "u"}, testSecret, HS256, opts); !errors.Is(err, ErrInvalidHeader) {
+			t.Errorf("Sign(Header[%q]) err = %v, want ErrInvalidHeader", name, err)
+		}
+		if _, err := SignJSON([]byte(`{"sub":"u"}`), testSecret, HS256, opts); !errors.Is(err, ErrInvalidHeader) {
+			t.Errorf("SignJSON(Header[%q]) err = %v, want ErrInvalidHeader", name, err)
+		}
+	}
+}
+
+// TestRSAWeakKeysRejected pins that RSxxx and PSxxx refuse keys below the RFC 7518 §3.3 minimum of
+// 2048 bits on both signing and verification. | TestRSAWeakKeysRejected 固定「RSxxx 与 PSxxx 在
+// 签名与验签两侧都拒绝低于 RFC 7518 §3.3 最小值 2048 位的密钥」。
+func TestRSAWeakKeysRejected(t *testing.T) {
+	small, err := rsa.GenerateKey(rand.Reader, 1024)
+	if err != nil {
+		t.Fatalf("rsa.GenerateKey: %v", err)
+	}
+	for _, alg := range []Alg{RS256, PS256} {
+		if _, err := Sign(map[string]any{"sub": "u"}, small, alg, SignOptions{}); !errors.Is(err, ErrWeakKey) {
+			t.Errorf("Sign(%s, 1024-bit key) err = %v, want ErrWeakKey", alg, err)
+		}
+	}
+
+	input := b64(`{"alg":"RS256"}`) + "." + b64(`{"exp":4102444800}`)
+	digest := sha256.Sum256([]byte(input))
+	sig, err := rsa.SignPKCS1v15(rand.Reader, small, crypto.SHA256, digest[:])
+	if err != nil {
+		t.Fatalf("rsa.SignPKCS1v15: %v", err)
+	}
+	token := input + "." + base64.RawURLEncoding.EncodeToString(sig)
+	keyFn := func(Header) (any, error) { return &small.PublicKey, nil }
+	if _, err := Parse(token, keyFn, ParseOptions{ValidAlgs: []Alg{RS256}}); !errors.Is(err, ErrSignatureInvalid) {
+		t.Errorf("Parse(1024-bit RSA signature) err = %v, want ErrSignatureInvalid", err)
 	}
 }

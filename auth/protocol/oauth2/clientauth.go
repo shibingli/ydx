@@ -13,9 +13,11 @@ import (
 // ClientAssertionTypeJWTBearer is the RFC 7523 assertion type. | ClientAssertionTypeJWTBearer 是 RFC 7523 断言类型。
 const ClientAssertionTypeJWTBearer = "urn:ietf:params:oauth:client-assertion-type:jwt-bearer"
 
-// authenticateClient authenticates the client of a token, introspection or revocation request. | authenticateClient
-// 认证令牌、自省或撤销请求的客户端。
-func (s *Server) authenticateClient(ctx context.Context, r *http.Request, form url.Values) (*Client, error) {
+// authenticateClient authenticates the client of a token, introspection or revocation request.
+// endpointPath is the configured path of the calling endpoint; it forms the RFC 7523 assertion
+// audience at the actual mount point. | authenticateClient 认证令牌、自省或撤销请求的客户端。
+// endpointPath 是调用端点的配置路径，用于在实际挂载点构成 RFC 7523 断言受众。
+func (s *Server) authenticateClient(ctx context.Context, r *http.Request, form url.Values, endpointPath string) (*Client, error) {
 	basicID, basicSecret, hasBasic := basicCredentials(r)
 	formID := strings.TrimSpace(form.Get("client_id"))
 	formSecret := form.Get("client_secret")
@@ -52,13 +54,18 @@ func (s *Server) authenticateClient(ctx context.Context, r *http.Request, form u
 		}
 		// Assertions may only be used by clients registered for private_key_jwt. A client
 		// registered for a shared-secret method must not bypass the secret by presenting an
-		// assertion, and a client registered for none is public by definition. | 只有注册为
+		// assertion, and a client registered for none is public by definition. client_secret_jwt
+		// cannot be verified at all because only a secret hash is stored. | 只有注册为
 		// private_key_jwt 的客户端可以使用断言。注册为共享密钥方法的客户端不得用断言绕过密钥，
-		// 注册为 none 的客户端按定义是公共客户端。
+		// 注册为 none 的客户端按定义是公共客户端。client_secret_jwt 完全无法校验，因为只保存
+		// 密钥哈希。
+		if registeredAuthMethod(client) == ClientSecretJWT {
+			return nil, errs.Detail(ErrInvalidClient, "client_secret_jwt is not supported because only a secret hash is stored | 不支持 client_secret_jwt，因为只保存密钥哈希")
+		}
 		if registeredAuthMethod(client) != PrivateKeyJWT {
 			return nil, errs.Detail(ErrInvalidClient, "client is not registered for private_key_jwt | 客户端未注册 private_key_jwt")
 		}
-		if err := s.config.ClientAssertionVerifier.VerifyClientAssertion(ctx, client, assertion, s.Endpoint(r.URL.Path)); err != nil {
+		if err := s.config.ClientAssertionVerifier.VerifyClientAssertion(ctx, client, assertion, s.Endpoint(endpointPath)); err != nil {
 			return nil, errs.Wrap(err, ErrInvalidClient)
 		}
 		return client, nil
@@ -101,7 +108,9 @@ func (s *Server) authenticateClient(ctx context.Context, r *http.Request, form u
 			return nil, errs.Detail(ErrInvalidClient, "client authentication failed | 客户端认证失败")
 		}
 		return client, nil
-	case ClientSecretJWT, PrivateKeyJWT:
+	case ClientSecretJWT:
+		return nil, errs.Detail(ErrInvalidClient, "client_secret_jwt is not supported because only a secret hash is stored; register private_key_jwt or a shared-secret method | 不支持 client_secret_jwt，因为只保存密钥哈希；请注册 private_key_jwt 或共享密钥方法")
+	case PrivateKeyJWT:
 		return nil, errs.Detail(ErrInvalidClient, "client assertion is required for the registered authentication method | 注册的认证方法要求客户端断言")
 	default:
 		return nil, errs.Detail(ErrInvalidClient, "unsupported client authentication method %[1]q | 不支持的客户端认证方法 %[1]q", method)

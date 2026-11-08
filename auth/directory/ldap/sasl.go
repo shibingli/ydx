@@ -380,6 +380,9 @@ func parseSCRAMServerFirst(message, clientNonce string) (string, []byte, int, er
 		if key == "m" {
 			return "", nil, 0, errs.Detail(ErrSCRAM, "unsupported mandatory SCRAM extension | 不支持的 SCRAM 强制扩展")
 		}
+		if _, duplicate := values[key]; duplicate {
+			return "", nil, 0, errs.Detail(ErrSCRAM, "duplicate server-first attribute %q | server-first 属性 %q 重复", key, key)
+		}
 		values[key] = field[2:]
 	}
 	serverNonce := values["r"]

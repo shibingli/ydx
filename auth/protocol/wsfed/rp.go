@@ -674,20 +674,25 @@ func secureEqual(a, b string) bool {
 	return auth.SecureEqual(a, b)
 }
 
-// audienceMatches reports whether realm is an allowed assertion audience. | audienceMatches 报告 realm
-// 是否为允许的断言受众。
+// audienceMatches reports whether every audience restriction includes realm, as required by SAML
+// intersection semantics. | audienceMatches 报告是否每个受众限制都包含 realm，符合 SAML 交集语义。
 func audienceMatches(conditions *saml.Conditions, realm string) bool {
-	if conditions == nil {
+	if conditions == nil || len(conditions.AudienceRestriction) == 0 {
 		return false
 	}
 	for _, restriction := range conditions.AudienceRestriction {
+		matched := false
 		for _, audience := range restriction.Audience {
 			if secureEqual(strings.TrimSpace(audience), realm) {
-				return true
+				matched = true
+				break
 			}
 		}
+		if !matched {
+			return false
+		}
 	}
-	return false
+	return true
 }
 
 // checkTimeWindow validates a NotBefore/NotOnOrAfter pair with clock skew. | checkTimeWindow 结合
@@ -714,19 +719,29 @@ func checkTimeWindow(notBefore, notOnOrAfter string, now time.Time, skew time.Du
 	return nil
 }
 
-// checkRecipient validates the bearer confirmation recipient and window. | checkRecipient 校验承载
-// 确认接收方与时间窗口。
+// saml11BearerMethod is the SAML 1.1 bearer confirmation method. | saml11BearerMethod 是 SAML 1.1
+// 承载确认方法。
+const saml11BearerMethod = "urn:oasis:names:tc:SAML:1.0:cm:bearer"
+
+// checkRecipient validates the bearer confirmation recipient and window. Confirmations using any
+// other method require proof of possession that the passive profile cannot verify, so a recipient
+// carried by such a confirmation is never accepted. | checkRecipient 校验承载确认接收方与时间窗口。
+// 其它方法的确认需要被动配置无法验证的持有证明，因此这类确认携带的接收方一律不接受。
 func checkRecipient(subject *saml.Subject, replyURL string, now time.Time, skew time.Duration) error {
 	if subject == nil || len(subject.SubjectConfirmation) == 0 {
 		return nil
 	}
 	sawRecipient := false
 	for index := range subject.SubjectConfirmation {
-		data := subject.SubjectConfirmation[index].SubjectConfirmationData
+		confirmation := &subject.SubjectConfirmation[index]
+		data := confirmation.SubjectConfirmationData
 		if data == nil || data.Recipient == "" {
 			continue
 		}
 		sawRecipient = true
+		if confirmation.Method != saml.SubjectConfirmationBearer && confirmation.Method != saml11BearerMethod {
+			continue
+		}
 		if !secureEqual(strings.TrimSpace(data.Recipient), replyURL) {
 			continue
 		}

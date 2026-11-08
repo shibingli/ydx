@@ -40,8 +40,15 @@ type oauthAdapter struct {
 	discovery          *oidc.DiscoveryDocument
 	discoveryExpiresAt time.Time
 	rp                 *oidc.RelyingParty
-	refreshWait        chan struct{}
-	refreshErr         error
+	refresh            *discoveryRefresh
+}
+
+// discoveryRefresh is one in-flight discovery refresh shared by single-flight waiters.
+// err is written once before done is closed. | discoveryRefresh 是一次进行中的发现刷新，
+// 由单飞等待方共享。err 在 done 关闭前只写入一次。
+type discoveryRefresh struct {
+	done chan struct{}
+	err  error
 }
 
 // newAdapter returns the provider adapter with periodic discovery refresh disabled.
@@ -310,9 +317,9 @@ func (a *oauthAdapter) discoveryPendingLocked(needJWKS bool) bool {
 }
 
 // refreshDiscovery fetches the discovery document with single-flight semantics. Only
-// one caller performs the network request; concurrent callers wait for its result.
-// refreshDiscovery 以单飞语义获取发现文档。只有一个调用方执行网络请求，并发调用方等待
-// 该结果。
+// one caller performs the network request; concurrent callers wait for its result or
+// for their own context to end. | refreshDiscovery 以单飞语义获取发现文档。只有一个
+// 调用方执行网络请求，并发调用方等待该结果或自身上下文结束。
 func (a *oauthAdapter) refreshDiscovery(ctx context.Context, needJWKS bool) error {
 	a.mu.Lock()
 	a.applyProviderDefaultsLocked()
@@ -320,17 +327,20 @@ func (a *oauthAdapter) refreshDiscovery(ctx context.Context, needJWKS bool) erro
 		a.mu.Unlock()
 		return nil
 	}
-	if wait := a.refreshWait; wait != nil {
+	if refresh := a.refresh; refresh != nil {
 		a.mu.Unlock()
-		<-wait
-		a.mu.Lock()
-		err := a.refreshErr
-		a.mu.Unlock()
-		return err
+		select {
+		case <-refresh.done:
+			// The result belongs to this refresh cycle, so a later leader cannot
+			// overwrite what this waiter observes. | 结果属于本次刷新周期，后续主导方
+			// 无法覆盖本等待方观察到的值。
+			return refresh.err
+		case <-ctx.Done():
+			return errs.Wrap(ctx.Err(), ErrProviderConfig)
+		}
 	}
-	wait := make(chan struct{})
-	a.refreshWait = wait
-	a.refreshErr = nil
+	refresh := &discoveryRefresh{done: make(chan struct{})}
+	a.refresh = refresh
 	issuer := a.issuer
 	client := a.client
 	a.mu.Unlock()
@@ -338,9 +348,9 @@ func (a *oauthAdapter) refreshDiscovery(ctx context.Context, needJWKS bool) erro
 	err := a.fetchDiscovery(ctx, issuer, client)
 
 	a.mu.Lock()
-	a.refreshErr = err
-	a.refreshWait = nil
-	close(wait)
+	refresh.err = err
+	a.refresh = nil
+	close(refresh.done)
 	a.mu.Unlock()
 	return err
 }

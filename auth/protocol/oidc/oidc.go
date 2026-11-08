@@ -110,12 +110,16 @@ var (
 type Address struct {
 	// Formatted is the full mailing address. | Formatted 是完整邮寄地址。
 	Formatted string `json:"formatted,omitempty"`
-	// StreetAddress, Locality, Region, PostalCode and Country are the address components. | StreetAddress、Locality、Region、PostalCode 与 Country 是地址组成部分。
+	// StreetAddress is the street-address component. | StreetAddress 是街道地址组成部分。
 	StreetAddress string `json:"street_address,omitempty"`
-	Locality      string `json:"locality,omitempty"`
-	Region        string `json:"region,omitempty"`
-	PostalCode    string `json:"postal_code,omitempty"`
-	Country       string `json:"country,omitempty"`
+	// Locality is the locality component. | Locality 是城市组成部分。
+	Locality string `json:"locality,omitempty"`
+	// Region is the region component. | Region 是省区组成部分。
+	Region string `json:"region,omitempty"`
+	// PostalCode is the postal-code component. | PostalCode 是邮政编码组成部分。
+	PostalCode string `json:"postal_code,omitempty"`
+	// Country is the country component. | Country 是国家组成部分。
+	Country string `json:"country,omitempty"`
 }
 
 // Audience is the aud claim, accepting both a string and an array. | Audience 是 aud 声明，接受字符串与数组两种形式。
@@ -155,16 +159,19 @@ type Claims struct {
 	Subject string `json:"sub,omitempty"`
 	// Audience is the aud claim. | Audience 是 aud 声明。
 	Audience Audience `json:"aud,omitempty"`
-	// Expiry, IssuedAt and NotBefore are NumericDate values. | Expiry、IssuedAt 与 NotBefore 是 NumericDate 取值。
-	Expiry    int64 `json:"exp,omitempty"`
-	IssuedAt  int64 `json:"iat,omitempty"`
+	// Expiry is the expiry NumericDate. | Expiry 是过期 NumericDate。
+	Expiry int64 `json:"exp,omitempty"`
+	// IssuedAt is the issue NumericDate. | IssuedAt 是签发 NumericDate。
+	IssuedAt int64 `json:"iat,omitempty"`
+	// NotBefore is the not-before NumericDate. | NotBefore 是生效前 NumericDate。
 	NotBefore int64 `json:"nbf,omitempty"`
 	// Nonce is the OIDC nonce. | Nonce 是 OIDC nonce。
 	Nonce string `json:"nonce,omitempty"`
 	// AuthTime is the end-user authentication time. | AuthTime 是最终用户认证时间。
 	AuthTime int64 `json:"auth_time,omitempty"`
-	// ACR and AMR describe the authentication context. | ACR 与 AMR 描述认证上下文。
-	ACR string   `json:"acr,omitempty"`
+	// ACR is the authentication context class reference. | ACR 是认证上下文类引用。
+	ACR string `json:"acr,omitempty"`
+	// AMR lists the authentication methods. | AMR 列出认证方法。
 	AMR []string `json:"amr,omitempty"`
 	// AZP is the authorized party. | AZP 是授权方。
 	AZP string `json:"azp,omitempty"`
@@ -172,32 +179,48 @@ type Claims struct {
 	JTI string `json:"jti,omitempty"`
 	// SID is the session identifier used by logout and session management. | SID 是登出与会话管理使用的会话标识。
 	SID string `json:"sid,omitempty"`
-	// AccessTokenHash and CodeHash bind the ID token to an access token or code. | AccessTokenHash 与 CodeHash 把 ID 令牌绑定到访问令牌或授权码。
+	// AccessTokenHash binds the ID token to an access token. | AccessTokenHash 把 ID 令牌绑定到访问令牌。
 	AccessTokenHash string `json:"at_hash,omitempty"`
-	CodeHash        string `json:"c_hash,omitempty"`
+	// CodeHash binds the ID token to an authorization code. | CodeHash 把 ID 令牌绑定到授权码。
+	CodeHash string `json:"c_hash,omitempty"`
 	// StateHash binds the ID token to the OAuth state in FAPI-style profiles. | StateHash 在 FAPI 类配置中把 ID 令牌绑定到 OAuth state。
 	StateHash string `json:"s_hash,omitempty"`
-	// Profile claims. | 资料声明。
-	Name              string `json:"name,omitempty"`
-	GivenName         string `json:"given_name,omitempty"`
-	FamilyName        string `json:"family_name,omitempty"`
-	MiddleName        string `json:"middle_name,omitempty"`
-	Nickname          string `json:"nickname,omitempty"`
+	// Name is the full display name. | Name 是完整显示名。
+	Name string `json:"name,omitempty"`
+	// GivenName is the given name. | GivenName 是名字。
+	GivenName string `json:"given_name,omitempty"`
+	// FamilyName is the family name. | FamilyName 是姓氏。
+	FamilyName string `json:"family_name,omitempty"`
+	// MiddleName is the middle name. | MiddleName 是中间名。
+	MiddleName string `json:"middle_name,omitempty"`
+	// Nickname is the casual name. | Nickname 是昵称。
+	Nickname string `json:"nickname,omitempty"`
+	// PreferredUsername is the preferred user name. | PreferredUsername 是首选用户名。
 	PreferredUsername string `json:"preferred_username,omitempty"`
-	Profile           string `json:"profile,omitempty"`
-	Picture           string `json:"picture,omitempty"`
-	Website           string `json:"website,omitempty"`
-	Gender            string `json:"gender,omitempty"`
-	Birthdate         string `json:"birthdate,omitempty"`
-	Zoneinfo          string `json:"zoneinfo,omitempty"`
-	Locale            string `json:"locale,omitempty"`
-	UpdatedAt         int64  `json:"updated_at,omitempty"`
-	// Email claims. | 邮箱声明。
-	Email         string `json:"email,omitempty"`
-	EmailVerified *bool  `json:"email_verified,omitempty"`
-	// Phone claims. | 电话声明。
-	PhoneNumber         string `json:"phone_number,omitempty"`
-	PhoneNumberVerified *bool  `json:"phone_number_verified,omitempty"`
+	// Profile is the profile page URL. | Profile 是资料页 URL。
+	Profile string `json:"profile,omitempty"`
+	// Picture is the profile picture URL. | Picture 是头像 URL。
+	Picture string `json:"picture,omitempty"`
+	// Website is the website URL. | Website 是网站 URL。
+	Website string `json:"website,omitempty"`
+	// Gender is the gender value. | Gender 是性别取值。
+	Gender string `json:"gender,omitempty"`
+	// Birthdate is the birthday in ISO 8601 date form. | Birthdate 是 ISO 8601 日期形式的生日。
+	Birthdate string `json:"birthdate,omitempty"`
+	// Zoneinfo is the time-zone identifier. | Zoneinfo 是时区标识。
+	Zoneinfo string `json:"zoneinfo,omitempty"`
+	// Locale is the locale identifier. | Locale 是区域设置标识。
+	Locale string `json:"locale,omitempty"`
+	// UpdatedAt is the profile last-update NumericDate. | UpdatedAt 是资料最后更新 NumericDate。
+	UpdatedAt int64 `json:"updated_at,omitempty"`
+	// Email is the email address. | Email 是邮箱地址。
+	Email string `json:"email,omitempty"`
+	// EmailVerified reports whether the email address was verified. | EmailVerified 报告邮箱地址是否已验证。
+	EmailVerified *bool `json:"email_verified,omitempty"`
+	// PhoneNumber is the telephone number. | PhoneNumber 是电话号码。
+	PhoneNumber string `json:"phone_number,omitempty"`
+	// PhoneNumberVerified reports whether the phone number was verified. | PhoneNumberVerified 报告电话号码是否已验证。
+	PhoneNumberVerified *bool `json:"phone_number_verified,omitempty"`
 	// Address is the address claim. | Address 是地址声明。
 	Address *Address `json:"address,omitempty"`
 	// Extra carries additional claims that are not in the standard set. | Extra 携带标准集之外的附加声明。

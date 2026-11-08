@@ -88,7 +88,7 @@ func TestHTTPVerifier(t *testing.T) {
 			t.Errorf("payload = %+v", payload)
 		}
 		w.Header().Set("Content-Type", "application/json")
-		io.WriteString(w, `{"verified":true,"requestId":"req-1","message":"ok","provider":"mock"}`)
+		_, _ = io.WriteString(w, `{"verified":true,"requestId":"req-1","message":"ok","provider":"mock"}`)
 	}))
 	defer srv.Close()
 
@@ -121,7 +121,7 @@ func TestHTTPVerifier(t *testing.T) {
 func TestHTTPVerifierProviderFallback(t *testing.T) {
 	t.Parallel()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		io.WriteString(w, `{"verified":false,"requestId":"req-2","message":"no match"}`)
+		_, _ = io.WriteString(w, `{"verified":false,"requestId":"req-2","message":"no match"}`)
 	}))
 	defer srv.Close()
 
@@ -141,7 +141,7 @@ func TestHTTPVerifierProviderFallback(t *testing.T) {
 func TestHTTPVerifierDecodeHook(t *testing.T) {
 	t.Parallel()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		io.WriteString(w, `{"ok":true,"trace":"trace-9"}`)
+		_, _ = io.WriteString(w, `{"ok":true,"trace":"trace-9"}`)
 	}))
 	defer srv.Close()
 
@@ -179,7 +179,7 @@ func TestHTTPVerifierFailuresDoNotLeakPII(t *testing.T) {
 	)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
-		io.WriteString(w, `{"error":"`+idNumber+` `+mobile+`"}`)
+		_, _ = io.WriteString(w, `{"error":"`+idNumber+` `+mobile+`"}`)
 	}))
 	defer srv.Close()
 
@@ -244,7 +244,7 @@ func TestHTTPVerifierConfigurationAndInput(t *testing.T) {
 func TestHTTPVerifierInvalidResponse(t *testing.T) {
 	t.Parallel()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		io.WriteString(w, `not json`)
+		_, _ = io.WriteString(w, `not json`)
 	}))
 	defer srv.Close()
 

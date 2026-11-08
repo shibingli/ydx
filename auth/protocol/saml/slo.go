@@ -31,7 +31,7 @@ func (sp *ServiceProvider) HandleSLO(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
-		if err := sp.validateLogoutResponse(r.Context(), raw, response, relayState); err != nil {
+		if err := sp.validateLogoutResponse(r.Context(), raw, response, relayState, redirect); err != nil {
 			http.Error(w, "invalid logout response", http.StatusBadRequest)
 			return
 		}
@@ -50,7 +50,7 @@ func (sp *ServiceProvider) HandleSLO(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if err := sp.validateLogoutRequest(r.Context(), raw, request); err != nil {
+	if err := sp.validateLogoutRequest(r.Context(), raw, request, redirect); err != nil {
 		http.Error(w, "invalid logout request", http.StatusBadRequest)
 		return
 	}
@@ -81,9 +81,11 @@ func (sp *ServiceProvider) HandleSLO(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// validateLogoutRequest validates an IdP-initiated LogoutRequest and rejects replays. |
-// validateLogoutRequest 校验 IdP 发起的 LogoutRequest 并拒绝重放。
-func (sp *ServiceProvider) validateLogoutRequest(ctx context.Context, raw []byte, request *LogoutRequest) error {
+// validateLogoutRequest validates an IdP-initiated LogoutRequest and rejects replays. A redirect
+// message has already satisfied the signed-only policy through its query signature. |
+// validateLogoutRequest 校验 IdP 发起的 LogoutRequest 并拒绝重放。重定向消息已通过查询签名满足
+// 仅签名策略。
+func (sp *ServiceProvider) validateLogoutRequest(ctx context.Context, raw []byte, request *LogoutRequest, redirect bool) error {
 	if request == nil {
 		return errs.Detail(ErrInvalidRequest, "logout request is nil | 登出请求为空")
 	}
@@ -114,7 +116,7 @@ func (sp *ServiceProvider) validateLogoutRequest(ctx context.Context, raw []byte
 	if err != nil {
 		return err
 	}
-	if err := verifyLogoutSignature(ctx, raw, request.ID, request.Signature, sp.config.SignatureVerifier, sp.config.RequireSignedLogout, request.Destination); err != nil {
+	if err := verifyLogoutSignature(ctx, raw, request.ID, request.Signature, sp.config.SignatureVerifier, sp.config.RequireSignedLogout && !redirect, request.Destination); err != nil {
 		return err
 	}
 	if sp.store != nil {
@@ -130,8 +132,10 @@ func (sp *ServiceProvider) validateLogoutRequest(ctx context.Context, raw []byte
 }
 
 // validateLogoutResponse validates a LogoutResponse received by the SP and consumes the correlated
-// request. | validateLogoutResponse 校验 SP 收到的 LogoutResponse 并消费关联请求。
-func (sp *ServiceProvider) validateLogoutResponse(ctx context.Context, raw []byte, response *LogoutResponse, relayState string) error {
+// request. A redirect message has already satisfied the signed-only policy through its query
+// signature. | validateLogoutResponse 校验 SP 收到的 LogoutResponse 并消费关联请求。重定向消息已
+// 通过查询签名满足仅签名策略。
+func (sp *ServiceProvider) validateLogoutResponse(ctx context.Context, raw []byte, response *LogoutResponse, relayState string, redirect bool) error {
 	if response == nil {
 		return errs.Detail(ErrInvalidResponse, "logout response is nil | 登出响应为空")
 	}
@@ -161,7 +165,7 @@ func (sp *ServiceProvider) validateLogoutResponse(ctx context.Context, raw []byt
 	if !logoutStatusAcceptable(response.Status) {
 		return errs.Detail(ErrStatusFailure, "logout status is not successful | 登出状态非成功")
 	}
-	if err := verifyLogoutSignature(ctx, raw, response.ID, response.Signature, sp.config.SignatureVerifier, sp.config.RequireSignedLogout, response.Destination); err != nil {
+	if err := verifyLogoutSignature(ctx, raw, response.ID, response.Signature, sp.config.SignatureVerifier, sp.config.RequireSignedLogout && !redirect, response.Destination); err != nil {
 		return err
 	}
 	state, err := sp.consumeLogoutRequest(ctx, response.InResponseTo, now)
@@ -259,12 +263,12 @@ func (idp *IdentityProvider) HandleSLO(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if redirect {
-			if err := verifySLORedirect(r.Context(), r.URL.RawQuery, "SAMLResponse", issuerString(response.Issuer), relayState, idp.config.RedirectVerifier, false); err != nil {
+			if err := verifySLORedirect(r.Context(), r.URL.RawQuery, "SAMLResponse", issuerString(response.Issuer), relayState, idp.config.RedirectVerifier, idp.config.WantLogoutRequestsSigned); err != nil {
 				http.Error(w, "invalid logout response", http.StatusBadRequest)
 				return
 			}
 		}
-		if err := idp.handleLogoutResponse(r.Context(), raw, relayState); err != nil {
+		if err := idp.handleLogoutResponse(r.Context(), raw, relayState, redirect); err != nil {
 			http.Error(w, "invalid logout response", http.StatusBadRequest)
 			return
 		}
@@ -283,7 +287,7 @@ func (idp *IdentityProvider) HandleSLO(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	partial, destination, err := idp.validateLogoutRequest(r.Context(), raw, request)
+	partial, destination, err := idp.validateLogoutRequest(r.Context(), raw, request, redirect)
 	if err != nil {
 		http.Error(w, "invalid logout request", http.StatusBadRequest)
 		return
@@ -310,9 +314,10 @@ func (idp *IdentityProvider) HandleSLO(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// handleLogoutResponse validates a LogoutResponse sent to the IdP. | handleLogoutResponse 校验发送给
-// IdP 的 LogoutResponse。
-func (idp *IdentityProvider) handleLogoutResponse(ctx context.Context, raw []byte, relayState string) error {
+// handleLogoutResponse validates a LogoutResponse sent to the IdP. A redirect message has already
+// satisfied the signed-only policy through its query signature. | handleLogoutResponse 校验发送给
+// IdP 的 LogoutResponse。重定向消息已通过查询签名满足仅签名策略。
+func (idp *IdentityProvider) handleLogoutResponse(ctx context.Context, raw []byte, relayState string, redirect bool) error {
 	response, err := DecodeLogoutResponse(raw)
 	if err != nil {
 		return err
@@ -342,7 +347,7 @@ func (idp *IdentityProvider) handleLogoutResponse(ctx context.Context, raw []byt
 	if !logoutStatusAcceptable(response.Status) {
 		return errs.Detail(ErrStatusFailure, "logout status is not successful | 登出状态非成功")
 	}
-	if err := verifyLogoutSignature(ctx, raw, response.ID, response.Signature, idp.config.SignatureVerifier, idp.config.WantLogoutRequestsSigned, response.Destination); err != nil {
+	if err := verifyLogoutSignature(ctx, raw, response.ID, response.Signature, idp.config.SignatureVerifier, idp.config.WantLogoutRequestsSigned && !redirect, response.Destination); err != nil {
 		return err
 	}
 	if response.InResponseTo != "" {
@@ -361,9 +366,10 @@ func (idp *IdentityProvider) handleLogoutResponse(ctx context.Context, raw []byt
 }
 
 // validateLogoutRequest validates an SP-initiated LogoutRequest, deletes the target sessions and
-// returns the SP response destination. | validateLogoutRequest 校验 SP 发起的 LogoutRequest、删除
-// 目标会话并返回 SP 响应目标。
-func (idp *IdentityProvider) validateLogoutRequest(ctx context.Context, raw []byte, request *LogoutRequest) (bool, string, error) {
+// returns the SP response destination. A redirect message has already satisfied the signed-only
+// policy through its query signature. | validateLogoutRequest 校验 SP 发起的 LogoutRequest、删除
+// 目标会话并返回 SP 响应目标。重定向消息已通过查询签名满足仅签名策略。
+func (idp *IdentityProvider) validateLogoutRequest(ctx context.Context, raw []byte, request *LogoutRequest, redirect bool) (bool, string, error) {
 	if request == nil {
 		return false, "", errs.Detail(ErrInvalidRequest, "logout request is nil | 登出请求为空")
 	}
@@ -391,7 +397,7 @@ func (idp *IdentityProvider) validateLogoutRequest(ctx context.Context, raw []by
 	if err != nil {
 		return false, "", err
 	}
-	if err := verifyLogoutSignature(ctx, raw, request.ID, request.Signature, idp.config.SignatureVerifier, idp.config.WantLogoutRequestsSigned, request.Destination); err != nil {
+	if err := verifyLogoutSignature(ctx, raw, request.ID, request.Signature, idp.config.SignatureVerifier, idp.config.WantLogoutRequestsSigned && !redirect, request.Destination); err != nil {
 		return false, "", err
 	}
 	if idp.store != nil {

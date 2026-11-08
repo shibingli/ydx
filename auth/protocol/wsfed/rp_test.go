@@ -123,6 +123,50 @@ func TestRPRejectsWrongRecipient(t *testing.T) {
 	}
 }
 
+// TestAudienceMatchesRequiresEveryRestriction verifies SAML intersection semantics for WS-Fed
+// tokens: every audience restriction must include the realm. |
+// TestAudienceMatchesRequiresEveryRestriction 校验 WS-Fed 令牌的 SAML 交集语义：每个受众限制都必须
+// 包含该领域。
+func TestAudienceMatchesRequiresEveryRestriction(t *testing.T) {
+	conditions := &saml.Conditions{AudienceRestriction: []saml.AudienceRestriction{
+		{Audience: []string{"https://other.example.com/"}},
+		{Audience: []string{testRealm}},
+	}}
+	if audienceMatches(conditions, testRealm) {
+		t.Fatal("a foreign audience restriction must invalidate the assertion")
+	}
+	conditions.AudienceRestriction = []saml.AudienceRestriction{
+		{Audience: []string{"https://other.example.com/", testRealm}},
+	}
+	if !audienceMatches(conditions, testRealm) {
+		t.Fatal("an audience listed inside a restriction must match")
+	}
+	if audienceMatches(nil, testRealm) || audienceMatches(&saml.Conditions{}, testRealm) {
+		t.Fatal("missing audience restrictions must not match")
+	}
+}
+
+// TestCheckRecipientRejectsNonBearerConfirmation rejects recipient-bearing holder-of-key
+// confirmations because the passive profile cannot verify proof of possession. |
+// TestCheckRecipientRejectsNonBearerConfirmation 拒绝带接收方的 holder-of-key 确认，因为被动配置
+// 无法验证持有证明。
+func TestCheckRecipientRejectsNonBearerConfirmation(t *testing.T) {
+	subject := &saml.Subject{SubjectConfirmation: []saml.SubjectConfirmation{{
+		Method: "urn:oasis:names:tc:SAML:2.0:cm:holder-of-key",
+		SubjectConfirmationData: &saml.SubjectConfirmationData{
+			Recipient:    testReply,
+			NotOnOrAfter: saml.FormatTime(testNow.Add(time.Minute)),
+		},
+	}}}
+	if err := checkRecipient(subject, testReply, testNow, 2*time.Minute); !errors.Is(err, ErrInvalidRecipient) {
+		t.Fatalf("holder-of-key error = %v, want ErrInvalidRecipient", err)
+	}
+	subject.SubjectConfirmation[0].Method = saml.SubjectConfirmationBearer
+	if err := checkRecipient(subject, testReply, testNow, 2*time.Minute); err != nil {
+		t.Fatalf("bearer confirmation rejected: %v", err)
+	}
+}
+
 // TestRPRejectsExpired rejects an expired assertion. | TestRPRejectsExpired 拒绝过期断言。
 func TestRPRejectsExpired(t *testing.T) {
 	sts := newTestSTS(t, &stubAuthenticator{principal: testPrincipal()}, nil)

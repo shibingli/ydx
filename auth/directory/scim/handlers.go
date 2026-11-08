@@ -580,12 +580,17 @@ func (s *Server) handleReplaceMe(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
+	attributes, excluded, err := parseAttributeSelection(r.URL.Query())
+	if err != nil {
+		writeError(w, err)
+		return
+	}
 	updated, err := s.replaceUser(r.Context(), existing, &incoming, incoming.Password, nil)
 	if err != nil {
 		writeError(w, err)
 		return
 	}
-	s.respondUser(w, r, http.StatusOK, updated, nil, nil)
+	s.respondUser(w, r, http.StatusOK, updated, attributes, excluded)
 }
 
 // handlePatchMe serves PATCH /Me. | handlePatchMe 提供 PATCH /Me。
@@ -612,6 +617,11 @@ func (s *Server) handlePatchMe(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
+	attributes, excluded, err := parseAttributeSelection(r.URL.Query())
+	if err != nil {
+		writeError(w, err)
+		return
+	}
 	patched, err := ApplyUserPatch(existing, request.Operations)
 	if err != nil {
 		writeError(w, err)
@@ -622,6 +632,10 @@ func (s *Server) handlePatchMe(w http.ResponseWriter, r *http.Request) {
 	patched.ID = existing.ID
 	patched.Meta = nil
 	patched.Groups = existing.Clone().Groups
+	if password != "" && s.passwordSetter == nil {
+		writeError(w, errs.Detail(ErrNotConfigured, "password provisioning requires PasswordSetter | 口令预配需要 PasswordSetter"))
+		return
+	}
 	stored, err := s.store.ReplaceUser(r.Context(), patched)
 	if err != nil {
 		writeError(w, err)
@@ -631,7 +645,7 @@ func (s *Server) handlePatchMe(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	s.respondUser(w, r, http.StatusOK, stored, nil, nil)
+	s.respondUser(w, r, http.StatusOK, stored, attributes, excluded)
 }
 
 // meUser resolves the user referenced by the authenticated principal. | meUser 解析已认证主体引用

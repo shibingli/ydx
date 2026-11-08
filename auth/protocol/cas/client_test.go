@@ -410,6 +410,69 @@ func TestParseJSONValidationResponse(t *testing.T) {
 	}
 }
 
+func TestParseValidationResponseRejectsMissingUser(t *testing.T) {
+	cases := []struct {
+		name string
+		raw  string
+	}{
+		{
+			name: "xml empty user",
+			raw:  `<cas:serviceResponse xmlns:cas="http://www.yale.edu/tp/cas"><cas:authenticationSuccess><cas:user></cas:user></cas:authenticationSuccess></cas:serviceResponse>`,
+		},
+		{
+			name: "xml missing user",
+			raw:  `<cas:serviceResponse xmlns:cas="http://www.yale.edu/tp/cas"><cas:authenticationSuccess><cas:attributes><cas:role>admin</cas:role></cas:attributes></cas:authenticationSuccess></cas:serviceResponse>`,
+		},
+		{
+			name: "xml whitespace user",
+			raw:  `<cas:serviceResponse xmlns:cas="http://www.yale.edu/tp/cas"><cas:authenticationSuccess><cas:user>   </cas:user></cas:authenticationSuccess></cas:serviceResponse>`,
+		},
+		{
+			name: "json empty user",
+			raw:  `{"authenticationSuccess":{"user":""}}`,
+		},
+		{
+			name: "json missing user",
+			raw:  `{"authenticationSuccess":{"attributes":{"role":["admin"]}}}`,
+		},
+		{
+			name: "json whitespace user",
+			raw:  `{"authenticationSuccess":{"user":"   "}}`,
+		},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			if _, err := parseValidationResponse([]byte(testCase.raw)); !errors.Is(err, ErrInvalidResponse) {
+				t.Fatalf("error = %v, want ErrInvalidResponse", err)
+			}
+		})
+	}
+}
+
+func TestClientRejectsValidationWithoutUser(t *testing.T) {
+	bodies := map[string]string{
+		"xml":  `<cas:serviceResponse xmlns:cas="http://www.yale.edu/tp/cas"><cas:authenticationSuccess><cas:user></cas:user></cas:authenticationSuccess></cas:serviceResponse>`,
+		"json": `{"authenticationSuccess":{"user":""}}`,
+	}
+	for name, body := range bodies {
+		t.Run(name, func(t *testing.T) {
+			httpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", casContentType)
+				_, _ = w.Write([]byte(body))
+			}))
+			t.Cleanup(httpServer.Close)
+			client, err := NewClient(ClientConfig{ServerURL: httpServer.URL, ServiceURL: testAppService})
+			if err != nil {
+				t.Fatalf("NewClient: %v", err)
+			}
+			response, err := client.Validate(context.Background(), "ST-any", "")
+			if response != nil || !errors.Is(err, ErrInvalidResponse) {
+				t.Fatalf("Validate = %#v, %v; want nil, ErrInvalidResponse", response, err)
+			}
+		})
+	}
+}
+
 func TestClientSendLogoutRequest(t *testing.T) {
 	service, receiver := newLogoutReceiver(t, http.StatusOK, 0)
 	server, _, store, _ := newSLOServer(t, []string{service.URL})

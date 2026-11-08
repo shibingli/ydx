@@ -201,14 +201,20 @@ func TestKeySetHandlerNeverPublishesPrivateMaterial(t *testing.T) {
 			t.Errorf("JWKS 响应泄露私钥成员 %s: %s", member, body)
 		}
 	}
-	if !strings.Contains(body, `"k":`) {
-		t.Error("oct 密钥的对称值必须保留")
+	if strings.Contains(body, `"k":`) {
+		t.Errorf("JWKS 响应泄露 oct 对称密钥: %s", body)
 	}
 	parsed, err := ParseKeySet(rec.Body.Bytes())
 	if err != nil {
 		t.Fatalf("ParseKeySet failed: %v", err)
 	}
+	if len(parsed.Keys) != 3 {
+		t.Fatalf("published key count = %d, want 3 (oct omitted): %+v", len(parsed.Keys), parsed.Keys)
+	}
 	for _, k := range parsed.Keys {
+		if k.Kty == KeyTypeOct {
+			t.Errorf("JWKS 响应发布了对称密钥 %q", k.Kid)
+		}
 		if k.D != "" || k.P != "" || k.Q != "" || k.DP != "" || k.DQ != "" || k.QI != "" || len(k.Oth) != 0 {
 			t.Errorf("发布的密钥 %q 仍含私钥材料: %+v", k.Kid, k)
 		}
@@ -216,6 +222,61 @@ func TestKeySetHandlerNeverPublishesPrivateMaterial(t *testing.T) {
 	// The projection must not mutate the caller's signing keys. | 该投影不得修改调用方的签名密钥。
 	if rsaKey.D == "" || ecKey.D == "" || edKey.D == "" {
 		t.Error("处理器修改了集合中的私钥")
+	}
+}
+
+// TestKeySetHandlerSymmetricOptIn proves that symmetric keys stay out of the default publication
+// and appear only through the explicit trusted-channel option. | TestKeySetHandlerSymmetricOptIn
+// 证明默认发布不包含对称密钥，只有显式开启可信通道选项时才发布。
+func TestKeySetHandlerSymmetricOptIn(t *testing.T) {
+	octKey := mustGenerate(t, "HS256")
+	octKey.Kid = "internal-oct"
+	edKey := mustGenerate(t, "EdDSA").Public()
+	edKey.Kid = "public-ed"
+	set := &KeySet{Keys: []*Key{edKey, octKey}}
+
+	rec := httptest.NewRecorder()
+	set.HandlerWithOptions(HandlerOptions{}).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/.well-known/jwks.json", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if got := rec.Header().Get("Cache-Control"); got != "public, max-age=3600" {
+		t.Fatalf("default Cache-Control = %q, want public, max-age=3600", got)
+	}
+	if body := rec.Body.String(); strings.Contains(body, `"k":`) || strings.Contains(body, "internal-oct") {
+		t.Fatalf("默认 HandlerWithOptions 发布了对称密钥: %s", body)
+	}
+
+	rec = httptest.NewRecorder()
+	set.HandlerWithOptions(HandlerOptions{IncludeSymmetricKeys: true, MaxAge: time.Minute}).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/internal/jwks.json", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if got := rec.Header().Get("Cache-Control"); got != "public, max-age=60" {
+		t.Fatalf("Cache-Control = %q, want public, max-age=60", got)
+	}
+	if body := rec.Body.String(); !strings.Contains(body, `"k":`) {
+		t.Fatalf("IncludeSymmetricKeys 未发布对称密钥: %s", body)
+	}
+	parsed, err := ParseKeySet(rec.Body.Bytes())
+	if err != nil {
+		t.Fatalf("ParseKeySet failed: %v", err)
+	}
+	if len(parsed.Keys) != 2 {
+		t.Fatalf("published key count = %d, want 2", len(parsed.Keys))
+	}
+	if octKey.K == "" {
+		t.Fatal("handler 修改了调用方的对称密钥")
+	}
+
+	// A malformed key with no kty cannot be classified and might carry "k" or private members; the
+	// default projection must drop it instead of serializing it. |
+	// 没有 kty 的畸形密钥无法分类，且可能携带 "k" 或私钥成员；默认投影必须丢弃它而不是序列化。
+	malformed := &KeySet{Keys: []*Key{{Kid: "no-kty", K: EncodeSegment(testSecretBytes())}}}
+	rec = httptest.NewRecorder()
+	malformed.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/.well-known/jwks.json", nil))
+	if body := rec.Body.String(); strings.Contains(body, `"k":`) || strings.Contains(body, "no-kty") {
+		t.Fatalf("默认投影发布了无法分类的密钥: %s", body)
 	}
 }
 

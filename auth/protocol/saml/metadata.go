@@ -74,7 +74,8 @@ type IndexedEndpoint struct {
 // LocalizedName is a language-tagged string. | LocalizedName 是带语言标签的字符串。
 type LocalizedName struct {
 	// Lang is the xml:lang value. | Lang 是 xml:lang 取值。
-	Lang  string `xml:"http://www.w3.org/XML/1998/namespace lang,attr,omitempty"`
+	Lang string `xml:"http://www.w3.org/XML/1998/namespace lang,attr,omitempty"`
+	// Value is the localized text. | Value 是本地化文本。
 	Value string `xml:",chardata"`
 }
 
@@ -237,51 +238,80 @@ func (d *EntityDescriptor) Validate(now time.Time) error {
 	return nil
 }
 
-// parseXSDuration validates an xs:duration lexical value. | parseXSDuration 校验 xs:duration 词法值。
+// parseXSDuration validates an xs:duration lexical value. Date and time designators must appear in
+// schema order without duplicates, and only seconds may carry a fraction. | parseXSDuration 校验
+// xs:duration 词法值。日期与时间指示符必须按 schema 顺序出现且不得重复，仅秒可以带小数。
 func parseXSDuration(value string) error {
 	original := value
-	if strings.HasPrefix(value, "-") {
-		value = value[1:]
-	}
+	value = strings.TrimPrefix(value, "-")
 	if !strings.HasPrefix(value, "P") {
-		return errs.Detail(ErrInvalidMetadata, "duration %[1]q | 时长 %[1]q", original)
+		return durationError(original)
 	}
 	value = value[1:]
 	datePart, timePart, hasTime := strings.Cut(value, "T")
 	if hasTime && timePart == "" {
-		return errs.Detail(ErrInvalidMetadata, "duration %[1]q | 时长 %[1]q", original)
+		return durationError(original)
 	}
 	seen := false
-	consume := func(part, units string) (string, error) {
-		for part != "" {
-			digitEnd := 0
-			for digitEnd < len(part) && part[digitEnd] >= '0' && part[digitEnd] <= '9' {
-				digitEnd++
-			}
-			if digitEnd == 0 || digitEnd >= len(part) {
-				return "", errs.Detail(ErrInvalidMetadata, "duration %[1]q | 时长 %[1]q", original)
-			}
-			if !strings.ContainsRune(units, rune(part[digitEnd])) {
-				return "", errs.Detail(ErrInvalidMetadata, "duration %[1]q | 时长 %[1]q", original)
-			}
-			seen = true
-			part = part[digitEnd+1:]
-		}
-		return part, nil
-	}
-	var err error
-	if _, err = consume(datePart, "YMD"); err != nil {
+	if err := consumeDurationPart(datePart, "YMD", false, original, &seen); err != nil {
 		return err
 	}
 	if hasTime {
-		if _, err = consume(timePart, "HMS"); err != nil {
+		if err := consumeDurationPart(timePart, "HMS", true, original, &seen); err != nil {
 			return err
 		}
 	}
 	if !seen {
-		return errs.Detail(ErrInvalidMetadata, "duration %[1]q | 时长 %[1]q", original)
+		return durationError(original)
 	}
 	return nil
+}
+
+// consumeDurationPart consumes the ordered designators of one xs:duration part. When fractions is
+// true only the final seconds designator may carry a decimal fraction. |
+// consumeDurationPart 消费 xs:duration 单个部分中按顺序排列的指示符。fractions 为 true 时仅最后的
+// 秒指示符可以带小数。
+func consumeDurationPart(part, units string, fractions bool, original string, seen *bool) error {
+	unitIndex := 0
+	for part != "" {
+		digitEnd := 0
+		for digitEnd < len(part) && part[digitEnd] >= '0' && part[digitEnd] <= '9' {
+			digitEnd++
+		}
+		if digitEnd == 0 {
+			return durationError(original)
+		}
+		unitEnd := digitEnd
+		if fractions && digitEnd < len(part) && part[digitEnd] == '.' {
+			unitEnd = digitEnd + 1
+			for unitEnd < len(part) && part[unitEnd] >= '0' && part[unitEnd] <= '9' {
+				unitEnd++
+			}
+			if unitEnd == digitEnd+1 {
+				return durationError(original)
+			}
+		}
+		if unitEnd >= len(part) {
+			return durationError(original)
+		}
+		unit := part[unitEnd]
+		position := strings.IndexByte(units, unit)
+		if position < 0 || position < unitIndex {
+			return durationError(original)
+		}
+		if unitEnd != digitEnd && (unit != 'S' || unitEnd+1 != len(part)) {
+			return durationError(original)
+		}
+		unitIndex = position + 1
+		*seen = true
+		part = part[unitEnd+1:]
+	}
+	return nil
+}
+
+// durationError returns the shared invalid-duration error. | durationError 返回统一的非法时长错误。
+func durationError(original string) error {
+	return errs.Detail(ErrInvalidMetadata, "duration %[1]q | 时长 %[1]q", original)
 }
 
 // Marshal encodes the descriptor as XML. | Marshal 把描述符编码为 XML。

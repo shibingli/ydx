@@ -29,6 +29,9 @@ func (s *Server) Authorize(w http.ResponseWriter, r *http.Request) {
 		s.writeOAuthError(w, r, errs.Detail(ErrInvalidRequest, "method %[1]s not allowed | 不允许方法 %[1]s", r.Method))
 		return
 	}
+	if r.Method == http.MethodPost {
+		limitFormBody(w, r)
+	}
 	req, err := s.loadAuthorizationRequest(r)
 	if err != nil {
 		s.writeOAuthError(w, r, err)
@@ -207,8 +210,20 @@ func (s *Server) handleLoginRequired(w http.ResponseWriter, r *http.Request, req
 		if err != nil {
 			return errs.Wrap(err, ErrInvalidConfig)
 		}
+		// Rebuild the return target from the parameters actually received: a POST authorization
+		// request carries them in the form body, not in the URL, and the mounted path must include
+		// an explicit PathPrefix. | 用实际收到的参数重建返回目标：POST 授权请求的参数位于表单正文
+		// 而非 URL，且挂载路径必须包含显式 PathPrefix。
+		raw, err := authorizationValues(r)
+		if err != nil {
+			return err
+		}
+		returnTo := s.Endpoint(s.config.AuthorizationPath)
+		if encoded := raw.Encode(); encoded != "" {
+			returnTo += "?" + encoded
+		}
 		query := location.Query()
-		query.Set("return_to", s.Endpoint(s.config.AuthorizationPath)+"?"+r.URL.RawQuery)
+		query.Set("return_to", returnTo)
 		location.RawQuery = query.Encode()
 		http.Redirect(w, r, location.String(), http.StatusFound)
 		return errResponseWritten

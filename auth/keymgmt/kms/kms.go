@@ -242,6 +242,30 @@ func (s *Service) rememberNonce(keyID string, version uint32, nonce []byte) bool
 	return entry.(*nonceCache).add(value)
 }
 
+// forgetNonceVersion drops the nonce history of one key version. | forgetNonceVersion 丢弃单个密钥
+// 版本的 nonce 历史。
+func (s *Service) forgetNonceVersion(keyID string, version uint32) {
+	if s == nil || keyID == "" {
+		return
+	}
+	s.nonces.Delete(keyID + "/" + strconvUint32(version))
+}
+
+// forgetNonces drops the nonce history of every version of keyID. | forgetNonces 丢弃 keyID 全部
+// 版本的 nonce 历史。
+func (s *Service) forgetNonces(keyID string) {
+	if s == nil || keyID == "" {
+		return
+	}
+	prefix := keyID + "/"
+	s.nonces.Range(func(key, _ any) bool {
+		if name, ok := key.(string); ok && strings.HasPrefix(name, prefix) {
+			s.nonces.Delete(key)
+		}
+		return true
+	})
+}
+
 // nonceCache is a bounded insertion-ordered nonce set. | nonceCache 是有界、按插入排序的 nonce 集合。
 type nonceCache struct {
 	// mu guards the fields below. | mu 保护下面的字段。

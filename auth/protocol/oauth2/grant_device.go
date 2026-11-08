@@ -27,12 +27,13 @@ func (s *Server) DeviceAuthorization(w http.ResponseWriter, r *http.Request) {
 		s.writeOAuthError(w, r, errs.Detail(ErrInvalidRequest, "method %[1]s not allowed | 不允许方法 %[1]s", r.Method))
 		return
 	}
+	limitFormBody(w, r)
 	if err := r.ParseForm(); err != nil {
 		s.writeOAuthError(w, r, errs.Wrap(err, ErrInvalidRequest))
 		return
 	}
 	form := r.PostForm
-	client, err := s.authenticateClient(r.Context(), r, form)
+	client, err := s.authenticateClient(r.Context(), r, form, s.config.DeviceAuthorizationPath)
 	if err != nil {
 		s.writeOAuthError(w, r, err)
 		return
@@ -139,14 +140,26 @@ func (s *Server) DeviceVerification(w http.ResponseWriter, r *http.Request) {
 	principal, ok := auth.PrincipalFromRequest(r)
 	if !ok || principal == nil {
 		if s.config.LoginURL != "" {
-			location := s.config.LoginURL + "?return_to=" + url.QueryEscape(s.Endpoint(s.Path(s.config.DeviceVerificationPath))+"?"+r.URL.RawQuery)
-			http.Redirect(w, r, location, http.StatusFound)
+			location, err := url.Parse(s.config.LoginURL)
+			if err != nil {
+				writeHTTPJSONError(w, http.StatusInternalServerError, "server_error", "server error | 服务器错误")
+				return
+			}
+			returnTo := s.Endpoint(s.config.DeviceVerificationPath)
+			if r.URL.RawQuery != "" {
+				returnTo += "?" + r.URL.RawQuery
+			}
+			query := location.Query()
+			query.Set("return_to", returnTo)
+			location.RawQuery = query.Encode()
+			http.Redirect(w, r, location.String(), http.StatusFound)
 			return
 		}
 		writeHTTPJSONError(w, http.StatusUnauthorized, "login_required", "login is required | 需要登录")
 		return
 	}
 	if r.Method == http.MethodPost {
+		limitFormBody(w, r)
 		if err := r.ParseForm(); err != nil {
 			writeHTTPJSONError(w, http.StatusBadRequest, "invalid_request", "invalid form | 表单非法")
 			return

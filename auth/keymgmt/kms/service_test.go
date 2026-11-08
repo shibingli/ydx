@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"math"
 	"strings"
 	"sync"
 	"testing"
@@ -520,5 +521,184 @@ func TestServiceConcurrentEncryption(t *testing.T) {
 	close(errsCh)
 	for err := range errsCh {
 		t.Fatalf("concurrent operation: %v", err)
+	}
+}
+
+// nonceHistoryKeys lists the nonce cache keys retained for keyID. | nonceHistoryKeys 列出 keyID
+// 保留的 nonce 缓存键。
+func nonceHistoryKeys(service *Service, keyID string) []string {
+	var out []string
+	prefix := keyID + "/"
+	service.nonces.Range(func(key, _ any) bool {
+		if name, ok := key.(string); ok && strings.HasPrefix(name, prefix) {
+			out = append(out, name)
+		}
+		return true
+	})
+	return out
+}
+
+// TestServiceForgetsNonceHistoryAfterLifecycleTransitions keeps the per-version nonce caches bounded.
+// | TestServiceForgetsNonceHistoryAfterLifecycleTransitions 保证按版本维护的 nonce 缓存有界。
+func TestServiceForgetsNonceHistoryAfterLifecycleTransitions(t *testing.T) {
+	ctx := context.Background()
+	service, _ := newServiceForTest(t, Config{})
+	encrypt := func(keyID string) {
+		t.Helper()
+		if _, err := service.Encrypt(ctx, keyID, []byte("payload"), nil); err != nil {
+			t.Fatalf("Encrypt(%s): %v", keyID, err)
+		}
+	}
+
+	rotated := createKeyForTest(t, service, CreateKeyRequest{Type: KeyTypeAES, Bits: 256}, true)
+	encrypt(rotated.ID)
+	if len(nonceHistoryKeys(service, rotated.ID)) == 0 {
+		t.Fatal("expected a nonce cache before rotation")
+	}
+	if _, err := service.Rotate(ctx, rotated.ID); err != nil {
+		t.Fatalf("Rotate: %v", err)
+	}
+	if history := nonceHistoryKeys(service, rotated.ID); len(history) != 0 {
+		t.Fatalf("nonce history after rotate = %v, want empty", history)
+	}
+
+	deactivated := createKeyForTest(t, service, CreateKeyRequest{Type: KeyTypeAES, Bits: 256}, true)
+	encrypt(deactivated.ID)
+	if _, err := service.Deactivate(ctx, deactivated.ID); err != nil {
+		t.Fatalf("Deactivate: %v", err)
+	}
+	if history := nonceHistoryKeys(service, deactivated.ID); len(history) != 0 {
+		t.Fatalf("nonce history after deactivate = %v, want empty", history)
+	}
+
+	compromised := createKeyForTest(t, service, CreateKeyRequest{Type: KeyTypeAES, Bits: 256}, true)
+	encrypt(compromised.ID)
+	if _, err := service.Compromise(ctx, compromised.ID); err != nil {
+		t.Fatalf("Compromise: %v", err)
+	}
+	if history := nonceHistoryKeys(service, compromised.ID); len(history) != 0 {
+		t.Fatalf("nonce history after compromise = %v, want empty", history)
+	}
+
+	scheduled := createKeyForTest(t, service, CreateKeyRequest{Type: KeyTypeAES, Bits: 256}, true)
+	encrypt(scheduled.ID)
+	if _, err := service.ScheduleDelete(ctx, scheduled.ID, time.Hour); err != nil {
+		t.Fatalf("ScheduleDelete: %v", err)
+	}
+	if history := nonceHistoryKeys(service, scheduled.ID); len(history) != 0 {
+		t.Fatalf("nonce history after schedule delete = %v, want empty", history)
+	}
+
+	destroyed := createKeyForTest(t, service, CreateKeyRequest{Type: KeyTypeAES, Bits: 256}, false)
+	var nonce [gcmNonceSize]byte
+	copy(nonce[:], []byte("0123456789ab"))
+	if !service.rememberNonce(destroyed.ID, 1, nonce[:]) {
+		t.Fatal("expected a fresh nonce")
+	}
+	if _, err := service.Destroy(ctx, destroyed.ID); err != nil {
+		t.Fatalf("Destroy: %v", err)
+	}
+	if history := nonceHistoryKeys(service, destroyed.ID); len(history) != 0 {
+		t.Fatalf("nonce history after destroy = %v, want empty", history)
+	}
+}
+
+// captureUpdateStore records keys passed while armed and then returns ErrConflict. |
+// captureUpdateStore 在启用记录后记录传入的密钥并返回 ErrConflict。
+type captureUpdateStore struct {
+	*MemoryStore
+	captureMu sync.Mutex
+	captured  []*Key
+	armed     bool
+}
+
+// arm makes later UpdateKey calls conflict and record their argument. | arm 让后续 UpdateKey 调用
+// 冲突并记录参数。
+func (s *captureUpdateStore) arm() {
+	s.captureMu.Lock()
+	s.captured = nil
+	s.armed = true
+	s.captureMu.Unlock()
+}
+
+// UpdateKey records key and returns ErrConflict while armed. | UpdateKey 在启用记录时记录 key 并返回 ErrConflict。
+func (s *captureUpdateStore) UpdateKey(ctx context.Context, key *Key) error {
+	s.captureMu.Lock()
+	if !s.armed {
+		s.captureMu.Unlock()
+		return s.MemoryStore.UpdateKey(ctx, key)
+	}
+	s.captured = append(s.captured, key)
+	s.captureMu.Unlock()
+	return ErrConflict
+}
+
+// TestServiceRotateRejectsVersionSpaceExhaustion checks that a key at version math.MaxUint32 cannot
+// wrap around and reuse version 1. | TestServiceRotateRejectsVersionSpaceExhaustion 校验版本号为
+// math.MaxUint32 的密钥不会回绕并复用版本 1。
+func TestServiceRotateRejectsVersionSpaceExhaustion(t *testing.T) {
+	ctx := context.Background()
+	service, _ := newServiceForTest(t, Config{})
+	key := createKeyForTest(t, service, CreateKeyRequest{ID: "rotate-version-exhausted", Type: KeyTypeAES, Bits: 256}, true)
+	stored, err := service.store.GetKey(ctx, key.ID)
+	if err != nil {
+		t.Fatalf("GetKey: %v", err)
+	}
+	stored.Version = math.MaxUint32
+	if err := service.store.UpdateKey(ctx, stored); err != nil {
+		t.Fatalf("UpdateKey: %v", err)
+	}
+
+	rotated, err := service.Rotate(ctx, key.ID)
+	if !errors.Is(err, ErrInvalidState) {
+		t.Fatalf("Rotate err = %v, want ErrInvalidState | Rotate 错误 = %v，期望 ErrInvalidState", err, err)
+	}
+	if rotated != nil {
+		t.Fatalf("Rotate returned %+v, want nil", rotated)
+	}
+	stored, err = service.store.GetKey(ctx, key.ID)
+	if err != nil {
+		t.Fatalf("GetKey after Rotate: %v", err)
+	}
+	if stored.MaxVersion() != math.MaxUint32 || len(stored.Versions) != 1 {
+		t.Fatalf("key changed after rejected rotation: maxVersion=%d versions=%d", stored.MaxVersion(), len(stored.Versions))
+	}
+}
+
+// TestServiceRotateZeroizesAbandonedMaterial checks that failed rotation attempts erase key material.
+// | TestServiceRotateZeroizesAbandonedMaterial 校验轮换失败时擦除密钥材料。
+func TestServiceRotateZeroizesAbandonedMaterial(t *testing.T) {
+	ctx := context.Background()
+	store := &captureUpdateStore{MemoryStore: NewMemoryStore()}
+	service, err := New(Config{Store: store, Clock: newTestClock().Now})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	key := createKeyForTest(t, service, CreateKeyRequest{Type: KeyTypeAES, Bits: 256}, true)
+	store.arm()
+	if _, err := service.Rotate(ctx, key.ID); !errors.Is(err, ErrConflict) {
+		t.Fatalf("Rotate err = %v, want ErrConflict", err)
+	}
+	store.captureMu.Lock()
+	captured := append([]*Key(nil), store.captured...)
+	store.captureMu.Unlock()
+	if len(captured) != mutationRetries {
+		t.Fatalf("captured attempts = %d, want %d", len(captured), mutationRetries)
+	}
+	for attempt, failed := range captured {
+		for _, material := range [][]byte{failed.Material, failed.PublicMaterial} {
+			for _, b := range material {
+				if b != 0 {
+					t.Fatalf("attempt %d retained key material", attempt)
+				}
+			}
+		}
+		for _, version := range failed.Versions {
+			for _, b := range version.Material {
+				if b != 0 {
+					t.Fatalf("attempt %d retained version material", attempt)
+				}
+			}
+		}
 	}
 }

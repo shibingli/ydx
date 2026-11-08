@@ -232,19 +232,55 @@ func TestAccessRetransmissionRotatesIdentifiers(t *testing.T) {
 	}
 }
 
-func TestAccessRejectsBadResponseAuthenticator(t *testing.T) {
+func TestAccessDiscardsBadResponseAuthenticator(t *testing.T) {
 	secret := []byte("testing-secret")
-	server := newUDPMock(t, secret, func(request *Packet, raw []byte) ([]byte, error) {
-		return signedResponse(request, []byte("other-secret"), CodeAccessAccept, nil)
+	t.Run("bad then good", func(t *testing.T) {
+		server := newScriptedUDPServer(t, func(request *Packet) ([][]byte, error) {
+			bad, err := signedResponse(request, []byte("other-secret"), CodeAccessAccept, nil)
+			if err != nil {
+				return nil, err
+			}
+			good, err := signedResponse(request, secret, CodeAccessAccept, nil)
+			if err != nil {
+				return nil, err
+			}
+			return [][]byte{bad, good}, nil
+		})
+		client := newTestClient(t, ClientConfig{
+			Address: server.LocalAddr().String(),
+			Secret:  secret,
+			Timeout: 500 * time.Millisecond,
+		})
+		response, err := client.AccessRequest(context.Background(), &AccessRequest{UserName: "alice", Password: "s3cret"})
+		if err != nil {
+			t.Fatalf("AccessRequest: %v", err)
+		}
+		if !response.Accepted() {
+			t.Fatalf("unexpected code %d", response.Code)
+		}
 	})
-	client := newTestClient(t, ClientConfig{Address: server.Addr(), Secret: secret, Retries: 0})
-	_, err := client.AccessRequest(context.Background(), &AccessRequest{UserName: "alice", Password: "s3cret"})
-	if !errors.Is(err, ErrAuthenticator) {
-		t.Fatalf("error = %v, want ErrAuthenticator", err)
-	}
-	if strings.Contains(err.Error(), string(secret)) || strings.Contains(err.Error(), "s3cret") {
-		t.Fatalf("error leaks a secret: %v", err)
-	}
+	t.Run("bad only times out", func(t *testing.T) {
+		server := newUDPMock(t, secret, func(request *Packet, raw []byte) ([]byte, error) {
+			return signedResponse(request, []byte("other-secret"), CodeAccessAccept, nil)
+		})
+		client := newTestClient(t, ClientConfig{
+			Address: server.Addr(),
+			Secret:  secret,
+			Timeout: 80 * time.Millisecond,
+			Retries: 1,
+		})
+		start := time.Now()
+		_, err := client.AccessRequest(context.Background(), &AccessRequest{UserName: "alice", Password: "s3cret"})
+		if !errors.Is(err, ErrTimeout) {
+			t.Fatalf("error = %v, want ErrTimeout", err)
+		}
+		if elapsed := time.Since(start); elapsed < 100*time.Millisecond {
+			t.Fatalf("bad response failed the exchange after only %v", elapsed)
+		}
+		if strings.Contains(err.Error(), string(secret)) || strings.Contains(err.Error(), "s3cret") {
+			t.Fatalf("error leaks a secret: %v", err)
+		}
+	})
 }
 
 func TestAccessRejectsUnexpectedCode(t *testing.T) {

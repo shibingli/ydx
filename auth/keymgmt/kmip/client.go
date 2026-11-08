@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/shibingli/ydx/errs"
@@ -54,11 +55,12 @@ type ClientConfig struct {
 // | Client 是 KMIP 客户端。它在单条连接上串行发送请求，因此单个 Client 可安全并发使用。
 // Client 不会自动重连；传输错误后应重新拨号。
 type Client struct {
-	cfg    ClientConfig
-	limits Limits
-	conn   net.Conn
-	mu     sync.Mutex
-	closed bool
+	cfg     ClientConfig
+	limits  Limits
+	conn    net.Conn
+	mu      sync.Mutex
+	closed  bool
+	closing atomic.Bool
 }
 
 // DialContext connects to the KMIP server described by cfg. | DialContext 连接 cfg 描述的 KMIP 服务器。
@@ -105,8 +107,16 @@ func DialContext(ctx context.Context, cfg ClientConfig) (*Client, error) {
 	return &Client{cfg: cfg, limits: cfg.Limits.normalized(), conn: conn}, nil
 }
 
-// Close closes the client connection. It is idempotent. | Close 关闭客户端连接，可重复调用。
+// Close closes the client connection. It is idempotent. A pending request is interrupted instead of
+// blocking Close indefinitely. | Close 关闭客户端连接，可重复调用。进行中的请求会被中断，避免 Close
+// 无限阻塞。
 func (c *Client) Close() error {
+	c.closing.Store(true)
+	if c.conn != nil {
+		// Wake an in-flight request blocked in connection I/O; net.Conn permits concurrent deadline
+		// updates. | 唤醒阻塞在连接 I/O 上的请求；net.Conn 允许并发更新截止时间。
+		_ = c.conn.SetDeadline(time.Now())
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.closed {
@@ -132,7 +142,7 @@ func (c *Client) Do(ctx context.Context, items ...RequestBatchItem) (ResponseMes
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.closed || c.conn == nil {
+	if c.closed || c.closing.Load() || c.conn == nil {
 		return ResponseMessage{}, errs.Detail(ErrClosed, "client is closed | 客户端已关闭")
 	}
 	if err := ctx.Err(); err != nil {
@@ -160,6 +170,9 @@ func (c *Client) Do(ctx context.Context, items ...RequestBatchItem) (ResponseMes
 		return ResponseMessage{}, err
 	}
 	if err := writeAll(c.conn, encoded); err != nil {
+		if c.closing.Load() {
+			return ResponseMessage{}, errs.Detail(ErrClosed, "client closed during request | 请求期间客户端关闭")
+		}
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return ResponseMessage{}, ctxErr
 		}
@@ -170,6 +183,9 @@ func (c *Client) Do(ctx context.Context, items ...RequestBatchItem) (ResponseMes
 	}
 	raw, err := readResponse(c.conn, c.cfg.MaxResponseSize)
 	if err != nil {
+		if c.closing.Load() {
+			return ResponseMessage{}, errs.Detail(ErrClosed, "client closed during request | 请求期间客户端关闭")
+		}
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return ResponseMessage{}, ctxErr
 		}
@@ -189,6 +205,10 @@ func (c *Client) Do(ctx context.Context, items ...RequestBatchItem) (ResponseMes
 // setDeadline applies the earlier of the context deadline and timeout. | setDeadline 应用上下文截止时间与
 // timeout 中较早的一个。
 func (c *Client) setDeadline(ctx context.Context, timeout time.Duration) error {
+	if c.closing.Load() {
+		_ = c.conn.SetDeadline(time.Now())
+		return errs.Detail(ErrClosed, "client is closing | 客户端正在关闭")
+	}
 	var deadline time.Time
 	if timeout > 0 {
 		deadline = time.Now().Add(timeout)

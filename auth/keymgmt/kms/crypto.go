@@ -1,6 +1,7 @@
 package kms
 
 import (
+	"bytes"
 	"context"
 	"crypto"
 	"crypto/ecdsa"
@@ -275,12 +276,14 @@ func ValidateMaterial(keyType KeyType, bits int, private, public []byte) ([]byte
 			if err != nil {
 				return nil, nil, 0, err
 			}
+			derived, err := publicFromPrivate(keyType, priv)
+			if err != nil {
+				return nil, nil, 0, err
+			}
 			if len(public) == 0 {
-				pub, err := publicFromPrivate(keyType, priv)
-				if err != nil {
-					return nil, nil, 0, err
-				}
-				public = pub
+				public = derived
+			} else if !publicMaterialMatches(keyType, public, derived) {
+				return nil, nil, 0, errs.Detail(ErrInvalidMaterial, "public material does not match the private key | 公钥材料与私钥不匹配")
 			}
 		}
 		pub, err := parsePublicKey(keyType, public)
@@ -388,6 +391,37 @@ func publicFromPrivate(keyType KeyType, key any) ([]byte, error) {
 	default:
 		return nil, errs.Detail(ErrInvalidKeyType, "type %[1]q | 类型 %[1]q", keyType)
 	}
+}
+
+// publicMaterialMatches reports whether two encodings contain the same public key. | publicMaterialMatches
+// 报告两个编码是否包含同一公钥。
+func publicMaterialMatches(keyType KeyType, supplied, derived []byte) bool {
+	suppliedKey, err := parsePublicKey(keyType, supplied)
+	if err != nil {
+		return false
+	}
+	derivedKey, err := parsePublicKey(keyType, derived)
+	if err != nil {
+		return false
+	}
+	switch left := suppliedKey.(type) {
+	case *rsa.PublicKey:
+		right, ok := derivedKey.(*rsa.PublicKey)
+		return ok && left.N != nil && right.N != nil && left.N.Cmp(right.N) == 0 && left.E == right.E
+	case *ecdsa.PublicKey:
+		right, ok := derivedKey.(*ecdsa.PublicKey)
+		if !ok || left == nil || right == nil || left.Curve == nil || right.Curve == nil {
+			return false
+		}
+		return left.Equal(right)
+	case ed25519.PublicKey:
+		right, ok := derivedKey.(ed25519.PublicKey)
+		return ok && bytes.Equal(left, right)
+	case *guomi.PublicKey:
+		right, ok := derivedKey.(*guomi.PublicKey)
+		return ok && left.Hex() != "" && left.Hex() == right.Hex()
+	}
+	return false
 }
 
 // bitsForPublic reports the effective size of a parsed public key. | bitsForPublic 报告解析后公钥的有效位长。

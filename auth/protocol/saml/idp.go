@@ -41,8 +41,9 @@ type RedirectVerifier func(ctx context.Context, rawQuery string, params url.Valu
 type IdentityProviderConfig struct {
 	// EntityID is the IdP entity ID. | EntityID 是 IdP 实体标识。
 	EntityID string
-	// SSOURL and SLOURL are the public IdP endpoint URLs. | SSOURL 与 SLOURL 是公开 IdP 端点 URL。
+	// SSOURL is the public IdP single-sign-on endpoint URL. | SSOURL 是公开的 IdP 单点登录端点 URL。
 	SSOURL string
+	// SLOURL is the public IdP single-logout endpoint URL. | SLOURL 是公开的 IdP 单点登出端点 URL。
 	SLOURL string
 	// ArtifactResolutionURL is the public SOAP artifact resolution endpoint. When empty it is derived
 	// from SSOURL and ARSPath. | ArtifactResolutionURL 是公开的 SOAP 工件解析端点。为空时由 SSOURL 与
@@ -78,9 +79,10 @@ type IdentityProviderConfig struct {
 	RedirectVerifier RedirectVerifier
 	// Signer signs Responses and Assertions. | Signer 签名 Response 与 Assertion。
 	Signer XMLSigner
-	// SigningKey and SigningAlg sign HTTP-Redirect binding messages. | SigningKey 与 SigningAlg
-	// 签名 HTTP-Redirect 绑定消息。
+	// SigningKey signs HTTP-Redirect binding messages. | SigningKey 签名 HTTP-Redirect 绑定消息。
 	SigningKey any
+	// SigningAlg is the HTTP-Redirect signature algorithm URI; empty uses SigAlgRSASHA256. | SigningAlg
+	// 是 HTTP-Redirect 签名算法 URI；为空时使用 SigAlgRSASHA256。
 	SigningAlg string
 	// SPResolver resolves service-provider metadata. | SPResolver 解析服务提供方元数据。
 	SPResolver MetadataResolver
@@ -92,8 +94,9 @@ type IdentityProviderConfig struct {
 	SigningCertificates []*x509.Certificate
 	// EncryptionCertificates are the IdP encryption certificates for metadata. | EncryptionCertificates 是用于元数据的 IdP 加密证书。
 	EncryptionCertificates []*x509.Certificate
-	// SignResponse and SignAssertion require the signer and request signatures. | SignResponse 与 SignAssertion 要求签名器与请求签名。
-	SignResponse  bool
+	// SignResponse signs the protocol Response element. | SignResponse 签名协议 Response 元素。
+	SignResponse bool
+	// SignAssertion signs each Assertion element. | SignAssertion 签名每个 Assertion 元素。
 	SignAssertion bool
 	// WantAuthnRequestsSigned rejects unsigned AuthnRequests. | WantAuthnRequestsSigned 拒绝未签名 AuthnRequest。
 	WantAuthnRequestsSigned bool
@@ -117,11 +120,13 @@ type IdentityProviderConfig struct {
 	Now func() time.Time
 	// ErrorHandler renders IdP failures; nil writes a SAML error response or 400. | ErrorHandler 渲染 IdP 失败；空值写入 SAML 错误响应或 400。
 	ErrorHandler func(w http.ResponseWriter, r *http.Request, err error)
-	// SSOPath, SLOPath, ARSPath and MetadataPath are local mount paths. | SSOPath、SLOPath、ARSPath
-	// 与 MetadataPath 是本地挂载路径。
-	SSOPath      string
-	SLOPath      string
-	ARSPath      string
+	// SSOPath is the local single-sign-on mount path. | SSOPath 是本地单点登录挂载路径。
+	SSOPath string
+	// SLOPath is the local single-logout mount path. | SLOPath 是本地单点登出挂载路径。
+	SLOPath string
+	// ARSPath is the local artifact resolution mount path. | ARSPath 是本地工件解析挂载路径。
+	ARSPath string
+	// MetadataPath is the local metadata mount path. | MetadataPath 是本地元数据挂载路径。
 	MetadataPath string
 }
 
@@ -424,19 +429,23 @@ func artifactRedirectURL(acsURL, artifact, relayState string) (string, error) {
 	return location.String(), nil
 }
 
-// resolveACS returns the registered assertion consumer URL for a request. | resolveACS 返回请求
-// 已注册的断言消费 URL。
+// resolveACS returns the registered assertion consumer URL for a request. A configured resolver is
+// authoritative: the request-supplied URL is only used when no resolver is configured. |
+// resolveACS 返回请求已注册的断言消费 URL。配置解析器时以其为准；仅未配置解析器时才使用请求自带的
+// URL。
 func (idp *IdentityProvider) resolveACS(ctx context.Context, request *AuthnRequest) (string, error) {
 	if request == nil {
 		return "", errs.Detail(ErrInvalidRequest, "request is nil | 请求为空")
 	}
-	acsURL := request.AssertionConsumerServiceURL
-	if acsURL == "" && idp.config.SPResolver != nil {
+	acsURL := ""
+	if idp.config.SPResolver != nil {
 		metadata, err := idp.config.SPResolver.Resolve(ctx, request.Issuer.Value)
 		if err != nil {
 			return "", errs.Wrap(err, ErrInvalidIssuer)
 		}
 		acsURL = metadata.ACSURL(request.ProtocolBinding)
+	} else {
+		acsURL = request.AssertionConsumerServiceURL
 	}
 	if acsURL == "" {
 		return "", errs.Detail(ErrInvalidRequest, "ACS URL is missing | 缺少 ACS URL")

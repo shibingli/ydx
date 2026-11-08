@@ -20,9 +20,11 @@ type XMLDSigSigner struct {
 	Certificate *x509.Certificate
 	// Certificates adds further certificates to X509Data. | Certificates 向 X509Data 追加证书。
 	Certificates []*x509.Certificate
-	// SignatureMethod and DigestMethod override the XMLDSig algorithm URIs. | SignatureMethod 与 DigestMethod 覆盖 XMLDSig 算法 URI。
+	// SignatureMethod overrides the XMLDSig signature algorithm URI. | SignatureMethod 覆盖 XMLDSig
+	// 签名算法 URI。
 	SignatureMethod string
-	DigestMethod    string
+	// DigestMethod overrides the XMLDSig digest algorithm URI. | DigestMethod 覆盖 XMLDSig 摘要算法 URI。
+	DigestMethod string
 	// InclusiveNamespaces is the exclusive C14N PrefixList. | InclusiveNamespaces 是排他 C14N 的 PrefixList。
 	InclusiveNamespaces []string
 	// Exclusive selects exclusive C14N; SAML deployments normally set it. | Exclusive 选择排他 C14N；SAML 部署通常开启。

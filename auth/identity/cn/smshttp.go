@@ -130,14 +130,19 @@ func (p *HTTPProvider) build(ctx context.Context, mobile, templateID string, par
 
 // smsHTTPPayload is the default request envelope. | smsHTTPPayload 是默认请求报文。
 type smsHTTPPayload struct {
-	Mobile     string            `json:"mobile"`
-	TemplateID string            `json:"templateId"`
-	Params     map[string]string `json:"params,omitempty"`
+	// Mobile is the recipient phone number. | Mobile 是接收方手机号。
+	Mobile string `json:"mobile"`
+	// TemplateID is the provider template identifier. | TemplateID 是服务方模板标识。
+	TemplateID string `json:"templateId"`
+	// Params are the template parameters. | Params 是模板参数。
+	Params map[string]string `json:"params,omitempty"`
 }
 
 // smsHTTPResponse is the default response envelope. | smsHTTPResponse 是默认响应报文。
 type smsHTTPResponse struct {
+	// RequestID is the provider request identifier. | RequestID 是服务方请求标识。
 	RequestID string `json:"requestId"`
+	// MessageID is the provider message identifier. | MessageID 是服务方消息标识。
 	MessageID string `json:"messageId"`
 }
 

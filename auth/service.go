@@ -157,8 +157,15 @@ func New(config Config) (*Service, error) {
 		policy = DefaultPasswordPolicy()
 	}
 	lockout := config.Lockout
-	if lockout.MaxAttempts == 0 {
-		lockout = DefaultLockoutPolicy()
+	defaults := DefaultLockoutPolicy()
+	if lockout.MaxAttempts <= 0 {
+		lockout.MaxAttempts = defaults.MaxAttempts
+	}
+	if lockout.BaseLockout <= 0 {
+		lockout.BaseLockout = defaults.BaseLockout
+	}
+	if lockout.MaxLockout <= 0 {
+		lockout.MaxLockout = defaults.MaxLockout
 	}
 	if config.ResetTokenTTL <= 0 {
 		config.ResetTokenTTL = time.Hour
@@ -244,7 +251,10 @@ type RegisterInput struct {
 
 // Register creates a user account. | Register 创建用户账号。
 func (s *Service) Register(ctx context.Context, input RegisterInput) (*User, error) {
-	if input.Username == "" && input.Email == "" && input.Phone == "" {
+	username := strings.TrimSpace(input.Username)
+	email := strings.TrimSpace(input.Email)
+	phone := strings.TrimSpace(input.Phone)
+	if username == "" && email == "" && phone == "" {
 		return nil, errs.Detail(ErrInvalidRequest, "username, email or phone is required | 用户名、邮箱或手机号至少需要一个")
 	}
 	if input.Password == "" {
@@ -253,9 +263,9 @@ func (s *Service) Register(ctx context.Context, input RegisterInput) (*User, err
 	now := s.nowTime()
 	user := &User{
 		ID:          NewID("usr"),
-		Username:    strings.TrimSpace(input.Username),
-		Email:       strings.TrimSpace(input.Email),
-		Phone:       strings.TrimSpace(input.Phone),
+		Username:    username,
+		Email:       email,
+		Phone:       phone,
 		DisplayName: strings.TrimSpace(input.DisplayName),
 		Status:      UserActive,
 		CreatedAt:   now,
@@ -374,8 +384,14 @@ func (s *Service) Authenticate(ctx context.Context, input AuthenticateInput) (*A
 		// 恢复账号，避免下次登录看到 UserLocked 且期限为零而永久拒登。
 		user.Status = UserActive
 	}
-	user.FailedLoginAttempts = 0
-	user.LockedUntil = time.Time{}
+	mfaPending := user.MFAEnabled && !input.SkipMFA
+	if !mfaPending {
+		// A successful password phase alone must not clear the shared lockout counter while a second
+		// factor is still pending, otherwise wrong factors can be retried without limit. | 第二因素
+		// 仍需验证时，仅口令阶段成功不得清除共享锁定计数，否则错误的因素可被无限重试。
+		user.FailedLoginAttempts = 0
+		user.LockedUntil = time.Time{}
+	}
 	rehashed := false
 	if s.hash.NeedsRehash(user.PasswordHash) {
 		if upgraded, err := s.hash.Hash(input.Password); err == nil {
@@ -400,7 +416,7 @@ func (s *Service) Authenticate(ctx context.Context, input AuthenticateInput) (*A
 			return nil, err
 		}
 	}
-	if user.MFAEnabled && !input.SkipMFA {
+	if mfaPending {
 		challenge, err := s.issueMFAChallenge(ctx, user.ID, now)
 		if err != nil {
 			return nil, err
@@ -472,6 +488,12 @@ func (s *Service) verifyDummyPassword(password string) {
 func (s *Service) issueMFAChallenge(ctx context.Context, userID string, now time.Time) (string, error) {
 	raw, err := RandomToken(32)
 	if err != nil {
+		return "", err
+	}
+	// Only the challenge of the latest password phase may complete; older challenges would otherwise
+	// stay valid until their TTL and accumulate in the token store. | 只允许最近一次口令阶段的挑战
+	// 完成登录；否则旧挑战会在 TTL 内继续有效并在令牌存储中累积。
+	if _, err := s.stores.Tokens.DeleteTokensByUser(ctx, userID, PurposeMFALogin); err != nil {
 		return "", err
 	}
 	token := &OneTimeToken{
@@ -862,7 +884,22 @@ func (s *Service) RegisterCredential(ctx context.Context, credential *Credential
 
 // ListCredentials returns the factors of a user without secrets. | ListCredentials 返回用户的可见因素，不含密钥。
 func (s *Service) ListCredentials(ctx context.Context, userID string) ([]*Credential, error) {
-	return s.stores.Credentials.ListCredentialsByUser(ctx, userID)
+	credentials, err := s.stores.Credentials.ListCredentialsByUser(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	for i, credential := range credentials {
+		if credential == nil {
+			continue
+		}
+		// The store needs the secret for verification, but listing must not hand it back to callers
+		// that only render account settings. | 存储需要密钥用于校验，但列表不得把它交还给仅渲染账号
+		// 设置的调用方。
+		sanitized := credential.Clone()
+		sanitized.Secret = ""
+		credentials[i] = sanitized
+	}
+	return credentials, nil
 }
 
 // RemoveCredential deletes a factor and clears MFAEnabled when no factor remains. | RemoveCredential 删除因素，并在无剩余因素时清除 MFAEnabled。
@@ -1079,13 +1116,18 @@ func (s *Service) DisableUser(ctx context.Context, userID string) error {
 	return nil
 }
 
-// EnableUser re-enables a disabled account. | EnableUser 重新启用被禁用的账号。
+// EnableUser re-enables a disabled account and clears any temporary lockout. | EnableUser 重新启用被禁用的账号并清除临时锁定。
 func (s *Service) EnableUser(ctx context.Context, userID string) error {
 	user, err := s.stores.Users.GetUser(ctx, userID)
 	if err != nil {
 		return err
 	}
 	user.Status = UserActive
+	// An operator re-enabling an account expects the login to work; a lock left over from before a
+	// disable would otherwise keep rejecting the account until its deadline. | 运维重新启用账号后应能
+	// 登录；禁用前遗留的锁定否则会持续拒绝该账号直到期限结束。
+	user.LockedUntil = time.Time{}
+	user.FailedLoginAttempts = 0
 	user.UpdatedAt = s.nowTime()
 	if err := s.stores.Users.UpdateUser(ctx, user); err != nil {
 		return err

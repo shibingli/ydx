@@ -1,10 +1,23 @@
 package kms
 
 import (
+	"math"
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/shibingli/ydx/errs"
 )
+
+// secondsToDuration converts a second count to a Duration and rejects int64 overflow. |
+// secondsToDuration 把秒数转换为 Duration，并拒绝 int64 溢出。
+func secondsToDuration(seconds int64) (time.Duration, error) {
+	const maxDurationSeconds = int64(math.MaxInt64) / int64(time.Second)
+	if seconds > maxDurationSeconds || seconds < -maxDurationSeconds {
+		return 0, errs.Detail(ErrInvalidRequest, "duration %[1]d seconds is out of range | 时长 %[1]d 秒超出范围", seconds)
+	}
+	return time.Duration(seconds) * time.Second, nil
+}
 
 // createKeyJSON is the POST /keys request body. | createKeyJSON 是 POST /keys 请求体。
 type createKeyJSON struct {
@@ -82,6 +95,11 @@ func (s *Server) handleCreateKey(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
+	rotation, err := secondsToDuration(body.RotationSeconds)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
 	key, err := s.service.CreateKey(s.requestContext(r), CreateKeyRequest{
 		ID:               body.ID,
 		Alias:            body.Alias,
@@ -92,7 +110,7 @@ func (s *Server) handleCreateKey(w http.ResponseWriter, r *http.Request) {
 		Tags:             body.Tags,
 		ParentID:         body.ParentID,
 		Exportable:       body.Exportable,
-		RotationInterval: time.Duration(body.RotationSeconds) * time.Second,
+		RotationInterval: rotation,
 	})
 	if err != nil {
 		writeError(w, err)
@@ -154,7 +172,11 @@ func (s *Server) handleUpdateKey(w http.ResponseWriter, r *http.Request, id stri
 		request.Tags = *body.Tags
 	}
 	if body.RotationSeconds != nil {
-		interval := time.Duration(*body.RotationSeconds) * time.Second
+		interval, err := secondsToDuration(*body.RotationSeconds)
+		if err != nil {
+			writeError(w, err)
+			return
+		}
 		request.RotationInterval = &interval
 	}
 	key, err := s.service.UpdateKey(s.requestContext(r), id, request)
@@ -179,7 +201,12 @@ func (s *Server) handleScheduleDelete(w http.ResponseWriter, r *http.Request, id
 		writeError(w, err)
 		return
 	}
-	key, err := s.service.ScheduleDelete(s.requestContext(r), id, time.Duration(seconds)*time.Second)
+	delay, err := secondsToDuration(int64(seconds))
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	key, err := s.service.ScheduleDelete(s.requestContext(r), id, delay)
 	if err != nil {
 		writeError(w, err)
 		return

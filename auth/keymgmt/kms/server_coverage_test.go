@@ -208,3 +208,55 @@ func TestServerAuthorizerAndUnavailable(t *testing.T) {
 	}
 	expectStatus(t, jsonRequest(t, server.HTTPHandler(""), http.MethodGet, "/keys", nil), http.StatusForbidden)
 }
+
+// TestServerSignByAliasReportsAlgorithm covers signing a key addressed by alias.
+// | TestServerSignByAliasReportsAlgorithm 覆盖通过别名寻址密钥的签名响应。
+func TestServerSignByAliasReportsAlgorithm(t *testing.T) {
+	server, _, _ := newTestHTTPPair(t, Config{}, ServerConfig{})
+	handler := server.HTTPHandler("/api")
+	createRecorder := jsonRequest(t, handler, http.MethodPost, "/api/keys", createKeyJSON{
+		ID:    "alias-sign",
+		Alias: "alias-signer",
+		Type:  KeyTypeEd25519,
+	})
+	expectStatus(t, createRecorder, http.StatusCreated)
+	expectStatus(t, jsonRequest(t, handler, http.MethodPost, "/api/keys/alias-sign/activate", nil), http.StatusOK)
+
+	data := base64.StdEncoding.EncodeToString([]byte("alias payload"))
+	signRecorder := jsonRequest(t, handler, http.MethodPost, "/api/sign", signJSON{KeyID: "alias-signer", Data: data})
+	expectStatus(t, signRecorder, http.StatusOK)
+	var signature signatureResponse
+	decodeResponse(t, signRecorder, &signature)
+	if signature.Signature == "" || signature.Algorithm != "Ed25519" {
+		t.Fatalf("alias signature = %+v", signature)
+	}
+}
+
+// TestServerRejectsOverflowingRotationSeconds covers duration overflow from REST inputs.
+// | TestServerRejectsOverflowingRotationSeconds 覆盖 REST 输入导致的时长整型溢出。
+func TestServerRejectsOverflowingRotationSeconds(t *testing.T) {
+	server, _, _ := newTestHTTPPair(t, Config{}, ServerConfig{})
+	handler := server.HTTPHandler("/api")
+
+	// 18446744074 * time.Second overflows int64 and wraps to a positive 290,448,384 ns.
+	// | 18446744074 * time.Second 溢出 int64 并回绕为正值 290,448,384 纳秒。
+	const overflowSeconds = int64(18446744074)
+	createRecorder := jsonRequest(t, handler, http.MethodPost, "/api/keys", createKeyJSON{
+		ID:              "overflow-create",
+		Type:            KeyTypeAES,
+		RotationSeconds: overflowSeconds,
+	})
+	expectStatus(t, createRecorder, http.StatusBadRequest)
+
+	expectStatus(t, jsonRequest(t, handler, http.MethodPost, "/api/keys", createKeyJSON{
+		ID:   "overflow-update",
+		Type: KeyTypeAES,
+	}), http.StatusCreated)
+	updateRecorder := jsonRequest(t, handler, http.MethodPatch, "/api/keys/overflow-update", updateKeyJSON{
+		RotationSeconds: &[]int64{overflowSeconds}[0],
+	})
+	expectStatus(t, updateRecorder, http.StatusBadRequest)
+
+	deleteRecorder := jsonRequest(t, handler, http.MethodDelete, "/api/keys/overflow-update?delay=18446744074", nil)
+	expectStatus(t, deleteRecorder, http.StatusBadRequest)
+}

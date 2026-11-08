@@ -144,6 +144,42 @@ func TestMemoryStoreVersionsAndAudit(t *testing.T) {
 	}
 }
 
+// TestMemoryStoreListAuditPaginationAndCopies checks offset/limit ordering and that returned events
+// are deep copies even though the store sorts shared pointers internally. |
+// TestMemoryStoreListAuditPaginationAndCopies 校验 offset/limit 顺序，并确认存储内部排序共享指针时
+// 返回值仍是深拷贝。
+func TestMemoryStoreListAuditPaginationAndCopies(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemoryStore()
+	base := time.Unix(1700000000, 0).UTC()
+	for i := 0; i < 5; i++ {
+		event := &AuditEvent{Operation: OperationEncrypt, KeyID: "k", At: base.Add(time.Duration(i) * time.Second)}
+		event.Detail = map[string]string{"index": string([]byte{byte('0' + i)})}
+		if err := store.AppendAudit(ctx, event); err != nil {
+			t.Fatalf("AppendAudit(%d): %v", i, err)
+		}
+	}
+	filter := AuditFilter{Limit: 2, Offset: 1, Descending: true}
+	page, err := store.ListAudit(ctx, filter)
+	if err != nil {
+		t.Fatalf("ListAudit: %v", err)
+	}
+	if len(page) != 2 || page[0].Detail["index"] != "3" || page[1].Detail["index"] != "2" {
+		t.Fatalf("page = %+v, want indexes 3,2", page)
+	}
+	page[0].Detail["index"] = "mutated"
+	again, err := store.ListAudit(ctx, filter)
+	if err != nil {
+		t.Fatalf("ListAudit again: %v", err)
+	}
+	if again[0].Detail["index"] != "3" {
+		t.Fatalf("mutation of returned event reached the store: %+v", again)
+	}
+	if all, err := store.ListAudit(ctx, AuditFilter{}); err != nil || len(all) != 5 {
+		t.Fatalf("unfiltered ListAudit = %d events, %v; want 5", len(all), err)
+	}
+}
+
 func TestKeyStoreMaterialSafety(t *testing.T) {
 	ctx := context.Background()
 	store := NewMemoryStore()

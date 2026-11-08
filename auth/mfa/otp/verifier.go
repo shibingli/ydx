@@ -20,10 +20,12 @@ import (
 //
 // Verify mutates credential.Data["counter"] after a successful HOTP check so the caller can
 // persist the advanced counter through auth.Service.UpdateCredential; callers must not share one
-// *auth.Credential value across concurrent verifications. A configured ReplayGuard records TOTP
-// steps and HOTP counters keyed by credential ID. | HOTP 校验成功后 Verify 会修改
-// credential.Data["counter"]，以便调用方通过 auth.Service.UpdateCredential 持久化推进后的计数器；
-// 调用方不得在并发校验之间共享同一个 *auth.Credential 值。配置的 ReplayGuard 以凭据 ID 为键记录
+// *auth.Credential value across concurrent verifications. The HOTP counter only moves forward: a
+// code matching a counter below the stored counter is treated as a replay and rejected. A
+// configured ReplayGuard records TOTP steps and HOTP counters keyed by credential ID. | HOTP 校验
+// 成功后 Verify 会修改 credential.Data["counter"]，以便调用方通过 auth.Service.UpdateCredential
+// 持久化推进后的计数器；调用方不得在并发校验之间共享同一个 *auth.Credential 值。HOTP 计数器只会
+// 前进：匹配低于已存计数器计数器的口令会被视为重放并拒绝。配置的 ReplayGuard 以凭据 ID 为键记录
 // TOTP 时间步与 HOTP 计数器。
 type Verifier struct {
 	guard ReplayGuard
@@ -153,6 +155,13 @@ func (v *Verifier) Verify(ctx context.Context, user *auth.User, credential *auth
 		if !ok {
 			return false, nil
 		}
+		// A counter below the stored value was already used. Accepting it would replay an old
+		// code and rewind the persisted counter, allowing every counter up to the stored value to
+		// be replayed. | 低于已存值的计数器已被使用。接受它会重放旧口令并回退已持久化计数器，使
+		// 已存值之前的每个计数器都可被重放。
+		if matched < counter {
+			return false, nil
+		}
 		if v.guard != nil {
 			if matched > uint64(maxInt64) {
 				return false, errs.Detail(ErrInvalidConfig,
@@ -169,7 +178,7 @@ func (v *Verifier) Verify(ctx context.Context, user *auth.User, credential *auth
 					credential.ID, matched, credential.ID, matched)
 			}
 		}
-		advanceHOTPCounter(credential, matched)
+		advanceHOTPCounter(credential, counter, matched)
 		return true, nil
 	}
 	return false, nil
@@ -275,15 +284,19 @@ func counterFromData(data map[string]string, credentialID string) (uint64, error
 }
 
 // advanceHOTPCounter records the next expected counter on the credential so a caller that
-// persists the credential prevents counter reuse. | advanceHOTPCounter 在凭据上记录下一个期望
-// 计数器，使持久化凭据的调用方能够阻止计数器重用。
-func advanceHOTPCounter(credential *auth.Credential, matched uint64) {
+// persists the credential prevents counter reuse. The stored counter never moves backwards. |
+// advanceHOTPCounter 在凭据上记录下一个期望计数器，使持久化凭据的调用方能够阻止计数器重用。
+// 已存计数器绝不回退。
+func advanceHOTPCounter(credential *auth.Credential, stored, matched uint64) {
 	if credential.Data == nil {
 		credential.Data = make(map[string]string, 1)
 	}
 	next := matched
 	if matched < ^uint64(0) {
 		next = matched + 1
+	}
+	if next < stored {
+		next = stored
 	}
 	credential.Data["counter"] = strconv.FormatUint(next, 10)
 }

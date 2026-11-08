@@ -216,9 +216,9 @@ func SortControl(keys ...SortKey) Control {
 			e.primitive(berClassContext, 0, []byte(key.OrderingRule))
 		}
 		if key.Reverse {
-			e.open(berClassContext, 1)
-			e.boolean(true)
-			e.close()
+			// RFC 2891 reverseOrder is an implicit primitive BOOLEAN. | RFC 2891
+			// reverseOrder 是隐式原始 BOOLEAN。
+			e.primitive(berClassContext, 1, []byte{0xff})
 		}
 		e.close()
 	}

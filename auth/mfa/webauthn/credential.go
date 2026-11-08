@@ -40,8 +40,9 @@ type Credential struct {
 	Name string `json:"name,omitempty"`
 	// AttestationType records the verified attestation class. | AttestationType 记录已校验的认证声明类别。
 	AttestationType AttestationType `json:"attestationType,omitempty"`
-	// CreatedAt and LastUsedAt are UTC timestamps. | CreatedAt 与 LastUsedAt 是 UTC 时间戳。
-	CreatedAt  time.Time `json:"createdAt"`
+	// CreatedAt is the credential creation time. | CreatedAt 是凭据创建时间。
+	CreatedAt time.Time `json:"createdAt"`
+	// LastUsedAt is the last successful authentication time. | LastUsedAt 是最近一次成功认证时间。
 	LastUsedAt time.Time `json:"lastUsedAt,omitempty"`
 }
 

@@ -145,7 +145,9 @@ func IDCardGender(raw string) string {
 	return card.Gender
 }
 
-// MaskIDCard masks an identity card number, keeping the first six and last four characters. | MaskIDCard 掩码身份证号码，保留前六位与后四位。
+// MaskIDCard masks an identity card number, keeping the first six and last four characters for an
+// 18-character number, or the first six and last three for a 15-character number. | MaskIDCard 掩码
+// 身份证号码：18 位保留前六位与后四位，15 位保留前六位与后三位。
 //
 // "11010519491231002X" becomes "110105********002X". The masking is structural and does not require
 // the checksum to pass; values that are neither 15 nor 18 characters fall back to MaskGeneric. |

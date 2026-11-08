@@ -43,19 +43,19 @@ type BrokerConfig struct {
 	Service *auth.Service
 	// Providers maps route names to providers. | Providers 把路由名称映射到提供方。
 	Providers map[string]*Provider
-	// StateStore stores authorization state; the default is a MemoryStateStore.
+	// StateStore stores authorization state; the default is a MemoryStateStore. |
 	// StateStore 保存授权 state；默认是 MemoryStateStore。
 	StateStore StateStore
 	// HTTPClient is the fallback provider HTTP client. | HTTPClient 是提供方 HTTP 回退客户端。
 	HTTPClient *http.Client
 	// StateTTL is the authorization state lifetime. | StateTTL 是授权 state 有效期。
 	StateTTL time.Duration
-	// LinkByEmail enables account linking by verified upstream email only.
+	// LinkByEmail enables account linking by verified upstream email only. |
 	// LinkByEmail 仅启用按已验证上游邮箱关联账号。
 	LinkByEmail bool
 	// SuccessRedirect is the post-login redirect target. | SuccessRedirect 是登录后重定向目标。
 	SuccessRedirect string
-	// ClientID is recorded on created sessions; the default is "federation".
+	// ClientID is recorded on created sessions; the default is "federation". |
 	// ClientID 记录在新建会话上，默认值为 "federation"。
 	ClientID string
 	// SuccessHandler overrides the default success redirect. | SuccessHandler 覆盖默认成功重定向。
@@ -68,10 +68,11 @@ type BrokerConfig struct {
 	// not set their own. Zero disables periodic refresh. | DiscoveryTTL 是未单独配置的
 	// 提供方默认 OIDC 发现缓存有效期。零值禁用周期性刷新。
 	DiscoveryTTL time.Duration
-	// DiscoveryTTLMin and DiscoveryTTLMax clamp the effective discovery cache lifetime.
-	// Zero disables the corresponding bound. | DiscoveryTTLMin 与 DiscoveryTTLMax 限制
-	// 生效的发现缓存有效期；零值禁用对应边界。
+	// DiscoveryTTLMin clamps the effective discovery cache lifetime from below. Zero disables the
+	// lower bound. | DiscoveryTTLMin 从下方限制生效的发现缓存有效期；零值禁用下界。
 	DiscoveryTTLMin time.Duration
+	// DiscoveryTTLMax clamps the effective discovery cache lifetime from above. Zero disables the
+	// upper bound. | DiscoveryTTLMax 从上方限制生效的发现缓存有效期；零值禁用上界。
 	DiscoveryTTLMax time.Duration
 	// DiscoveryJitter randomizes each cache lifetime by +/- this fraction. | DiscoveryJitter
 	// 按该比例正负随机化每次缓存有效期。
@@ -96,7 +97,7 @@ type Broker struct {
 	StateStore StateStore
 	// HTTPClient is the fallback provider HTTP client. | HTTPClient 是提供方 HTTP 回退客户端。
 	HTTPClient *http.Client
-	// LinkByEmail enables account linking by verified upstream email only.
+	// LinkByEmail enables account linking by verified upstream email only. |
 	// LinkByEmail 仅启用按已验证上游邮箱关联账号。
 	LinkByEmail bool
 	// SuccessRedirect is the post-login redirect target. | SuccessRedirect 是登录后重定向目标。
@@ -114,9 +115,11 @@ type Broker struct {
 	// DiscoveryTTL is the default OIDC discovery cache lifetime. | DiscoveryTTL 是默认
 	// OIDC 发现缓存有效期。
 	DiscoveryTTL time.Duration
-	// DiscoveryTTLMin and DiscoveryTTLMax clamp the effective discovery cache lifetime.
-	// DiscoveryTTLMin 与 DiscoveryTTLMax 限制生效的发现缓存有效期。
+	// DiscoveryTTLMin clamps the effective discovery cache lifetime from below. |
+	// DiscoveryTTLMin 从下方限制生效的发现缓存有效期。
 	DiscoveryTTLMin time.Duration
+	// DiscoveryTTLMax clamps the effective discovery cache lifetime from above. |
+	// DiscoveryTTLMax 从上方限制生效的发现缓存有效期。
 	DiscoveryTTLMax time.Duration
 	// DiscoveryJitter randomizes each cache lifetime by +/- this fraction. | DiscoveryJitter
 	// 按该比例正负随机化每次缓存有效期。
@@ -266,7 +269,7 @@ func (b *Broker) Login(c *router.Ctx) {
 	}
 }
 
-// Callback handles a ydx/router callback request with a :provider path parameter.
+// Callback handles a ydx/router callback request with a :provider path parameter. |
 // Callback 处理带 :provider 路径参数的 ydx/router 回调请求。
 func (b *Broker) Callback(c *router.Ctx) {
 	if c == nil || c.Request == nil {

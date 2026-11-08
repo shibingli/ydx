@@ -135,17 +135,24 @@ func (v *HTTPVerifier) Verify(ctx context.Context, req RealNameRequest) (*RealNa
 
 // realNameHTTPPayload is the default request envelope. | realNameHTTPPayload 是默认请求报文。
 type realNameHTTPPayload struct {
-	Name     string `json:"name"`
+	// Name is the real name to verify. | Name 是待核验的真实姓名。
+	Name string `json:"name"`
+	// IDNumber is the identity card number. | IDNumber 是身份证号码。
 	IDNumber string `json:"idNumber"`
-	Mobile   string `json:"mobile,omitempty"`
+	// Mobile is the optional bound phone number. | Mobile 是可选绑定手机号。
+	Mobile string `json:"mobile,omitempty"`
 }
 
 // realNameHTTPResponse is the default response envelope. | realNameHTTPResponse 是默认响应报文。
 type realNameHTTPResponse struct {
-	Verified  bool   `json:"verified"`
+	// Verified reports whether the name and ID number match. | Verified 表示姓名与身份证号是否匹配。
+	Verified bool `json:"verified"`
+	// RequestID is the provider request identifier. | RequestID 是服务方请求标识。
 	RequestID string `json:"requestId"`
-	Message   string `json:"message"`
-	Provider  string `json:"provider"`
+	// Message is the provider result message. | Message 是服务方结果消息。
+	Message string `json:"message"`
+	// Provider is the provider name returned by the response. | Provider 是响应返回的服务方名称。
+	Provider string `json:"provider"`
 }
 
 // decodeRealNameHTTPResponse is the default response decoder. | decodeRealNameHTTPResponse 是默认响应解码器。

@@ -134,9 +134,9 @@ func TestFloatHalfEdgeCases(t *testing.T) {
 		{65504, 0x7bff, true},
 		{math.Copysign(0, -1), 0x8000, true},
 		{math.Ldexp(1, -20), 0x0010, true},
-		{math.Ldexp(1, -40), 0x0000, true},
-		{-math.Ldexp(1, -40), 0x8000, true},
-		{float64(math.SmallestNonzeroFloat32), 0x0000, true},
+		{math.Ldexp(1, -40), 0, false},
+		{-math.Ldexp(1, -40), 0, false},
+		{float64(math.SmallestNonzeroFloat32), 0, false},
 		{math.Ldexp(1, 16), 0, false},
 		{0.1, 0, false},
 	}

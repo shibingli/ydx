@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/shibingli/ydx/auth/protocol/oauth2"
 	"github.com/shibingli/ydx/base64"
@@ -669,6 +670,34 @@ func TestOtherChinesePresetUserInfoDecoders(t *testing.T) {
 	if giteeIdentity.Subject != "100" || giteeIdentity.Username != "gitee_user" ||
 		giteeIdentity.Name != "码云用户" || giteeIdentity.AvatarURL != "https://example.com/gt.png" {
 		t.Fatalf("gitee identity = %#v", giteeIdentity)
+	}
+}
+
+// TestPresetDiscoverySettings verifies that presets honor the discovery cache fields of
+// ProviderConfig. | TestPresetDiscoverySettings 校验预设遵循 ProviderConfig 的发现缓存字段。
+func TestPresetDiscoverySettings(t *testing.T) {
+	config := presetTestConfig()
+	config.DiscoveryTTL = 10 * time.Minute
+	config.DiscoveryTTLMin = time.Minute
+	config.DiscoveryTTLMax = time.Hour
+	config.DiscoveryJitter = 0.25
+	config.DiscoveryMaxStale = 5 * time.Minute
+	for name, preset := range map[string]func(ProviderConfig) *Provider{
+		"google":   func(c ProviderConfig) *Provider { return Google(c) },
+		"gitlab":   func(c ProviderConfig) *Provider { return GitLab(c) },
+		"keycloak": func(c ProviderConfig) *Provider { return Keycloak("https://id.example", "realm", c) },
+		"auth0":    func(c ProviderConfig) *Provider { return Auth0("example.auth0.com", c) },
+	} {
+		t.Run(name, func(t *testing.T) {
+			p := preset(config)
+			if p.DiscoveryTTL != config.DiscoveryTTL ||
+				p.DiscoveryTTLMin != config.DiscoveryTTLMin ||
+				p.DiscoveryTTLMax != config.DiscoveryTTLMax ||
+				p.DiscoveryJitter != config.DiscoveryJitter ||
+				p.DiscoveryMaxStale != config.DiscoveryMaxStale {
+				t.Fatalf("preset %s discovery settings = %+v, want %+v", name, p, config)
+			}
+		})
 	}
 }
 

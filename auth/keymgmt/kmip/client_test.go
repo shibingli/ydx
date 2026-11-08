@@ -136,3 +136,66 @@ func TestClientResponseLimit(t *testing.T) {
 		t.Fatalf("Create with small response limit = %v, want ErrResponseTooLarge | 小响应上限应返回 ErrResponseTooLarge", err)
 	}
 }
+
+// TestClientCloseInterruptsBlockedRequest covers Close while a request waits for an unresponsive
+// server. | TestClientCloseInterruptsBlockedRequest 覆盖请求等待无响应服务器时的 Close。
+func TestClientCloseInterruptsBlockedRequest(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("Listen: %v", err)
+	}
+	t.Cleanup(func() { _ = listener.Close() })
+	received := make(chan struct{})
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
+	go func() {
+		conn, acceptErr := listener.Accept()
+		if acceptErr != nil {
+			return
+		}
+		defer conn.Close()
+		buffer := make([]byte, 4096)
+		if _, readErr := conn.Read(buffer); readErr != nil {
+			return
+		}
+		close(received)
+		<-release
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	client, err := DialContext(ctx, ClientConfig{Address: listener.Addr().String(), AllowPlaintext: true})
+	if err != nil {
+		t.Fatalf("DialContext: %v", err)
+	}
+	payload := mustItem(t, GetRequest{UniqueIdentifier: "blocked"})
+	doErr := make(chan error, 1)
+	go func() {
+		_, err := client.Do(context.Background(), RequestBatchItem{Operation: OpGet, Payload: payload})
+		doErr <- err
+	}()
+	select {
+	case <-received:
+	case <-time.After(5 * time.Second):
+		t.Fatal("server did not receive the request | 服务器未收到请求")
+	}
+
+	closeDone := make(chan error, 1)
+	go func() { closeDone <- client.Close() }()
+	select {
+	case closeErr := <-closeDone:
+		if closeErr != nil {
+			t.Fatalf("Close: %v", closeErr)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Close blocked behind an in-flight request | Close 被进行中的请求阻塞")
+	}
+	select {
+	case err := <-doErr:
+		if !errors.Is(err, ErrClosed) {
+			t.Fatalf("Do err = %v, want ErrClosed", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Do did not return after Close | Close 后 Do 未返回")
+	}
+}

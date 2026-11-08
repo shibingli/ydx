@@ -72,6 +72,21 @@ func applyPreset(name, displayName, kind string, defaults Provider, config Provi
 	if config.Nonce {
 		p.Nonce = true
 	}
+	if config.DiscoveryTTL != 0 {
+		p.DiscoveryTTL = config.DiscoveryTTL
+	}
+	if config.DiscoveryTTLMin != 0 {
+		p.DiscoveryTTLMin = config.DiscoveryTTLMin
+	}
+	if config.DiscoveryTTLMax != 0 {
+		p.DiscoveryTTLMax = config.DiscoveryTTLMax
+	}
+	if config.DiscoveryJitter != 0 {
+		p.DiscoveryJitter = config.DiscoveryJitter
+	}
+	if config.DiscoveryMaxStale != 0 {
+		p.DiscoveryMaxStale = config.DiscoveryMaxStale
+	}
 	if config.AuthStyle != "" {
 		p.AuthStyle = config.AuthStyle
 	}
@@ -151,7 +166,7 @@ func Microsoft(config ProviderConfig, options ...ProviderOption) *Provider {
 }
 
 // GitHub returns a GitHub OAuth 2.0 provider preset. Email is linked only when the
-// upstream response marks it verified; GitHub login names are mapped to Username.
+// upstream response marks it verified; GitHub login names are mapped to Username. |
 // GitHub 返回 GitHub OAuth 2.0 提供方预设。只有上游响应标记邮箱已验证时才可用于关联；
 // GitHub 登录名映射到 Username。
 func GitHub(config ProviderConfig, options ...ProviderOption) *Provider {

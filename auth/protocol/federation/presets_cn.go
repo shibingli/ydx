@@ -12,25 +12,25 @@ import (
 
 // Extra keys and account types used by Chinese provider presets. | 中国提供方预设使用的扩展键与账号类型。
 const (
-	// ExtraWeChatAccountType selects WeChat Open Platform (open) or Official Account (mp).
+	// ExtraWeChatAccountType selects WeChat Open Platform (open) or Official Account (mp). |
 	// ExtraWeChatAccountType 选择微信开放平台（open）或公众号（mp）。
 	ExtraWeChatAccountType = "wechat_account_type"
-	// WeChatAccountOpenPlatform is the WeChat website application (qrconnect) flow.
+	// WeChatAccountOpenPlatform is the WeChat website application (qrconnect) flow. |
 	// WeChatAccountOpenPlatform 是微信网站应用（qrconnect）流程。
 	WeChatAccountOpenPlatform = "open"
-	// WeChatAccountOfficialAccount is the WeChat Official Account (oauth2/authorize) flow.
+	// WeChatAccountOfficialAccount is the WeChat Official Account (oauth2/authorize) flow. |
 	// WeChatAccountOfficialAccount 是微信公众号（oauth2/authorize）流程。
 	WeChatAccountOfficialAccount = "mp"
-	// ExtraWeChatLang selects the WeChat UserInfo language, for example zh_CN.
+	// ExtraWeChatLang selects the WeChat UserInfo language, for example zh_CN. |
 	// ExtraWeChatLang 选择微信 UserInfo 语言，例如 zh_CN。
 	ExtraWeChatLang = "wechat_lang"
-	// ExtraQQOpenIDURL overrides the QQ OpenID endpoint derived from TokenURL.
+	// ExtraQQOpenIDURL overrides the QQ OpenID endpoint derived from TokenURL. |
 	// ExtraQQOpenIDURL 覆盖由 TokenURL 推导的 QQ OpenID 端点。
 	ExtraQQOpenIDURL = "qq_openid_url"
-	// ExtraWeComAuthUserInfoURL overrides the WeCom code-to-user endpoint.
+	// ExtraWeComAuthUserInfoURL overrides the WeCom code-to-user endpoint. |
 	// ExtraWeComAuthUserInfoURL 覆盖企业微信 code 换用户端点。
 	ExtraWeComAuthUserInfoURL = "wecom_auth_userinfo_url"
-	// ExtraAlipayPrivateKey supplies the Alipay RSA2 private key when Provider.PrivateKey is empty.
+	// ExtraAlipayPrivateKey supplies the Alipay RSA2 private key when Provider.PrivateKey is empty. |
 	// ExtraAlipayPrivateKey 在 Provider.PrivateKey 为空时提供支付宝 RSA2 私钥。
 	ExtraAlipayPrivateKey = "alipay_private_key"
 )

@@ -27,6 +27,9 @@ type LogoutTokenClaims struct {
 	Subject string `json:"sub,omitempty"`
 	// Audience is the aud claim. | Audience 是 aud 声明。
 	Audience Audience `json:"aud"`
+	// AZP is the azp claim identifying the RP the token is directed to; it is required when the
+	// token has multiple audiences. | AZP 是标识令牌目标 RP 的 azp 声明；令牌有多个受众时必填。
+	AZP string `json:"azp,omitempty"`
 	// IssuedAt is the iat claim. | IssuedAt 是 iat 声明。
 	IssuedAt int64 `json:"iat"`
 	// JTI is the jti claim. | JTI 是 jti 声明。
@@ -69,13 +72,18 @@ func (p *Provider) LogoutToken(client *oauth2.Client, subject, sid string) (stri
 }
 
 // ValidateLogoutToken verifies a back-channel logout token. The typ header must be logout+jwt,
-// iat is evaluated against the provider clock, and nonce must be absent. When ProviderConfig
-// .LogoutReplay is set, an already accepted jti is rejected; the store keeps the identifier until
-// the end of the iat acceptance window. Replay protection is opt-in because replaying a logout
-// token only repeats an idempotent session revocation. | ValidateLogoutToken 校验后端登出令牌。
-// typ 头部必须是 logout+jwt，iat 用提供方时钟评估，nonce 必须缺失。设置 ProviderConfig
-// .LogoutReplay 后，已接受过的 jti 会被拒绝；存储会保留该标识至 iat 接受窗口结束。重放保护为
-// 选择性启用，因为重放登出令牌只会重复幂等的会话撤销。
+// iat is evaluated against the provider clock, and nonce must be absent. When audience is non-empty,
+// the aud claim must contain it and a present azp claim must equal it, while multiple audiences
+// additionally require azp; an empty audience only requires a non-empty aud for callers that do not
+// know their receiver identity yet. When ProviderConfig.LogoutReplay is set, an already accepted jti
+// is rejected; the store keeps the identifier until the end of the iat acceptance window. Replay
+// protection is opt-in because replaying a logout token only repeats an idempotent session
+// revocation. | ValidateLogoutToken 校验后端登出令牌。
+// typ 头部必须是 logout+jwt，iat 用提供方时钟评估，nonce 必须缺失。audience 非空时，aud 声明
+// 必须包含它，出现的 azp 声明必须等于它，且多受众还要求提供 azp；空 audience 只要求 aud 非空，
+// 供尚不知道接收方标识的调用方使用。设置 ProviderConfig.LogoutReplay 后，已接受过的 jti 会被
+// 拒绝；存储会保留该标识至 iat 接受窗口结束。重放保护为选择性启用，因为重放登出令牌只会重复
+// 幂等的会话撤销。
 func (p *Provider) ValidateLogoutToken(ctx context.Context, raw, issuer, audience string) (*LogoutTokenClaims, error) {
 	verified, err := jose.VerifyContext(ctx, raw, p.keys.Resolver(), jose.VerifyOptions{
 		Typ: "logout+jwt",
@@ -97,8 +105,19 @@ func (p *Provider) ValidateLogoutToken(ctx context.Context, raw, issuer, audienc
 	if len(claims.Audience) == 0 {
 		return nil, errs.Detail(ErrInvalidAudience, "logout token audience is missing | 登出令牌缺少受众")
 	}
-	if audience != "" && !claims.Audience.Contains(audience) {
-		return nil, errs.Detail(ErrInvalidAudience, "logout token audience mismatch | 登出令牌受众不匹配")
+	if audience != "" {
+		if !claims.Audience.Contains(audience) {
+			return nil, errs.Detail(ErrInvalidAudience, "logout token audience mismatch | 登出令牌受众不匹配")
+		}
+		// OIDC Back-Channel Logout 1.0 requires azp when aud has multiple values, and a present
+		// azp must identify the receiving RP. | OIDC 后端登出 1.0 要求 aud 含多个值时提供 azp，
+		// 且出现的 azp 必须标识接收 RP。
+		if len(claims.Audience) > 1 && claims.AZP == "" {
+			return nil, errs.Detail(ErrInvalidAudience, "logout token azp is required with multiple audiences | 多受众的登出令牌必须提供 azp")
+		}
+		if claims.AZP != "" && claims.AZP != audience {
+			return nil, errs.Detail(ErrInvalidAudience, "logout token azp mismatch | 登出令牌 azp 不匹配")
+		}
 	}
 	if claims.IssuedAt == 0 || p.Now().Sub(time.Unix(claims.IssuedAt, 0)).Abs() > 5*time.Minute {
 		return nil, errs.Detail(ErrInvalidToken, "logout token iat is stale | 登出令牌 iat 过旧")
@@ -246,11 +265,21 @@ func (p *Provider) EndSession(w http.ResponseWriter, r *http.Request) {
 	writeLoggedOut(w)
 }
 
-// BackchannelLogout receives a back-channel logout token. | BackchannelLogout 接收后端登出令牌。
+// BackchannelLogout receives a back-channel logout token. The receiver acts as an RP and validates
+// that the token aud contains ProviderConfig.BackchannelLogoutClientID; tokens issued for another
+// RP are rejected. Without a configured client ID the endpoint fails closed instead of revoking
+// sessions for any well-formed token. | BackchannelLogout 接收后端登出令牌。接收端以 RP 身份校验
+// 令牌 aud 包含 ProviderConfig.BackchannelLogoutClientID；签发给其他 RP 的令牌会被拒绝。未配置
+// client ID 时端点按失败关闭处理，而不是为任何格式正确的令牌撤销会话。
 func (p *Provider) BackchannelLogout(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		w.Header().Set("Allow", "POST")
 		writeError(w, http.StatusMethodNotAllowed, "invalid_request", "method not allowed | 方法不允许")
+		return
+	}
+	clientID := strings.TrimSpace(p.config.BackchannelLogoutClientID)
+	if clientID == "" {
+		writeError(w, http.StatusInternalServerError, "server_error", "back-channel logout receiver has no client_id | 后端登出接收端未配置 client_id")
 		return
 	}
 	if err := r.ParseForm(); err != nil {
@@ -262,7 +291,7 @@ func (p *Provider) BackchannelLogout(w http.ResponseWriter, r *http.Request) {
 		badRequest(w, "logout_token is required | 必须提供 logout_token")
 		return
 	}
-	claims, err := p.ValidateLogoutToken(r.Context(), raw, p.config.Issuer, "")
+	claims, err := p.ValidateLogoutToken(r.Context(), raw, p.config.Issuer, clientID)
 	if err != nil {
 		badRequest(w, "logout_token is invalid | logout_token 无效")
 		return
@@ -277,7 +306,14 @@ func (p *Provider) BackchannelLogout(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 }
 
-// FrontchannelLogout renders the front-channel logout iframe for an RP. | FrontchannelLogout 为 RP 渲染前端登出 iframe。
+// FrontchannelLogout renders the front-channel logout page for an RP. It validates only that iss
+// identifies this provider. OIDC Front-Channel Logout 1.0 leaves mapping sid or sub to a local
+// session, and therefore any client registration check, to the RP receiving the request; this
+// handler neither revokes sessions nor requires the caller to be a registered client. Deployments
+// that need client binding must resolve sid against their own session store. |
+// FrontchannelLogout 为 RP 渲染前端登出页面。它只校验 iss 标识本提供方。OIDC 前端登出 1.0 把
+// sid 或 sub 到本地会话的映射（以及由此产生的客户端注册校验）留给接收请求的 RP；本处理器既不撤销
+// 会话，也不要求调用方是已注册客户端。需要客户端绑定的部署必须用自己的会话存储解析 sid。
 func (p *Provider) FrontchannelLogout(w http.ResponseWriter, r *http.Request) {
 	issuer := r.URL.Query().Get("iss")
 	sid := r.URL.Query().Get("sid")

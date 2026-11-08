@@ -574,21 +574,13 @@ func decodeExtensibleFilter(r *berReader) (Filter, error) {
 			seenValue = true
 			filter.Value = string(component.Value)
 		case 4:
-			if !tag.Constructed || seenDN {
+			// RFC 4511 encodes dnAttributes as an implicit primitive BOOLEAN. |
+			// RFC 4511 把 dnAttributes 编码为隐式原始 BOOLEAN。
+			if tag.Constructed || seenDN || len(component.Value) != 1 {
 				return nil, errs.Detail(ErrProtocolError, "invalid dnAttributes component | 非法 dnAttributes 组件")
 			}
 			seenDN = true
-			dnReader, err := inner.subReader(component)
-			if err != nil {
-				return nil, err
-			}
-			filter.DNAttributes, err = dnReader.readBoolean()
-			if err != nil {
-				return nil, err
-			}
-			if err := dnReader.expectEnd(); err != nil {
-				return nil, err
-			}
+			filter.DNAttributes = component.Value[0] != 0
 		default:
 			return nil, errs.Detail(ErrProtocolError, "unknown extensible component %d | 未知扩展匹配组件 %d", tag.Number, tag.Number)
 		}

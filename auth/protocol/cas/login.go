@@ -79,7 +79,10 @@ func (s *Server) loginPage(w http.ResponseWriter, r *http.Request) {
 			})
 			return
 		}
-		st, err := s.issueTicket(r.Context(), TicketST, tgt.Principal, tgt.UserID, params.service, tgt, s.config.ServiceTicketTimeout, tgt.Renewal, tgt.RememberMe)
+		// The ticket comes from the existing SSO session, never from a credential presentation,
+		// so it must not inherit the TGT's renewal marker. | 该票据来自既有单点登录会话而非凭据提交，
+		// 因此不得继承 TGT 的重新认证标记。
+		st, err := s.issueTicket(r.Context(), TicketST, tgt.Principal, tgt.UserID, params.service, tgt, s.config.ServiceTicketTimeout, false, tgt.RememberMe)
 		if err != nil {
 			s.fail(w, r, http.StatusInternalServerError, errs.Wrap(err, ErrTicketGeneration))
 			return
@@ -173,7 +176,9 @@ func (s *Server) loginSubmit(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, r.URL.Path, http.StatusFound)
 		return
 	}
-	st, err := s.issueTicket(r.Context(), TicketST, principal, userID, params.service, tgt, s.config.ServiceTicketTimeout, tgt.Renewal, tgt.RememberMe)
+	// The ST reflects the login request: only an explicit renew makes it satisfy renew validation. |
+	// ST 反映登录请求：只有显式 renew 才使其满足 renew 校验。
+	st, err := s.issueTicket(r.Context(), TicketST, principal, userID, params.service, tgt, s.config.ServiceTicketTimeout, params.renew, tgt.RememberMe)
 	if err != nil {
 		s.destroyTGT(r.Context(), tgt.ID)
 		s.fail(w, r, http.StatusInternalServerError, errs.Wrap(err, ErrTicketGeneration))

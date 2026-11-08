@@ -205,7 +205,13 @@ var (
 	ErrInvalidRequest = errs.New("radius: invalid request | radius：请求非法")
 	// ErrInvalidResponse reports a response that failed structural validation. | ErrInvalidResponse 表示响应未通过结构校验。
 	ErrInvalidResponse = errs.New("radius: invalid response | radius：响应非法")
-	// ErrAuthenticator reports a Response Authenticator mismatch (RFC 2865 section 3). | ErrAuthenticator 表示 Response Authenticator 不匹配（RFC 2865 第 3 节）。
+	// ErrAuthenticator reports an authenticator mismatch. UDP clients silently discard a
+	// mismatching response and keep waiting, as RFC 2865 sections 4.2 and 4.4 require; the
+	// sentinel is returned by explicit verification helpers, by stream transports that must close
+	// the connection (RFC 6613 section 2.6.4), and by server-side request validation. |
+	// ErrAuthenticator 表示认证符不匹配。UDP 客户端按 RFC 2865 第 4.2 与 4.4 节要求静默丢弃不匹配
+	// 的响应并继续等待；该哨兵由显式校验辅助函数、必须关闭连接的流传输（RFC 6613 第 2.6.4 节）
+	// 以及服务端请求校验返回。
 	ErrAuthenticator = errs.New("radius: authenticator mismatch | radius：认证符不匹配")
 	// ErrMessageAuthenticator reports a Message-Authenticator mismatch or a missing required one. | ErrMessageAuthenticator 表示 Message-Authenticator 不匹配或缺少必需值。
 	ErrMessageAuthenticator = errs.New("radius: message authenticator mismatch | radius：消息认证符不匹配")

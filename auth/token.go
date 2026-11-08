@@ -104,9 +104,7 @@ func normalizePhone(phone string) (string, bool) {
 		}
 	}
 	digits := b.String()
-	if strings.HasPrefix(digits, "00") {
-		digits = digits[2:]
-	}
+	digits = strings.TrimPrefix(digits, "00")
 	if len(digits) == 13 && strings.HasPrefix(digits, "86") && digits[2] == '1' {
 		digits = digits[2:]
 	}
@@ -116,7 +114,9 @@ func normalizePhone(phone string) (string, bool) {
 	return digits, true
 }
 
-// SanitizeIdentifier lowercases and trims an identifier for case-insensitive comparison. | SanitizeIdentifier 对标识做小写与去空白，用于大小写不敏感比较。
+// SanitizeIdentifier lowercases ASCII letters and removes ASCII spaces, tabs, carriage returns and
+// line feeds for case-insensitive comparison. | SanitizeIdentifier 将 ASCII 字母转为小写并移除 ASCII
+// 空格、制表符、回车与换行，用于大小写不敏感比较。
 func SanitizeIdentifier(s string) string {
 	out := make([]byte, 0, len(s))
 	for i := 0; i < len(s); i++ {

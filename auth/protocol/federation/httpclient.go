@@ -68,11 +68,21 @@ func doRequest(ctx context.Context, client *http.Client, method, endpoint string
 	}
 	resp, err := client.Do(req)
 	if err != nil {
+		// The raw url.Error carries the endpoint, so it is never exposed. The
+		// context cause is safe to keep and lets callers detect cancellation. |
+		// 原始 url.Error 含有端点，因此绝不暴露；上下文原因可安全保留，使调用方能
+		// 识别取消。
+		if cause := ctx.Err(); cause != nil {
+			return 0, nil, errs.WrapDetail(cause, ErrTransport, "provider request failed | 提供方请求失败")
+		}
 		return 0, nil, errs.Detail(ErrTransport, "provider request failed | 提供方请求失败")
 	}
 	defer resp.Body.Close()
 	data, err := io.ReadAll(io.LimitReader(resp.Body, maxProviderResponse+1))
 	if err != nil {
+		if cause := ctx.Err(); cause != nil {
+			return 0, nil, errs.WrapDetail(cause, ErrTransport, "cannot read provider response | 无法读取提供方响应")
+		}
 		return 0, nil, errs.Detail(ErrTransport, "cannot read provider response | 无法读取提供方响应")
 	}
 	if len(data) > maxProviderResponse {

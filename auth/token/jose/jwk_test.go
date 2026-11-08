@@ -381,3 +381,29 @@ func TestMarshalPublicKeyOmitsPrivateMembers(t *testing.T) {
 		t.Fatalf("ParseKey(public) failed: %v", err)
 	}
 }
+
+// TestParseKeyRejectsNonCanonicalMembers pins that JWK members use canonical base64url: "AB" and
+// "AA" decode alike under a tolerant decoder, but only the latter is a legal JWK value. |
+// TestParseKeyRejectsNonCanonicalMembers 固定「JWK 成员使用规范 base64url」：宽容解码器会把
+// "AB" 与 "AA" 解成相同字节，但只有后者是合法 JWK 取值。
+func TestParseKeyRejectsNonCanonicalMembers(t *testing.T) {
+	// ParseKey is structural by contract; the canonical check runs when the material is used. |
+	// ParseKey 按契约只做结构解析；规范校验在密钥材料被使用时执行。
+	nonCanonical, err := ParseKey([]byte(`{"kty":"oct","kid":"k","k":"AB"}`))
+	if err != nil {
+		t.Fatalf("ParseKey(non-canonical k) err = %v", err)
+	}
+	if err := nonCanonical.Validate(); !errors.Is(err, ErrInvalidKey) {
+		t.Fatalf("Validate(non-canonical k) err = %v, want ErrInvalidKey", err)
+	}
+	if _, err := nonCanonical.PrivateKey(); !errors.Is(err, ErrInvalidKey) {
+		t.Fatalf("PrivateKey(non-canonical k) err = %v, want ErrInvalidKey", err)
+	}
+	canonical, err := ParseKey([]byte(`{"kty":"oct","kid":"k","k":"AA"}`))
+	if err != nil {
+		t.Fatalf("ParseKey(canonical k) err = %v", err)
+	}
+	if err := canonical.Validate(); err != nil {
+		t.Fatalf("Validate(canonical k) err = %v", err)
+	}
+}

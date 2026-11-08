@@ -322,6 +322,24 @@ func TestSCRAMBind(t *testing.T) {
 	}
 }
 
+// TestSCRAMRejectsDuplicateServerFirstAttributes verifies the server-first
+// message stays within the RFC 5802 ABNF, where nonce, salt and iteration
+// count appear at most once. | TestSCRAMRejectsDuplicateServerFirstAttributes
+// 验证服务端首条消息符合 RFC 5802 ABNF：随机数、盐与迭代次数最多出现一次。
+func TestSCRAMRejectsDuplicateServerFirstAttributes(t *testing.T) {
+	const clientNonce = "client-nonce"
+	tests := []string{
+		"r=" + clientNonce + "-server,s=c2FsdA==,i=4096,r=" + clientNonce + "-again",
+		"r=" + clientNonce + "-server,s=c2FsdA==,i=4096,i=8192",
+		"r=" + clientNonce + "-server,s=c2FsdA==,s=c2FsdA==,i=4096",
+	}
+	for _, message := range tests {
+		if _, _, _, err := parseSCRAMServerFirst(message, clientNonce); !errors.Is(err, ErrSCRAM) {
+			t.Fatalf("parseSCRAMServerFirst(%q) error = %v, want ErrSCRAM", message, err)
+		}
+	}
+}
+
 // TestSCRAMFailures verifies proof and server signature failures. | TestSCRAMFailures
 // 校验证明与服务端签名失败。
 func TestSCRAMFailures(t *testing.T) {

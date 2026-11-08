@@ -13,8 +13,9 @@ import (
 type RequestState struct {
 	// ID is the request identifier. | ID 是请求标识。
 	ID string
-	// SPEntityID and IDPEntityID identify the parties. | SPEntityID 与 IDPEntityID 标识双方。
-	SPEntityID  string
+	// SPEntityID is the service-provider entity ID. | SPEntityID 是服务提供方实体标识。
+	SPEntityID string
+	// IDPEntityID is the identity-provider entity ID. | IDPEntityID 是身份提供方实体标识。
 	IDPEntityID string
 	// ACSURL is the expected assertion consumer URL. | ACSURL 是期望的断言消费 URL。
 	ACSURL string
@@ -22,8 +23,9 @@ type RequestState struct {
 	RelayState string
 	// NameIDFormat is the requested NameID format. | NameIDFormat 是请求的 NameID 格式。
 	NameIDFormat string
-	// CreatedAt and ExpiresAt bound the request lifetime. | CreatedAt 与 ExpiresAt 限定请求生命周期。
+	// CreatedAt is the request creation time. | CreatedAt 是请求创建时间。
 	CreatedAt time.Time
+	// ExpiresAt is the request expiry time. | ExpiresAt 是请求过期时间。
 	ExpiresAt time.Time
 	// Used marks a consumed request. | Used 标记已消费请求。
 	Used bool
@@ -44,11 +46,13 @@ type Session struct {
 	ID string
 	// NameID is the subject identifier. | NameID 是主体标识。
 	NameID string
-	// SPEntityID and IDPEntityID identify the parties. | SPEntityID 与 IDPEntityID 标识双方。
-	SPEntityID  string
+	// SPEntityID is the service-provider entity ID. | SPEntityID 是服务提供方实体标识。
+	SPEntityID string
+	// IDPEntityID is the identity-provider entity ID. | IDPEntityID 是身份提供方实体标识。
 	IDPEntityID string
-	// CreatedAt and ExpiresAt bound the session lifetime. | CreatedAt 与 ExpiresAt 限定会话生命周期。
+	// CreatedAt is the session creation time. | CreatedAt 是会话创建时间。
 	CreatedAt time.Time
+	// ExpiresAt is the session expiry time. | ExpiresAt 是会话过期时间。
 	ExpiresAt time.Time
 	// Attributes are the session attributes. | Attributes 是会话属性。
 	Attributes map[string][]string
@@ -78,11 +82,13 @@ type ArtifactRecord struct {
 	// Message is the raw SAML protocol message returned to the service provider. | Message 是返回给
 	// 服务提供方的原始 SAML 协议消息。
 	Message []byte
-	// SPEntityID and IDPEntityID identify the parties. | SPEntityID 与 IDPEntityID 标识双方。
-	SPEntityID  string
+	// SPEntityID is the service-provider entity ID. | SPEntityID 是服务提供方实体标识。
+	SPEntityID string
+	// IDPEntityID is the identity-provider entity ID. | IDPEntityID 是身份提供方实体标识。
 	IDPEntityID string
-	// IssuedAt and ExpiresAt bound the artifact lifetime. | IssuedAt 与 ExpiresAt 限定工件寿命。
-	IssuedAt  time.Time
+	// IssuedAt is the artifact issue time. | IssuedAt 是工件签发时间。
+	IssuedAt time.Time
+	// ExpiresAt is the artifact expiry time. | ExpiresAt 是工件过期时间。
 	ExpiresAt time.Time
 	// Used marks a resolved artifact; a used record is retained until expiry so replays are
 	// reported as such. | Used 标记已解析工件；已用记录保留到过期，以便报告重放。

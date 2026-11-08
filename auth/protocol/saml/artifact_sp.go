@@ -87,7 +87,7 @@ func (sp *ServiceProvider) postArtifactResolve(ctx context.Context, arsURL strin
 	if err != nil {
 		return nil, 0, errs.WrapDetail(err, ErrInvalidResponse, "artifact resolution | 工件解析")
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 	data, err := io.ReadAll(io.LimitReader(response.Body, MaxSOAPMessageBytes+1))
 	if err != nil {
 		return nil, response.StatusCode, errs.WrapDetail(err, ErrInvalidResponse, "artifact response | 工件响应")

@@ -111,13 +111,16 @@ func (r *DynamicAuthorizationResponse) Rejected() bool {
 // ends. Every retransmission resends byte-identical content, including the Identifier, Request
 // Authenticator and Event-Timestamp, so the NAS can detect duplicates as RFC 5176 section 3.6
 // recommends; each SendCoA call uses a fresh Identifier. A CoA-NAK returns a non-nil response and
-// an error wrapping ErrCoANAK that reports Error-Cause. Malformed or unauthenticated responses,
+// an error wrapping ErrCoANAK that reports Error-Cause. UDP responses whose Response Authenticator
+// does not match are silently discarded and the attempt keeps waiting for a valid ACK or NAK;
+// stream transports fail the attempt so the connection can be closed. Malformed responses,
 // Message-Authenticator failures and unexpected response codes are not retried. | Request
 // Authenticator 使用 RFC 5176 第 2.3 节要求的 RFC 2866 算法。超时按指数退避重传，直到 Retries
 // 用尽或上下文结束。每次重传发送完全相同的字节，包括 Identifier、Request Authenticator 与
 // Event-Timestamp，以便 NAS 按 RFC 5176 第 3.6 节建议进行重复检测；每次 SendCoA 调用使用新的
-// Identifier。CoA-NAK 会返回非空响应与包装 ErrCoANAK 并报告 Error-Cause 的错误。畸形或未通过
-// 认证的响应、Message-Authenticator 失败以及意外响应类型不会重试。
+// Identifier。CoA-NAK 会返回非空响应与包装 ErrCoANAK 并报告 Error-Cause 的错误。UDP 响应中
+// Response Authenticator 不匹配者被静默丢弃，本次尝试继续等待合法 ACK 或 NAK；流传输则让本次
+// 尝试失败以便关闭连接。畸形响应、Message-Authenticator 失败以及意外响应类型不会重试。
 func (c *Client) SendCoA(ctx context.Context, request *CoARequest) (*CoAResponse, error) {
 	return c.sendDynamicAuthorization(ctx, CodeCoARequest, request, ErrCoANAK)
 }

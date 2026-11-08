@@ -27,14 +27,22 @@ const (
 
 // androidKeyDescription is the parsed Android KeyDescription structure. | androidKeyDescription 是解析后的 Android KeyDescription 结构。
 type androidKeyDescription struct {
-	AttestationVersion       int
+	// AttestationVersion is the attestation record version. | AttestationVersion 是认证记录版本。
+	AttestationVersion int
+	// AttestationSecurityLevel is the security level that produced the attestation. | AttestationSecurityLevel 是产生认证声明的安全级别。
 	AttestationSecurityLevel asn1.Enumerated
-	KeymasterVersion         int
-	KeymasterSecurityLevel   asn1.Enumerated
-	AttestationChallenge     []byte
-	UniqueID                 []byte
-	SoftwareEnforced         asn1.RawValue
-	TEEEnforced              asn1.RawValue
+	// KeymasterVersion is the Keymaster or KeyMint version. | KeymasterVersion 是 Keymaster 或 KeyMint 版本。
+	KeymasterVersion int
+	// KeymasterSecurityLevel is the security level holding the key. | KeymasterSecurityLevel 是保存密钥的安全级别。
+	KeymasterSecurityLevel asn1.Enumerated
+	// AttestationChallenge is the client data hash bound into the attestation. | AttestationChallenge 是绑定进认证声明的客户端数据哈希。
+	AttestationChallenge []byte
+	// UniqueID is the optional key unique identifier. | UniqueID 是可选密钥唯一标识。
+	UniqueID []byte
+	// SoftwareEnforced is the software-enforced AuthorizationList. | SoftwareEnforced 是软件强制的 AuthorizationList。
+	SoftwareEnforced asn1.RawValue
+	// TEEEnforced is the TEE or hardware-enforced AuthorizationList. | TEEEnforced 是 TEE 或硬件强制的 AuthorizationList。
+	TEEEnforced asn1.RawValue
 }
 
 // androidAuthorizationList carries the security-relevant fields of an AuthorizationList. | androidAuthorizationList 携带 AuthorizationList 的安全相关字段。
@@ -167,7 +175,14 @@ func verifyAndroidKeyExtension(cert *x509.Certificate, clientDataHash []byte, ex
 	return nil
 }
 
-// parseAndroidAuthorizationList parses the security-relevant fields of an AuthorizationList. | parseAndroidAuthorizationList 解析 AuthorizationList 的安全相关字段。
+// parseAndroidAuthorizationList parses the security-relevant fields of an AuthorizationList. |
+// parseAndroidAuthorizationList 解析 AuthorizationList 的安全相关字段。
+//
+// The AOSP schema declares every field EXPLICIT, so origin [702] wraps an INTEGER and
+// attestationApplicationId [709] wraps an OCTET STRING. Legacy implicit encodings produced by
+// earlier versions of this package are still accepted. | AOSP 模式把每个字段声明为 EXPLICIT，
+// 因此 origin [702] 包裹 INTEGER，attestationApplicationId [709] 包裹 OCTET STRING。本包早期版本
+// 产生的旧式隐式编码仍会被接受。
 func parseAndroidAuthorizationList(raw asn1.RawValue) (androidAuthorizationList, error) {
 	var list androidAuthorizationList
 	if len(raw.FullBytes) == 0 {
@@ -191,14 +206,22 @@ func parseAndroidAuthorizationList(raw asn1.RawValue) (androidAuthorizationList,
 		case androidTagAllApplications:
 			list.hasAllApplications = true
 		case androidTagOrigin:
-			origin, err := parseDERPositiveInt(element.content)
+			content := element.content
+			if inner, ok := explicitAndroidElement(content, derTagInteger); ok {
+				content = inner.content
+			}
+			origin, err := parseDERPositiveInt(content)
 			if err != nil {
 				return list, errs.WrapDetail(err, ErrInvalidAttestation, "Android authorization origin is malformed | Android 授权 origin 格式非法")
 			}
 			list.hasOrigin = true
 			list.origin = origin
 		case androidTagAttestationApplicationID:
-			packages, err := parseAndroidAttestationApplicationID(element.content)
+			content := element.content
+			if inner, ok := explicitAndroidElement(content, derTagOctetString); ok {
+				content = inner.content
+			}
+			packages, err := parseAndroidAttestationApplicationID(content)
 			if err != nil {
 				return list, err
 			}
@@ -207,6 +230,18 @@ func parseAndroidAuthorizationList(raw asn1.RawValue) (androidAuthorizationList,
 		}
 	}
 	return list, nil
+}
+
+// explicitAndroidElement unwraps the single universal element of an EXPLICIT context-specific
+// field. It reports false when content is not exactly one element with the wanted tag. |
+// explicitAndroidElement 解包 EXPLICIT 上下文特定字段中的单个通用元素。content 不是恰好一个指定
+// 标签的元素时返回 false。
+func explicitAndroidElement(content []byte, tag int) (derElement, bool) {
+	inner, rest, err := parseDERElement(content)
+	if err != nil || len(rest) != 0 || inner.class != derClassUniversal || inner.tag != tag {
+		return derElement{}, false
+	}
+	return inner, true
 }
 
 // parseAndroidPurposes parses the SET OF INTEGER in the purpose field. | parseAndroidPurposes 解析 purpose 字段中的 SET OF INTEGER。

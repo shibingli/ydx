@@ -180,3 +180,70 @@ func TestSnapshotDeepCopy(t *testing.T) {
 		t.Fatalf("Snapshot aliased engine state: %+v", roles[0])
 	}
 }
+
+// blockingResetStore blocks Reset until release is closed. | blockingResetStore 阻塞 Reset 直到
+// release 被关闭。
+type blockingResetStore struct {
+	*MemoryStore
+	started chan struct{}
+	release chan struct{}
+}
+
+// Reset implements Store. | Reset 实现 Store。
+func (s *blockingResetStore) Reset(ctx context.Context) error {
+	close(s.started)
+	<-s.release
+	return s.MemoryStore.Reset(ctx)
+}
+
+// TestLoadSnapshotBlocksConcurrentAuthorization checks that Authorize never observes the empty or
+// partially loaded state between Reset and load. | TestLoadSnapshotBlocksConcurrentAuthorization 检查
+// Authorize 绝不会观察到 Reset 与加载之间的空状态或部分加载状态。
+func TestLoadSnapshotBlocksConcurrentAuthorization(t *testing.T) {
+	ctx := context.Background()
+	base := NewMemoryStore()
+	if err := base.AddRole(ctx, Role{Name: "editor", Permissions: []string{"post:write"}}); err != nil {
+		t.Fatalf("AddRole: %v", err)
+	}
+	if err := base.Assign(ctx, Assignment{Subject: "alice", Role: "editor"}); err != nil {
+		t.Fatalf("Assign: %v", err)
+	}
+	store := &blockingResetStore{MemoryStore: base, started: make(chan struct{}), release: make(chan struct{})}
+	engine := New(WithStore(store))
+	if decision := authorize(t, engine, Request{Subject: "alice", Action: "post:write"}); !decision.Allowed {
+		t.Fatalf("initial authorization denied: %s", decision.Reason)
+	}
+
+	loadResult := make(chan error, 1)
+	go func() {
+		loadResult <- engine.LoadSnapshot(ctx, Snapshot{Version: SnapshotVersion})
+	}()
+	<-store.started
+
+	type authorization struct {
+		decision Decision
+		err      error
+	}
+	authResult := make(chan authorization, 1)
+	go func() {
+		decision, err := engine.Authorize(ctx, Request{Subject: "alice", Action: "post:write"})
+		authResult <- authorization{decision: decision, err: err}
+	}()
+
+	select {
+	case got := <-authResult:
+		t.Fatalf("Authorize observed the load in progress: decision=%+v err=%v | 授权读取到加载中间状态", got.decision, got.err)
+	case <-time.After(200 * time.Millisecond):
+	}
+	close(store.release)
+	if err := <-loadResult; err != nil {
+		t.Fatalf("LoadSnapshot: %v", err)
+	}
+	got := <-authResult
+	if got.err != nil {
+		t.Fatalf("Authorize after load: %v", got.err)
+	}
+	if got.decision.Allowed {
+		t.Fatalf("Authorize after empty load allowed: %s | 空快照加载后仍允许", got.decision.Reason)
+	}
+}

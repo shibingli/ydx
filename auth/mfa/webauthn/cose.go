@@ -73,11 +73,13 @@ type COSEKey struct {
 	Alg int
 	// Crv is the curve identifier for EC2 and OKP keys. | Crv 是 EC2 与 OKP 密钥的曲线标识。
 	Crv int
-	// X and Y are the EC2 affine coordinates. | X 与 Y 是 EC2 仿射坐标。
+	// X is the EC2 affine x coordinate. | X 是 EC2 仿射 x 坐标。
 	X []byte
+	// Y is the EC2 affine y coordinate. | Y 是 EC2 仿射 y 坐标。
 	Y []byte
-	// N and E are the RSA modulus and public exponent. | N 与 E 是 RSA 模数与公开指数。
+	// N is the RSA modulus. | N 是 RSA 模数。
 	N []byte
+	// E is the RSA public exponent. | E 是 RSA 公开指数。
 	E []byte
 }
 

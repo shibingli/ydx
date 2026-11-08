@@ -105,10 +105,12 @@ type smsChallenge struct {
 // SMSOTP issues and verifies SMS one-time passwords. | SMSOTP 签发并校验短信一次性验证码。
 //
 // A successful Send creates a random challenge identifier and a random numeric code. The code is
-// stored only as SHA-256(challengeID + ":" + code), compared in constant time, and deleted from the
-// active set once used, expired or locked. Concurrency is guarded by a sync.Mutex. | 成功的 Send 会
-// 创建随机挑战标识与随机数字验证码。验证码仅以 SHA-256(challengeID + ":" + code) 形式保存，以
-// 常量时间比较；使用、过期或锁定后从活动集合移除。并发由 sync.Mutex 保护。
+// stored only as SHA-256(challengeID + ":" + code) and compared in constant time. Expired challenges
+// are purged; a used or locked challenge stays recognized until its expiry so repeated verification
+// reports ErrOTPUsed or ErrOTPAttemptsExceeded. Concurrency is guarded by a sync.Mutex. | 成功的
+// Send 会创建随机挑战标识与随机数字验证码。验证码仅以 SHA-256(challengeID + ":" + code) 形式保存，
+// 并以常量时间比较。过期挑战会被清理；已使用或已锁定的挑战在过期前仍会被识别，使重复校验分别返回
+// ErrOTPUsed 或 ErrOTPAttemptsExceeded。并发由 sync.Mutex 保护。
 type SMSOTP struct {
 	cfg       SMSOTPConfig
 	configErr error

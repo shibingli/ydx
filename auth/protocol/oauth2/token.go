@@ -22,12 +22,13 @@ func (s *Server) Token(w http.ResponseWriter, r *http.Request) {
 		s.writeOAuthError(w, r, errs.Detail(ErrInvalidRequest, "token endpoint requires application/x-www-form-urlencoded | 令牌端点需要 application/x-www-form-urlencoded"))
 		return
 	}
+	limitFormBody(w, r)
 	if err := r.ParseForm(); err != nil {
 		s.writeOAuthError(w, r, errs.Wrap(err, ErrInvalidRequest))
 		return
 	}
 	form := r.PostForm
-	client, err := s.authenticateClient(r.Context(), r, form)
+	client, err := s.authenticateClient(r.Context(), r, form, s.config.TokenPath)
 	if err != nil {
 		s.writeOAuthError(w, r, err)
 		return

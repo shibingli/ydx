@@ -190,12 +190,16 @@ type Key struct {
 	State KeyState `json:"state"`
 	// UsageMask is the set of permitted operations. | UsageMask 是允许的操作集合。
 	UsageMask UsageMask `json:"usageMask"`
-	// CreatedAt, ActivatedAt, DeactivatedAt, CompromisedAt and DestroyedAt are UTC lifecycle timestamps. | CreatedAt、ActivatedAt、DeactivatedAt、CompromisedAt 与 DestroyedAt 是 UTC 生命周期时间戳。
-	CreatedAt     time.Time `json:"createdAt"`
-	ActivatedAt   time.Time `json:"activatedAt,omitempty"`
+	// CreatedAt is the UTC creation time. | CreatedAt 是 UTC 创建时间。
+	CreatedAt time.Time `json:"createdAt"`
+	// ActivatedAt is the UTC time the key entered the active state. | ActivatedAt 是密钥进入活动状态的 UTC 时间。
+	ActivatedAt time.Time `json:"activatedAt,omitempty"`
+	// DeactivatedAt is the UTC time the key entered the deactivated state. | DeactivatedAt 是密钥进入停用状态的 UTC 时间。
 	DeactivatedAt time.Time `json:"deactivatedAt,omitempty"`
+	// CompromisedAt is the UTC time the key was marked compromised. | CompromisedAt 是密钥被标记为泄露的 UTC 时间。
 	CompromisedAt time.Time `json:"compromisedAt,omitempty"`
-	DestroyedAt   time.Time `json:"destroyedAt,omitempty"`
+	// DestroyedAt is the UTC time the key material was erased. | DestroyedAt 是密钥材料被擦除的 UTC 时间。
+	DestroyedAt time.Time `json:"destroyedAt,omitempty"`
 	// DeleteAfter is the destruction deadline set by ScheduleDelete. | DeleteAfter 是 ScheduleDelete 设置的销毁期限。
 	DeleteAfter time.Time `json:"deleteAfter,omitempty"`
 	// RotationInterval is a rotation recommendation; RotateAllDue enforces it. | RotationInterval 是轮换建议；RotateAllDue 会据此执行。
@@ -228,11 +232,14 @@ type KeyVersion struct {
 	Material []byte `json:"-"`
 	// PublicMaterial is the public half, if any. | PublicMaterial 是公钥部分（如有）。
 	PublicMaterial []byte `json:"publicMaterial,omitempty"`
-	// CreatedAt, ActivatedAt, DeactivatedAt and DestroyedAt are UTC lifecycle timestamps. | CreatedAt、ActivatedAt、DeactivatedAt 与 DestroyedAt 是 UTC 生命周期时间戳。
-	CreatedAt     time.Time `json:"createdAt"`
-	ActivatedAt   time.Time `json:"activatedAt,omitempty"`
+	// CreatedAt is the UTC creation time of this version. | CreatedAt 是该版本的 UTC 创建时间。
+	CreatedAt time.Time `json:"createdAt"`
+	// ActivatedAt is the UTC time this version entered the active state. | ActivatedAt 是该版本进入活动状态的 UTC 时间。
+	ActivatedAt time.Time `json:"activatedAt,omitempty"`
+	// DeactivatedAt is the UTC time this version entered the deactivated state. | DeactivatedAt 是该版本进入停用状态的 UTC 时间。
 	DeactivatedAt time.Time `json:"deactivatedAt,omitempty"`
-	DestroyedAt   time.Time `json:"destroyedAt,omitempty"`
+	// DestroyedAt is the UTC time this version's material was erased. | DestroyedAt 是该版本材料被擦除的 UTC 时间。
+	DestroyedAt time.Time `json:"destroyedAt,omitempty"`
 }
 
 // Clone returns a deep copy of k. | Clone 返回 k 的深拷贝。
@@ -534,9 +541,10 @@ type KeyFilter struct {
 	Query string
 	// ParentID filters by parent key. | ParentID 按父密钥过滤。
 	ParentID string
-	// Offset and Limit paginate; Limit 0 means no limit. | Offset 与 Limit 分页；Limit 为 0 表示不限。
+	// Offset is the number of matching keys to skip. | Offset 是要跳过的匹配密钥数量。
 	Offset int
-	Limit  int
+	// Limit is the maximum number of keys to return; 0 means no limit. | Limit 是返回密钥数量上限；0 表示不限。
+	Limit int
 }
 
 // matches reports whether k passes the filter. | matches 报告 k 是否通过过滤器。

@@ -57,8 +57,9 @@ type Ceremony struct {
 	UserID string `json:"userId,omitempty"`
 	// UserHandle is the raw WebAuthn user handle. | UserHandle 是原始 WebAuthn 用户句柄。
 	UserHandle []byte `json:"userHandle,omitempty"`
-	// Username and DisplayName describe the account during registration. | Username 与 DisplayName 在注册时描述账号。
-	Username    string `json:"username,omitempty"`
+	// Username is the account login name during registration. | Username 是注册时的账号登录名。
+	Username string `json:"username,omitempty"`
+	// DisplayName is the account display name during registration. | DisplayName 是注册时的账号展示名称。
 	DisplayName string `json:"displayName,omitempty"`
 	// RPID is the effective relying party identifier. | RPID 是生效的依赖方标识。
 	RPID string `json:"rpId"`
@@ -80,17 +81,21 @@ type Ceremony struct {
 	Discoverable bool `json:"discoverable,omitempty"`
 	// CredentialName is the label persisted with a newly registered credential. | CredentialName 是随新注册凭据保存的标签。
 	CredentialName string `json:"credentialName,omitempty"`
-	// RegistrationExtensions and AuthenticationExtensions are the requested extensions. | RegistrationExtensions 与 AuthenticationExtensions 是请求的扩展。
-	RegistrationExtensions   *RegistrationExtensions   `json:"registrationExtensions,omitempty"`
+	// RegistrationExtensions are the requested registration extensions. | RegistrationExtensions 是请求的注册扩展。
+	RegistrationExtensions *RegistrationExtensions `json:"registrationExtensions,omitempty"`
+	// AuthenticationExtensions are the requested authentication extensions. | AuthenticationExtensions 是请求的认证扩展。
 	AuthenticationExtensions *AuthenticationExtensions `json:"authenticationExtensions,omitempty"`
-	// TokenBindingID and RequireTokenBinding capture the configured token binding policy. | TokenBindingID 与 RequireTokenBinding 保存配置的令牌绑定策略。
-	TokenBindingID      string `json:"tokenBindingId,omitempty"`
-	RequireTokenBinding bool   `json:"requireTokenBinding,omitempty"`
-	// AllowCrossOrigin and AllowedTopOrigins capture the cross-origin policy. | AllowCrossOrigin 与 AllowedTopOrigins 保存跨来源策略。
-	AllowCrossOrigin  bool     `json:"allowCrossOrigin,omitempty"`
+	// TokenBindingID is the configured token binding identifier. | TokenBindingID 是配置的令牌绑定标识。
+	TokenBindingID string `json:"tokenBindingId,omitempty"`
+	// RequireTokenBinding reports whether token binding is mandatory. | RequireTokenBinding 表示令牌绑定是否为强制。
+	RequireTokenBinding bool `json:"requireTokenBinding,omitempty"`
+	// AllowCrossOrigin reports whether cross-origin requests are accepted. | AllowCrossOrigin 表示是否接受跨来源请求。
+	AllowCrossOrigin bool `json:"allowCrossOrigin,omitempty"`
+	// AllowedTopOrigins lists additional accepted top origins. | AllowedTopOrigins 列出额外接受的顶层来源。
 	AllowedTopOrigins []string `json:"allowedTopOrigins,omitempty"`
-	// CreatedAt and ExpiresAt bound the ceremony lifetime. | CreatedAt 与 ExpiresAt 限定流程生命周期。
+	// CreatedAt is the ceremony creation time. | CreatedAt 是流程创建时间。
 	CreatedAt time.Time `json:"createdAt"`
+	// ExpiresAt is the ceremony expiry time; zero means no expiry. | ExpiresAt 是流程过期时间；零值表示不过期。
 	ExpiresAt time.Time `json:"expiresAt"`
 }
 

@@ -144,10 +144,29 @@ func protocolVersionItem(v ProtocolVersion) Item {
 	)
 }
 
+// duplicateTag records tag in seen and reports whether it was already present. | duplicateTag
+// 在 seen 中记录 tag，并报告其此前是否已存在。
+func duplicateTag(seen map[Tag]struct{}, tag Tag) bool {
+	if _, ok := seen[tag]; ok {
+		return true
+	}
+	seen[tag] = struct{}{}
+	return false
+}
+
+// duplicateTagError builds an ErrMalformed error for a repeated tag. | duplicateTagError 为重复标签
+// 构造 ErrMalformed 错误。
+func duplicateTagError(tag Tag, where string) error {
+	return errs.Detail(ErrMalformed, "duplicate tag 0x%06X in %s | %s 中重复标签 0x%06X", uint32(tag), where, where, uint32(tag))
+}
+
 // decodeProtocolVersion decodes a Protocol Version structure. | decodeProtocolVersion 解码协议版本结构。
 func decodeProtocolVersion(item Item) (ProtocolVersion, error) {
 	if item.Type != TypeStructure || item.Tag != TagProtocolVersion {
 		return ProtocolVersion{}, errs.Detail(ErrMalformed, "expected Protocol Version structure | 需要协议版本结构")
+	}
+	if len(item.ChildrenOf(TagProtocolVersionMajor)) != 1 || len(item.ChildrenOf(TagProtocolVersionMinor)) != 1 {
+		return ProtocolVersion{}, errs.Detail(ErrMalformed, "Protocol Version must contain exactly one major and one minor field | 协议版本必须恰好包含一个主版本与一个次版本字段")
 	}
 	majorItem, err := item.RequireChild(TagProtocolVersionMajor)
 	if err != nil {
@@ -218,7 +237,11 @@ func decodeRequestHeader(item Item) (RequestHeader, error) {
 		return RequestHeader{}, errs.Detail(ErrMalformed, "expected Request Header structure | 需要请求头结构")
 	}
 	var out RequestHeader
+	seen := make(map[Tag]struct{}, len(item.Children))
 	for _, child := range item.Children {
+		if duplicateTag(seen, child.Tag) {
+			return out, duplicateTagError(child.Tag, "Request Header")
+		}
 		switch child.Tag {
 		case TagProtocolVersion:
 			v, err := decodeProtocolVersion(child)
@@ -324,7 +347,11 @@ func decodeResponseHeader(item Item) (ResponseHeader, error) {
 		return ResponseHeader{}, errs.Detail(ErrMalformed, "expected Response Header structure | 需要响应头结构")
 	}
 	var out ResponseHeader
+	seen := make(map[Tag]struct{}, len(item.Children))
 	for _, child := range item.Children {
+		if duplicateTag(seen, child.Tag) {
+			return out, duplicateTagError(child.Tag, "Response Header")
+		}
 		switch child.Tag {
 		case TagProtocolVersion:
 			v, err := decodeProtocolVersion(child)
@@ -587,7 +614,11 @@ func decodeRequestBatchItem(item Item) (RequestBatchItem, error) {
 		return RequestBatchItem{}, errs.Detail(ErrMalformed, "expected Batch Item structure | 需要批处理项结构")
 	}
 	var out RequestBatchItem
+	seen := make(map[Tag]struct{}, len(item.Children))
 	for _, child := range item.Children {
+		if duplicateTag(seen, child.Tag) {
+			return out, duplicateTagError(child.Tag, "request Batch Item")
+		}
 		switch child.Tag {
 		case TagOperation:
 			v, err := child.AsEnumeration()
@@ -630,7 +661,11 @@ func decodeResponseBatchItem(item Item) (ResponseBatchItem, error) {
 	var out ResponseBatchItem
 	hasOperation := false
 	hasResultStatus := false
+	seen := make(map[Tag]struct{}, len(item.Children))
 	for _, child := range item.Children {
+		if duplicateTag(seen, child.Tag) {
+			return out, duplicateTagError(child.Tag, "response Batch Item")
+		}
 		switch child.Tag {
 		case TagOperation:
 			v, err := child.AsEnumeration()

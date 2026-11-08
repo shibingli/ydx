@@ -280,6 +280,54 @@ func TestLoginRenewForcesReauthentication(t *testing.T) {
 	}
 }
 
+// TestLoginSSODoesNotInheritRenewal checks that a ticket issued from an SSO session never satisfies
+// renew, even when the session itself was established by a forced re-authentication. |
+// TestLoginSSODoesNotInheritRenewal 检查来自单点登录会话的票据永远无法满足 renew，即使该会话本身
+// 由强制重新认证建立。
+func TestLoginSSODoesNotInheritRenewal(t *testing.T) {
+	server, store, _ := newTestServer(t)
+	handler := newTestRouter(t, server)
+	renew := url.Values{}
+	renew.Set("renew", "true")
+	// Establish the SSO session through a forced re-authentication. | 通过强制重新认证建立单点登录会话。
+	loginRecorder := loginForm(t, handler, "alice", "secret", "", renew)
+	if loginRecorder.Code != http.StatusFound {
+		t.Fatalf("renew login status = %d, want 302; body: %s", loginRecorder.Code, loginRecorder.Body.String())
+	}
+	cookie := tgcFrom(t, loginRecorder)
+	tgt, err := store.Get(t.Context(), cookie.Value)
+	if err != nil {
+		t.Fatalf("renew TGT: %v", err)
+	}
+	if !tgt.Renewal {
+		t.Fatalf("renew login TGT does not carry the renewal flag")
+	}
+
+	// A later SSO login presents no credentials, so its ST is not a renewal. | 之后的单点登录不提交凭据，
+	// 因此其 ST 不是重新认证票据。
+	recorder := serve(t, handler, http.MethodGet, "/cas/login?service="+url.QueryEscape(testAppService), nil, cookie)
+	if recorder.Code != http.StatusFound {
+		t.Fatalf("SSO login status = %d, want 302; body: %s", recorder.Code, recorder.Body.String())
+	}
+	stID := ticketFromLocation(t, recorder)
+	st, err := store.Get(t.Context(), stID)
+	if err != nil {
+		t.Fatalf("SSO ST: %v", err)
+	}
+	if st.Renewal {
+		t.Fatalf("SSO ST inherited the renewal flag from the TGT")
+	}
+	recorder = serve(t, handler, http.MethodGet, validateURL("serviceValidate", stID, testAppService, renew), nil)
+	if !strings.Contains(recorder.Body.String(), `code="INVALID_TICKET"`) {
+		t.Fatalf("SSO ticket satisfied renew: %s", recorder.Body.String())
+	}
+	// The rejected renewal must not consume the ticket. | 被拒绝的 renew 校验不得消费票据。
+	recorder = serve(t, handler, http.MethodGet, validateURL("serviceValidate", stID, testAppService, nil), nil)
+	if !strings.Contains(recorder.Body.String(), "<cas:authenticationSuccess>") {
+		t.Fatalf("SSO ticket unusable after renew mismatch: %s", recorder.Body.String())
+	}
+}
+
 func TestLoginCSRF(t *testing.T) {
 	server, _, _ := newTestServer(t, func(config *ServerConfig) {
 		config.CSRFProtector = rejectingCSRF{}

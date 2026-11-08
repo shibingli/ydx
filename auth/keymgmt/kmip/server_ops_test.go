@@ -713,3 +713,15 @@ func TestServerBatchPolicies(t *testing.T) {
 		t.Fatalf("unsupported operation error = %v | 不支持操作错误 = %v", err, err)
 	}
 }
+
+// TestServerRegisterRejectsKeyLengthMismatch covers metadata that contradicts the key material.
+// | TestServerRegisterRejectsKeyLengthMismatch 覆盖与密钥材料矛盾的元数据。
+func TestServerRegisterRejectsKeyLengthMismatch(t *testing.T) {
+	server := newTestServer(t)
+	keyBlock := rawKeyBlock(AlgorithmAES, testKeyMaterial())
+	keyBlock.Length = 128
+	object := NewSymmetricKeyObject(keyBlock)
+	if _, err := server.handleRegister(RegisterRequest{ObjectType: ObjectTypeSymmetricKey, Object: object}); !errors.Is(err, ErrInvalidRequest) {
+		t.Fatalf("mismatched key length err = %v, want ErrInvalidRequest", err)
+	}
+}

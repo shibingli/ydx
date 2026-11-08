@@ -185,7 +185,7 @@ func TestDeviceLoginRedirect(t *testing.T) {
 		t.Fatalf("redirect status = %d, want 302 | 重定向状态 = %d，期望 302", recorder.Code, recorder.Code)
 	}
 	location := recorder.Header().Get("Location")
-	if !strings.HasPrefix(location, "https://login.example/signin?return_to=") || !strings.Contains(location, url.QueryEscape(server.Endpoint(server.Path(server.config.DeviceVerificationPath))+"?")) {
+	if !strings.HasPrefix(location, "https://login.example/signin?return_to=") || !strings.Contains(location, url.QueryEscape(server.Endpoint(server.config.DeviceVerificationPath)+"?")) {
 		t.Fatalf("redirect Location = %q | 重定向 Location = %q", location, location)
 	}
 }

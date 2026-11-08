@@ -493,3 +493,122 @@ func TestSessionHelpers(t *testing.T) {
 		t.Fatal("nil request reported principal")
 	}
 }
+
+func TestSessionMiddlewareDenialAbortsRouterChain(t *testing.T) {
+	clock := &testClock{now: time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)}
+	manager, users := newTestSessionManager(t, clock, SessionConfig{AbsoluteTimeout: time.Hour})
+	user := createTestUser(t, users, "user-abort")
+	session, err := manager.Create(context.Background(), user.ID, "", nil, nil, "")
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	reached := 0
+	newRouter := func(opts SessionMiddlewareOptions) *router.Router {
+		r := router.New()
+		r.Use(manager.Middleware(opts))
+		handler := func(c *router.Ctx) {
+			reached++
+			_ = c.JSON(http.StatusOK, "protected")
+		}
+		r.GET("/protected", handler)
+		r.POST("/protected", handler)
+		return r
+	}
+
+	// A rejected anonymous request must never reach the protected handler. | 被拒绝的匿名请求不得进入受保护处理器。
+	w := httptest.NewRecorder()
+	newRouter(SessionMiddlewareOptions{RequireSession: true}).ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/protected", nil))
+	if w.Code != http.StatusUnauthorized || reached != 0 {
+		t.Fatalf("anonymous denial: status=%d reached=%d", w.Code, reached)
+	}
+
+	// CSRF failures, including ones rendered by a custom error handler, must abort the chain. | CSRF
+	// 失败（包括自定义错误处理器渲染的失败）必须终止调用链。
+	options := []SessionMiddlewareOptions{
+		{RequireSession: true, EnforceCSRF: true},
+		{RequireSession: true, EnforceCSRF: true, ErrorHandler: func(c *router.Ctx, _ error) {
+			_ = c.JSON(http.StatusTeapot, "custom")
+		}},
+	}
+	for i, opts := range options {
+		reached = 0
+		r := newRouter(opts)
+		req := httptest.NewRequest(http.MethodPost, "/protected", nil)
+		req.AddCookie(manager.Cookie(session))
+		w = httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		if reached != 0 {
+			t.Fatalf("CSRF denial %d reached protected handler", i)
+		}
+		if i == 0 && w.Code != http.StatusForbidden {
+			t.Fatalf("CSRF denial %d status = %d", i, w.Code)
+		}
+		if i == 1 && w.Code != http.StatusTeapot {
+			t.Fatalf("custom CSRF denial %d status = %d", i, w.Code)
+		}
+	}
+}
+
+func TestSessionValidatePersistsIdleDeadlineNearExpiry(t *testing.T) {
+	clock := &testClock{now: time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)}
+	// A touch interval longer than the idle timeout means the stored sliding deadline can lapse
+	// before the interval-based touch ever runs. | 触碰间隔长于空闲超时时，基于间隔的触碰可能尚未执行，
+	// 存储的滑动期限就已失效。
+	manager, users := newTestSessionManager(t, clock, SessionConfig{
+		AbsoluteTimeout: time.Hour,
+		IdleTimeout:     10 * time.Minute,
+		TouchInterval:   15 * time.Minute,
+	})
+	user := createTestUser(t, users, "user-sliding")
+	session, err := manager.Create(context.Background(), user.ID, "", nil, nil, "")
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	clock.Advance(9 * time.Minute)
+	validated, err := manager.Validate(context.Background(), session.ID)
+	if err != nil {
+		t.Fatalf("validate at 9m: %v", err)
+	}
+	wantIdle := clock.Now().Add(10 * time.Minute)
+	if !validated.IdleExpiresAt.Equal(wantIdle) {
+		t.Fatalf("returned idle deadline = %v, want %v", validated.IdleExpiresAt, wantIdle)
+	}
+	stored, err := manager.Get(context.Background(), session.ID)
+	if err != nil {
+		t.Fatalf("get stored session: %v", err)
+	}
+	if !stored.IdleExpiresAt.Equal(wantIdle) {
+		t.Fatalf("persisted idle deadline = %v, want %v", stored.IdleExpiresAt, wantIdle)
+	}
+
+	clock.Advance(90 * time.Second)
+	if _, err := manager.Validate(context.Background(), session.ID); err != nil {
+		t.Fatalf("validate at 10m30s after an earlier active request: %v", err)
+	}
+}
+
+func TestSessionCookieWithoutAbsoluteDeadline(t *testing.T) {
+	clock := &testClock{now: time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)}
+	manager, _ := newTestSessionManager(t, clock, SessionConfig{})
+	session := &Session{
+		ID:        "session-without-absolute-deadline",
+		UserID:    "user",
+		CreatedAt: clock.Now(),
+		UpdatedAt: clock.Now(),
+	}
+	if !session.Active(clock.Now()) {
+		t.Fatal("session without absolute deadline should be active")
+	}
+	cookie := manager.Cookie(session)
+	if cookie.MaxAge != 0 {
+		t.Fatalf("cookie MaxAge = %d for a session without absolute deadline", cookie.MaxAge)
+	}
+	if !cookie.Expires.IsZero() {
+		t.Fatalf("cookie Expires = %v for a session without absolute deadline", cookie.Expires)
+	}
+	if strings.Contains(cookie.String(), "Max-Age") {
+		t.Fatalf("cookie %q carries a deletion Max-Age for a valid session", cookie.String())
+	}
+}

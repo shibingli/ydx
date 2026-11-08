@@ -1,6 +1,7 @@
 package ldap
 
 import (
+	"bytes"
 	"errors"
 	"reflect"
 	"strings"
@@ -83,6 +84,122 @@ func TestParseFilterInvalid(t *testing.T) {
 				t.Fatalf("error %v is not ErrInvalidFilter", err)
 			}
 		})
+	}
+}
+
+// TestParseFilterErrorText verifies parser diagnostics carry one English and
+// one Chinese message plus a byte offset without duplicated text. |
+// TestParseFilterErrorText 校验解析器诊断只包含一条英文与一条中文消息、带字节偏移且
+// 不重复文本。
+func TestParseFilterErrorText(t *testing.T) {
+	inputs := []string{
+		"(cn=foo",
+		"(bad attribute=x)",
+		"(cn>=*)",
+		"(&)",
+		"(cn:dn:dn:=x)",
+	}
+	for _, input := range inputs {
+		t.Run(input, func(t *testing.T) {
+			_, err := ParseFilter(input)
+			if err == nil {
+				t.Fatalf("ParseFilter(%q) succeeded", input)
+			}
+			if !errors.Is(err, ErrInvalidFilter) {
+				t.Fatalf("error %v is not ErrInvalidFilter", err)
+			}
+			message := err.Error()
+			if strings.Contains(message, "%!") {
+				t.Fatalf("message %q contains a format failure", message)
+			}
+			if got := strings.Count(message, "at byte "); got != 1 {
+				t.Fatalf("message %q has %d English positions, want 1", message, got)
+			}
+			if got := strings.Count(message, "位置 "); got != 1 {
+				t.Fatalf("message %q has %d Chinese positions, want 1", message, got)
+			}
+			start := strings.Index(message, "at byte ")
+			if start < 0 {
+				t.Fatalf("message %q lacks the byte position", message)
+			}
+			english, chinese, ok := strings.Cut(message[start:], " | ")
+			if !ok || english == "" || chinese == "" {
+				t.Fatalf("message %q is not bilingual", message)
+			}
+			if !strings.HasPrefix(chinese, "位置 ") {
+				t.Fatalf("message %q puts %q after the English half", message, chinese)
+			}
+			if colon := strings.Index(english, ": "); colon >= 0 {
+				body := english[colon+2:]
+				if body != "" && strings.Contains(chinese, body) {
+					t.Fatalf("message %q repeats the English detail %q in the Chinese half", message, body)
+				}
+			}
+		})
+	}
+	_, err := ParseFilter("(bad attribute=x)")
+	if err == nil || !strings.Contains(err.Error(), "attribute description contains byte") {
+		t.Fatalf("invalid attribute error = %v", err)
+	}
+}
+
+// TestExtensibleMatchDNAttributesPrimitive verifies :dn is encoded as the
+// implicit primitive [4] BOOLEAN required by RFC 4511. |
+// TestExtensibleMatchDNAttributesPrimitive 校验 :dn 编码为 RFC 4511 要求的隐式原始
+// [4] BOOLEAN。
+func TestExtensibleMatchDNAttributesPrimitive(t *testing.T) {
+	encoder := newBEREncoder(64)
+	encodeFilter(encoder, ExtensibleMatch("1.2.3", "cn", "x", true))
+	outer := newBERReader(encoder.bytes())
+	element, err := outer.expect(berClassContext, true, 9)
+	if err != nil {
+		t.Fatalf("matching rule assertion: %v", err)
+	}
+	inner, err := outer.subReader(element)
+	if err != nil {
+		t.Fatalf("sub reader: %v", err)
+	}
+	if _, err := inner.expect(berClassContext, false, 1); err != nil {
+		t.Fatalf("matching rule component: %v", err)
+	}
+	if _, err := inner.expect(berClassContext, false, 2); err != nil {
+		t.Fatalf("attribute component: %v", err)
+	}
+	if _, err := inner.expect(berClassContext, false, 3); err != nil {
+		t.Fatalf("value component: %v", err)
+	}
+	dn, err := inner.expect(berClassContext, false, 4)
+	if err != nil {
+		t.Fatalf("dnAttributes component: %v", err)
+	}
+	if !bytes.Equal(dn.Value, []byte{0xff}) {
+		t.Fatalf("dnAttributes value = %x, want ff", dn.Value)
+	}
+	if err := inner.expectEnd(); err != nil {
+		t.Fatalf("extensible trailing: %v", err)
+	}
+	if err := outer.expectEnd(); err != nil {
+		t.Fatalf("outer trailing: %v", err)
+	}
+
+	// A standards-compliant server encodes :dn as 84 01 FF; decoding must accept
+	// it instead of demanding a constructed BOOLEAN. | 标准服务端把 :dn 编码为
+	// 84 01 FF；解码必须接受它，而不是要求构造 BOOLEAN。
+	wire := []byte{0xa9, 0x0a, 0x82, 0x02, 'c', 'n', 0x83, 0x01, 'x', 0x84, 0x01, 0xff}
+	reader := newBERReader(wire)
+	decoded, err := decodeFilter(reader)
+	if err != nil {
+		t.Fatalf("decode primitive dnAttributes: %v", err)
+	}
+	extensible, ok := decoded.(*ExtensibleMatchFilter)
+	if !ok {
+		t.Fatalf("decoded type %T", decoded)
+	}
+	if !extensible.DNAttributes || extensible.Attribute != "cn" || extensible.Value != "x" {
+		t.Fatalf("decoded filter = %+v", extensible)
+	}
+	if err := reader.expectEnd(); err != nil {
+		t.Fatalf("wire trailing: %v", err)
 	}
 }
 

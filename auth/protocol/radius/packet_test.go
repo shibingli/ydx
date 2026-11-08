@@ -118,6 +118,9 @@ func TestParsePacketRejectsMalformed(t *testing.T) {
 	badVendorShort := rawPacket(CodeAccessRequest, 1, []byte{byte(AttrVendorSpecific), 4, 0, 0, 0})
 	badVendorSubLength := rawPacket(CodeAccessRequest, 1,
 		[]byte{byte(AttrVendorSpecific), 9, 0, 0, 0, 9, 1, 1, 0x58})
+	zeroVendorID := rawPacket(CodeAccessRequest, 1, tlv(AttrVendorSpecific, []byte{0, 0, 0, 0}))
+	zeroVendorSubAttribute := rawPacket(CodeAccessRequest, 1,
+		[]byte{byte(AttrVendorSpecific), 8, 0, 0, 0, 0, 1, 2})
 	shortPassword := rawPacket(CodeAccessRequest, 1, tlv(AttrUserPassword, make([]byte, 15)))
 	shortCHAP := rawPacket(CodeAccessRequest, 1, tlv(AttrCHAPPassword, make([]byte, 16)))
 
@@ -155,6 +158,8 @@ func TestParsePacketRejectsMalformed(t *testing.T) {
 		{name: "duplicate message authenticator", raw: duplicateMA, want: ErrInvalidAttribute},
 		{name: "vendor value below four", raw: badVendorShort, want: ErrInvalidAttribute},
 		{name: "vendor sub-attribute length", raw: badVendorSubLength, want: ErrInvalidAttribute},
+		{name: "vendor id zero", raw: zeroVendorID, want: ErrInvalidAttribute},
+		{name: "vendor id zero sub-attribute", raw: zeroVendorSubAttribute, want: ErrInvalidAttribute},
 		{name: "user password length", raw: shortPassword, want: ErrInvalidAttribute},
 		{name: "chap password length", raw: shortCHAP, want: ErrInvalidAttribute},
 	}

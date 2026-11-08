@@ -98,6 +98,7 @@ type OneTimeToken struct {
 	Metadata map[string]string
 	// CreatedAt and ExpiresAt bound the token lifetime. | CreatedAt 与 ExpiresAt 限定令牌生命周期。
 	CreatedAt time.Time
+	// ExpiresAt is the time at which the token expires. | ExpiresAt 是令牌过期时间。
 	ExpiresAt time.Time
 	// UsedAt is non-zero once the token has been consumed. | UsedAt 在令牌被消费后非零。
 	UsedAt time.Time
@@ -120,7 +121,8 @@ func (t *OneTimeToken) Clone() *OneTimeToken {
 
 // TokenStore persists one-time tokens. | TokenStore 持久化一次性令牌。
 type TokenStore interface {
-	// CreateToken stores a new token and replaces any token with the same user, purpose and hash. | CreateToken 保存新令牌，并替换相同用户、用途与哈希的令牌。
+	// CreateToken stores a new token, replacing any token with the same purpose and hash. | CreateToken
+	// 保存新令牌，并替换相同用途与哈希的令牌。
 	CreateToken(ctx context.Context, token *OneTimeToken) error
 	// ConsumeToken atomically marks a token used and returns it; it returns ErrTokenInvalid,
 	// ErrTokenExpired or ErrTokenUsed when the token cannot be consumed. | ConsumeToken 原子地标记令牌已用并返回；

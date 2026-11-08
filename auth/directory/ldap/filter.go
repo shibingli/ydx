@@ -435,9 +435,9 @@ func (f *ExtensibleMatchFilter) appendFilter(e *berEncoder) {
 	}
 	e.primitive(berClassContext, 3, []byte(value))
 	if dnAttributes {
-		e.open(berClassContext, 4)
-		e.boolean(true)
-		e.close()
+		// RFC 4511 MatchingRuleAssertion [4] is an implicit BOOLEAN. | RFC 4511
+		// MatchingRuleAssertion 的 [4] 是隐式 BOOLEAN。
+		e.primitive(berClassContext, 4, []byte{0xff})
 	}
 	e.close()
 }
@@ -662,7 +662,7 @@ func (p *filterParser) parseItem() (Filter, error) {
 	attribute := p.input[start:p.pos]
 	if attribute != "" {
 		if err := validateFilterAttribute(attribute); err != nil {
-			return nil, p.errorf("%v", err)
+			return nil, p.errorDetail(err)
 		}
 	}
 	if p.pos >= len(p.input) {
@@ -891,7 +891,25 @@ func (p *filterParser) consume(c byte) bool {
 	return false
 }
 
-// errorf builds a positioned filter error. | errorf 构造带位置的过滤器错误。
-func (p *filterParser) errorf(format string, args ...any) error {
-	return errs.Detail(ErrInvalidFilter, "at byte %d: "+format+" | 位置 %d："+format, append([]any{p.pos}, append(args, p.pos)...)...)
+// errorf builds a positioned filter error from a bilingual message whose
+// English and Chinese halves are separated by " | ". | errorf 从以 " | " 分隔
+// 英中两半的双语消息构造带位置的过滤器错误。
+func (p *filterParser) errorf(message string) error {
+	english, chinese, ok := strings.Cut(message, " | ")
+	if !ok {
+		english, chinese = message, message
+	}
+	return errs.Detail(ErrInvalidFilter, "at byte %d: %s | 位置 %d：%s", p.pos, english, p.pos, chinese)
+}
+
+// errorDetail positions an ErrInvalidFilter detail, stripping the sentinel
+// prefix so the reported text keeps exactly one English and one Chinese
+// message. | errorDetail 为 ErrInvalidFilter 细节添加位置，并去掉哨兵前缀，使报告
+// 文本只保留一条英文与一条中文消息。
+func (p *filterParser) errorDetail(err error) error {
+	prefix := ErrInvalidFilter.Error() + ": "
+	if detail, ok := strings.CutPrefix(err.Error(), prefix); ok {
+		return p.errorf(detail)
+	}
+	return p.errorf(err.Error())
 }

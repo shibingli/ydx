@@ -16,6 +16,17 @@ import (
 // packetBuilder builds one transmission attempt. | packetBuilder 构建一次传输尝试。
 type packetBuilder func(attempt int) (raw []byte, requestAuthenticator [16]byte, err error)
 
+// responseVerifier validates a candidate response. Returning ErrAuthenticator marks the candidate
+// as unauthenticated: UDP transports silently discard it and keep reading until a valid response or
+// the attempt deadline, as RFC 2865 sections 4.2 and 4.4 require, while stream transports report it
+// and close the connection as RFC 6613 section 2.6.4 requires. Any other error means the candidate
+// cannot be validated structurally; it is returned to the caller so ParsePacket reports the
+// protocol error consistently. | responseVerifier 校验候选响应。返回 ErrAuthenticator 表示候选未
+// 通过认证：UDP 传输按 RFC 2865 第 4.2 与 4.4 节要求静默丢弃它并继续读取，直到收到合法响应或
+// 本次尝试超时；流传输则按 RFC 6613 第 2.6.4 节要求报告错误并关闭连接。其它错误表示候选无法通过
+// 结构校验；它会被返回给调用方，由 ParsePacket 一致地报告协议错误。
+type responseVerifier func(raw []byte) error
+
 // exchange performs a request/response exchange with retransmission. | exchange 执行带重传的请求/响应交互。
 func (c *Client) exchange(ctx context.Context, requestCode Code, build packetBuilder) (*Packet, []byte, [16]byte, error) {
 	if err := c.checkClosed(); err != nil {
@@ -56,12 +67,28 @@ func (c *Client) exchange(ctx context.Context, requestCode Code, build packetBui
 		if err != nil {
 			return nil, nil, [16]byte{}, err
 		}
+		// RFC 2865 sections 4.2 and 4.4 require a client to silently discard a response whose
+		// Response Authenticator does not match and to keep waiting for a valid response until
+		// the request times out; RFC 2866 section 4 applies the same rule to accounting. Stream
+		// transports instead fail the attempt so the connection can be closed. Verification
+		// therefore happens inside the read path, while the secret snapshot for this attempt is
+		// still alive. | RFC 2865 第 4.2 与 4.4 节要求客户端静默丢弃 Response Authenticator 不匹配
+		// 的响应，并继续等待合法响应直到请求超时；RFC 2866 第 4 节对计费作同样规定。流传输则让
+		// 本次尝试失败，以便关闭连接。因此校验发生在读取路径内，此时本次尝试的密钥快照仍然有效。
+		secret, err := c.secretSnapshot()
+		if err != nil {
+			return nil, nil, [16]byte{}, err
+		}
+		verify := func(candidate []byte) error {
+			return verifyResponseAuthenticator(candidate, secret, requestAuthenticator)
+		}
 		var received []byte
 		if sharedUDP != nil {
-			received, err = c.transmit(ctx, sharedUDP, true, raw, c.attemptTimeout(attempt))
+			received, err = c.transmit(ctx, sharedUDP, true, raw, c.attemptTimeout(attempt), verify)
 		} else {
-			received, err = c.roundTrip(ctx, requestCode, raw, c.attemptTimeout(attempt))
+			received, err = c.roundTrip(ctx, requestCode, raw, c.attemptTimeout(attempt), verify)
 		}
+		zeroBytes(secret)
 		if err != nil {
 			if ctxErr := ctx.Err(); ctxErr != nil {
 				return nil, nil, [16]byte{}, contextError(ctxErr)
@@ -69,9 +96,14 @@ func (c *Client) exchange(ctx context.Context, requestCode Code, build packetBui
 			if errors.Is(err, ErrClosed) {
 				return nil, nil, [16]byte{}, err
 			}
-			// Framing and identifier errors describe a protocol failure, not a lost datagram, so
-			// retransmitting cannot help. | 分帧与标识符错误属于协议故障而非丢包，重传无济于事。
-			if errors.Is(err, ErrInvalidResponse) || errors.Is(err, ErrUnexpectedIdentifier) || errors.Is(err, ErrInvalidRequest) {
+			// Framing, identifier and stream response-authenticator errors describe a protocol
+			// failure, not a lost datagram, so retransmitting cannot help. RFC 6613 section
+			// 2.6.4 additionally requires closing the stream connection when the Response
+			// Authenticator fails validation; returning here discards the connection opened for
+			// this attempt. | 分帧、标识符与流传输响应认证符错误属于协议故障而非丢包，重传无济于事。
+			// RFC 6613 第 2.6.4 节还要求流连接在 Response Authenticator 校验失败时关闭；在此返回会
+			// 丢弃本次尝试打开的连接。
+			if errors.Is(err, ErrInvalidResponse) || errors.Is(err, ErrUnexpectedIdentifier) || errors.Is(err, ErrInvalidRequest) || errors.Is(err, ErrAuthenticator) {
 				return nil, nil, [16]byte{}, err
 			}
 			lastErr = err
@@ -83,15 +115,6 @@ func (c *Client) exchange(ctx context.Context, requestCode Code, build packetBui
 		}
 		if !responseCodeAllowed(requestCode, packet.Code) {
 			return nil, nil, [16]byte{}, errs.Detail(ErrUnexpectedCode, "request code %d answered with code %d", uint8(requestCode), uint8(packet.Code))
-		}
-		secret, err := c.secretSnapshot()
-		if err != nil {
-			return nil, nil, [16]byte{}, err
-		}
-		verifyErr := verifyResponseAuthenticator(received, secret, requestAuthenticator)
-		zeroBytes(secret)
-		if verifyErr != nil {
-			return nil, nil, [16]byte{}, verifyErr
 		}
 		return packet, received, requestAuthenticator, nil
 	}
@@ -125,7 +148,7 @@ func (c *Client) attemptTimeout(attempt int) time.Duration {
 
 // roundTrip dials a fresh connection, writes one request and reads the matching response. | roundTrip
 // 建立新连接、写入一次请求并读取匹配的响应。
-func (c *Client) roundTrip(ctx context.Context, code Code, payload []byte, timeout time.Duration) ([]byte, error) {
+func (c *Client) roundTrip(ctx context.Context, code Code, payload []byte, timeout time.Duration, verify responseVerifier) ([]byte, error) {
 	conn, isUDP, err := c.dial(ctx, code, timeout)
 	if err != nil {
 		return nil, err
@@ -133,12 +156,12 @@ func (c *Client) roundTrip(ctx context.Context, code Code, payload []byte, timeo
 	defer func() {
 		_ = conn.Close()
 	}()
-	return c.transmit(ctx, conn, isUDP, payload, timeout)
+	return c.transmit(ctx, conn, isUDP, payload, timeout, verify)
 }
 
 // transmit writes one request on conn and reads the matching response. The caller owns conn. | transmit
 // 在 conn 上写入一次请求并读取匹配的响应。conn 由调用方持有。
-func (c *Client) transmit(ctx context.Context, conn net.Conn, isUDP bool, payload []byte, timeout time.Duration) ([]byte, error) {
+func (c *Client) transmit(ctx context.Context, conn net.Conn, isUDP bool, payload []byte, timeout time.Duration, verify responseVerifier) ([]byte, error) {
 	if len(payload) < 2 {
 		return nil, errs.Detail(ErrInvalidRequest, "encoded packet length %d is below 2", len(payload))
 	}
@@ -157,9 +180,9 @@ func (c *Client) transmit(ctx context.Context, conn net.Conn, isUDP bool, payloa
 		return nil, err
 	}
 	if isUDP {
-		return readUDPResponse(conn, payload[1])
+		return readUDPResponse(conn, payload[1], verify)
 	}
-	return readStreamResponse(conn, payload[1])
+	return readStreamResponse(conn, payload[1], verify)
 }
 
 // dial opens the transport connection for one request. | dial 为一次请求打开传输连接。
@@ -261,14 +284,17 @@ func defaultPort(network string, code Code) string {
 	return "2083"
 }
 
-// readUDPResponse reads datagrams until one carries the expected identifier. Datagrams with another
-// identifier, including late responses to an earlier attempt with a fresh identifier, are skipped.
-// A repeated copy of the same response is indistinguishable from the first and is harmless: the
-// first matching datagram wins and any later copy is discarded with the socket. | readUDPResponse
-// 读取数据报直到出现携带预期标识符的一个。标识符不同的数据报会被跳过，包括使用新标识符的先前尝试
-// 的迟到响应。同一响应的重复副本与首个副本无法区分且无害：首个匹配的数据报胜出，后续副本随套接字
+// readUDPResponse reads datagrams until one carries the expected identifier and a valid Response
+// Authenticator. Datagrams with another identifier, including late responses to an earlier attempt
+// with a fresh identifier, are skipped. Datagrams whose Response Authenticator does not match are
+// silently discarded and reading continues, as RFC 2865 section 3 requires. A repeated copy of the
+// same response is indistinguishable from the first and is harmless: the first valid datagram wins
+// and any later copy is discarded with the socket. | readUDPResponse 读取数据报，直到出现携带预期
+// 标识符且 Response Authenticator 合法的一个。标识符不同的数据报会被跳过，包括使用新标识符的
+// 先前尝试的迟到响应。Response Authenticator 不匹配的数据报按 RFC 2865 第 3 节要求静默丢弃并
+// 继续读取。同一响应的重复副本与首个副本无法区分且无害：首个合法数据报胜出，后续副本随套接字
 // 一起丢弃。
-func readUDPResponse(conn net.Conn, identifier uint8) ([]byte, error) {
+func readUDPResponse(conn net.Conn, identifier uint8, verify responseVerifier) ([]byte, error) {
 	buf := make([]byte, MaxPacketLength)
 	for {
 		n, err := conn.Read(buf)
@@ -281,15 +307,24 @@ func readUDPResponse(conn net.Conn, identifier uint8) ([]byte, error) {
 		if buf[1] != identifier {
 			continue
 		}
+		// Verify before copying: a discarded datagram stays in the reusable buffer and
+		// costs no allocation. | 先校验再复制：被丢弃的数据报留在可复用缓冲区中，不产生分配。
+		if verify != nil && errors.Is(verify(buf[:n]), ErrAuthenticator) {
+			continue
+		}
 		out := make([]byte, n)
 		copy(out, buf[:n])
 		return out, nil
 	}
 }
 
-// readStreamResponse reads one length-delimited RADIUS packet from a stream. | readStreamResponse
-// 从流中读取一个按长度分帧的 RADIUS 报文。
-func readStreamResponse(conn net.Conn, identifier uint8) ([]byte, error) {
+// readStreamResponse reads one length-delimited RADIUS packet from a stream. A frame with another
+// identifier or a Response Authenticator that fails validation is reported as an error: RFC 6613
+// section 2.6.4 requires the stream connection to be closed in both cases, and the caller closes it
+// after this attempt ends. | readStreamResponse 从流中读取一个按长度分帧的 RADIUS 报文。标识符
+// 不同的帧或 Response Authenticator 校验失败的帧会报告为错误：RFC 6613 第 2.6.4 节要求这两种
+// 情况下关闭流连接，调用方会在本次尝试结束后关闭。
+func readStreamResponse(conn net.Conn, identifier uint8, verify responseVerifier) ([]byte, error) {
 	header := make([]byte, 4)
 	if _, err := io.ReadFull(conn, header); err != nil {
 		return nil, err
@@ -305,6 +340,11 @@ func readStreamResponse(conn net.Conn, identifier uint8) ([]byte, error) {
 	}
 	if buf[1] != identifier {
 		return nil, errs.Detail(ErrUnexpectedIdentifier, "got %d want %d", buf[1], identifier)
+	}
+	if verify != nil {
+		if err := verify(buf); errors.Is(err, ErrAuthenticator) {
+			return nil, err
+		}
 	}
 	return buf, nil
 }

@@ -82,7 +82,7 @@ func NewMemoryStateStore(ttl time.Duration, options ...MemoryStateStoreOption) *
 	return store
 }
 
-// Save stores a state record, rejecting duplicates and purging expired records.
+// Save stores a state record, rejecting duplicates and purging expired records. |
 // Save 保存 state 记录，拒绝重复值并清理过期记录。
 func (s *MemoryStateStore) Save(ctx context.Context, record *StateRecord) error {
 	if err := ctx.Err(); err != nil {
@@ -116,7 +116,7 @@ func (s *MemoryStateStore) Save(ctx context.Context, record *StateRecord) error 
 	return nil
 }
 
-// Consume removes a state record and reports missing, reused and expired values.
+// Consume removes a state record and reports missing, reused and expired values. |
 // Consume 删除 state 记录，并报告缺失、重复使用与过期情况。
 func (s *MemoryStateStore) Consume(ctx context.Context, state string) (*StateRecord, error) {
 	if err := ctx.Err(); err != nil {

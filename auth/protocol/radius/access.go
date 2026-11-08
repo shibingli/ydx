@@ -158,9 +158,13 @@ func (r *AccessResponse) Challenged() bool {
 //
 // PAP, CHAP, MS-CHAPv2 and EAP are supported. Every transmission attempt uses a fresh Identifier
 // and Request Authenticator; timeouts are retried with exponential backoff until Retries is
-// exhausted or the context ends. Authentication and malformed-response failures are not retried. |
-// 支持 PAP、CHAP、MS-CHAPv2 与 EAP。每次传输尝试使用新的 Identifier 与 Request Authenticator；
-// 超时按指数退避重试，直到 Retries 用尽或上下文结束。认证失败与畸形响应不重试。
+// exhausted or the context ends. UDP responses whose Response Authenticator does not match are
+// silently discarded and the attempt keeps waiting for a valid response, as RFC 2865 sections 4.2
+// and 4.4 require; stream transports fail the attempt so the connection can be closed. Malformed
+// responses and credential failures are not retried. | 支持 PAP、CHAP、MS-CHAPv2 与 EAP。每次传输
+// 尝试使用新的 Identifier 与 Request Authenticator；超时按指数退避重试，直到 Retries 用尽或上下文
+// 结束。UDP 响应中 Response Authenticator 不匹配者按 RFC 2865 第 4.2 与 4.4 节要求被静默丢弃，
+// 本次尝试继续等待合法响应；流传输则让本次尝试失败以便关闭连接。畸形响应与凭据失败不重试。
 func (c *Client) AccessRequest(ctx context.Context, request *AccessRequest) (*AccessResponse, error) {
 	prepared, err := prepareAccessRequest(request)
 	if err != nil {

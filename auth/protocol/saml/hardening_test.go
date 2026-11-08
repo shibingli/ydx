@@ -818,13 +818,13 @@ func TestMetadataValidateErrors(t *testing.T) {
 	if err := badCache.Validate(samlTestNow); !errors.Is(err, ErrInvalidMetadata) {
 		t.Fatalf("bad cache error = %v", err)
 	}
-	for _, duration := range []string{"P1Y2M3DT4H5M6S", "-P1D", "PT30M"} {
+	for _, duration := range []string{"P1Y2M3DT4H5M6S", "-P1D", "PT30M", "PT0.5S"} {
 		descriptor := &EntityDescriptor{EntityID: "x", CacheDuration: duration, IDPSSODescriptor: &IDPSSODescriptor{}}
 		if err := descriptor.Validate(samlTestNow); err != nil {
 			t.Fatalf("duration %q: %v", duration, err)
 		}
 	}
-	for _, duration := range []string{"P", "PT", "P1H", "1D", "Pd"} {
+	for _, duration := range []string{"P", "PT", "P1H", "1D", "Pd", "P1D1Y", "P1Y1Y", "PT1S1M", "PT1.5H"} {
 		descriptor := &EntityDescriptor{EntityID: "x", CacheDuration: duration, IDPSSODescriptor: &IDPSSODescriptor{}}
 		if err := descriptor.Validate(samlTestNow); !errors.Is(err, ErrInvalidMetadata) {
 			t.Fatalf("duration %q error = %v", duration, err)

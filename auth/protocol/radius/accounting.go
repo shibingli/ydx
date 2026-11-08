@@ -85,9 +85,13 @@ type AccountingResponse struct {
 // Accounting-Request 并校验响应。
 //
 // The Request Authenticator is computed as specified by RFC 2866 and the response must carry a
-// matching Response Authenticator. Every attempt uses a fresh Identifier and an updated
-// Acct-Delay-Time. | Request Authenticator 按 RFC 2866 计算，响应必须携带匹配的 Response
-// Authenticator。每次尝试使用新的 Identifier 和更新后的 Acct-Delay-Time。
+// matching Response Authenticator. UDP responses with a mismatching authenticator are silently
+// discarded and reading continues until a valid response or the attempt deadline, as RFC 2866
+// section 4 requires; stream transports fail the attempt so the connection can be closed. Every
+// attempt uses a fresh Identifier and an updated Acct-Delay-Time. | Request Authenticator 按
+// RFC 2866 计算，响应必须携带匹配的 Response Authenticator。按 RFC 2866 第 4 节要求，UDP 响应中
+// 认证符不匹配者被静默丢弃，读取继续直到收到合法响应或本次尝试超时；流传输则让本次尝试失败以便
+// 关闭连接。每次尝试使用新的 Identifier 和更新后的 Acct-Delay-Time。
 func (c *Client) AccountRequest(ctx context.Context, request *AccountingRequest) (*AccountingResponse, error) {
 	prepared, eventTimestamp, err := prepareAccountingRequest(request)
 	if err != nil {

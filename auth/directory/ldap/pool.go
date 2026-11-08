@@ -29,15 +29,16 @@ type idleClient struct {
 // 单独串行化。Get 借出客户端，Put 归还，Do 组合两者。客户端按需创建，并按 Config
 // 重新认证。
 type Pool struct {
-	cfg      normalizedConfig
-	mu       sync.Mutex
-	idle     []idleClient
-	all      map[*Client]struct{}
-	creating int
-	closed   bool
-	notify   chan struct{}
-	stop     chan struct{}
-	janitor  chan struct{}
+	cfg        normalizedConfig
+	mu         sync.Mutex
+	idle       []idleClient
+	all        map[*Client]struct{}
+	checkedOut map[*Client]struct{}
+	creating   int
+	closed     bool
+	notify     chan struct{}
+	stop       chan struct{}
+	janitor    chan struct{}
 }
 
 // NewPool validates cfg and creates an empty pool. Connections are established
@@ -48,11 +49,12 @@ func NewPool(cfg Config) (*Pool, error) {
 		return nil, err
 	}
 	pool := &Pool{
-		cfg:     normalized,
-		all:     make(map[*Client]struct{}),
-		notify:  make(chan struct{}),
-		stop:    make(chan struct{}),
-		janitor: make(chan struct{}),
+		cfg:        normalized,
+		all:        make(map[*Client]struct{}),
+		checkedOut: make(map[*Client]struct{}),
+		notify:     make(chan struct{}),
+		stop:       make(chan struct{}),
+		janitor:    make(chan struct{}),
 	}
 	go pool.runJanitor()
 	return pool, nil
@@ -79,6 +81,7 @@ func (p *Pool) Get(ctx context.Context) (*Client, error) {
 			last := len(p.idle) - 1
 			client := p.idle[last].client
 			p.idle = p.idle[:last]
+			p.checkedOut[client] = struct{}{}
 			p.mu.Unlock()
 			closeClients(expired)
 			return client, nil
@@ -106,6 +109,7 @@ func (p *Pool) Get(ctx context.Context) (*Client, error) {
 				return nil, ErrPoolClosed
 			}
 			p.all[client] = struct{}{}
+			p.checkedOut[client] = struct{}{}
 			p.mu.Unlock()
 			return client, nil
 		}
@@ -121,20 +125,29 @@ func (p *Pool) Get(ctx context.Context) (*Client, error) {
 }
 
 // Put returns a borrowed client. Closing, dead, excess, and expired clients are
-// discarded. It is safe to Put a client after Close, where it is closed. | Put
-// 归还借出的客户端。已关闭、已失效、超额与过期客户端会被丢弃。Close 之后 Put 也安全，
-// 此时客户端会被关闭。
+// discarded. Returning a client that is already idle is a no-op, so a repeated
+// Put cannot duplicate it in the idle set. It is safe to Put a client after
+// Close, where it is closed. | Put 归还借出的客户端。已关闭、已失效、超额与过期客户端
+// 会被丢弃。归还已经空闲的客户端是无操作，因此重复 Put 不会在空闲集合中复制它。Close
+// 之后 Put 也安全，此时客户端会被关闭。
 func (p *Pool) Put(client *Client) error {
 	if p == nil || client == nil {
 		return nil
 	}
 	p.mu.Lock()
 	expired := p.pruneLocked()
-	if _, present := p.all[client]; !present {
+	if _, borrowed := p.checkedOut[client]; !borrowed {
+		_, known := p.all[client]
 		p.mu.Unlock()
 		closeClients(expired)
+		if known {
+			// The client is already idle; keep its single idle entry. |
+			// 客户端已经空闲；保留其唯一的空闲条目。
+			return nil
+		}
 		return client.Close()
 	}
+	delete(p.checkedOut, client)
 	if p.closed || client.IsClosed() {
 		delete(p.all, client)
 		p.broadcastLocked()
@@ -200,6 +213,7 @@ func (p *Pool) Close() error {
 		clients = append(clients, client)
 	}
 	p.all = make(map[*Client]struct{})
+	p.checkedOut = make(map[*Client]struct{})
 	p.idle = nil
 	p.broadcastLocked()
 	close(p.stop)

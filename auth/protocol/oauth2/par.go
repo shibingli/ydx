@@ -18,6 +18,7 @@ func (s *Server) PAR(w http.ResponseWriter, r *http.Request) {
 		s.writeOAuthError(w, r, errs.Detail(ErrInvalidRequest, "method %[1]s not allowed | 不允许方法 %[1]s", r.Method))
 		return
 	}
+	limitFormBody(w, r)
 	if err := r.ParseForm(); err != nil {
 		s.writeOAuthError(w, r, errs.Wrap(err, ErrInvalidRequest))
 		return
@@ -27,7 +28,7 @@ func (s *Server) PAR(w http.ResponseWriter, r *http.Request) {
 		s.writeOAuthError(w, r, errs.Detail(ErrInvalidRequest, "request_uri is not allowed in PAR | PAR 中不允许 request_uri"))
 		return
 	}
-	client, err := s.authenticateClient(r.Context(), r, form)
+	client, err := s.authenticateClient(r.Context(), r, form, s.config.PARPath)
 	if err != nil {
 		s.writeOAuthError(w, r, err)
 		return

@@ -37,13 +37,13 @@ const (
 
 // Token endpoint authentication styles. | 令牌端点认证方式。
 const (
-	// AuthStylePost sends client_id and client_secret in the form body.
+	// AuthStylePost sends client_id and client_secret in the form body. |
 	// AuthStylePost 在表单体中发送 client_id 与 client_secret。
 	AuthStylePost = "post"
-	// AuthStyleBasic sends HTTP Basic credentials and only puts client_id in the body.
+	// AuthStyleBasic sends HTTP Basic credentials and only puts client_id in the body. |
 	// AuthStyleBasic 使用 HTTP Basic 凭据，仅在表单体中放 client_id。
 	AuthStyleBasic = "basic"
-	// AuthStyleAuto uses Basic when a client secret exists and POST otherwise.
+	// AuthStyleAuto uses Basic when a client secret exists and POST otherwise. |
 	// AuthStyleAuto 在存在客户端密钥时使用 Basic，否则使用 POST。
 	AuthStyleAuto = "auto"
 )
@@ -52,7 +52,7 @@ const (
 // provider responses and raw tokens are never embedded in these errors. | 联合登录哨兵错误。
 // 调用方应使用 errors.Is 判定；提供方响应与原始令牌绝不会写入这些错误。
 var (
-	// ErrInvalidConfig reports an incomplete broker or provider configuration.
+	// ErrInvalidConfig reports an incomplete broker or provider configuration. |
 	// ErrInvalidConfig 表示代理或提供方配置不完整。
 	ErrInvalidConfig = errs.New("federation: invalid configuration | federation：配置非法")
 	// ErrInvalidRequest reports malformed HTTP input. | ErrInvalidRequest 表示 HTTP 输入非法。
@@ -61,28 +61,28 @@ var (
 	ErrProviderNotFound = errs.New("federation: provider not found | federation：提供方不存在")
 	// ErrProviderConfig reports an unusable provider definition. | ErrProviderConfig 表示提供方定义不可用。
 	ErrProviderConfig = errs.New("federation: invalid provider configuration | federation：提供方配置非法")
-	// ErrProviderDenied reports that the provider rejected or cancelled authorization.
+	// ErrProviderDenied reports that the provider rejected or cancelled authorization. |
 	// ErrProviderDenied 表示提供方拒绝或取消了授权。
 	ErrProviderDenied = errs.New("federation: authorization denied | federation：授权被拒绝")
-	// ErrStateMismatch reports an unknown, forged or already consumed state.
+	// ErrStateMismatch reports an unknown, forged or already consumed state. |
 	// ErrStateMismatch 表示 state 未知、伪造或已被使用。
 	ErrStateMismatch = errs.New("federation: state mismatch | federation：state 不匹配")
 	// ErrStateExpired reports an expired state record. | ErrStateExpired 表示 state 记录已过期。
 	ErrStateExpired = errs.New("federation: state expired | federation：state 已过期")
-	// ErrMissingCode reports a callback without an authorization code.
+	// ErrMissingCode reports a callback without an authorization code. |
 	// ErrMissingCode 表示回调缺少授权码。
 	ErrMissingCode = errs.New("federation: missing authorization code | federation：缺少授权码")
-	// ErrTokenExchange reports a failed token endpoint exchange or ID token check.
+	// ErrTokenExchange reports a failed token endpoint exchange or ID token check. |
 	// ErrTokenExchange 表示令牌端点兑换或 ID 令牌校验失败。
 	ErrTokenExchange = errs.New("federation: token exchange failed | federation：令牌兑换失败")
 	// ErrUserInfo reports a failed or malformed UserInfo response. | ErrUserInfo 表示 UserInfo 响应失败或格式非法。
 	ErrUserInfo = errs.New("federation: user info failed | federation：用户信息获取失败")
-	// ErrAccountLinkConflict reports an identity that could not be linked safely.
+	// ErrAccountLinkConflict reports an identity that could not be linked safely. |
 	// ErrAccountLinkConflict 表示身份无法安全关联。
 	ErrAccountLinkConflict = errs.New("federation: account link conflict | federation：账号关联冲突")
 	// ErrNonceMismatch reports a missing or mismatched OIDC nonce. | ErrNonceMismatch 表示 OIDC nonce 缺失或不匹配。
 	ErrNonceMismatch = errs.New("federation: nonce mismatch | federation：nonce 不匹配")
-	// ErrTransport reports a network or HTTP transport failure without exposing URLs.
+	// ErrTransport reports a network or HTTP transport failure without exposing URLs. |
 	// ErrTransport 表示网络或 HTTP 传输失败，且不暴露 URL。
 	ErrTransport = errs.New("federation: provider transport failed | federation：提供方传输失败")
 	// ErrSigning reports a provider request signing failure. | ErrSigning 表示提供方请求签名失败。
@@ -137,7 +137,7 @@ type Token struct {
 	UnionID string
 	// Claims holds verified ID token claims as scalar strings. | Claims 保存已校验 ID 令牌的标量字符串声明。
 	Claims map[string]string
-	// Raw holds scalar token response fields. It is never included in errors.
+	// Raw holds scalar token response fields. It is never included in errors. |
 	// Raw 保存令牌响应的标量字段，且绝不会写入错误。
 	Raw map[string]string
 }
@@ -152,7 +152,7 @@ func (t *Token) SetExpiry(now time.Time) {
 	}
 }
 
-// Valid reports whether the token has a non-empty access token and has not expired.
+// Valid reports whether the token has a non-empty access token and has not expired. |
 // Valid 报告令牌是否具有非空访问令牌且尚未过期。
 func (t *Token) Valid() bool {
 	if t == nil || t.AccessToken == "" {
@@ -173,7 +173,7 @@ type ExchangeHook func(ctx context.Context, p *Provider, client *http.Client, co
 type UserInfoHook func(ctx context.Context, p *Provider, client *http.Client, token *Token) (*Identity, error)
 
 // ProviderAdapter implements one provider's authorization flow. Built-in adapters are
-// selected automatically; a Provider may instead install a complete custom adapter.
+// selected automatically; a Provider may instead install a complete custom adapter. |
 // ProviderAdapter 实现单个提供方的授权流程。内置适配器自动选择；Provider 也可以安装完整的自定义适配器。
 type ProviderAdapter interface {
 	// AuthCodeURL builds the authorization redirect URL. | AuthCodeURL 构建授权重定向 URL。
@@ -192,17 +192,17 @@ type Provider struct {
 	DisplayName string
 	// Kind selects provider-specific presets and quirks. | Kind 选择提供方专用预设与特殊处理。
 	Kind string
-	// ClientID is the OAuth client identifier (appid for Chinese providers).
+	// ClientID is the OAuth client identifier (appid for Chinese providers). |
 	// ClientID 是 OAuth 客户端标识（中国提供方通常为 appid）。
 	ClientID string
-	// ClientSecret is the OAuth client secret. It is never logged or included in errors.
+	// ClientSecret is the OAuth client secret. It is never logged or included in errors. |
 	// ClientSecret 是 OAuth 客户端密钥，绝不记录或在错误中输出。
 	ClientSecret string
 	// RedirectURL is the registered callback URL. | RedirectURL 是已注册回调 URL。
 	RedirectURL string
 	// Scopes are the default authorization scopes. | Scopes 是默认授权作用域。
 	Scopes []string
-	// ScopeSeparator separates scopes in the authorization URL; an empty value means a space.
+	// ScopeSeparator separates scopes in the authorization URL; an empty value means a space. |
 	// ScopeSeparator 是授权 URL 中的作用域分隔符，空值表示空格。
 	ScopeSeparator string
 	// AuthURL is the authorization endpoint. | AuthURL 是授权端点。
@@ -221,10 +221,11 @@ type Provider struct {
 	// and keeps the first document for the adapter lifetime. | DiscoveryTTL 是 OIDC 发现
 	// 缓存有效期。零值禁用周期性刷新，并在适配器生命周期内保留首次文档。
 	DiscoveryTTL time.Duration
-	// DiscoveryTTLMin and DiscoveryTTLMax clamp the effective discovery cache lifetime.
-	// Zero disables the corresponding bound. | DiscoveryTTLMin 与 DiscoveryTTLMax 限制
-	// 生效的发现缓存有效期；零值禁用对应边界。
+	// DiscoveryTTLMin clamps the effective discovery cache lifetime from below. Zero disables the
+	// lower bound. | DiscoveryTTLMin 从下方限制生效的发现缓存有效期；零值禁用下界。
 	DiscoveryTTLMin time.Duration
+	// DiscoveryTTLMax clamps the effective discovery cache lifetime from above. Zero disables the
+	// upper bound. | DiscoveryTTLMax 从上方限制生效的发现缓存有效期；零值禁用上界。
 	DiscoveryTTLMax time.Duration
 	// DiscoveryJitter randomizes each cache lifetime by +/- this fraction of the
 	// effective TTL. It must be between 0 and 1; zero disables jitter. | DiscoveryJitter
@@ -239,7 +240,7 @@ type Provider struct {
 	PKCE bool
 	// Nonce enables OIDC nonce generation and verification. | Nonce 启用 OIDC nonce 生成与校验。
 	Nonce bool
-	// AuthStyle selects client authentication at the token endpoint. Empty means POST.
+	// AuthStyle selects client authentication at the token endpoint. Empty means POST. |
 	// AuthStyle 选择令牌端点的客户端认证方式，空值表示 POST。
 	AuthStyle string
 	// AuthParams are additional authorization query parameters. | AuthParams 是附加授权查询参数。
@@ -248,7 +249,7 @@ type Provider struct {
 	TokenParams map[string]string
 	// UserInfoHeaders are additional UserInfo request headers. | UserInfoHeaders 是附加 UserInfo 请求头。
 	UserInfoHeaders map[string]string
-	// Extra carries provider-specific settings such as tenant, account type or keys.
+	// Extra carries provider-specific settings such as tenant, account type or keys. |
 	// Extra 保存提供方专用设置，例如租户、账号类型或密钥。
 	Extra map[string]string
 	// PrivateKey is a PEM or base64 DER private key used by request-signing providers
@@ -275,31 +276,43 @@ type ProviderConfig struct {
 	DisplayName string
 	// Kind is the provider kind. | Kind 是提供方类型。
 	Kind string
-	// ClientID and ClientSecret are the registered credentials. | ClientID 与 ClientSecret 是已注册凭据。
-	ClientID     string
+	// ClientID is the registered OAuth client identifier. | ClientID 是已注册的 OAuth 客户端标识。
+	ClientID string
+	// ClientSecret is the registered OAuth client secret. | ClientSecret 是已注册的 OAuth 客户端密钥。
 	ClientSecret string
 	// RedirectURL is the registered callback URL. | RedirectURL 是已注册回调 URL。
 	RedirectURL string
 	// Scopes overrides preset default scopes. | Scopes 覆盖预设默认作用域。
 	Scopes []string
-	// AuthURL, TokenURL, UserInfoURL, JWKSURL and Issuer override preset endpoints.
-	// AuthURL、TokenURL、UserInfoURL、JWKSURL 与 Issuer 覆盖预设端点。
-	AuthURL     string
-	TokenURL    string
+	// AuthURL overrides the preset authorization endpoint. | AuthURL 覆盖预设授权端点。
+	AuthURL string
+	// TokenURL overrides the preset token endpoint. | TokenURL 覆盖预设令牌端点。
+	TokenURL string
+	// UserInfoURL overrides the preset UserInfo endpoint. | UserInfoURL 覆盖预设 UserInfo 端点。
 	UserInfoURL string
-	JWKSURL     string
-	Issuer      string
-	// UseOIDC, PKCE and Nonce override preset flow switches. | UseOIDC、PKCE 与 Nonce 覆盖预设流程开关。
+	// JWKSURL overrides the preset JWKS endpoint. | JWKSURL 覆盖预设 JWKS 端点。
+	JWKSURL string
+	// Issuer overrides the preset OIDC issuer. | Issuer 覆盖预设 OIDC 签发方。
+	Issuer string
+	// UseOIDC overrides the preset OIDC flow switch. | UseOIDC 覆盖预设 OIDC 流程开关。
 	UseOIDC bool
-	PKCE    bool
-	Nonce   bool
-	// DiscoveryTTL, DiscoveryTTLMin, DiscoveryTTLMax, DiscoveryJitter and
-	// DiscoveryMaxStale override preset discovery cache settings. | DiscoveryTTL、
-	// DiscoveryTTLMin、DiscoveryTTLMax、DiscoveryJitter 与 DiscoveryMaxStale 覆盖预设发现缓存设置。
-	DiscoveryTTL      time.Duration
-	DiscoveryTTLMin   time.Duration
-	DiscoveryTTLMax   time.Duration
-	DiscoveryJitter   float64
+	// PKCE overrides the preset PKCE switch. | PKCE 覆盖预设 PKCE 开关。
+	PKCE bool
+	// Nonce overrides the preset OIDC nonce switch. | Nonce 覆盖预设 OIDC nonce 开关。
+	Nonce bool
+	// DiscoveryTTL overrides the preset discovery cache lifetime. | DiscoveryTTL 覆盖预设发现缓存有效期。
+	DiscoveryTTL time.Duration
+	// DiscoveryTTLMin overrides the preset lower discovery cache bound. | DiscoveryTTLMin 覆盖预设发现
+	// 缓存下界。
+	DiscoveryTTLMin time.Duration
+	// DiscoveryTTLMax overrides the preset upper discovery cache bound. | DiscoveryTTLMax 覆盖预设发现
+	// 缓存上界。
+	DiscoveryTTLMax time.Duration
+	// DiscoveryJitter overrides the preset discovery cache jitter fraction. | DiscoveryJitter 覆盖预设
+	// 发现缓存抖动比例。
+	DiscoveryJitter float64
+	// DiscoveryMaxStale overrides the preset stale discovery fallback window. | DiscoveryMaxStale 覆盖
+	// 预设过期发现文档回退窗口。
 	DiscoveryMaxStale time.Duration
 	// AuthStyle overrides token endpoint client authentication. | AuthStyle 覆盖令牌端点客户端认证。
 	AuthStyle string
@@ -309,10 +322,11 @@ type ProviderConfig struct {
 	HTTPClient *http.Client
 	// Extra carries provider-specific settings. | Extra 保存提供方专用设置。
 	Extra map[string]string
-	// AuthParams, TokenParams and UserInfoHeaders are additional request parameters.
-	// AuthParams、TokenParams 与 UserInfoHeaders 是附加请求参数。
-	AuthParams      map[string]string
-	TokenParams     map[string]string
+	// AuthParams are additional authorization query parameters. | AuthParams 是附加授权查询参数。
+	AuthParams map[string]string
+	// TokenParams are additional token exchange form parameters. | TokenParams 是附加令牌兑换表单参数。
+	TokenParams map[string]string
+	// UserInfoHeaders are additional UserInfo request headers. | UserInfoHeaders 是附加 UserInfo 请求头。
 	UserInfoHeaders map[string]string
 }
 
@@ -336,7 +350,7 @@ type Endpoints struct {
 	Extra map[string]string
 }
 
-// WithEndpoints returns an option overriding non-empty endpoints and merging Extra.
+// WithEndpoints returns an option overriding non-empty endpoints and merging Extra. |
 // WithEndpoints 返回覆盖非空端点并合并 Extra 的选项。
 func WithEndpoints(endpoints Endpoints) ProviderOption {
 	return func(p *Provider) {
@@ -429,7 +443,7 @@ func WithAuthParams(params map[string]string) ProviderOption {
 	}
 }
 
-// WithAuthURLHook returns an option installing a custom authorization URL builder.
+// WithAuthURLHook returns an option installing a custom authorization URL builder. |
 // WithAuthURLHook 返回安装自定义授权 URL 构建器的选项。
 func WithAuthURLHook(hook AuthURLHook) ProviderOption {
 	return func(p *Provider) {
@@ -439,7 +453,7 @@ func WithAuthURLHook(hook AuthURLHook) ProviderOption {
 	}
 }
 
-// WithExchangeHook returns an option installing a custom token exchange hook.
+// WithExchangeHook returns an option installing a custom token exchange hook. |
 // WithExchangeHook 返回安装自定义令牌兑换钩子的选项。
 func WithExchangeHook(hook ExchangeHook) ProviderOption {
 	return func(p *Provider) {

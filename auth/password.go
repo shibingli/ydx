@@ -717,14 +717,18 @@ type PasswordPolicy struct {
 	MaxLength int
 	// RequireUppercase, RequireLowercase, RequireDigit and RequireSymbol add composition rules. | RequireUppercase、RequireLowercase、RequireDigit 与 RequireSymbol 增加组成规则。
 	RequireUppercase bool
+	// RequireLowercase requires at least one lowercase letter. | RequireLowercase 要求至少一个小写字母。
 	RequireLowercase bool
-	RequireDigit     bool
-	RequireSymbol    bool
+	// RequireDigit requires at least one digit. | RequireDigit 要求至少一个数字。
+	RequireDigit bool
+	// RequireSymbol requires at least one non-letter, non-digit character. | RequireSymbol 要求至少一个非字母、非数字字符。
+	RequireSymbol bool
 	// DisallowWhitespace rejects any Unicode whitespace. | DisallowWhitespace 拒绝任何 Unicode 空白。
 	DisallowWhitespace bool
 	// DisallowUsername and DisallowEmail reject passwords containing those identifiers. | DisallowUsername 与 DisallowEmail 拒绝包含这些标识的口令。
 	DisallowUsername bool
-	DisallowEmail    bool
+	// DisallowEmail rejects a password containing the user's email address. | DisallowEmail 拒绝包含用户邮箱地址的口令。
+	DisallowEmail bool
 	// MaxAge is the maximum password age; zero disables expiry. | MaxAge 是口令最长有效期；零值禁用过期。
 	MaxAge time.Duration
 	// History is the number of previous hashes checked for reuse; zero disables the check. | History 是检查复用的历史哈希数；零值禁用检查。

@@ -147,18 +147,52 @@ func TestAccountingInvalidRequests(t *testing.T) {
 	}
 }
 
-func TestAccountingRejectsBadResponseAuthenticator(t *testing.T) {
+func TestAccountingDiscardsBadResponseAuthenticator(t *testing.T) {
 	secret := []byte("testing-secret")
-	server := newUDPMock(t, secret, func(request *Packet, raw []byte) ([]byte, error) {
-		return signedResponse(request, []byte("other-secret"), CodeAccountingResponse, nil)
+	request := &AccountingRequest{StatusType: AcctStatusAccountingOn}
+	t.Run("bad then good", func(t *testing.T) {
+		server := newScriptedUDPServer(t, func(request *Packet) ([][]byte, error) {
+			bad, err := signedResponse(request, []byte("other-secret"), CodeAccountingResponse, nil)
+			if err != nil {
+				return nil, err
+			}
+			good, err := signedResponse(request, secret, CodeAccountingResponse, nil)
+			if err != nil {
+				return nil, err
+			}
+			return [][]byte{bad, good}, nil
+		})
+		client := newTestClient(t, ClientConfig{
+			Address: server.LocalAddr().String(),
+			Secret:  secret,
+			Timeout: 500 * time.Millisecond,
+		})
+		response, err := client.AccountRequest(context.Background(), request)
+		if err != nil {
+			t.Fatalf("AccountRequest: %v", err)
+		}
+		if response.Code != CodeAccountingResponse {
+			t.Fatalf("unexpected code %d", response.Code)
+		}
 	})
-	client := newTestClient(t, ClientConfig{Address: server.Addr(), Secret: secret})
-	_, err := client.AccountRequest(context.Background(), &AccountingRequest{
-		StatusType: AcctStatusAccountingOn,
+	t.Run("bad only times out", func(t *testing.T) {
+		server := newUDPMock(t, secret, func(request *Packet, raw []byte) ([]byte, error) {
+			return signedResponse(request, []byte("other-secret"), CodeAccountingResponse, nil)
+		})
+		client := newTestClient(t, ClientConfig{
+			Address: server.Addr(),
+			Secret:  secret,
+			Timeout: 80 * time.Millisecond,
+		})
+		start := time.Now()
+		_, err := client.AccountRequest(context.Background(), request)
+		if !errors.Is(err, ErrTimeout) {
+			t.Fatalf("error = %v, want ErrTimeout", err)
+		}
+		if elapsed := time.Since(start); elapsed < 60*time.Millisecond {
+			t.Fatalf("bad response failed the exchange after only %v", elapsed)
+		}
 	})
-	if !errors.Is(err, ErrAuthenticator) {
-		t.Fatalf("error = %v, want ErrAuthenticator", err)
-	}
 }
 
 func TestAccountingRejectsUnexpectedCode(t *testing.T) {

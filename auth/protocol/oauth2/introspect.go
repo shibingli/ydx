@@ -8,21 +8,22 @@ import (
 	"github.com/shibingli/ydx/errs"
 )
 
-// Introspect is the RFC 7662 introspection endpoint. The token_type_hint value narrows which
-// store is consulted: a wrong hint can therefore return active=false instead of falling back to
-// the other token type. | Introspect 是 RFC 7662 自省端点。token_type_hint 会收窄查询的存储，
-// 因此错误提示可能返回 active=false，而不会回退到另一种令牌类型。
+// Introspect is the RFC 7662 introspection endpoint. The token_type_hint value is only a
+// preference: when the hinted token type does not contain the token, the other supported type is
+// still searched as the RFC requires. | Introspect 是 RFC 7662 自省端点。token_type_hint 仅表示
+// 偏好：提示的令牌类型中不存在该令牌时，仍按 RFC 要求搜索另一种受支持类型。
 func (s *Server) Introspect(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		w.Header().Set("Allow", "POST")
 		s.writeOAuthError(w, r, errs.Detail(ErrInvalidRequest, "method %[1]s not allowed | 不允许方法 %[1]s", r.Method))
 		return
 	}
+	limitFormBody(w, r)
 	if err := r.ParseForm(); err != nil {
 		s.writeOAuthError(w, r, errs.Wrap(err, ErrInvalidRequest))
 		return
 	}
-	client, err := s.authenticateClient(r.Context(), r, r.PostForm)
+	client, err := s.authenticateClient(r.Context(), r, r.PostForm, s.config.IntrospectionPath)
 	if err != nil {
 		s.writeOAuthError(w, r, err)
 		return
@@ -33,21 +34,34 @@ func (s *Server) Introspect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	hint := strings.TrimSpace(r.PostForm.Get("token_type_hint"))
-	if hint != "refresh_token" {
-		if access, err := s.ValidateAccessToken(r.Context(), raw); err == nil {
-			if s.config.AllowCrossClientIntrospection || access.ClientID == client.ID {
-				writeJSON(w, http.StatusOK, s.accessIntrospection(access))
-				return
-			}
+	introspectAccess := func() bool {
+		access, err := s.ValidateAccessToken(r.Context(), raw)
+		if err != nil || access == nil {
+			return false
 		}
+		if !s.config.AllowCrossClientIntrospection && access.ClientID != client.ID {
+			return false
+		}
+		writeJSON(w, http.StatusOK, s.accessIntrospection(access))
+		return true
 	}
-	if hint != "access_token" {
-		if refresh, err := s.config.Store.GetRefreshToken(r.Context(), auth.HashToken(raw)); err == nil {
-			if s.config.AllowCrossClientIntrospection || refresh.ClientID == client.ID {
-				writeJSON(w, http.StatusOK, s.refreshIntrospection(refresh))
-				return
-			}
+	introspectRefresh := func() bool {
+		refresh, err := s.config.Store.GetRefreshToken(r.Context(), auth.HashToken(raw))
+		if err != nil || refresh == nil {
+			return false
 		}
+		if !s.config.AllowCrossClientIntrospection && refresh.ClientID != client.ID {
+			return false
+		}
+		writeJSON(w, http.StatusOK, s.refreshIntrospection(refresh))
+		return true
+	}
+	if hint == "refresh_token" {
+		if introspectRefresh() || introspectAccess() {
+			return
+		}
+	} else if introspectAccess() || introspectRefresh() {
+		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"active": false})
 }

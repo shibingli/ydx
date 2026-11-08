@@ -29,15 +29,17 @@ func (e *Engine) Snapshot(ctx context.Context) (Snapshot, error) {
 	if err := checkContext(ctx); err != nil {
 		return Snapshot{}, err
 	}
+	e.stateMu.RLock()
 	roles, err := e.store.ListRoles(ctx)
-	if err != nil {
-		return Snapshot{}, err
+	var assignments []Assignment
+	if err == nil {
+		assignments, err = e.store.ListAssignments(ctx)
 	}
-	assignments, err := e.store.ListAssignments(ctx)
-	if err != nil {
-		return Snapshot{}, err
+	var policies []Policy
+	if err == nil {
+		policies, err = e.store.ListPolicies(ctx)
 	}
-	policies, err := e.store.ListPolicies(ctx)
+	e.stateMu.RUnlock()
 	if err != nil {
 		return Snapshot{}, err
 	}
@@ -53,8 +55,11 @@ func (e *Engine) Snapshot(ctx context.Context) (Snapshot, error) {
 //
 // The snapshot is validated in a temporary in-memory store before the active store is touched, so an
 // invalid snapshot leaves the engine unchanged. A version other than SnapshotVersion is rejected
-// with ErrUnsupportedVersion. | 快照先在临时内存存储中校验，再触碰活动存储，因此非法快照不会改变
-// 引擎。版本不等于 SnapshotVersion 时以 ErrUnsupportedVersion 拒绝。
+// with ErrUnsupportedVersion. The Reset and reload run under the engine's exclusive state lock, so
+// concurrent Engine methods never observe the empty or partially loaded state. | 快照先在临时内存
+// 存储中校验，再触碰活动存储，因此非法快照不会改变引擎。版本不等于 SnapshotVersion 时以
+// ErrUnsupportedVersion 拒绝。Reset 与重新加载在引擎排他状态锁内执行，因此并发 Engine 方法绝不会
+// 观察到空状态或部分加载状态。
 func (e *Engine) LoadSnapshot(ctx context.Context, snapshot Snapshot) error {
 	ctx = normalizeContext(ctx)
 	if err := checkContext(ctx); err != nil {
@@ -68,6 +73,8 @@ func (e *Engine) LoadSnapshot(ctx context.Context, snapshot Snapshot) error {
 	if err := loadInto(ctx, probe, snapshot); err != nil {
 		return errs.Wrap(err, ErrInvalidSnapshot)
 	}
+	e.stateMu.Lock()
+	defer e.stateMu.Unlock()
 	if err := e.store.Reset(ctx); err != nil {
 		return err
 	}

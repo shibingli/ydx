@@ -424,8 +424,11 @@ func responseHasContent(response *RequestSecurityTokenResponse) bool {
 // rawResponseCollection is a namespace-agnostic response collection. | rawResponseCollection 是
 // 命名空间无关的响应集合。
 type rawResponseCollection struct {
-	XMLName   xml.Name
-	ID        string        `xml:"ID,attr,omitempty"`
+	// XMLName is the element name. | XMLName 是元素名。
+	XMLName xml.Name
+	// ID is the collection identifier. | ID 是集合标识。
+	ID string `xml:"ID,attr,omitempty"`
+	// Responses is the raw response list. | Responses 是原始响应列表。
 	Responses []rawResponse `xml:"RequestSecurityTokenResponse,omitempty"`
 }
 
@@ -440,19 +443,32 @@ func (c *rawResponseCollection) collection() *RequestSecurityTokenResponseCollec
 
 // rawResponse is a namespace-agnostic WS-Trust response. | rawResponse 是命名空间无关的 WS-Trust 响应。
 type rawResponse struct {
-	XMLName                      xml.Name
-	ID                           string             `xml:"ID,attr,omitempty"`
-	Context                      string             `xml:"Context,attr,omitempty"`
-	Wctx                         string             `xml:"wctx,attr,omitempty"`
-	TokenType                    string             `xml:"TokenType,omitempty"`
-	RequestType                  string             `xml:"RequestType,omitempty"`
-	AppliesTo                    *rawAppliesTo      `xml:"AppliesTo,omitempty"`
-	Lifetime                     *rawLifetime       `xml:"Lifetime,omitempty"`
-	RequestedSecurityToken       *rawSecurityToken  `xml:"RequestedSecurityToken,omitempty"`
-	RequestedAttachedReference   *rawTokenReference `xml:"RequestedAttachedReference,omitempty"`
+	// XMLName is the element name. | XMLName 是元素名。
+	XMLName xml.Name
+	// ID is the response identifier. | ID 是响应标识。
+	ID string `xml:"ID,attr,omitempty"`
+	// Context echoes the WS-Trust request context. | Context 回显 WS-Trust 请求上下文。
+	Context string `xml:"Context,attr,omitempty"`
+	// Wctx echoes the WS-Federation context. | Wctx 回显 WS-Federation 上下文。
+	Wctx string `xml:"wctx,attr,omitempty"`
+	// TokenType is the declared token type. | TokenType 是声明的令牌类型。
+	TokenType string `xml:"TokenType,omitempty"`
+	// RequestType is the WS-Trust request type. | RequestType 是 WS-Trust 请求类型。
+	RequestType string `xml:"RequestType,omitempty"`
+	// AppliesTo identifies the token audience. | AppliesTo 标识令牌受众。
+	AppliesTo *rawAppliesTo `xml:"AppliesTo,omitempty"`
+	// Lifetime bounds the token lifetime. | Lifetime 限定令牌寿命。
+	Lifetime *rawLifetime `xml:"Lifetime,omitempty"`
+	// RequestedSecurityToken carries the raw token. | RequestedSecurityToken 携带原始令牌。
+	RequestedSecurityToken *rawSecurityToken `xml:"RequestedSecurityToken,omitempty"`
+	// RequestedAttachedReference references the attached token. | RequestedAttachedReference 引用附加令牌。
+	RequestedAttachedReference *rawTokenReference `xml:"RequestedAttachedReference,omitempty"`
+	// RequestedUnattachedReference references the unattached token. | RequestedUnattachedReference 引用未附加令牌。
 	RequestedUnattachedReference *rawTokenReference `xml:"RequestedUnattachedReference,omitempty"`
-	KeySize                      int                `xml:"KeySize,omitempty"`
-	Status                       *rawStatus         `xml:"Status,omitempty"`
+	// KeySize is the proof key size. | KeySize 是证明密钥大小。
+	KeySize int `xml:"KeySize,omitempty"`
+	// Status is the raw status element. | Status 是原始状态元素。
+	Status *rawStatus `xml:"Status,omitempty"`
 }
 
 // hasContent reports whether the raw response carries data. | hasContent 报告原始响应是否携带数据。
@@ -510,30 +526,37 @@ func (r *rawResponse) response() RequestSecurityTokenResponse {
 
 // rawAppliesTo is a namespace-agnostic AppliesTo element. | rawAppliesTo 是命名空间无关的 AppliesTo 元素。
 type rawAppliesTo struct {
+	// EndpointReference is the audience endpoint reference. | EndpointReference 是受众端点引用。
 	EndpointReference *rawEndpointReference `xml:"EndpointReference,omitempty"`
-	Address           string                `xml:"Address,omitempty"`
+	// Address is the direct audience address. | Address 是直接受众地址。
+	Address string `xml:"Address,omitempty"`
 }
 
 // rawEndpointReference is a namespace-agnostic endpoint reference. | rawEndpointReference 是
 // 命名空间无关的端点引用。
 type rawEndpointReference struct {
+	// Address is the endpoint address. | Address 是端点地址。
 	Address string `xml:"Address,omitempty"`
 }
 
 // rawLifetime is a namespace-agnostic Lifetime element. | rawLifetime 是命名空间无关的 Lifetime 元素。
 type rawLifetime struct {
+	// Created is the creation time. | Created 是创建时间。
 	Created string `xml:"Created,omitempty"`
+	// Expires is the expiry time. | Expires 是过期时间。
 	Expires string `xml:"Expires,omitempty"`
 }
 
 // rawSecurityToken is a namespace-agnostic RequestedSecurityToken element. | rawSecurityToken 是
 // 命名空间无关的 RequestedSecurityToken 元素。
 type rawSecurityToken struct {
+	// InnerXML is the raw token content. | InnerXML 是原始令牌内容。
 	InnerXML string `xml:",innerxml"`
 }
 
 // rawTokenReference is a namespace-agnostic token reference. | rawTokenReference 是命名空间无关的令牌引用。
 type rawTokenReference struct {
+	// Reference is the raw token reference. | Reference 是原始令牌引用。
 	Reference *rawReferenceURI `xml:"Reference,omitempty"`
 }
 
@@ -551,14 +574,19 @@ func (r *rawTokenReference) reference() *SecurityTokenReference {
 
 // rawReferenceURI is a namespace-agnostic Reference element. | rawReferenceURI 是命名空间无关的 Reference 元素。
 type rawReferenceURI struct {
-	URI       string `xml:"URI,attr,omitempty"`
+	// URI is the reference URI. | URI 是引用 URI。
+	URI string `xml:"URI,attr,omitempty"`
+	// ValueType identifies the token profile. | ValueType 标识令牌配置。
 	ValueType string `xml:"ValueType,attr,omitempty"`
 }
 
 // rawStatus is a namespace-agnostic WS-Trust Status element. | rawStatus 是命名空间无关的 WS-Trust Status 元素。
 type rawStatus struct {
-	Code       string `xml:"Code,omitempty"`
-	Reason     string `xml:"Reason,omitempty"`
+	// Code is the status code. | Code 是状态码。
+	Code string `xml:"Code,omitempty"`
+	// Reason is the human-readable reason. | Reason 是人类可读原因。
+	Reason string `xml:"Reason,omitempty"`
+	// StatusCode is the nested status code variant. | StatusCode 是嵌套状态码变体。
 	StatusCode string `xml:"StatusCode,omitempty"`
 }
 
@@ -589,8 +617,9 @@ type SAML11Assertion struct {
 
 // SAML11Conditions constrains a SAML 1.1 assertion. | SAML11Conditions 约束 SAML 1.1 断言。
 type SAML11Conditions struct {
-	// NotBefore and NotOnOrAfter bound the validity window. | NotBefore 与 NotOnOrAfter 限定有效窗口。
-	NotBefore    string `xml:"NotBefore,attr,omitempty"`
+	// NotBefore is the start of the validity window. | NotBefore 是有效窗口起点。
+	NotBefore string `xml:"NotBefore,attr,omitempty"`
+	// NotOnOrAfter is the end of the validity window. | NotOnOrAfter 是有效窗口终点。
 	NotOnOrAfter string `xml:"NotOnOrAfter,attr,omitempty"`
 	// AudienceRestrictionCondition lists the allowed audiences. | AudienceRestrictionCondition 列出允许受众。
 	AudienceRestrictionCondition []SAML11AudienceRestriction `xml:"urn:oasis:names:tc:SAML:1.0:assertion AudienceRestrictionCondition,omitempty"`

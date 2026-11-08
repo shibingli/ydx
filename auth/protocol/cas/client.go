@@ -317,37 +317,54 @@ func (c *Client) get(ctx context.Context, endpoint string, query url.Values, acc
 // serviceResponseXML is the shared envelope of CAS 2.0 and 3.0 responses. | serviceResponseXML 是
 // CAS 2.0 与 3.0 响应的共享信封。
 type serviceResponseXML struct {
+	// AuthenticationSuccess is the success element of a validation response. | AuthenticationSuccess
+	// 是校验响应的成功元素。
 	AuthenticationSuccess *authenticationSuccess `xml:"authenticationSuccess"`
+	// AuthenticationFailure is the failure element of a validation response. | AuthenticationFailure
+	// 是校验响应的失败元素。
 	AuthenticationFailure *authenticationFailure `xml:"authenticationFailure"`
-	ProxySuccess          *proxySuccess          `xml:"proxySuccess"`
-	ProxyFailure          *proxyFailure          `xml:"proxyFailure"`
-	XMLName               xml.Name               `xml:"serviceResponse"`
+	// ProxySuccess is the success element of a proxy response. | ProxySuccess 是代理响应的成功元素。
+	ProxySuccess *proxySuccess `xml:"proxySuccess"`
+	// ProxyFailure is the failure element of a proxy response. | ProxyFailure 是代理响应的失败元素。
+	ProxyFailure *proxyFailure `xml:"proxyFailure"`
+	// XMLName is the serviceResponse element name. | XMLName 是 serviceResponse 元素名。
+	XMLName xml.Name `xml:"serviceResponse"`
 }
 
 // authenticationSuccess is the CAS authenticationSuccess element. | authenticationSuccess 是 CAS
 // authenticationSuccess 元素。
 type authenticationSuccess struct {
-	User                string        `xml:"user"`
-	Attributes          attributesXML `xml:"attributes"`
-	ProxyGrantingTicket string        `xml:"proxyGrantingTicket"`
-	Proxies             proxiesXML    `xml:"proxies"`
+	// User is the protocol user identifier. | User 是协议用户标识。
+	User string `xml:"user"`
+	// Attributes are the released user attributes. | Attributes 是发布的用户属性。
+	Attributes attributesXML `xml:"attributes"`
+	// ProxyGrantingTicket is the PGT identifier issued through pgtUrl, if any. | ProxyGrantingTicket
+	// 是通过 pgtUrl 签发的 PGT 标识（如有）。
+	ProxyGrantingTicket string `xml:"proxyGrantingTicket"`
+	// Proxies lists the proxy callback URLs traversed by the ticket. | Proxies 列出票据经过的代理回调 URL。
+	Proxies proxiesXML `xml:"proxies"`
 }
 
 // authenticationFailure is the CAS authenticationFailure element. | authenticationFailure 是 CAS
 // authenticationFailure 元素。
 type authenticationFailure struct {
-	Code    string `xml:"code,attr"`
+	// Code is the CAS protocol error code. | Code 是 CAS 协议错误码。
+	Code string `xml:"code,attr"`
+	// Message is the human-readable failure description. | Message 是人类可读的失败描述。
 	Message string `xml:",chardata"`
 }
 
 // proxySuccess is the CAS proxySuccess element. | proxySuccess 是 CAS proxySuccess 元素。
 type proxySuccess struct {
+	// ProxyTicket is the issued PT identifier. | ProxyTicket 是已签发的 PT 标识。
 	ProxyTicket string `xml:"proxyTicket"`
 }
 
 // proxyFailure is the CAS proxyFailure element. | proxyFailure 是 CAS proxyFailure 元素。
 type proxyFailure struct {
-	Code    string `xml:"code,attr"`
+	// Code is the CAS protocol error code. | Code 是 CAS 协议错误码。
+	Code string `xml:"code,attr"`
+	// Message is the human-readable failure description. | Message 是人类可读的失败描述。
 	Message string `xml:",chardata"`
 }
 
@@ -458,6 +475,9 @@ func parseXMLValidationResponse(raw []byte) (*ValidationResponse, error) {
 	switch {
 	case response.AuthenticationSuccess != nil:
 		success := response.AuthenticationSuccess
+		if strings.TrimSpace(success.User) == "" {
+			return nil, errs.Detail(ErrInvalidResponse, "validation success has no user | 校验成功响应缺少用户")
+		}
 		result.Success = true
 		result.User = success.User
 		result.Attributes = success.Attributes.Values
@@ -484,6 +504,9 @@ func parseJSONValidationResponse(raw []byte) (*ValidationResponse, error) {
 	switch {
 	case response.AuthenticationSuccess != nil:
 		success := response.AuthenticationSuccess
+		if strings.TrimSpace(success.User) == "" {
+			return nil, errs.Detail(ErrInvalidResponse, "validation success has no user | 校验成功响应缺少用户")
+		}
 		result.Success = true
 		result.User = success.User
 		if len(success.Attributes) > 0 {

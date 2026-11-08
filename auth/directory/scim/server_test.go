@@ -654,6 +654,85 @@ func TestMeEndpoints(t *testing.T) {
 	requireError(t, recorder, http.StatusNotFound, "")
 }
 
+// TestPatchMePasswordRequiresSetter verifies PATCH /Me rejects a password when no
+// PasswordSetter is configured without committing the remaining profile changes. |
+// TestPatchMePasswordRequiresSetter 验证未配置 PasswordSetter 时 PATCH /Me 拒绝口令，且不提交
+// 其余资料修改。
+func TestPatchMePasswordRequiresSetter(t *testing.T) {
+	env := newTestEnv(t, Options{}, "/scim")
+	user := env.mustCreateUser(map[string]any{"userName": "me-password", "title": "Original"})
+	ctx := auth.ContextWithPrincipal(context.Background(), &auth.Principal{Subject: user.ID})
+
+	recorder := env.doContext(ctx, http.MethodPatch, "/Me", PatchRequest{Operations: []PatchOperation{
+		{Op: "replace", Path: "title", Value: "Changed"},
+		{Op: "replace", Path: "password", Value: "secret"},
+	}}, nil)
+	requireError(t, recorder, http.StatusBadRequest, "invalidValue")
+
+	stored, err := env.store.GetUser(context.Background(), user.ID)
+	if err != nil {
+		t.Fatalf("GetUser error = %v", err)
+	}
+	if stored.Title != "Original" {
+		t.Fatalf("profile change was committed despite rejected password: title = %q", stored.Title)
+	}
+	if stored.Password != "" {
+		t.Fatalf("plain password was persisted: %q", stored.Password)
+	}
+
+	withSetter := newTestEnv(t, Options{PasswordSetter: func(ctx context.Context, user *User, password string) error {
+		if password != "secret" {
+			t.Fatalf("PasswordSetter password = %q", password)
+		}
+		return nil
+	}}, "/scim")
+	user = withSetter.mustCreateUser(map[string]any{"userName": "me-password-2", "title": "Original"})
+	ctx = auth.ContextWithPrincipal(context.Background(), &auth.Principal{Subject: user.ID})
+	recorder = withSetter.doContext(ctx, http.MethodPatch, "/Me", PatchRequest{Operations: []PatchOperation{
+		{Op: "replace", Path: "title", Value: "Changed"},
+		{Op: "replace", Path: "password", Value: "secret"},
+	}}, nil)
+	requireStatus(t, recorder, http.StatusOK)
+	if patched := decodeResponse[User](t, recorder); patched.Title != "Changed" || patched.Password != "" {
+		t.Fatalf("patched me = %+v", patched)
+	}
+}
+
+// TestMeHonorsAttributeSelection verifies PUT and PATCH /Me apply the RFC 7644
+// attributes and excludedAttributes query parameters like the /Users handlers. |
+// TestMeHonorsAttributeSelection 验证 PUT 与 PATCH /Me 像 /Users 处理器一样应用 RFC 7644 的
+// attributes 与 excludedAttributes 查询参数。
+func TestMeHonorsAttributeSelection(t *testing.T) {
+	env := newTestEnv(t, Options{}, "/scim")
+	user := env.mustCreateUser(map[string]any{"userName": "me-selection", "displayName": "Me", "title": "Original"})
+	ctx := auth.ContextWithPrincipal(context.Background(), &auth.Principal{Subject: user.ID})
+
+	recorder := env.doContext(ctx, http.MethodPut, "/Me?attributes=userName", map[string]any{
+		"userName":    "me-selection",
+		"displayName": "Me Updated",
+	}, nil)
+	requireStatus(t, recorder, http.StatusOK)
+	projected := decodeResponse[map[string]any](t, recorder)
+	if _, present := projected["displayName"]; present {
+		t.Fatalf("PUT /Me response ignored attributes: %+v", projected)
+	}
+	if projected["userName"] != "me-selection" {
+		t.Fatalf("PUT /Me response userName = %v", projected["userName"])
+	}
+
+	recorder = env.doContext(ctx, http.MethodPatch, "/Me?excludedAttributes=title", PatchRequest{
+		Operations: []PatchOperation{{Op: "replace", Path: "title", Value: "Changed"}},
+	}, nil)
+	requireStatus(t, recorder, http.StatusOK)
+	projected = decodeResponse[map[string]any](t, recorder)
+	if _, present := projected["title"]; present {
+		t.Fatalf("PATCH /Me response ignored excludedAttributes: %+v", projected)
+	}
+	if projected["displayName"] != "Me Updated" {
+		t.Fatalf("PATCH /Me response displayName = %v", projected["displayName"])
+	}
+}
+
 func TestAuthorizer(t *testing.T) {
 	var actions []string
 	env := newTestEnv(t, Options{Authorizer: func(ctx context.Context, r *http.Request, action, resource string) error {

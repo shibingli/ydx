@@ -506,3 +506,57 @@ func TestServiceImportPublicOnlyRejectsPrivateUsage(t *testing.T) {
 		t.Fatalf("empty symmetric import err = %v, want ErrInvalidMaterial", err)
 	}
 }
+
+func TestValidateMaterialRejectsMismatchedPublicKey(t *testing.T) {
+	privateKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("generate ECDSA P-256: %v", err)
+	}
+	privDER, err := x509.MarshalPKCS8PrivateKey(privateKey)
+	if err != nil {
+		t.Fatalf("marshal private: %v", err)
+	}
+	otherCurveKey, err := ecdsa.GenerateKey(elliptic.P384(), rand.Reader)
+	if err != nil {
+		t.Fatalf("generate ECDSA P-384: %v", err)
+	}
+	otherCurveDER, err := x509.MarshalPKIXPublicKey(&otherCurveKey.PublicKey)
+	if err != nil {
+		t.Fatalf("marshal P-384 public: %v", err)
+	}
+	if _, _, _, err := ValidateMaterial(KeyTypeECDSA, 0, privDER, otherCurveDER); !errors.Is(err, ErrInvalidMaterial) {
+		t.Fatalf("P-256 private with P-384 public err = %v, want ErrInvalidMaterial", err)
+	}
+
+	otherKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("generate second ECDSA P-256: %v", err)
+	}
+	otherDER, err := x509.MarshalPKIXPublicKey(&otherKey.PublicKey)
+	if err != nil {
+		t.Fatalf("marshal second public: %v", err)
+	}
+	if _, _, _, err := ValidateMaterial(KeyTypeECDSA, 0, privDER, otherDER); !errors.Is(err, ErrInvalidMaterial) {
+		t.Fatalf("P-256 private with unrelated P-256 public err = %v, want ErrInvalidMaterial", err)
+	}
+
+	publicKey := privateKey.PublicKey
+	matchingDER, err := x509.MarshalPKIXPublicKey(&publicKey)
+	if err != nil {
+		t.Fatalf("marshal matching public: %v", err)
+	}
+	_, returnedPublic, bits, err := ValidateMaterial(KeyTypeECDSA, 0, privDER, matchingDER)
+	if err != nil {
+		t.Fatalf("matching private and public err = %v", err)
+	}
+	if bits != 256 {
+		t.Fatalf("bits = %d, want 256", bits)
+	}
+	if !bytes.Equal(returnedPublic, matchingDER) {
+		t.Fatalf("returned public material changed")
+	}
+
+	if _, _, _, err := ValidateMaterial(KeyTypeECDSA, 0, privDER, nil); err != nil {
+		t.Fatalf("derive public from private err = %v", err)
+	}
+}

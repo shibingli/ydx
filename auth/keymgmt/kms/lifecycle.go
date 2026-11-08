@@ -2,6 +2,7 @@ package kms
 
 import (
 	"context"
+	"math"
 	"sort"
 	"time"
 
@@ -56,6 +57,7 @@ func (s *Service) Deactivate(ctx context.Context, id string) (*Key, error) {
 		return nil, err
 	}
 	s.succeed(ctx, OperationKeyDeactivate, key.ID, key.Version, map[string]string{"state": string(StateDeactivated)})
+	s.forgetNonces(key.ID)
 	return key.PublicView(), nil
 }
 
@@ -84,6 +86,7 @@ func (s *Service) Compromise(ctx context.Context, id string) (*Key, error) {
 		return nil, err
 	}
 	s.succeed(ctx, OperationKeyCompromise, key.ID, key.Version, map[string]string{"state": string(StateCompromised)})
+	s.forgetNonces(key.ID)
 	return key.PublicView(), nil
 }
 
@@ -112,6 +115,7 @@ func (s *Service) Destroy(ctx context.Context, id string) (*Key, error) {
 		return nil, err
 	}
 	s.succeed(ctx, OperationKeyDestroy, key.ID, key.Version, map[string]string{"state": string(StateDestroyed)})
+	s.forgetNonces(key.ID)
 	return key.PublicView(), nil
 }
 
@@ -152,6 +156,7 @@ func (s *Service) ScheduleDelete(ctx context.Context, id string, delay time.Dura
 		"state":       string(StatePendingDeletion),
 		"deleteAfter": key.DeleteAfter.Format(time.RFC3339),
 	})
+	s.forgetNonces(key.ID)
 	return key.PublicView(), nil
 }
 
@@ -215,10 +220,13 @@ func (s *Service) Rotate(ctx context.Context, id string) (*Key, error) {
 			s.fail(ctx, OperationKeyRotate, key.ID, key.Version, err)
 			return nil, err
 		}
-		next := key.MaxVersion() + 1
-		if next == 0 {
-			next = 1
+		maxVersion := key.MaxVersion()
+		if maxVersion == math.MaxUint32 {
+			err := errs.Detail(ErrInvalidState, "key %[1]q has exhausted the 32-bit version space | 密钥 %[1]q 的 32 位版本号空间已耗尽", key.ID)
+			s.fail(ctx, OperationKeyRotate, key.ID, key.Version, err)
+			return nil, err
 		}
+		next := maxVersion + 1
 		private, public, algorithm, bits, err := generateMaterial(key.Type, key.Bits)
 		if err != nil {
 			s.fail(ctx, OperationKeyRotate, key.ID, key.Version, err)
@@ -253,6 +261,8 @@ func (s *Service) Rotate(ctx context.Context, id string) (*Key, error) {
 		key.Bits = bits
 		revision := key.Revision
 		if err := s.store.UpdateKey(ctx, key); err != nil {
+			key.eraseMaterial()
+			zeroBytes(wrapped)
 			if errorsIs(err, ErrConflict) {
 				continue
 			}
@@ -265,7 +275,10 @@ func (s *Service) Rotate(ctx context.Context, id string) (*Key, error) {
 			"version":         strconvUint32(next),
 			"algorithm":       algorithm,
 		})
-		return key.PublicView(), nil
+		view := key.PublicView()
+		key.eraseMaterial()
+		s.forgetNonceVersion(key.ID, previous)
+		return view, nil
 	}
 	err := errs.Detail(ErrConflict, "key %[1]q changed repeatedly | 密钥 %[1]q 反复变更", target)
 	s.fail(ctx, OperationKeyRotate, target, 0, err)

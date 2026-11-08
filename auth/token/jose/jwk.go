@@ -105,12 +105,15 @@ type Key struct {
 	E string `json:"e,omitempty"`
 	// D is the RSA private exponent or the EC/OKP private value, base64url encoded. | D 是 RSA 私钥指数或 EC/OKP 私有值，base64url 编码。
 	D string `json:"d,omitempty"`
-	// P and Q are the first two RSA prime factors, base64url encoded. | P 与 Q 是前两个 RSA 素数因子，base64url 编码。
+	// P is the first RSA prime factor, base64url encoded. | P 是第一个 RSA 素数因子，base64url 编码。
 	P string `json:"p,omitempty"`
+	// Q is the second RSA prime factor, base64url encoded. | Q 是第二个 RSA 素数因子，base64url 编码。
 	Q string `json:"q,omitempty"`
-	// DP, DQ and QI are the RSA CRT values, base64url encoded. | DP、DQ 与 QI 是 RSA CRT 取值，base64url 编码。
+	// DP is the first RSA CRT exponent, base64url encoded. | DP 是第一个 RSA CRT 指数，base64url 编码。
 	DP string `json:"dp,omitempty"`
+	// DQ is the second RSA CRT exponent, base64url encoded. | DQ 是第二个 RSA CRT 指数，base64url 编码。
 	DQ string `json:"dq,omitempty"`
+	// QI is the RSA CRT coefficient, base64url encoded. | QI 是 RSA CRT 系数，base64url 编码。
 	QI string `json:"qi,omitempty"`
 	// Oth holds additional primes of a multi-prime RSA key. | Oth 保存多素数 RSA 密钥的附加素数。
 	Oth []OtherPrime `json:"oth,omitempty"`
@@ -645,7 +648,7 @@ func decodeMember(name, value string) ([]byte, error) {
 	if value == "" {
 		return nil, errs.Detail(ErrInvalidKey, "missing %[1]s | 缺少 %[1]s", name)
 	}
-	out, err := base64.RawURLEncoding.DecodeString(value)
+	out, err := strictRawURLEncoding.DecodeString(value)
 	if err != nil {
 		return nil, errs.WrapDetail(err, ErrInvalidKey, "member %[1]s | 成员 %[1]s", name)
 	}
@@ -729,6 +732,59 @@ func ecPoint(k *Key, crv elliptic.Curve) (*ecdsa.PublicKey, error) {
 	return pub, nil
 }
 
+// checkKeyUse reports whether the optional use and key_ops metadata of key permits op. | checkKeyUse
+// 报告 key 可选的 use 与 key_ops 元数据是否允许 op。
+//
+// The checks follow RFC 7517 §4.2 and §4.3. An empty use or key_ops imposes no restriction, so
+// providers that publish no metadata are unaffected. | 检查依据 RFC 7517 §4.2 与 §4.3。use 或
+// key_ops 为空时不施加限制，因此不发布元数据的提供方不受影响。
+func checkKeyUse(key *Key, op string) error {
+	if key == nil {
+		return ErrInvalidKey
+	}
+	switch op {
+	case "sign", "verify":
+		if key.Use != "" && key.Use != "sig" {
+			return errs.Detail(ErrInvalidKey, "key use=%[1]q does not permit %[2]s | 密钥 use=%[1]q 不允许 %[2]s", key.Use, op)
+		}
+	case "encrypt", "decrypt":
+		if key.Use != "" && key.Use != "enc" {
+			return errs.Detail(ErrInvalidKey, "key use=%[1]q does not permit %[2]s | 密钥 use=%[1]q 不允许 %[2]s", key.Use, op)
+		}
+	default:
+		return errs.Detail(ErrInvalidKey, "unknown key operation %[1]q | 未知密钥操作 %[1]q", op)
+	}
+	if len(key.KeyOps) == 0 {
+		return nil
+	}
+	var permitted [4]string
+	n := 0
+	switch op {
+	case "sign":
+		permitted[0] = "sign"
+		n = 1
+	case "verify":
+		permitted[0] = "verify"
+		n = 1
+	case "encrypt":
+		permitted[0], permitted[1], permitted[2] = "encrypt", "wrapKey", "deriveKey"
+		permitted[3] = "deriveBits"
+		n = 4
+	case "decrypt":
+		permitted[0], permitted[1], permitted[2] = "decrypt", "unwrapKey", "deriveKey"
+		permitted[3] = "deriveBits"
+		n = 4
+	}
+	for _, want := range permitted[:n] {
+		for _, have := range key.KeyOps {
+			if have == want {
+				return nil
+			}
+		}
+	}
+	return errs.Detail(ErrInvalidKey, "key_ops=%[1]v does not permit %[2]s | key_ops=%[1]v 不允许 %[2]s", key.KeyOps, op)
+}
+
 // checkKeyAlg reports whether key can perform alg. | checkKeyAlg 报告 key 能否执行 alg。
 func checkKeyAlg(key *Key, alg string) error {
 	if key == nil {
@@ -754,6 +810,23 @@ func checkKeyAlg(key *Key, alg string) error {
 		"RSA-OAEP", "RSA-OAEP-256", "RSA1_5":
 		if key.Kty != KeyTypeRSA {
 			return mismatch(KeyTypeRSA)
+		}
+		// RFC 7518 §3.3 and §4.3 require a modulus of at least 2048 bits for these algorithms.
+		// Family-only checks may run on a key without material; those keys are rejected later
+		// when the standard-library key is derived. | RFC 7518 §3.3 与 §4.3 要求这些算法使用至少
+		// 2048 位的模数。仅做算法族检查时密钥可能尚无材料，这类密钥随后在派生标准库密钥时被拒绝。
+		if key.N != "" {
+			pub, err := key.PublicKey()
+			if err != nil {
+				return err
+			}
+			rsaPub, ok := pub.(*rsa.PublicKey)
+			if !ok {
+				return mismatch(KeyTypeRSA)
+			}
+			if rsaPub.N == nil || rsaPub.N.BitLen() < 2048 {
+				return errs.Detail(ErrWeakKey, "alg=%[1]s needs a 2048-bit RSA key | 算法 %[1]s 需要 2048 位 RSA 密钥", alg)
+			}
 		}
 	case "ES256":
 		if key.Kty != KeyTypeEC || key.Crv != CurveP256 {

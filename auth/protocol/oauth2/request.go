@@ -46,6 +46,12 @@ func ParseAuthorizationRequestContext(ctx context.Context, r *http.Request, clie
 		if !strings.HasPrefix(strings.ToLower(contentType), "application/x-www-form-urlencoded") {
 			return nil, errs.Detail(ErrInvalidRequest, "authorization POST requires application/x-www-form-urlencoded | 授权 POST 需要 application/x-www-form-urlencoded")
 		}
+		// This parser has no ResponseWriter to notify, so it caps the body without the connection
+		// hint MaxBytesReader would otherwise use. | 该解析器没有可通知的 ResponseWriter，因此仅限制
+		// 正文大小，而不使用 MaxBytesReader 提供的连接提示。
+		if r.Body != nil {
+			r.Body = http.MaxBytesReader(nil, r.Body, maxFormBodyBytes)
+		}
 		if err := r.ParseForm(); err != nil {
 			return nil, errs.Wrap(err, ErrInvalidRequest)
 		}

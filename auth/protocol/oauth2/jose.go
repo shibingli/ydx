@@ -477,7 +477,8 @@ func (v *PrivateKeyJWTVerifier) clientKeySet(ctx context.Context, client *Client
 	// Only encrypted transport is dereferenced; loopback HTTP stays available to local tests and
 	// native development servers, while arbitrary http URLs cannot become an SSRF primitive. | 只
 	// 抓取加密传输；回环 HTTP 供本地测试与原生开发服务器使用，任意 http 地址不能成为 SSRF 手段。
-	if parsed.Scheme != "https" && !(parsed.Scheme == "http" && isLoopbackHost(parsed.Hostname())) {
+	loopbackHTTP := parsed.Scheme == "http" && isLoopbackHost(parsed.Hostname())
+	if parsed.Scheme != "https" && !loopbackHTTP {
 		return nil, errs.Detail(ErrInvalidClient, "client jwks_uri must use https | 客户端 jwks_uri 必须使用 https")
 	}
 	now := time.Now

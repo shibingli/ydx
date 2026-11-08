@@ -41,9 +41,11 @@ type AccessTokenClaims struct {
 	Subject string `json:"sub"`
 	// Audience is the aud claim. | Audience 是 aud 声明。
 	Audience []string `json:"aud,omitempty"`
-	// ExpiresAt, IssuedAt and NotBefore are NumericDate values. | ExpiresAt、IssuedAt 与 NotBefore 是 NumericDate 取值。
+	// ExpiresAt is the expiry NumericDate. | ExpiresAt 是过期 NumericDate。
 	ExpiresAt int64 `json:"exp"`
-	IssuedAt  int64 `json:"iat"`
+	// IssuedAt is the issue NumericDate. | IssuedAt 是签发 NumericDate。
+	IssuedAt int64 `json:"iat"`
+	// NotBefore is the not-before NumericDate. | NotBefore 是生效前 NumericDate。
 	NotBefore int64 `json:"nbf,omitempty"`
 	// JTI is the token identifier. | JTI 是令牌标识。
 	JTI string `json:"jti"`
@@ -53,8 +55,9 @@ type AccessTokenClaims struct {
 	Scope string `json:"scope,omitempty"`
 	// AuthTime is the end-user authentication time. | AuthTime 是最终用户认证时间。
 	AuthTime int64 `json:"auth_time,omitempty"`
-	// ACR and AMR describe the authentication context. | ACR 与 AMR 描述认证上下文。
-	ACR string   `json:"acr,omitempty"`
+	// ACR is the authentication context class reference. | ACR 是认证上下文类引用。
+	ACR string `json:"acr,omitempty"`
+	// AMR lists the authentication methods. | AMR 列出认证方法。
 	AMR []string `json:"amr,omitempty"`
 	// CNF is the confirmation claim for sender-constrained tokens. | CNF 是发送方约束令牌的确认声明。
 	CNF map[string]any `json:"cnf,omitempty"`
@@ -72,8 +75,9 @@ type AccessTokenVerifier interface {
 	VerifyAccessToken(ctx context.Context, token string) (*AccessTokenClaims, error)
 }
 
-// ClientAssertionVerifier verifies RFC 7523 private_key_jwt or client_secret_jwt assertions. | ClientAssertionVerifier
-// 校验 RFC 7523 private_key_jwt 或 client_secret_jwt 断言。
+// ClientAssertionVerifier verifies RFC 7523 private_key_jwt assertions. client_secret_jwt is not
+// supported because clients store only a secret hash. | ClientAssertionVerifier 校验 RFC 7523
+// private_key_jwt 断言。由于客户端只保存密钥哈希，不支持 client_secret_jwt。
 type ClientAssertionVerifier interface {
 	// VerifyClientAssertion verifies assertion for client at audience. | VerifyClientAssertion 在 audience 处为 client 校验 assertion。
 	VerifyClientAssertion(ctx context.Context, client *Client, assertion, audience string) error
@@ -111,17 +115,21 @@ type Grant struct {
 	Client *Client
 	// Principal is the resource owner; nil for client-credentials grants. | Principal 是资源所有者；客户端凭据授权为空。
 	Principal *auth.Principal
-	// UserID and Subject identify the resource owner. | UserID 与 Subject 标识资源所有者。
-	UserID  string
+	// UserID is the local resource-owner identifier. | UserID 是本地资源所有者标识。
+	UserID string
+	// Subject is the authorization-server subject. | Subject 是授权服务器主体。
 	Subject string
 	// Scopes are the granted scopes. | Scopes 是已授予作用域。
 	Scopes []string
 	// Audience lists the resource indicators. | Audience 列出资源指示器。
 	Audience []string
-	// AuthTime, ACR, AMR and SessionID describe the authentication event. | AuthTime、ACR、AMR 与 SessionID 描述认证事件。
-	AuthTime  time.Time
-	ACR       string
-	AMR       []string
+	// AuthTime is the authentication time. | AuthTime 是认证时间。
+	AuthTime time.Time
+	// ACR is the authentication context class reference. | ACR 是认证上下文类引用。
+	ACR string
+	// AMR lists the authentication methods. | AMR 列出认证方法。
+	AMR []string
+	// SessionID identifies the authentication session. | SessionID 标识认证会话。
 	SessionID string
 	// Nonce is the OpenID Connect nonce. | Nonce 是 OpenID Connect nonce。
 	Nonce string
@@ -131,8 +139,9 @@ type Grant struct {
 	Code *AuthorizationCode
 	// RefreshToken is the redeemed refresh token, when any. | RefreshToken 是已兑换的刷新令牌（如有）。
 	RefreshToken *RefreshToken
-	// DPoPJKT and CertThumbprint bind the issued tokens. | DPoPJKT 与 CertThumbprint 绑定的签发令牌。
-	DPoPJKT        string
+	// DPoPJKT binds the issued tokens to a DPoP key. | DPoPJKT 把签发的令牌绑定到 DPoP 密钥。
+	DPoPJKT string
+	// CertThumbprint binds the issued tokens to a client certificate. | CertThumbprint 把签发的令牌绑定到客户端证书。
 	CertThumbprint string
 	// GrantID identifies the authorization grant family. | GrantID 标识授权许可家族。
 	GrantID string
@@ -165,22 +174,30 @@ type ServerConfig struct {
 	Issuer string
 	// PathPrefix is the mount prefix; empty derives it from Issuer's path. | PathPrefix 是挂载前缀；空值从 Issuer 路径推导。
 	PathPrefix string
-	// AuthorizationPath, TokenPath and the other path fields override the default endpoint paths. | AuthorizationPath、TokenPath 等路径字段覆盖默认端点路径。
-	AuthorizationPath       string
-	TokenPath               string
-	IntrospectionPath       string
-	RevocationPath          string
+	// AuthorizationPath overrides the authorization endpoint path. | AuthorizationPath 覆盖授权端点路径。
+	AuthorizationPath string
+	// TokenPath overrides the token endpoint path. | TokenPath 覆盖令牌端点路径。
+	TokenPath string
+	// IntrospectionPath overrides the introspection endpoint path. | IntrospectionPath 覆盖自省端点路径。
+	IntrospectionPath string
+	// RevocationPath overrides the revocation endpoint path. | RevocationPath 覆盖撤销端点路径。
+	RevocationPath string
+	// DeviceAuthorizationPath overrides the device authorization endpoint path. | DeviceAuthorizationPath 覆盖设备授权端点路径。
 	DeviceAuthorizationPath string
-	DeviceVerificationPath  string
-	PARPath                 string
-	MetadataPath            string
+	// DeviceVerificationPath overrides the device verification page path. | DeviceVerificationPath 覆盖设备验证页路径。
+	DeviceVerificationPath string
+	// PARPath overrides the pushed authorization request endpoint path. | PARPath 覆盖推送授权请求端点路径。
+	PARPath string
+	// MetadataPath overrides the authorization-server metadata path. | MetadataPath 覆盖授权服务器元数据路径。
+	MetadataPath string
 	// JWKSURI is published in metadata for JWT access tokens and ID tokens. | JWKSURI 在元数据中发布，用于 JWT 访问令牌与 ID 令牌。
 	JWKSURI string
 	// RegistrationEndpoint is published when dynamic registration exists. | RegistrationEndpoint 在存在动态注册时发布。
 	RegistrationEndpoint string
-	// Clients and Store are the persistence ports. | Clients 与 Store 是持久化端口。
+	// Clients stores client registrations. | Clients 存储客户端注册。
 	Clients ClientStore
-	Store   Store
+	// Store stores grants and tokens. | Store 存储许可与令牌。
+	Store Store
 	// Scopes is the scope registry; nil uses DefaultScopes. | Scopes 是作用域注册表；空值使用 DefaultScopes。
 	Scopes ScopeRegistry
 	// Authenticator resolves the resource owner. | Authenticator 解析资源所有者。
@@ -193,15 +210,18 @@ type ServerConfig struct {
 	LoginHandler http.HandlerFunc
 	// TokenFormat selects opaque or JWT access tokens. | TokenFormat 选择不透明或 JWT 访问令牌。
 	TokenFormat string
-	// AccessTokenTTL, RefreshTokenTTL, AuthorizationCodeTTL, DeviceCodeTTL, DeviceInterval and PARTTL
-	// override lifetimes. | AccessTokenTTL、RefreshTokenTTL、AuthorizationCodeTTL、DeviceCodeTTL、
-	// DeviceInterval 与 PARTTL 覆盖寿命。
-	AccessTokenTTL       time.Duration
-	RefreshTokenTTL      time.Duration
+	// AccessTokenTTL overrides the access-token lifetime. | AccessTokenTTL 覆盖访问令牌寿命。
+	AccessTokenTTL time.Duration
+	// RefreshTokenTTL overrides the refresh-token lifetime. | RefreshTokenTTL 覆盖刷新令牌寿命。
+	RefreshTokenTTL time.Duration
+	// AuthorizationCodeTTL overrides the authorization-code lifetime. | AuthorizationCodeTTL 覆盖授权码寿命。
 	AuthorizationCodeTTL time.Duration
-	DeviceCodeTTL        time.Duration
-	DeviceInterval       time.Duration
-	PARTTL               time.Duration
+	// DeviceCodeTTL overrides the device-code lifetime. | DeviceCodeTTL 覆盖设备码寿命。
+	DeviceCodeTTL time.Duration
+	// DeviceInterval overrides the device polling interval. | DeviceInterval 覆盖设备轮询间隔。
+	DeviceInterval time.Duration
+	// PARTTL overrides the pushed authorization request lifetime. | PARTTL 覆盖推送授权请求寿命。
+	PARTTL time.Duration
 	// DisableIssuerParameter suppresses the RFC 9207 iss response parameter. | DisableIssuerParameter 关闭 RFC 9207 iss 响应参数。
 	DisableIssuerParameter bool
 	// AllowImplicit enables response_type=token. | AllowImplicit 启用 response_type=token。
@@ -224,7 +244,9 @@ type ServerConfig struct {
 	DPoPRequired bool
 	// DPoPVerifier verifies proofs; required when DPoPRequired is set or a client sends DPoP. | DPoPVerifier 校验证明；DPoPRequired 或客户端发送 DPoP 时必填。
 	DPoPVerifier DPoPVerifier
-	// ClientAssertionVerifier verifies private_key_jwt and client_secret_jwt authentication. | ClientAssertionVerifier 校验 private_key_jwt 与 client_secret_jwt 认证。
+	// ClientAssertionVerifier verifies private_key_jwt authentication. client_secret_jwt is not
+	// supported because only secret hashes are stored. | ClientAssertionVerifier 校验
+	// private_key_jwt 认证。由于只保存密钥哈希，不支持 client_secret_jwt。
 	ClientAssertionVerifier ClientAssertionVerifier
 	// AccessTokenIssuer signs JWT access tokens. | AccessTokenIssuer 签发 JWT 访问令牌。
 	AccessTokenIssuer JWTIssuer
@@ -269,6 +291,10 @@ type Server struct {
 	now            func() time.Time
 	requestObjects *requestObjectVerifier
 	requestURIs    *requestURICache
+	// issuerOrigin is the scheme and authority of Issuer, used to build endpoint URLs without
+	// repeating an issuer path that already became PathPrefix. | issuerOrigin 是 Issuer 的协议与
+	// 主机部分，用于构建端点 URL 时不重复已成为 PathPrefix 的 issuer 路径。
+	issuerOrigin string
 }
 
 // NewServer returns a Server. | NewServer 返回 Server。
@@ -344,7 +370,7 @@ func NewServer(config ServerConfig) (*Server, error) {
 		// 会把授权端点变成 SSRF 原语。
 		return nil, errs.Detail(ErrInvalidConfig, "external request_uri needs request_uris registration or allowed hosts | 外部 request_uri 需要注册或主机白名单")
 	}
-	server := &Server{config: config, now: config.Clock}
+	server := &Server{config: config, now: config.Clock, issuerOrigin: parsed.Scheme + "://" + parsed.Host}
 	if server.now == nil {
 		server.now = time.Now
 	}
@@ -412,7 +438,8 @@ func (s *Server) Now() time.Time { return s.now().UTC() }
 // Issuer returns the issuer identifier. | Issuer 返回签发方标识。
 func (s *Server) Issuer() string { return s.config.Issuer }
 
-// Path returns the mounted path for p. | Path 返回 p 的挂载路径。
+// Path returns the mounted path for the unprefixed endpoint path p. | Path 返回未加前缀的端点路径 p
+// 的挂载路径。
 func (s *Server) Path(p string) string {
 	if p != "" && !strings.HasPrefix(p, "/") {
 		p = "/" + p
@@ -423,8 +450,26 @@ func (s *Server) Path(p string) string {
 	return s.config.PathPrefix + p
 }
 
-// Endpoint returns the absolute URL for a mounted path. | Endpoint 返回挂载路径的绝对 URL。
-func (s *Server) Endpoint(p string) string { return s.config.Issuer + p }
+// Endpoint returns the absolute URL for an endpoint path that does not include the mount prefix.
+// It combines the issuer scheme and host with Path(p). Path returns the mounted path, so callers
+// must pass a configured endpoint path such as ServerConfig.TokenPath and must never call
+// Endpoint(Path(p)), which would apply the prefix twice. | Endpoint 返回未包含挂载前缀的端点路径的
+// 绝对 URL。它把 issuer 的协议与主机部分与 Path(p) 组合。Path 返回挂载后的路径，因此调用方必须
+// 传入配置中的端点路径（例如 ServerConfig.TokenPath），且绝不能调用 Endpoint(Path(p))，否则前缀
+// 会被应用两次。
+func (s *Server) Endpoint(p string) string { return s.issuerOrigin + s.Path(p) }
+
+// maxFormBodyBytes limits form-encoded endpoint bodies. | maxFormBodyBytes 限制表单编码的端点正文。
+const maxFormBodyBytes = 1 << 20
+
+// limitFormBody caps the request body before ParseForm reads it. | limitFormBody 在 ParseForm 读取之前
+// 限制请求正文大小。
+func limitFormBody(w http.ResponseWriter, r *http.Request) {
+	if r == nil || r.Body == nil {
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, maxFormBodyBytes)
+}
 
 // Register mounts every endpoint on a ydx/router Router. | Register 把所有端点挂载到 ydx/router Router。
 func (s *Server) Register(r *router.Router) {
@@ -551,8 +596,19 @@ func (s *Server) ValidateAccessToken(ctx context.Context, raw string) (*AccessTo
 		if err != nil {
 			return nil, errs.Wrap(err, ErrInvalidGrant)
 		}
-		if stored, err := s.config.Store.GetAccessToken(ctx, auth.HashToken(raw)); err == nil && stored.Revoked {
-			return nil, ErrInvalidGrant
+		stored, err := s.config.Store.GetAccessToken(ctx, auth.HashToken(raw))
+		switch {
+		case err == nil:
+			if stored == nil || stored.Revoked {
+				return nil, ErrInvalidGrant
+			}
+		case errors.Is(err, ErrInvalidGrant):
+			// A verified JWT that the store never tracked stays valid, matching stateless issuers.
+			// Any other store failure must fail closed so a revoked token cannot survive an outage. |
+			// 存储从未记录但已校验的 JWT 保持有效，以兼容无状态签发方。其他存储故障必须失败关闭，
+			// 避免撤销的令牌在故障期间继续有效。
+		default:
+			return nil, errs.Wrap(err, ErrInvalidGrant)
 		}
 		token := &AccessToken{
 			TokenHash:      auth.HashToken(raw),

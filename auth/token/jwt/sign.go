@@ -65,11 +65,17 @@ func putScratch(s *scratch) {
 	scratchPool.Put(s)
 }
 
+// strictRawURLEncoding is the canonical unpadded base64url codec. RFC 7515 §2 requires the pad bits
+// to be zero; the tolerant default would accept several spellings of the same segment bytes. |
+// strictRawURLEncoding 是规范的无填充 base64url 编解码器。RFC 7515 §2 要求填充位为零；宽容的默认
+// 解码会接受同一段字节的多种拼写。
+var strictRawURLEncoding = base64.RawURLEncoding.Strict()
+
 // decodeSegment base64url-decodes seg into dst without allocating an intermediate
 // text buffer: AppendDecodeString reads the string directly. | decodeSegment 把 seg
 // 以 base64url 解码到 dst，且不分配中间文本缓冲：AppendDecodeString 直接读取字符串。
 func decodeSegment(s *scratch, dst *[]byte, seg string) bool {
-	out, err := base64.RawURLEncoding.AppendDecodeString((*dst)[:0], seg)
+	out, err := strictRawURLEncoding.AppendDecodeString((*dst)[:0], seg)
 	if err != nil {
 		return false
 	}
@@ -129,14 +135,19 @@ func scanHeader(raw []byte, f *headerFields) error {
 			// reject the token. This implementation supports none, so any crit header fails closed.
 			// | RFC 7515 §4.1.11 要求接收方不理解 "crit" 扩展时必须拒绝令牌。本实现不支持任何扩展，
 			// 因此任何 crit 头部都失败关闭。
-			if rawEqualString(s.key, "crit") {
+			// Compare the decoded name, not the raw bytes: a member name that JSON-decodes to "crit"
+			// (for example an ASCII letter spelled with a Unicode escape) is the crit parameter under
+			// RFC 7515 §4, and a byte comparison would let that spelling bypass the fail-closed check. |
+			// 比较解码后的名字而不是原始字节：JSON 解码后等于 "crit" 的成员名（例如用 Unicode 转义
+			// 拼出的 ASCII 字母）就是 RFC 7515 §4 的 crit 参数，逐字节比较会让这种拼写绕过失败关闭检查。
+			if keyMatches(s.key, "crit") {
 				return errs.Detail(ErrMalformed, "unsupported crit header | 不支持 crit 头部")
 			}
 			// RFC 7797 unencoded payloads are not implemented. Accepting b64=false would change the
 			// signing input without implementing its rules, so the parameter is refused outright. |
 			// 本实现不支持 RFC 7797 的无编码载荷。接受 b64=false 会在未实现其规则的情况下改变签名
 			// 输入，因此该参数一律拒绝。
-			if rawEqualString(s.key, "b64") {
+			if keyMatches(s.key, "b64") {
 				return errs.Detail(ErrMalformed, "unsupported b64 header | 不支持 b64 头部")
 			}
 			if v, ok := jsonStringValue(s.val); ok {
@@ -187,7 +198,11 @@ var allAlgs = []Alg{HS256, HS384, HS512, RS256, RS384, RS512, PS256, PS384, PS51
 type SignOptions struct {
 	// Header adds extra header parameters. | Header 附加额外的头部参数。
 	//
-	// The reserved names alg, typ and kid are ignored, so this map can never override them. | 保留名 alg、typ 与 kid 会被忽略，因此该 map 无法覆盖它们。
+	// The reserved names alg, typ and kid are ignored, so this map can never override them. The crit
+	// and b64 extension names are refused with ErrInvalidHeader because this implementation supports
+	// neither, and signing them would only produce a token that Parse rejects. | 保留名 alg、typ 与
+	// kid 会被忽略，因此该 map 无法覆盖它们。crit 与 b64 扩展名会以 ErrInvalidHeader 拒绝，因为本
+	// 实现两者都不支持，签发它们只会产出 Parse 拒绝的 token。
 	Header map[string]string
 	// Kid sets the "kid" header parameter; empty means the parameter is omitted. | Kid 设置 "kid" 头部参数；为空表示省略该参数。
 	Kid string
@@ -244,7 +259,11 @@ func signPayload(payload []byte, key any, alg Alg, o SignOptions) (string, error
 	defer putScratch(s)
 
 	// Encode both segments into pooled buffers and keep the signing input in one contiguous slice. | 把两段编码进池化缓冲，并让签名输入保持为一段连续内存。
-	s.header = appendHeader(s.header[:0], alg, o)
+	var err error
+	s.header, err = appendHeader(s.header[:0], alg, o)
+	if err != nil {
+		return "", err
+	}
 	s.input = base64.RawURLEncoding.AppendEncode(s.input[:0], s.header)
 	s.input = append(s.input, '.')
 	s.input = base64.RawURLEncoding.AppendEncode(s.input, payload)
@@ -263,10 +282,12 @@ func signPayload(payload []byte, key any, alg Alg, o SignOptions) (string, error
 // 把受保护头部序列化进 dst，不构造 map，也不使用反射。
 //
 // The reserved names alg, typ and kid are controlled by SignOptions and can never be smuggled in
-// through Header. Keys are sorted so that identical options produce identical header bytes. | 保留名
-// alg、typ 与 kid 由 SignOptions 控制，绝不可能经由 Header 混入。键会排序，因此相同选项产生
+// through Header. The unsupported crit and b64 extensions are refused so Sign cannot mint a token
+// that Parse would reject. Keys are sorted so that identical options produce identical header
+// bytes. | 保留名 alg、typ 与 kid 由 SignOptions 控制，绝不可能经由 Header 混入。尚未支持的
+// crit 与 b64 扩展会被拒绝，使 Sign 无法签发 Parse 会拒绝的 token。键会排序，因此相同选项产生
 // 相同的头部字节。
-func appendHeader(dst []byte, alg Alg, o SignOptions) []byte {
+func appendHeader(dst []byte, alg Alg, o SignOptions) ([]byte, error) {
 	dst = append(dst, `{"alg":"`...)
 	dst = append(dst, alg...)
 	dst = append(dst, `","typ":"JWT"`...)
@@ -280,6 +301,8 @@ func appendHeader(dst []byte, alg Alg, o SignOptions) []byte {
 			switch k {
 			case "alg", "typ", "kid":
 				continue
+			case "crit", "b64":
+				return dst, errs.Detail(ErrInvalidHeader, "unsupported %[1]s header | 不支持 %[1]s 头部", k)
 			}
 			keys = append(keys, k)
 		}
@@ -291,7 +314,7 @@ func appendHeader(dst []byte, alg Alg, o SignOptions) []byte {
 			dst = appendJSONStringLiteral(dst, o.Header[k])
 		}
 	}
-	return append(dst, '}')
+	return append(dst, '}'), nil
 }
 
 // appendJSONStringLiteral appends s as a JSON string literal, escaping control characters and quotes and
@@ -429,6 +452,9 @@ func signRaw(alg Alg, key any, input []byte, s *scratch) ([]byte, error) {
 		if !ok {
 			return nil, keyTypeError(alg)
 		}
+		if k.N == nil || k.N.BitLen() < 2048 {
+			return nil, errs.Detail(ErrWeakKey, "alg=%[1]s needs a 2048-bit RSA key | 算法 %[1]s 需要 2048 位 RSA 密钥", string(alg))
+		}
 		digest := algHashPool(alg).sum(input, s.mac[:0])
 		sig, err := rsa.SignPKCS1v15(rand.Reader, k, h, digest)
 		if err != nil {
@@ -439,6 +465,9 @@ func signRaw(alg Alg, key any, input []byte, s *scratch) ([]byte, error) {
 		k, ok := key.(*rsa.PrivateKey)
 		if !ok {
 			return nil, keyTypeError(alg)
+		}
+		if k.N == nil || k.N.BitLen() < 2048 {
+			return nil, errs.Detail(ErrWeakKey, "alg=%[1]s needs a 2048-bit RSA key | 算法 %[1]s 需要 2048 位 RSA 密钥", string(alg))
 		}
 		digest := algHashPool(alg).sum(input, s.mac[:0])
 		opts := &rsa.PSSOptions{SaltLength: rsa.PSSSaltLengthEqualsHash, Hash: h}
@@ -623,12 +652,12 @@ func appendFixedWidth(dst []byte, r, s *big.Int, width int) []byte {
 func rsaVerifyKey(key any) (*rsa.PublicKey, bool) {
 	switch k := key.(type) {
 	case *rsa.PublicKey:
-		if k == nil || k.N == nil || k.E <= 0 {
+		if k == nil || k.N == nil || k.E <= 0 || k.N.BitLen() < 2048 {
 			return nil, false
 		}
 		return k, true
 	case *rsa.PrivateKey:
-		if k == nil || k.PublicKey.N == nil || k.PublicKey.E <= 0 {
+		if k == nil || k.N == nil || k.E <= 0 || k.N.BitLen() < 2048 {
 			return nil, false
 		}
 		return &k.PublicKey, true

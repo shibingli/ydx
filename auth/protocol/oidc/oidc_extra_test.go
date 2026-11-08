@@ -258,6 +258,63 @@ func TestBackchannelLogoutEndpoint(t *testing.T) {
 	}
 }
 
+// TestBackchannelLogoutRequiresReceiverAudience verifies that the receiver rejects tokens issued
+// for another RP, enforces the azp rules for multi-audience tokens, and fails closed without a
+// configured receiver client_id. | TestBackchannelLogoutRequiresReceiverAudience 校验接收端拒绝
+// 签发给其他 RP 的令牌，对多受众令牌执行 azp 规则，并在未配置接收端 client_id 时按失败关闭处理。
+func TestBackchannelLogoutRequiresReceiverAudience(t *testing.T) {
+	fixture := newOIDCFixture(t, false)
+	provider := fixture.provider
+	now := time.Now().Unix()
+	claimsFor := func(jti string, audience []string, azp string) map[string]any {
+		claims := map[string]any{
+			"iss":    fixture.server.URL,
+			"sub":    "user-1",
+			"aud":    audience,
+			"iat":    now,
+			"jti":    jti,
+			"events": map[string]any{BackchannelLogoutEvent: map[string]any{}},
+		}
+		if azp != "" {
+			claims["azp"] = azp
+		}
+		return claims
+	}
+	deliver := func(claims map[string]any) *httptest.ResponseRecorder {
+		form := url.Values{"logout_token": {signLogoutClaims(t, provider, claims)}}
+		req := httptest.NewRequest(http.MethodPost, BackchannelLogoutPath, strings.NewReader(form.Encode()))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		recorder := httptest.NewRecorder()
+		provider.BackchannelLogout(recorder, req)
+		return recorder
+	}
+	cases := []struct {
+		name       string
+		jti        string
+		audience   []string
+		azp        string
+		wantStatus int
+	}{
+		{name: "other client", jti: "jti-other", audience: []string{"other-rp"}, wantStatus: http.StatusBadRequest},
+		{name: "multi audience without azp", jti: "jti-multi-no-azp", audience: []string{"web", "other-rp"}, wantStatus: http.StatusBadRequest},
+		{name: "multi audience wrong azp", jti: "jti-multi-wrong-azp", audience: []string{"web", "other-rp"}, azp: "other-rp", wantStatus: http.StatusBadRequest},
+		{name: "multi audience correct azp", jti: "jti-multi-azp", audience: []string{"web", "other-rp"}, azp: "web", wantStatus: http.StatusOK},
+		{name: "single audience wrong azp", jti: "jti-single-wrong-azp", audience: []string{"web"}, azp: "other-rp", wantStatus: http.StatusBadRequest},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if recorder := deliver(claimsFor(tc.jti, tc.audience, tc.azp)); recorder.Code != tc.wantStatus {
+				t.Fatalf("status = %d, want %d body=%s | 状态 = %d，期望 %d，正文 = %s",
+					recorder.Code, tc.wantStatus, recorder.Body.String(), recorder.Code, tc.wantStatus, recorder.Body.String())
+			}
+		})
+	}
+	provider.config.BackchannelLogoutClientID = ""
+	if recorder := deliver(claimsFor("jti-unconfigured", []string{"web"}, "")); recorder.Code != http.StatusInternalServerError {
+		t.Fatalf("unconfigured receiver = %d | 未配置接收端 = %d", recorder.Code, recorder.Code)
+	}
+}
+
 func TestEndSessionEndpointAndURL(t *testing.T) {
 	fixture := newOIDCFixture(t, false)
 	provider := fixture.provider
@@ -373,7 +430,9 @@ func TestFrontchannelLogout(t *testing.T) {
 }
 
 func TestPairwiseSubjects(t *testing.T) {
-	if PairwiseSubject("user-1", "sector-a", "salt") != PairwiseSubject("user-1", "sector-a", "salt") {
+	firstSubject := PairwiseSubject("user-1", "sector-a", "salt")
+	secondSubject := PairwiseSubject("user-1", "sector-a", "salt")
+	if firstSubject != secondSubject {
 		t.Fatal("pairwise subject is not deterministic")
 	}
 	if PairwiseSubject("user-1", "sector-a", "salt") == PairwiseSubject("user-2", "sector-a", "salt") ||

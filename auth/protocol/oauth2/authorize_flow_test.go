@@ -460,7 +460,7 @@ func TestAuthorizeValidationPolicies(t *testing.T) {
 	if values := locationValues(t, resp); values.Get("error") != ErrorInvalidRequest {
 		t.Fatalf("plain PKCE disabled = %v", values)
 	}
-	server, client = flowServer(t, func(config *ServerConfig) { config.AllowPKCEPlain = true })
+	server, _ = flowServer(t, func(config *ServerConfig) { config.AllowPKCEPlain = true })
 	resp = authorize(t, server, params)
 	if values := locationValues(t, resp); resp.StatusCode != http.StatusFound || values.Get("code") == "" {
 		t.Fatalf("plain PKCE enabled = %d %v", resp.StatusCode, values)

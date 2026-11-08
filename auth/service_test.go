@@ -692,3 +692,158 @@ func TestServiceAuthenticateHooksAndStoreFailures(t *testing.T) {
 		t.Fatalf("update store error = %v", err)
 	}
 }
+
+func TestNewHonorsPartialLockoutPolicy(t *testing.T) {
+	harness := newTestService(t, func(config *Config) {
+		config.Lockout = LockoutPolicy{BaseLockout: 2 * time.Second, MaxLockout: 10 * time.Second}
+	})
+	harness.register(t, "partial-lockout")
+	ctx := context.Background()
+	for i := 0; i < DefaultLockoutPolicy().MaxAttempts; i++ {
+		if _, err := harness.service.Authenticate(ctx, AuthenticateInput{Login: "partial-lockout", Password: "wrong"}); !errors.Is(err, ErrInvalidCredentials) {
+			t.Fatalf("attempt %d = %v", i+1, err)
+		}
+	}
+	user, err := harness.stores.Users.GetUserByEmail(ctx, "partial-lockout@example.com")
+	if err != nil {
+		t.Fatalf("get user: %v", err)
+	}
+	want := harness.clock.Now().Add(2 * time.Second)
+	if !user.LockedUntil.Equal(want) {
+		t.Fatalf("locked until %v, want the configured 2s base lock %v", user.LockedUntil, want)
+	}
+}
+
+func TestRegisterRejectsWhitespaceOnlyIdentifiers(t *testing.T) {
+	harness := newTestService(t, nil)
+	_, err := harness.service.Register(context.Background(), RegisterInput{
+		Username: "  ",
+		Email:    "\t",
+		Phone:    " ",
+		Password: testServicePassword,
+	})
+	if !errors.Is(err, ErrInvalidRequest) {
+		t.Fatalf("whitespace only identifiers = %v, want ErrInvalidRequest", err)
+	}
+	if _, total, err := harness.stores.Users.ListUsers(context.Background(), UserQuery{}); err != nil || total != 0 {
+		t.Fatalf("users after rejected register = %d, %v", total, err)
+	}
+}
+
+func TestAuthenticateReplacesPreviousMFAChallenge(t *testing.T) {
+	harness := newTestService(t, nil)
+	ctx := context.Background()
+	user := harness.register(t, "mfa-replace")
+	harness.service.RegisterMFAVerifier(CredentialTOTP, &fakeMFAVerifier{code: "123456"})
+	if _, err := harness.service.RegisterCredential(ctx, &Credential{UserID: user.ID, Type: CredentialTOTP, Secret: "test-secret"}); err != nil {
+		t.Fatalf("register credential: %v", err)
+	}
+	first, err := harness.service.Authenticate(ctx, AuthenticateInput{Login: "mfa-replace", Password: testServicePassword})
+	if err != nil || !first.MFARequired || first.MFAToken == "" {
+		t.Fatalf("first password phase = %+v, %v", first, err)
+	}
+	second, err := harness.service.Authenticate(ctx, AuthenticateInput{Login: "mfa-replace", Password: testServicePassword})
+	if err != nil || !second.MFARequired || second.MFAToken == "" {
+		t.Fatalf("second password phase = %+v, %v", second, err)
+	}
+	if second.MFAToken == first.MFAToken {
+		t.Fatal("second password phase reused the first challenge")
+	}
+	if _, err := harness.service.CompleteMFA(ctx, CompleteMFAInput{UserID: user.ID, MFAToken: first.MFAToken, Response: "123456"}); !errors.Is(err, ErrTokenInvalid) {
+		t.Fatalf("stale challenge = %v, want ErrTokenInvalid", err)
+	}
+	if _, err := harness.service.CompleteMFA(ctx, CompleteMFAInput{UserID: user.ID, MFAToken: second.MFAToken, Response: "123456"}); err != nil {
+		t.Fatalf("current challenge: %v", err)
+	}
+}
+
+func TestMFAFailuresShareLockoutAcrossPasswordPhases(t *testing.T) {
+	harness := newTestService(t, func(config *Config) {
+		config.Lockout = LockoutPolicy{MaxAttempts: 2, BaseLockout: time.Minute, MaxLockout: time.Minute}
+	})
+	ctx := context.Background()
+	user := harness.register(t, "mfa-lockout")
+	harness.service.RegisterMFAVerifier(CredentialTOTP, &fakeMFAVerifier{code: "123456"})
+	if _, err := harness.service.RegisterCredential(ctx, &Credential{UserID: user.ID, Type: CredentialTOTP, Secret: "test-secret"}); err != nil {
+		t.Fatalf("register credential: %v", err)
+	}
+	for i := 0; i < 2; i++ {
+		result, err := harness.service.Authenticate(ctx, AuthenticateInput{Login: "mfa-lockout", Password: testServicePassword})
+		if err != nil || !result.MFARequired {
+			t.Fatalf("password phase %d = %+v, %v", i+1, result, err)
+		}
+		if _, err := harness.service.CompleteMFA(ctx, CompleteMFAInput{UserID: user.ID, MFAToken: result.MFAToken, Response: "000000"}); !errors.Is(err, ErrMFAInvalid) {
+			t.Fatalf("wrong factor %d = %v", i+1, err)
+		}
+	}
+	if _, err := harness.service.Authenticate(ctx, AuthenticateInput{Login: "mfa-lockout", Password: testServicePassword}); !errors.Is(err, ErrAccountLocked) {
+		t.Fatalf("password phase after two wrong factors = %v, want ErrAccountLocked", err)
+	}
+
+	harness.clock.Advance(2 * time.Minute)
+	result, err := harness.service.Authenticate(ctx, AuthenticateInput{Login: "mfa-lockout", Password: testServicePassword})
+	if err != nil || !result.MFARequired {
+		t.Fatalf("password phase after lock expiry = %+v, %v", result, err)
+	}
+	completed, err := harness.service.CompleteMFA(ctx, CompleteMFAInput{UserID: user.ID, MFAToken: result.MFAToken, Response: "123456"})
+	if err != nil || completed.Session == nil {
+		t.Fatalf("complete after lock expiry = %+v, %v", completed, err)
+	}
+	stored, err := harness.stores.Users.GetUser(ctx, user.ID)
+	if err != nil {
+		t.Fatalf("get user: %v", err)
+	}
+	if stored.FailedLoginAttempts != 0 || !stored.LockedUntil.IsZero() {
+		t.Fatalf("failure state after success = attempts %d locked until %v", stored.FailedLoginAttempts, stored.LockedUntil)
+	}
+}
+
+func TestEnableUserClearsTemporaryLock(t *testing.T) {
+	harness := newTestService(t, nil)
+	ctx := context.Background()
+	user := harness.register(t, "reenabled")
+	if err := harness.service.LockUser(ctx, user.ID, harness.clock.Now().Add(time.Hour)); err != nil {
+		t.Fatalf("lock user: %v", err)
+	}
+	if err := harness.service.DisableUser(ctx, user.ID); err != nil {
+		t.Fatalf("disable user: %v", err)
+	}
+	if err := harness.service.EnableUser(ctx, user.ID); err != nil {
+		t.Fatalf("enable user: %v", err)
+	}
+	if _, err := harness.service.Authenticate(ctx, AuthenticateInput{Login: "reenabled", Password: testServicePassword}); err != nil {
+		t.Fatalf("login after re-enable: %v", err)
+	}
+}
+
+func TestListCredentialsOmitsSecrets(t *testing.T) {
+	harness := newTestService(t, nil)
+	ctx := context.Background()
+	user := harness.register(t, "credential-list")
+	stored, err := harness.service.RegisterCredential(ctx, &Credential{
+		UserID: user.ID,
+		Type:   CredentialTOTP,
+		Secret: "test-secret",
+		Data:   map[string]string{"issuer": "ydx"},
+	})
+	if err != nil {
+		t.Fatalf("register credential: %v", err)
+	}
+	list, err := harness.service.ListCredentials(ctx, user.ID)
+	if err != nil || len(list) != 1 {
+		t.Fatalf("list credentials = %d, %v", len(list), err)
+	}
+	if list[0].Secret != "" {
+		t.Fatalf("ListCredentials exposed secret %q", list[0].Secret)
+	}
+	if list[0].Data["issuer"] != "ydx" {
+		t.Fatalf("ListCredentials dropped metadata: %+v", list[0].Data)
+	}
+	full, err := harness.stores.Credentials.GetCredential(ctx, stored.ID)
+	if err != nil {
+		t.Fatalf("get stored credential: %v", err)
+	}
+	if full.Secret != "test-secret" {
+		t.Fatalf("stored credential secret = %q", full.Secret)
+	}
+}

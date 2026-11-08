@@ -18,8 +18,9 @@ import (
 type RelyingPartyConfig struct {
 	// Issuer is the OP issuer used for discovery. | Issuer 是用于发现文档的 OP 签发方。
 	Issuer string
-	// ClientID and ClientSecret are the registered credentials. | ClientID 与 ClientSecret 是已注册凭据。
-	ClientID     string
+	// ClientID is the registered client identifier. | ClientID 是已注册客户端标识。
+	ClientID string
+	// ClientSecret is the registered client secret. | ClientSecret 是已注册客户端密钥。
 	ClientSecret string
 	// RedirectURL is the registered redirect URI. | RedirectURL 是已注册重定向 URI。
 	RedirectURL string

@@ -193,6 +193,45 @@ func (m *udpMock) nextRequest(t *testing.T) capturedRequest {
 	return capturedRequest{}
 }
 
+// newScriptedUDPServer starts a UDP responder that writes every returned datagram in order for each
+// request. It exercises clients that must discard an invalid response and keep reading. The
+// goroutine exits when the connection is closed by test cleanup. | newScriptedUDPServer 启动 UDP
+// 响应器，为每个请求依次写出返回的全部数据报。它用于验证客户端必须丢弃无效响应并继续读取的行为。
+// 测试清理关闭连接后，该协程退出。
+func newScriptedUDPServer(t *testing.T, respond func(request *Packet) ([][]byte, error)) net.PacketConn {
+	t.Helper()
+	conn, err := net.ListenPacket("udp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen udp: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = conn.Close()
+	})
+	go func() {
+		buf := make([]byte, MaxPacketLength)
+		for {
+			n, addr, err := conn.ReadFrom(buf)
+			if err != nil {
+				return
+			}
+			request, err := ParsePacket(buf[:n])
+			if err != nil {
+				continue
+			}
+			responses, err := respond(request)
+			if err != nil {
+				return
+			}
+			for _, response := range responses {
+				if _, err := conn.WriteTo(response, addr); err != nil {
+					return
+				}
+			}
+		}
+	}()
+	return conn
+}
+
 // streamMock is a minimal single-packet TCP or TLS RADIUS responder for tests. | streamMock 是测试用的
 // 最小单报文 TCP 或 TLS RADIUS 响应器。
 type streamMock struct {

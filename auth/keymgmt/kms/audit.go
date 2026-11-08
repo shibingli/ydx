@@ -110,12 +110,14 @@ type AuditFilter struct {
 	Actor string
 	// Outcome filters by outcome. | Outcome 按结果过滤。
 	Outcome string
-	// Since and Until bound At inclusively. | Since 与 Until 包含式限定 At。
+	// Since is the inclusive lower bound on At. | Since 是 At 的包含式下界。
 	Since time.Time
+	// Until is the inclusive upper bound on At. | Until 是 At 的包含式上界。
 	Until time.Time
-	// Offset and Limit paginate; Limit 0 means no limit. | Offset 与 Limit 分页；Limit 为 0 表示不限。
+	// Offset is the number of matching events to skip. | Offset 是要跳过的匹配事件数量。
 	Offset int
-	Limit  int
+	// Limit is the maximum number of events to return; 0 means no limit. | Limit 是返回事件数量上限；0 表示不限。
+	Limit int
 	// Descending reverses chronological order. | Descending 反转时间顺序。
 	Descending bool
 }

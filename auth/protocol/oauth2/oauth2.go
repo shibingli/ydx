@@ -106,7 +106,11 @@ const (
 	ClientSecretBasic = "client_secret_basic"
 	// ClientSecretPost is form-body client authentication. | ClientSecretPost 是表单体客户端认证。
 	ClientSecretPost = "client_secret_post"
-	// ClientSecretJWT is HMAC-signed JWT client authentication. | ClientSecretJWT 是 HMAC 签名 JWT 客户端认证。
+	// ClientSecretJWT names the HMAC-signed JWT method, which this implementation does not support:
+	// Client stores only a secret hash, so an HS256 assertion cannot be verified. Registrations
+	// using this value are rejected; use PrivateKeyJWT or a shared-secret method instead. |
+	// ClientSecretJWT 是 HMAC 签名 JWT 方法名，但本实现不支持：Client 只保存密钥哈希，无法校验
+	// HS256 断言。使用该值的注册会被拒绝；请改用 PrivateKeyJWT 或共享密钥方法。
 	ClientSecretJWT = "client_secret_jwt"
 	// PrivateKeyJWT is asymmetric JWT client authentication. | PrivateKeyJWT 是非对称 JWT 客户端认证。
 	PrivateKeyJWT = "private_key_jwt"
@@ -153,18 +157,21 @@ const (
 	ErrorExpiredToken            = "expired_token"
 	ErrorInvalidDPoPProof        = "invalid_dpop_proof"
 	ErrorInvalidTarget           = "invalid_target"
-	// RFC 9101 request-object errors, returned when request objects are not supported. | 不支持
-	// 请求对象时返回的 RFC 9101 请求对象错误。
-	ErrorRequestNotSupported    = "request_not_supported"
+	// ErrorRequestNotSupported reports that request objects are not supported. | ErrorRequestNotSupported 表示不支持请求对象。
+	ErrorRequestNotSupported = "request_not_supported"
+	// ErrorRequestURINotSupported reports that request_uri is not supported. | ErrorRequestURINotSupported 表示不支持 request_uri。
 	ErrorRequestURINotSupported = "request_uri_not_supported"
-	// RFC 9101 errors for a malformed or unreachable request object. | RFC 9101 请求对象非法或
-	// 无法获取时使用的错误。
+	// ErrorInvalidRequestObject reports a malformed request object. | ErrorInvalidRequestObject 表示请求对象非法。
 	ErrorInvalidRequestObject = "invalid_request_object"
-	ErrorInvalidRequestURI    = "invalid_request_uri"
-	// OpenID Connect interaction errors, also used by the authorization endpoint. | OpenID Connect 交互错误，授权端点同样使用。
-	ErrorLoginRequired            = "login_required"
-	ErrorConsentRequired          = "consent_required"
-	ErrorInteractionRequired      = "interaction_required"
+	// ErrorInvalidRequestURI reports an unreachable or invalid request_uri. | ErrorInvalidRequestURI 表示 request_uri 无法获取或非法。
+	ErrorInvalidRequestURI = "invalid_request_uri"
+	// ErrorLoginRequired reports that user interaction for login is required. | ErrorLoginRequired 表示需要用户登录交互。
+	ErrorLoginRequired = "login_required"
+	// ErrorConsentRequired reports that user consent is required. | ErrorConsentRequired 表示需要用户同意。
+	ErrorConsentRequired = "consent_required"
+	// ErrorInteractionRequired reports that user interaction is required. | ErrorInteractionRequired 表示需要用户交互。
+	ErrorInteractionRequired = "interaction_required"
+	// ErrorAccountSelectionRequired reports that account selection is required. | ErrorAccountSelectionRequired 表示需要选择账户。
 	ErrorAccountSelectionRequired = "account_selection_required"
 )
 
@@ -310,9 +317,11 @@ type Client struct {
 	TokenEndpointAuthMethod string `json:"token_endpoint_auth_method,omitempty"`
 	// RequirePKCE forces PKCE even for confidential clients. | RequirePKCE 强制机密客户端也使用 PKCE。
 	RequirePKCE bool `json:"require_pkce,omitempty"`
-	// AccessTokenTTL, RefreshTokenTTL and AuthorizationCodeTTL override server defaults. | AccessTokenTTL、RefreshTokenTTL 与 AuthorizationCodeTTL 覆盖服务器默认值。
-	AccessTokenTTL       time.Duration `json:"-"`
-	RefreshTokenTTL      time.Duration `json:"-"`
+	// AccessTokenTTL overrides the server access-token lifetime. | AccessTokenTTL 覆盖服务器访问令牌寿命。
+	AccessTokenTTL time.Duration `json:"-"`
+	// RefreshTokenTTL overrides the server refresh-token lifetime. | RefreshTokenTTL 覆盖服务器刷新令牌寿命。
+	RefreshTokenTTL time.Duration `json:"-"`
+	// AuthorizationCodeTTL overrides the server authorization-code lifetime. | AuthorizationCodeTTL 覆盖服务器授权码寿命。
 	AuthorizationCodeTTL time.Duration `json:"-"`
 	// JWKSURI points to the client's public keys for private_key_jwt. | JWKSURI 指向客户端 private_key_jwt 公钥。
 	JWKSURI string `json:"jwks_uri,omitempty"`
@@ -324,39 +333,61 @@ type Client struct {
 	TLSClientAuthSANs []string `json:"tls_client_auth_san_dns,omitempty"`
 	// SkipConsent marks first-party clients that do not need a consent screen. | SkipConsent 标记无需同意页的第一方客户端。
 	SkipConsent bool `json:"skip_consent,omitempty"`
-	// The following fields are OpenID Connect client metadata (RFC 7591 / OIDC Registration). |
-	// 以下字段是 OpenID Connect 客户端元数据（RFC 7591 / OIDC Registration）。
-	PostLogoutRedirectURIs            []string `json:"post_logout_redirect_uris,omitempty"`
-	SubjectType                       string   `json:"subject_type,omitempty"`
-	SectorIdentifierURI               string   `json:"sector_identifier_uri,omitempty"`
-	IDTokenSignedResponseAlg          string   `json:"id_token_signed_response_alg,omitempty"`
-	IDTokenEncryptedResponseAlg       string   `json:"id_token_encrypted_response_alg,omitempty"`
-	IDTokenEncryptedResponseEnc       string   `json:"id_token_encrypted_response_enc,omitempty"`
-	UserInfoSignedResponseAlg         string   `json:"userinfo_signed_response_alg,omitempty"`
-	UserInfoEncryptedResponseAlg      string   `json:"userinfo_encrypted_response_alg,omitempty"`
-	UserInfoEncryptedResponseEnc      string   `json:"userinfo_encrypted_response_enc,omitempty"`
-	RequestObjectSigningAlg           string   `json:"request_object_signing_alg,omitempty"`
-	RequestURIs                       []string `json:"request_uris,omitempty"`
-	AuthorizationSignedResponseAlg    string   `json:"authorization_signed_response_alg,omitempty"`
-	TokenEndpointAuthSigningAlg       string   `json:"token_endpoint_auth_signing_alg,omitempty"`
-	ApplicationType                   string   `json:"application_type,omitempty"`
-	Contacts                          []string `json:"contacts,omitempty"`
-	LogoURI                           string   `json:"logo_uri,omitempty"`
-	PolicyURI                         string   `json:"policy_uri,omitempty"`
-	TOSURI                            string   `json:"tos_uri,omitempty"`
-	ClientURI                         string   `json:"client_uri,omitempty"`
-	FrontchannelLogoutURI             string   `json:"frontchannel_logout_uri,omitempty"`
-	FrontchannelLogoutSessionRequired bool     `json:"frontchannel_logout_session_required,omitempty"`
-	BackchannelLogoutURI              string   `json:"backchannel_logout_uri,omitempty"`
-	BackchannelLogoutSessionRequired  bool     `json:"backchannel_logout_session_required,omitempty"`
+	// PostLogoutRedirectURIs are the exact allowed post-logout redirect URIs. | PostLogoutRedirectURIs 是允许的精确登出后重定向 URI。
+	PostLogoutRedirectURIs []string `json:"post_logout_redirect_uris,omitempty"`
+	// SubjectType is public or pairwise. | SubjectType 取值为 public 或 pairwise。
+	SubjectType string `json:"subject_type,omitempty"`
+	// SectorIdentifierURI groups pairwise subject identifiers. | SectorIdentifierURI 对成对主体标识分组。
+	SectorIdentifierURI string `json:"sector_identifier_uri,omitempty"`
+	// IDTokenSignedResponseAlg is the required ID-token signing algorithm. | IDTokenSignedResponseAlg 是要求的 ID 令牌签名算法。
+	IDTokenSignedResponseAlg string `json:"id_token_signed_response_alg,omitempty"`
+	// IDTokenEncryptedResponseAlg is the required ID-token key-management algorithm. | IDTokenEncryptedResponseAlg 是要求的 ID 令牌密钥管理算法。
+	IDTokenEncryptedResponseAlg string `json:"id_token_encrypted_response_alg,omitempty"`
+	// IDTokenEncryptedResponseEnc is the required ID-token content-encryption algorithm. | IDTokenEncryptedResponseEnc 是要求的 ID 令牌内容加密算法。
+	IDTokenEncryptedResponseEnc string `json:"id_token_encrypted_response_enc,omitempty"`
+	// UserInfoSignedResponseAlg is the required UserInfo signing algorithm. | UserInfoSignedResponseAlg 是要求的 UserInfo 签名算法。
+	UserInfoSignedResponseAlg string `json:"userinfo_signed_response_alg,omitempty"`
+	// UserInfoEncryptedResponseAlg is the required UserInfo key-management algorithm. | UserInfoEncryptedResponseAlg 是要求的 UserInfo 密钥管理算法。
+	UserInfoEncryptedResponseAlg string `json:"userinfo_encrypted_response_alg,omitempty"`
+	// UserInfoEncryptedResponseEnc is the required UserInfo content-encryption algorithm. | UserInfoEncryptedResponseEnc 是要求的 UserInfo 内容加密算法。
+	UserInfoEncryptedResponseEnc string `json:"userinfo_encrypted_response_enc,omitempty"`
+	// RequestObjectSigningAlg is the required request-object signing algorithm. | RequestObjectSigningAlg 是要求的请求对象签名算法。
+	RequestObjectSigningAlg string `json:"request_object_signing_alg,omitempty"`
+	// RequestURIs are the pre-registered request_uri values. | RequestURIs 是预注册的 request_uri 值。
+	RequestURIs []string `json:"request_uris,omitempty"`
+	// AuthorizationSignedResponseAlg is the required JARM signing algorithm. | AuthorizationSignedResponseAlg 是要求的 JARM 签名算法。
+	AuthorizationSignedResponseAlg string `json:"authorization_signed_response_alg,omitempty"`
+	// TokenEndpointAuthSigningAlg is the required client-assertion signing algorithm. | TokenEndpointAuthSigningAlg 是要求的客户端断言签名算法。
+	TokenEndpointAuthSigningAlg string `json:"token_endpoint_auth_signing_alg,omitempty"`
+	// ApplicationType is web or native. | ApplicationType 取值为 web 或 native。
+	ApplicationType string `json:"application_type,omitempty"`
+	// Contacts lists administrative contact addresses. | Contacts 列出管理联系人地址。
+	Contacts []string `json:"contacts,omitempty"`
+	// LogoURI points to a client logo. | LogoURI 指向客户端徽标。
+	LogoURI string `json:"logo_uri,omitempty"`
+	// PolicyURI points to the client privacy policy. | PolicyURI 指向客户端隐私政策。
+	PolicyURI string `json:"policy_uri,omitempty"`
+	// TOSURI points to the client terms of service. | TOSURI 指向客户端服务条款。
+	TOSURI string `json:"tos_uri,omitempty"`
+	// ClientURI points to the client home page. | ClientURI 指向客户端主页。
+	ClientURI string `json:"client_uri,omitempty"`
+	// FrontchannelLogoutURI is the front-channel logout endpoint. | FrontchannelLogoutURI 是前端通道登出端点。
+	FrontchannelLogoutURI string `json:"frontchannel_logout_uri,omitempty"`
+	// FrontchannelLogoutSessionRequired requires the sid parameter at logout. | FrontchannelLogoutSessionRequired 要求登出时携带 sid 参数。
+	FrontchannelLogoutSessionRequired bool `json:"frontchannel_logout_session_required,omitempty"`
+	// BackchannelLogoutURI is the back-channel logout endpoint. | BackchannelLogoutURI 是后端通道登出端点。
+	BackchannelLogoutURI string `json:"backchannel_logout_uri,omitempty"`
+	// BackchannelLogoutSessionRequired requires the sid parameter at logout. | BackchannelLogoutSessionRequired 要求登出时携带 sid 参数。
+	BackchannelLogoutSessionRequired bool `json:"backchannel_logout_session_required,omitempty"`
 	// RegistrationAccessTokenHash protects the dynamic-registration management endpoint. | RegistrationAccessTokenHash 保护动态注册管理端点。
 	RegistrationAccessTokenHash string `json:"-"`
 	// RegistrationClientURI is the management endpoint returned to the client. | RegistrationClientURI 是返回给客户端的管理端点。
 	RegistrationClientURI string `json:"-"`
 	// Metadata holds application-defined scalar attributes. | Metadata 保存应用自定义标量属性。
 	Metadata map[string]string `json:"metadata,omitempty"`
-	// CreatedAt and UpdatedAt are UTC timestamps. | CreatedAt 与 UpdatedAt 是 UTC 时间戳。
+	// CreatedAt is the registration creation time. | CreatedAt 是注册创建时间。
 	CreatedAt time.Time `json:"created_at"`
+	// UpdatedAt is the last metadata update time. | UpdatedAt 是最后元数据更新时间。
 	UpdatedAt time.Time `json:"updated_at"`
 }
 
@@ -494,13 +525,17 @@ type AuthorizationCode struct {
 	Subject string
 	// Nonce is the OpenID Connect nonce. | Nonce 是 OpenID Connect nonce。
 	Nonce string
-	// CodeChallenge and CodeChallengeMethod carry PKCE state. | CodeChallenge 与 CodeChallengeMethod 携带 PKCE 状态。
-	CodeChallenge       string
+	// CodeChallenge is the PKCE code challenge. | CodeChallenge 是 PKCE 代码挑战。
+	CodeChallenge string
+	// CodeChallengeMethod is the PKCE challenge method. | CodeChallengeMethod 是 PKCE 挑战方法。
 	CodeChallengeMethod string
-	// AuthTime, ACR, AMR and SessionID describe the authentication event. | AuthTime、ACR、AMR 与 SessionID 描述认证事件。
-	AuthTime  time.Time
-	ACR       string
-	AMR       []string
+	// AuthTime is the authentication time. | AuthTime 是认证时间。
+	AuthTime time.Time
+	// ACR is the authentication context class reference. | ACR 是认证上下文类引用。
+	ACR string
+	// AMR lists the authentication methods. | AMR 列出认证方法。
+	AMR []string
+	// SessionID identifies the authentication session. | SessionID 标识认证会话。
 	SessionID string
 	// Resource lists RFC 8707 resource indicators. | Resource 列出 RFC 8707 资源指示器。
 	Resource []string
@@ -508,11 +543,13 @@ type AuthorizationCode struct {
 	Claims string
 	// Principal is a snapshot of the authenticated principal for protocol enrichers. | Principal 是供协议增强器使用的已认证主体快照。
 	Principal *auth.Principal
-	// DPoPJKT and CertThumbprint bind the future token to a key or certificate. | DPoPJKT 与 CertThumbprint 把未来令牌绑定到密钥或证书。
-	DPoPJKT        string
+	// DPoPJKT binds the future token to a DPoP key. | DPoPJKT 把未来令牌绑定到 DPoP 密钥。
+	DPoPJKT string
+	// CertThumbprint binds the future token to a client certificate. | CertThumbprint 把未来令牌绑定到客户端证书。
 	CertThumbprint string
-	// CreatedAt and ExpiresAt bound the code lifetime. | CreatedAt 与 ExpiresAt 限定授权码生命周期。
+	// CreatedAt is the code issue time. | CreatedAt 是授权码签发时间。
 	CreatedAt time.Time
+	// ExpiresAt is the code expiry time. | ExpiresAt 是授权码过期时间。
 	ExpiresAt time.Time
 	// Used marks a consumed code. | Used 标记已消费授权码。
 	Used bool
@@ -528,8 +565,9 @@ type RefreshToken struct {
 	ParentHash string
 	// ClientID identifies the client. | ClientID 标识客户端。
 	ClientID string
-	// UserID and Subject identify the resource owner. | UserID 与 Subject 标识资源所有者。
-	UserID  string
+	// UserID is the local resource-owner identifier. | UserID 是本地资源所有者标识。
+	UserID string
+	// Subject is the authorization-server subject. | Subject 是授权服务器主体。
 	Subject string
 	// Principal is a snapshot of the authenticated principal. | Principal 是已认证主体快照。
 	Principal *auth.Principal
@@ -537,16 +575,21 @@ type RefreshToken struct {
 	Scopes []string
 	// Audience lists the resource indicators. | Audience 列出资源指示器。
 	Audience []string
-	// AuthTime, ACR, AMR and SessionID describe the authentication event. | AuthTime、ACR、AMR 与 SessionID 描述认证事件。
-	AuthTime  time.Time
-	ACR       string
-	AMR       []string
+	// AuthTime is the authentication time. | AuthTime 是认证时间。
+	AuthTime time.Time
+	// ACR is the authentication context class reference. | ACR 是认证上下文类引用。
+	ACR string
+	// AMR lists the authentication methods. | AMR 列出认证方法。
+	AMR []string
+	// SessionID identifies the authentication session. | SessionID 标识认证会话。
 	SessionID string
-	// DPoPJKT and CertThumbprint bind the token to a key or certificate. | DPoPJKT 与 CertThumbprint 把令牌绑定到密钥或证书。
-	DPoPJKT        string
+	// DPoPJKT binds the token to a DPoP key. | DPoPJKT 把令牌绑定到 DPoP 密钥。
+	DPoPJKT string
+	// CertThumbprint binds the token to a client certificate. | CertThumbprint 把令牌绑定到客户端证书。
 	CertThumbprint string
-	// CreatedAt and ExpiresAt bound the token lifetime. | CreatedAt 与 ExpiresAt 限定令牌生命周期。
+	// CreatedAt is the token issue time. | CreatedAt 是令牌签发时间。
 	CreatedAt time.Time
+	// ExpiresAt is the token expiry time. | ExpiresAt 是令牌过期时间。
 	ExpiresAt time.Time
 	// Used marks a rotated or consumed token. | Used 标记已轮换或消费的令牌。
 	Used bool
@@ -560,8 +603,9 @@ type AccessToken struct {
 	TokenHash string
 	// ClientID identifies the client. | ClientID 标识客户端。
 	ClientID string
-	// UserID and Subject identify the resource owner. | UserID 与 Subject 标识资源所有者。
-	UserID  string
+	// UserID is the local resource-owner identifier. | UserID 是本地资源所有者标识。
+	UserID string
+	// Subject is the authorization-server subject. | Subject 是授权服务器主体。
 	Subject string
 	// Principal is a snapshot of the authenticated principal. | Principal 是已认证主体快照。
 	Principal *auth.Principal
@@ -569,18 +613,23 @@ type AccessToken struct {
 	Scopes []string
 	// Audience lists the resource indicators. | Audience 列出资源指示器。
 	Audience []string
-	// AuthTime, ACR, AMR and SessionID describe the authentication event. | AuthTime、ACR、AMR 与 SessionID 描述认证事件。
-	AuthTime  time.Time
-	ACR       string
-	AMR       []string
+	// AuthTime is the authentication time. | AuthTime 是认证时间。
+	AuthTime time.Time
+	// ACR is the authentication context class reference. | ACR 是认证上下文类引用。
+	ACR string
+	// AMR lists the authentication methods. | AMR 列出认证方法。
+	AMR []string
+	// SessionID identifies the authentication session. | SessionID 标识认证会话。
 	SessionID string
-	// IssuedAt and ExpiresAt bound the token lifetime. | IssuedAt 与 ExpiresAt 限定令牌生命周期。
-	IssuedAt  time.Time
+	// IssuedAt is the token issue time. | IssuedAt 是令牌签发时间。
+	IssuedAt time.Time
+	// ExpiresAt is the token expiry time. | ExpiresAt 是令牌过期时间。
 	ExpiresAt time.Time
 	// JTI is the token identifier. | JTI 是令牌标识。
 	JTI string
-	// DPoPJKT and CertThumbprint bind the token to a key or certificate. | DPoPJKT 与 CertThumbprint 把令牌绑定到密钥或证书。
-	DPoPJKT        string
+	// DPoPJKT binds the token to a DPoP key. | DPoPJKT 把令牌绑定到 DPoP 密钥。
+	DPoPJKT string
+	// CertThumbprint binds the token to a client certificate. | CertThumbprint 把令牌绑定到客户端证书。
 	CertThumbprint string
 	// GrantID links the token to its authorization grant. | GrantID 把令牌链接到授权许可。
 	GrantID string
@@ -600,22 +649,25 @@ type DeviceCode struct {
 	Scopes []string
 	// Audience lists the resource indicators. | Audience 列出资源指示器。
 	Audience []string
-	// UserID and Subject are filled after approval. | UserID 与 Subject 在批准后填充。
-	UserID  string
+	// UserID is the local resource-owner identifier, filled after approval. | UserID 是本地资源所有者标识，批准后填充。
+	UserID string
+	// Subject is the authorization-server subject, filled after approval. | Subject 是授权服务器主体，批准后填充。
 	Subject string
 	// Principal is a snapshot filled after approval. | Principal 是批准后填充的主体快照。
 	Principal *auth.Principal
 	// Status is pending, approved, denied, used or expired. | Status 取值为 pending、approved、denied、used 或 expired。
 	Status string
-	// DPoPJKT and CertThumbprint bind the future token to a key or certificate. | DPoPJKT 与 CertThumbprint 把未来令牌绑定到密钥或证书。
-	DPoPJKT        string
+	// DPoPJKT binds the future token to a DPoP key. | DPoPJKT 把未来令牌绑定到 DPoP 密钥。
+	DPoPJKT string
+	// CertThumbprint binds the future token to a client certificate. | CertThumbprint 把未来令牌绑定到客户端证书。
 	CertThumbprint string
 	// Interval is the minimum polling interval. | Interval 是最小轮询间隔。
 	Interval time.Duration
 	// LastPolledAt is the last token-endpoint poll. | LastPolledAt 是最后一次令牌端点轮询。
 	LastPolledAt time.Time
-	// CreatedAt and ExpiresAt bound the grant lifetime. | CreatedAt 与 ExpiresAt 限定许可生命周期。
+	// CreatedAt is the grant creation time. | CreatedAt 是许可创建时间。
 	CreatedAt time.Time
+	// ExpiresAt is the grant expiry time. | ExpiresAt 是许可过期时间。
 	ExpiresAt time.Time
 }
 
@@ -627,8 +679,9 @@ type PARRequest struct {
 	ClientID string
 	// Params are the pushed authorization parameters. | Params 是推送的授权参数。
 	Params url.Values
-	// CreatedAt and ExpiresAt bound the request lifetime. | CreatedAt 与 ExpiresAt 限定请求生命周期。
+	// CreatedAt is the request creation time. | CreatedAt 是请求创建时间。
 	CreatedAt time.Time
+	// ExpiresAt is the request expiry time. | ExpiresAt 是请求过期时间。
 	ExpiresAt time.Time
 	// Used marks a consumed request URI. | Used 标记已消费的请求 URI。
 	Used bool
@@ -648,8 +701,9 @@ type AuthorizationRequest struct {
 	State string
 	// Nonce is the OpenID Connect nonce. | Nonce 是 OpenID Connect nonce。
 	Nonce string
-	// CodeChallenge and CodeChallengeMethod carry PKCE state. | CodeChallenge 与 CodeChallengeMethod 携带 PKCE 状态。
-	CodeChallenge       string
+	// CodeChallenge is the PKCE code challenge. | CodeChallenge 是 PKCE 代码挑战。
+	CodeChallenge string
+	// CodeChallengeMethod is the PKCE challenge method. | CodeChallengeMethod 是 PKCE 挑战方法。
 	CodeChallengeMethod string
 	// ResponseMode is query, fragment or form_post. | ResponseMode 取值为 query、fragment 或 form_post。
 	ResponseMode string
@@ -657,16 +711,21 @@ type AuthorizationRequest struct {
 	Prompt []string
 	// MaxAge is the OpenID Connect max_age, when present. | MaxAge 是 OpenID Connect max_age（存在时）。
 	MaxAge *int
-	// LoginHint, IDTokenHint, ACRValues, UILocales and Claims are OpenID Connect parameters. | LoginHint、IDTokenHint、ACRValues、UILocales 与 Claims 是 OpenID Connect 参数。
-	LoginHint   string
+	// LoginHint is the OpenID Connect login_hint. | LoginHint 是 OpenID Connect login_hint。
+	LoginHint string
+	// IDTokenHint is the OpenID Connect id_token_hint. | IDTokenHint 是 OpenID Connect id_token_hint。
 	IDTokenHint string
-	ACRValues   []string
-	UILocales   []string
-	Claims      string
+	// ACRValues lists the requested authentication context classes. | ACRValues 列出请求的认证上下文类。
+	ACRValues []string
+	// UILocales lists the requested user-interface locales. | UILocales 列出请求的用户界面区域设置。
+	UILocales []string
+	// Claims is the OpenID Connect claims request JSON. | Claims 是 OpenID Connect 声明请求 JSON。
+	Claims string
 	// Resource lists RFC 8707 resource indicators. | Resource 列出 RFC 8707 资源指示器。
 	Resource []string
-	// Request and RequestURI carry RFC 9101 request objects. | Request 与 RequestURI 携带 RFC 9101 请求对象。
-	Request    string
+	// Request is the RFC 9101 request object. | Request 是 RFC 9101 请求对象。
+	Request string
+	// RequestURI is the RFC 9101 by-reference request object URI. | RequestURI 是 RFC 9101 按引用传递的请求对象 URI。
 	RequestURI string
 	// Raw holds every original parameter for extension processing. | Raw 保存原始参数，供扩展处理。
 	Raw url.Values
@@ -746,9 +805,10 @@ func (t *TokenResponse) MarshalJSON() ([]byte, error) {
 type ServerMetadata struct {
 	// Issuer is the authorization-server issuer. | Issuer 是授权服务器签发方。
 	Issuer string `json:"issuer"`
-	// AuthorizationEndpoint and TokenEndpoint are the core endpoints. | AuthorizationEndpoint 与 TokenEndpoint 是核心端点。
+	// AuthorizationEndpoint is the authorization endpoint URL. | AuthorizationEndpoint 是授权端点 URL。
 	AuthorizationEndpoint string `json:"authorization_endpoint"`
-	TokenEndpoint         string `json:"token_endpoint"`
+	// TokenEndpoint is the token endpoint URL. | TokenEndpoint 是令牌端点 URL。
+	TokenEndpoint string `json:"token_endpoint"`
 	// JWKSURI points to the signing key set. | JWKSURI 指向签名密钥集。
 	JWKSURI string `json:"jwks_uri,omitempty"`
 	// RegistrationEndpoint is the dynamic registration endpoint. | RegistrationEndpoint 是动态注册端点。
@@ -784,8 +844,9 @@ type ServerMetadata struct {
 	RevocationEndpointAuthMethodsSupported []string `json:"revocation_endpoint_auth_methods_supported,omitempty"`
 	// IntrospectionEndpointAuthMethodsSupported lists client authentication methods accepted at the introspection endpoint. | IntrospectionEndpointAuthMethodsSupported 列出自省端点接受的客户端认证方法。
 	IntrospectionEndpointAuthMethodsSupported []string `json:"introspection_endpoint_auth_methods_supported,omitempty"`
-	// RevocationEndpoint and IntrospectionEndpoint are the management endpoints. | RevocationEndpoint 与 IntrospectionEndpoint 是管理端点。
-	RevocationEndpoint    string `json:"revocation_endpoint,omitempty"`
+	// RevocationEndpoint is the RFC 7009 revocation endpoint URL. | RevocationEndpoint 是 RFC 7009 撤销端点 URL。
+	RevocationEndpoint string `json:"revocation_endpoint,omitempty"`
+	// IntrospectionEndpoint is the RFC 7662 introspection endpoint URL. | IntrospectionEndpoint 是 RFC 7662 自省端点 URL。
 	IntrospectionEndpoint string `json:"introspection_endpoint,omitempty"`
 	// DeviceAuthorizationEndpoint is the RFC 8628 endpoint. | DeviceAuthorizationEndpoint 是 RFC 8628 端点。
 	DeviceAuthorizationEndpoint string `json:"device_authorization_endpoint,omitempty"`

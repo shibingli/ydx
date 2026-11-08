@@ -98,10 +98,11 @@ func (f JWTIssuerFunc) IssueJWT(ctx context.Context, principal *auth.Principal, 
 type STSConfig struct {
 	// Issuer is the token service entity ID and issuer. | Issuer 是令牌服务实体标识与签发方。
 	Issuer string
-	// SignInPath, SignOutPath and MetadataPath are endpoint paths or absolute URLs. | SignInPath、
-	// SignOutPath 与 MetadataPath 是端点路径或绝对 URL。
-	SignInPath   string
-	SignOutPath  string
+	// SignInPath is the sign-in endpoint path or absolute URL. | SignInPath 是登录端点路径或绝对 URL。
+	SignInPath string
+	// SignOutPath is the sign-out endpoint path or absolute URL. | SignOutPath 是登出端点路径或绝对 URL。
+	SignOutPath string
+	// MetadataPath is the metadata endpoint path or absolute URL. | MetadataPath 是元数据端点路径或绝对 URL。
 	MetadataPath string
 	// Authenticator resolves the current browser user. | Authenticator 解析当前浏览器用户。
 	Authenticator Authenticator
@@ -425,7 +426,7 @@ func buildSAML11Assertion(issuer string, nameID *saml.NameID, principal *auth.Pr
 			Value:  nameID.Value,
 		},
 		SubjectConfirmation: []SAML11SubjectConfirmation{{
-			ConfirmationMethod: []string{"urn:oasis:names:tc:SAML:1.0:cm:bearer"},
+			ConfirmationMethod: []string{saml11BearerMethod},
 		}},
 	}
 	assertion := &SAML11Assertion{

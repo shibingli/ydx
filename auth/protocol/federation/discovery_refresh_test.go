@@ -194,6 +194,55 @@ func TestDiscoveryRefreshFailureSingleFlight(t *testing.T) {
 	}
 }
 
+// TestDiscoveryRefreshWaiterHonorsContext verifies that a caller waiting for another
+// caller's in-flight discovery refresh returns as soon as its own context expires. |
+// TestDiscoveryRefreshWaiterHonorsContext 校验等待其他调用方进行中刷新时，调用方自身的
+// 上下文到期后立即返回。
+func TestDiscoveryRefreshWaiterHonorsContext(t *testing.T) {
+	fixture := newOIDCFixture(t)
+	clock := newTestDiscoveryClock()
+	provider := fixture.discoveryProvider("waiter-context")
+	provider.DiscoveryTTL = time.Hour
+	adapter := newAdapterWithPolicy(provider, nil, discoveryPolicyFor(nil, provider), clock.Now).(*oauthAdapter)
+
+	if _, err := adapter.AuthCodeURL("state", "nonce", ""); err != nil {
+		t.Fatalf("initial AuthCodeURL: %v | 首次 AuthCodeURL：%v", err, err)
+	}
+	fixture.set(func(c *oidcFixtureConfig) { c.discoveryDelay = 500 * time.Millisecond })
+	clock.Advance(2 * time.Hour)
+
+	leaderDone := make(chan error, 1)
+	go func() {
+		_, err := adapter.AuthCodeURL("state", "nonce", "")
+		leaderDone <- err
+	}()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if discovery, _, _, _ := fixture.counts(); discovery >= 2 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("leader discovery never started | 主导方发现请求始终未开始")
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	started := time.Now()
+	_, err := adapter.Exchange(ctx, "code-1", "")
+	elapsed := time.Since(started)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("waiter error = %v, want context.DeadlineExceeded | 等待方错误 = %v，期望 context.DeadlineExceeded", err, err)
+	}
+	if elapsed > 300*time.Millisecond {
+		t.Fatalf("waiter blocked for %s despite a 20ms context | 等待方在 20ms 上下文下仍阻塞 %s", elapsed, elapsed)
+	}
+	if err := <-leaderDone; err != nil {
+		t.Fatalf("leader AuthCodeURL: %v | 主导方 AuthCodeURL：%v", err, err)
+	}
+}
+
 // TestDiscoveryStaleFallback verifies bounded stale-while-revalidate behavior. |
 // TestDiscoveryStaleFallback 校验有界过期回退行为。
 func TestDiscoveryStaleFallback(t *testing.T) {

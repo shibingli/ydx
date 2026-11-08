@@ -176,6 +176,8 @@ wsfedSTS.Register(r, "/wsfed")   // WS-Federation / ADFS
 - 多实例部署必须把 `oauth2.Store`、`auth.SessionStore`、`auth.TokenStore`、OTP 重放保护、
   OIDC/SCIM/RBAC 的状态替换为共享实现；内存实现仅用于单进程、测试与嵌入式场景。
 - `auth/identity/cn` 只做结构与校验位验证；真实身份核验必须通过 `RealNameVerifier` 调用合规供应商。
+  实名与短信的默认 HTTP 客户端拒绝跟随重定向（3xx 按失败处理），避免把 API Key 等静态凭据头转发到
+  其它主机；确需重定向的调用方必须显式传入自定义 `http.Client`。
 
 ## 依赖
 
@@ -184,8 +186,8 @@ wsfedSTS.Register(r, "/wsfed")   // WS-Federation / ADFS
 - `github.com/golang-jwt/jwt/v5`：仅用于 `auth/token/jwt/interop_test.go` 的双向互操作测试，
   不出现在任何运行时代码路径，也不被二进制引用。
 - 其余仅依赖 ydx 自有模块（`errs`、`json`、`base64`、`xml`、`router`、`log`、`jwt` 已迁入
-  `auth/token/jwt`）。`auth` 要求 `ydx/json` v0.1.17（修复原生解码器字符串 arena 越界 panic）；
-  发布 `auth` 前必须先打 `json/v0.1.17` 标签。
+  `auth/token/jwt`）。`auth` 依赖已发布的 `ydx/json` v0.1.17（修复原生解码器字符串 arena
+  越界 panic 与 fast-struct 解码计划缓存污染）。
 
 ## KMS 与协议签名
 
@@ -229,6 +231,30 @@ JWK/PKCS#8/PKIX 导出策略；OIDC 的 `SigningKey`、SAML 的 `XMLDSigSigner` 
   `rbac.NewMemoryStore`、`scim.NewMemoryStore`、`cas.NewMemoryTicketStore`、`kms`/`kmip`
   内存存储、OTP 重放保护）仅适用于单进程；多实例请实现共享存储接口。
 
+## 第二轮审计行为变更（v0.1.1）
+
+以下变更为对齐协议与收紧密封边界，升级时需检查调用方：
+
+- **JWT/JOSE**：拒绝非规范 base64url、转义拼写的 `crit`/`b64` 头部与 RSA < 2048 位密钥；
+  JWK 的 `use`/`key_ops` 参与签名、验签、加密、解密授权；`KeySet.Handler` 默认不发布
+  `oct` 对称密钥，可信内部分发需显式 `HandlerWithOptions{IncludeSymmetricKeys: true}`；
+  `Verify`/`Decrypt` 默认限制 1 MiB 输入，大载荷需调高 `MaxTokenSize`。
+- **OAuth2/OIDC**：`Server.Endpoint(p)` 与 `Provider.Endpoint(p)` 现接受未加前缀的路径并
+  自动应用 PathPrefix，禁止 `Endpoint(Path(p))` 嵌套；`client_secret_jwt` 在注册与认证时
+  明确拒绝；Back-Channel Logout 接收端必须配置 `BackchannelLogoutClientID`，未配置时失败关闭。
+- **SAML/WS-Fed**：多个 AudienceRestriction 必须全部匹配；配置 `SPResolver` 时 ACS 以元数据
+  为准，未注册的请求 URL 被拒绝；HTTP-Redirect SLO 以查询签名满足签名策略，POST 仍需 XML 签名。
+- **OTP/WebAuthn/RBAC**：HOTP 拒绝计数器回退并保持单调；CBOR binary16 不再静默舍入；Android Key
+  attestation 接受规范 EXPLICIT DER；`LoadSnapshot` 对 Engine 方法原子化，经 `Store()` 直接
+  写入仍绕过引擎锁。
+- **LDAP/SCIM**：连接池重复 Put 为 no-op；SortControl 与 ExtensibleMatch 使用 RFC 要求的隐式
+  原始 BOOLEAN；SCRAM 拒绝重复 server-first 属性；PUT/PATCH `/Me` 应用 attributes 投影。
+- **CAS/RADIUS**：SSO 签发的 ST 不再继承 TGT 的 renew；CAS 2.0/3.0 空 user 被拒绝；RADIUS UDP
+  静默丢弃无效 Response Authenticator 并继续等待合法应答，流传输返回 `ErrAuthenticator` 并
+  关闭连接；Vendor-Id 0 的 VSA 被拒绝。
+- **KMS/KMIP**：导入非对称材料校验公私钥配对；KMIP 拒绝重复标量标签与重复 ProtocolVersion
+  字段，读取前校验根标签，只读 Batch 不再取全 Store 快照；其余见各包文档。
+
 ## 与主流实现的对比
 
 `benchmarks/auth` 对 JOSE/JWS、JWE、OTP、RBAC、LDAP 过滤器与 XMLDSig 做主流程同进程对比，
@@ -248,7 +274,7 @@ GOWORK=off go vet ./...
 GOWORK=off CGO_ENABLED=1 CC=clang go test ./... -race
 ```
 
-`auth` 依赖的 `ydx/json` v0.1.17 尚未发布时，需在仓库外临时 `go.work` 或文件代理中指向本仓
-`json` 目录；发布 `json/v0.1.17` 后可直接使用默认 `GOPROXY`。
+`auth v0.1.0` 依赖的 `ydx/json v0.1.17` 已随本仓标签发布，可直接使用默认 `GOPROXY` 构建；
+开发期联调尚未发布的兄弟模块时，才需要在仓库外临时 `go.work` 或文件代理。
 
 外部协议一致性测试使用 RFC/W3C/OpenID 官方测试向量与本地 mock 服务器；不访问真实第三方网络。

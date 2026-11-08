@@ -318,11 +318,37 @@ func (c *Client) exchangeLocked(ctx context.Context, op ProtocolOp, controls []C
 	}
 }
 
+// transportDeadlineSlack covers the scheduling gap between a socket deadline and the context
+// timer firing. | transportDeadlineSlack 覆盖套接字期限与上下文计时器触发之间的调度间隙。
+const transportDeadlineSlack = 5 * time.Millisecond
+
+// contextCause reports the context error responsible for a transport failure. A socket read
+// deadline derived from the context can fire a few microseconds before ctx.Err() becomes
+// non-nil, so a timed-out operation whose context deadline has effectively passed is still
+// attributed to the context. | contextCause 报告导致传输故障的上下文错误。由上下文派生的套接字
+// 读取期限可能比 ctx.Err() 变非 nil 早几微秒，因此上下文期限实际上已过的超时操作仍归因于上下文。
+func contextCause(ctx context.Context, err error) error {
+	if ctx == nil {
+		return nil
+	}
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return ctxErr
+	}
+	var netErr net.Error
+	if !errors.As(err, &netErr) || !netErr.Timeout() {
+		return nil
+	}
+	if deadline, ok := ctx.Deadline(); ok && !time.Now().Add(transportDeadlineSlack).Before(deadline) {
+		return context.DeadlineExceeded
+	}
+	return nil
+}
+
 // transportError converts a network error and invalidates the connection. | transportError
 // 转换网络错误并使连接失效。
 func (c *Client) transportError(ctx context.Context, operation string, err error) error {
-	if ctx != nil && ctx.Err() != nil {
-		return errs.WrapDetail(ctx.Err(), ErrNetwork, "%s canceled | %s 已取消", operation, operation)
+	if cause := contextCause(ctx, err); cause != nil {
+		return errs.WrapDetail(cause, ErrNetwork, "%s canceled | %s 已取消", operation, operation)
 	}
 	var netErr net.Error
 	if errors.As(err, &netErr) && netErr.Timeout() {
@@ -336,8 +362,8 @@ func (c *Client) transportError(ctx context.Context, operation string, err error
 
 // dialError converts a connection setup failure. | dialError 转换连接建立失败。
 func (c *Client) dialError(ctx context.Context, operation string, err error) error {
-	if ctx != nil && ctx.Err() != nil {
-		return errs.WrapDetail(ctx.Err(), ErrNetwork, "%s canceled | %s 已取消", operation, operation)
+	if cause := contextCause(ctx, err); cause != nil {
+		return errs.WrapDetail(cause, ErrNetwork, "%s canceled | %s 已取消", operation, operation)
 	}
 	var netErr net.Error
 	if errors.As(err, &netErr) && netErr.Timeout() {

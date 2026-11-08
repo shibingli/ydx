@@ -6,10 +6,12 @@
 // The design follows the framework rule that a decision about a claim must be taken on
 // the bytes that were signed. Parse never decodes the payload into map[string]any: it
 // scans the decoded payload bytes with the hand-written scanner in scan.go, so exp / nbf
-// / iat / iss / aud / sub are validated against exactly the bytes the signature covers.
+// / iss / aud / sub are enforced against exactly the bytes the signature covers; iat is
+// parsed and exposed through Claims.IssuedAt but is not window-checked.
 // | 本设计遵循框架约定：关于声明的判定必须落在被签名的字节上。Parse 绝不把载荷解码成
-// map[string]any，而是用 scan.go 中手写的扫描器读取解码后的载荷字节，因此 exp / nbf / iat /
-// iss / aud / sub 校验的正是签名所覆盖的那份字节。
+// map[string]any，而是用 scan.go 中手写的扫描器读取解码后的载荷字节，因此 exp / nbf / iss /
+// aud / sub 校验的正是签名所覆盖的那份字节；iat 会被解析并通过 Claims.IssuedAt 暴露，但不做
+// 时间窗口校验。
 //
 // Supported algorithms | 受支持的算法：
 //

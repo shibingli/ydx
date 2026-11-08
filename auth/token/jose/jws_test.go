@@ -1,7 +1,10 @@
 package jose
 
 import (
+	"crypto"
 	"crypto/hmac"
+	"crypto/rand"
+	"crypto/rsa"
 	"crypto/sha256"
 	"errors"
 	"strings"
@@ -388,4 +391,106 @@ func bytesRepeat(b byte, n int) []byte {
 		out[i] = b
 	}
 	return out
+}
+
+// TestSignVerifyEnforceKeyUseAndOps pins that the optional use and key_ops JWK metadata is
+// enforced at the operation boundary, so a key published for encryption cannot verify signatures
+// and vice versa. | TestSignVerifyEnforceKeyUseAndOps 固定「在操作边界强制执行可选的 use 与
+// key_ops JWK 元数据」，因此用于加密的密钥不能验签，反之亦然。
+func TestSignVerifyEnforceKeyUseAndOps(t *testing.T) {
+	signer := testOctSecretKey()
+	token := mustSign(t, []byte(`{"sub":"x"}`), signer, SignOptions{Alg: "HS256"})
+	okResolver := KeySetResolver(&KeySet{Keys: []*Key{signer.Public()}})
+	if _, err := Verify(token, okResolver, VerifyOptions{}); err != nil {
+		t.Fatalf("Verify with unbound key failed: %v", err)
+	}
+
+	wrongUse := signer.Public()
+	wrongUse.Use = "enc"
+	if _, err := Verify(token, KeySetResolver(&KeySet{Keys: []*Key{wrongUse}}), VerifyOptions{}); !errors.Is(err, ErrInvalidKey) {
+		t.Errorf("Verify(use=enc) err = %v, want ErrInvalidKey", err)
+	}
+	if _, err := Sign([]byte(`{"sub":"x"}`), wrongUse, SignOptions{Alg: "HS256"}); !errors.Is(err, ErrInvalidKey) {
+		t.Errorf("Sign(use=enc) err = %v, want ErrInvalidKey", err)
+	}
+
+	verifyOps := signer.Public()
+	verifyOps.KeyOps = []string{"verify"}
+	if _, err := Verify(token, KeySetResolver(&KeySet{Keys: []*Key{verifyOps}}), VerifyOptions{}); err != nil {
+		t.Fatalf("Verify(key_ops=[verify]) failed: %v", err)
+	}
+	signOps := signer.Clone()
+	signOps.KeyOps = []string{"sign"}
+	if _, err := Sign([]byte(`{"sub":"x"}`), signOps, SignOptions{Alg: "HS256"}); err != nil {
+		t.Fatalf("Sign(key_ops=[sign]) failed: %v", err)
+	}
+	if _, err := Verify(token, KeySetResolver(&KeySet{Keys: []*Key{verifyOps.Clone()}}), VerifyOptions{}); err != nil {
+		// Clone keeps key_ops and drops the derived material; verification must still succeed. |
+		// 克隆保留 key_ops 但丢弃派生材料；验签仍须成功。
+		t.Fatalf("Verify(cloned key_ops=[verify]) failed: %v", err)
+	}
+
+	signOnly := signer.Public()
+	signOnly.KeyOps = []string{"sign"}
+	if _, err := Verify(token, KeySetResolver(&KeySet{Keys: []*Key{signOnly}}), VerifyOptions{}); !errors.Is(err, ErrInvalidKey) {
+		t.Errorf("Verify(key_ops=[sign]) err = %v, want ErrInvalidKey", err)
+	}
+}
+
+// TestJWSRSAWeakKeysRejected pins the RFC 7518 minimum modulus size on the JWS side as well: a
+// 1024-bit RSA key cannot sign or verify RSxxx/PSxxx through a JWK. | TestJWSRSAWeakKeysRejected
+// 固定 JWS 侧的 RFC 7518 最小模数要求：1024 位 RSA 密钥无法通过 JWK 进行 RSxxx/PSxxx 签名或验签。
+func TestJWSRSAWeakKeysRejected(t *testing.T) {
+	small, err := rsa.GenerateKey(rand.Reader, 1024)
+	if err != nil {
+		t.Fatalf("rsa.GenerateKey: %v", err)
+	}
+	key, err := FromPrivateKey("weak", small)
+	if err != nil {
+		t.Fatalf("FromPrivateKey: %v", err)
+	}
+	for _, alg := range []string{"RS256", "PS256"} {
+		if _, err := Sign([]byte(`{"sub":"u"}`), key, SignOptions{Alg: alg}); !errors.Is(err, ErrWeakKey) {
+			t.Errorf("Sign(%s) err = %v, want ErrWeakKey", alg, err)
+		}
+	}
+	input := []byte(EncodeSegment([]byte(`{"alg":"RS256"}`)) + "." + EncodeSegment([]byte(`{"sub":"u"}`)))
+	digest := sha256.Sum256(input)
+	sig, err := rsa.SignPKCS1v15(rand.Reader, small, crypto.SHA256, digest[:])
+	if err != nil {
+		t.Fatalf("rsa.SignPKCS1v15: %v", err)
+	}
+	token := string(input) + "." + EncodeSegment(sig)
+	if _, err := Verify(token, KeySetResolver(&KeySet{Keys: []*Key{key.Public()}}), VerifyOptions{}); !errors.Is(err, ErrWeakKey) {
+		t.Errorf("Verify(1024-bit RSA) err = %v, want ErrWeakKey", err)
+	}
+	key.Alg = "RS256"
+	if err := key.Validate(); !errors.Is(err, ErrWeakKey) {
+		t.Errorf("Validate(1024-bit RS256 key) err = %v, want ErrWeakKey", err)
+	}
+}
+
+// TestVerifyTokenSizeLimit covers the pre-decode input bound: the exact limit passes, one byte over
+// fails with ErrTokenTooLarge, and a zero option selects DefaultMaxTokenSize. |
+// TestVerifyTokenSizeLimit 覆盖解码前的输入上限：恰好等于上限通过，超出 1 字节返回
+// ErrTokenTooLarge，选项为零时使用 DefaultMaxTokenSize。
+func TestVerifyTokenSizeLimit(t *testing.T) {
+	signKey := testOctSecretKey()
+	verifyKey := testOctSecretKey()
+	token := mustSign(t, []byte(`{"sub":"u"}`), signKey, SignOptions{Alg: "HS256"})
+	resolver := KeySetResolver(&KeySet{Keys: []*Key{verifyKey}})
+
+	if _, err := Verify(token, resolver, VerifyOptions{MaxTokenSize: len(token)}); err != nil {
+		t.Fatalf("Verify at exact limit failed: %v", err)
+	}
+	if _, err := Verify(token, resolver, VerifyOptions{MaxTokenSize: len(token) - 1}); !errors.Is(err, ErrTokenTooLarge) {
+		t.Fatalf("Verify one byte over limit err = %v, want ErrTokenTooLarge", err)
+	}
+	if _, err := Verify(token, resolver, VerifyOptions{}); err != nil {
+		t.Fatalf("Verify under default limit failed: %v", err)
+	}
+	huge := strings.Repeat("A", DefaultMaxTokenSize+1)
+	if _, err := Verify(huge, resolver, VerifyOptions{}); !errors.Is(err, ErrTokenTooLarge) {
+		t.Fatalf("Verify over default limit err = %v, want ErrTokenTooLarge", err)
+	}
 }

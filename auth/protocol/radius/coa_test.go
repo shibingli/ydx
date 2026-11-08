@@ -342,21 +342,24 @@ func TestDynamicMessageAuthenticator(t *testing.T) {
 	})
 }
 
-func TestDynamicRejectsBadResponseAuthenticator(t *testing.T) {
+func TestDynamicDiscardsBadResponseAuthenticator(t *testing.T) {
 	secret := []byte("testing-secret")
 	cases := []struct {
-		name string
-		send sendDynamicFunc
+		name         string
+		responseCode Code
+		send         sendDynamicFunc
 	}{
 		{
-			name: "coa",
+			name:         "coa",
+			responseCode: CodeCoAACK,
 			send: func(client *Client, ctx context.Context) error {
 				_, err := client.SendCoA(ctx, &CoARequest{SessionID: "session-1"})
 				return err
 			},
 		},
 		{
-			name: "disconnect",
+			name:         "disconnect",
+			responseCode: CodeDisconnectACK,
 			send: func(client *Client, ctx context.Context) error {
 				_, err := client.SendDisconnect(ctx, &DisconnectRequest{SessionID: "session-1"})
 				return err
@@ -364,18 +367,43 @@ func TestDynamicRejectsBadResponseAuthenticator(t *testing.T) {
 		},
 	}
 	for _, testCase := range cases {
-		t.Run(testCase.name, func(t *testing.T) {
-			server := newUDPMock(t, secret, func(request *Packet, raw []byte) ([]byte, error) {
-				responseCode := CodeCoAACK
-				if request.Code == CodeDisconnectRequest {
-					responseCode = CodeDisconnectACK
+		t.Run(testCase.name+"/bad then good", func(t *testing.T) {
+			server := newScriptedUDPServer(t, func(request *Packet) ([][]byte, error) {
+				bad, err := signedResponse(request, []byte("other-secret"), testCase.responseCode, nil)
+				if err != nil {
+					return nil, err
 				}
-				return signedResponse(request, []byte("other-secret"), responseCode, nil)
+				good, err := signedResponse(request, secret, testCase.responseCode, nil)
+				if err != nil {
+					return nil, err
+				}
+				return [][]byte{bad, good}, nil
 			})
-			client := newTestClient(t, ClientConfig{Address: server.Addr(), Secret: secret})
+			client := newTestClient(t, ClientConfig{
+				Address: server.LocalAddr().String(),
+				Secret:  secret,
+				Timeout: 500 * time.Millisecond,
+			})
+			if err := testCase.send(client, context.Background()); err != nil {
+				t.Fatalf("send: %v", err)
+			}
+		})
+		t.Run(testCase.name+"/bad only times out", func(t *testing.T) {
+			server := newUDPMock(t, secret, func(request *Packet, raw []byte) ([]byte, error) {
+				return signedResponse(request, []byte("other-secret"), testCase.responseCode, nil)
+			})
+			client := newTestClient(t, ClientConfig{
+				Address: server.Addr(),
+				Secret:  secret,
+				Timeout: 80 * time.Millisecond,
+			})
+			start := time.Now()
 			err := testCase.send(client, context.Background())
-			if !errors.Is(err, ErrAuthenticator) {
-				t.Fatalf("error = %v, want ErrAuthenticator", err)
+			if !errors.Is(err, ErrTimeout) {
+				t.Fatalf("error = %v, want ErrTimeout", err)
+			}
+			if elapsed := time.Since(start); elapsed < 60*time.Millisecond {
+				t.Fatalf("bad response failed the exchange after only %v", elapsed)
 			}
 			if strings.Contains(err.Error(), string(secret)) || strings.Contains(err.Error(), "other-secret") {
 				t.Fatalf("error leaks a secret: %v", err)

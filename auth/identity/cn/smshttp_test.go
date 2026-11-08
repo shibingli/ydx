@@ -40,7 +40,7 @@ func TestHTTPProviderSend(t *testing.T) {
 			t.Errorf("payload = %+v", payload)
 		}
 		w.Header().Set("Content-Type", "application/json")
-		io.WriteString(w, `{"requestId":"req-9"}`)
+		_, _ = io.WriteString(w, `{"requestId":"req-9"}`)
 	}))
 	defer srv.Close()
 
@@ -73,7 +73,7 @@ func TestHTTPProviderSend(t *testing.T) {
 func TestHTTPProviderMessageIDFallback(t *testing.T) {
 	t.Parallel()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		io.WriteString(w, `{"messageId":"msg-7"}`)
+		_, _ = io.WriteString(w, `{"messageId":"msg-7"}`)
 	}))
 	defer srv.Close()
 
@@ -97,7 +97,7 @@ func TestHTTPProviderHooks(t *testing.T) {
 		if string(body) != "custom-body" {
 			t.Errorf("body = %q, want custom-body", body)
 		}
-		io.WriteString(w, `{}`)
+		_, _ = io.WriteString(w, `{}`)
 	}))
 	defer srv.Close()
 
@@ -131,7 +131,7 @@ func TestHTTPProviderFailures(t *testing.T) {
 	const mobile = "+8613800138000"
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusForbidden)
-		io.WriteString(w, `{"error":"`+mobile+`"}`)
+		_, _ = io.WriteString(w, `{"error":"`+mobile+`"}`)
 	}))
 	defer srv.Close()
 
@@ -159,7 +159,7 @@ func TestHTTPProviderFailures(t *testing.T) {
 func TestHTTPProviderSignAndDecodeFailures(t *testing.T) {
 	t.Parallel()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		io.WriteString(w, `not json`)
+		_, _ = io.WriteString(w, `not json`)
 	}))
 	defer srv.Close()
 

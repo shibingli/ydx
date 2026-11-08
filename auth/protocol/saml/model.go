@@ -15,8 +15,10 @@ type Issuer struct {
 	XMLName xml.Name `xml:"urn:oasis:names:tc:SAML:2.0:assertion Issuer"`
 	// Format is the optional issuer format. | Format 是可选的签发方格式。
 	Format string `xml:"Format,attr,omitempty"`
-	// NameQualifier and SPNameQualifier qualify the issuer name. | NameQualifier 与 SPNameQualifier 限定签发方名称。
-	NameQualifier   string `xml:"NameQualifier,attr,omitempty"`
+	// NameQualifier qualifies the issuer name. | NameQualifier 限定签发方名称。
+	NameQualifier string `xml:"NameQualifier,attr,omitempty"`
+	// SPNameQualifier qualifies the issuer name in the SP namespace. | SPNameQualifier 在 SP 命名空间中
+	// 限定签发方名称。
 	SPNameQualifier string `xml:"SPNameQualifier,attr,omitempty"`
 	// Value is the issuer URI. | Value 是签发方 URI。
 	Value string `xml:",chardata"`
@@ -28,8 +30,10 @@ type NameID struct {
 	XMLName xml.Name `xml:"urn:oasis:names:tc:SAML:2.0:assertion NameID"`
 	// Format is the name-identifier format. | Format 是名称标识格式。
 	Format string `xml:"Format,attr,omitempty"`
-	// NameQualifier and SPNameQualifier qualify the identifier. | NameQualifier 与 SPNameQualifier 限定标识。
-	NameQualifier   string `xml:"NameQualifier,attr,omitempty"`
+	// NameQualifier qualifies the identifier. | NameQualifier 限定标识。
+	NameQualifier string `xml:"NameQualifier,attr,omitempty"`
+	// SPNameQualifier qualifies the identifier in the SP namespace. | SPNameQualifier 在 SP 命名空间中
+	// 限定标识。
 	SPNameQualifier string `xml:"SPNameQualifier,attr,omitempty"`
 	// SPProvidedID is the service-provider-provided identifier. | SPProvidedID 是服务提供方提供的标识。
 	SPProvidedID string `xml:"SPProvidedID,attr,omitempty"`
@@ -59,8 +63,9 @@ type SubjectConfirmation struct {
 
 // SubjectConfirmationData is the bearer confirmation data. | SubjectConfirmationData 是承载确认数据。
 type SubjectConfirmationData struct {
-	// NotBefore and NotOnOrAfter bound the confirmation window. | NotBefore 与 NotOnOrAfter 限定确认窗口。
-	NotBefore    string `xml:"NotBefore,attr,omitempty"`
+	// NotBefore is the start of the confirmation window. | NotBefore 是确认窗口起点。
+	NotBefore string `xml:"NotBefore,attr,omitempty"`
+	// NotOnOrAfter is the end of the confirmation window. | NotOnOrAfter 是确认窗口终点。
 	NotOnOrAfter string `xml:"NotOnOrAfter,attr,omitempty"`
 	// Recipient is the intended ACS URL. | Recipient 是目标 ACS URL。
 	Recipient string `xml:"Recipient,attr,omitempty"`
@@ -74,8 +79,9 @@ type SubjectConfirmationData struct {
 
 // Conditions constrain assertion validity. | Conditions 约束断言有效性。
 type Conditions struct {
-	// NotBefore and NotOnOrAfter bound the validity window. | NotBefore 与 NotOnOrAfter 限定有效窗口。
-	NotBefore    string `xml:"NotBefore,attr,omitempty"`
+	// NotBefore is the start of the validity window. | NotBefore 是有效窗口起点。
+	NotBefore string `xml:"NotBefore,attr,omitempty"`
+	// NotOnOrAfter is the end of the validity window. | NotOnOrAfter 是有效窗口终点。
 	NotOnOrAfter string `xml:"NotOnOrAfter,attr,omitempty"`
 	// AudienceRestriction lists the allowed audiences. | AudienceRestriction 列出允许受众。
 	AudienceRestriction []AudienceRestriction `xml:"urn:oasis:names:tc:SAML:2.0:assertion AudienceRestriction,omitempty"`

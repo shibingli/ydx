@@ -222,6 +222,88 @@ func TestPoolMaxIdle(t *testing.T) {
 	}
 }
 
+// TestPoolDoublePutDoesNotDoubleBorrow verifies that returning the same client
+// twice cannot place it in the idle set twice, close it while it is idle, or
+// hand it to two borrowers. | TestPoolDoublePutDoesNotDoubleBorrow 校验重复归还同一
+// 客户端不会把它两次放入空闲集合、在空闲时将其关闭，或把它同时交给两个借用方。
+func TestPoolDoublePutDoesNotDoubleBorrow(t *testing.T) {
+	t.Run("excess idle", func(t *testing.T) {
+		server := startMockServer(t, poolSearchHandler)
+		pool, err := NewPool(Config{URL: server.URL(), PoolSize: 2, MaxIdle: 2, MaxIdleTime: time.Minute})
+		if err != nil {
+			t.Fatalf("NewPool: %v", err)
+		}
+		defer pool.Close()
+		client, err := pool.Get(context.Background())
+		if err != nil {
+			t.Fatalf("Get: %v", err)
+		}
+		if err := pool.Put(client); err != nil {
+			t.Fatalf("Put: %v", err)
+		}
+		if err := pool.Put(client); err != nil {
+			t.Fatalf("second Put: %v", err)
+		}
+		if stats := pool.Stats(); stats.Open != 1 || stats.Idle != 1 {
+			t.Fatalf("stats after double Put = %+v", stats)
+		}
+		first, err := pool.Get(context.Background())
+		if err != nil {
+			t.Fatalf("Get after double Put: %v", err)
+		}
+		if first != client {
+			t.Fatal("Get after double Put did not reuse the idle client")
+		}
+		second, err := pool.Get(context.Background())
+		if err != nil {
+			t.Fatalf("second Get after double Put: %v", err)
+		}
+		if second == first {
+			t.Fatal("double Put handed the same client to two borrowers")
+		}
+		if err := pool.Put(first); err != nil {
+			t.Fatalf("Put first: %v", err)
+		}
+		if err := pool.Put(second); err != nil {
+			t.Fatalf("Put second: %v", err)
+		}
+	})
+	t.Run("max idle one", func(t *testing.T) {
+		server := startMockServer(t, poolSearchHandler)
+		pool, err := NewPool(Config{URL: server.URL(), PoolSize: 1, MaxIdle: 1, MaxIdleTime: time.Minute})
+		if err != nil {
+			t.Fatalf("NewPool: %v", err)
+		}
+		defer pool.Close()
+		client, err := pool.Get(context.Background())
+		if err != nil {
+			t.Fatalf("Get: %v", err)
+		}
+		if err := pool.Put(client); err != nil {
+			t.Fatalf("Put: %v", err)
+		}
+		if err := pool.Put(client); err != nil {
+			t.Fatalf("second Put: %v", err)
+		}
+		if stats := pool.Stats(); stats.Open != 1 || stats.Idle != 1 {
+			t.Fatalf("stats after double Put = %+v", stats)
+		}
+		reused, err := pool.Get(context.Background())
+		if err != nil {
+			t.Fatalf("Get after double Put: %v", err)
+		}
+		if reused != client {
+			t.Fatal("Get after double Put did not reuse the idle client")
+		}
+		if reused.IsClosed() {
+			t.Fatal("double Put closed the idle client")
+		}
+		if err := pool.Put(reused); err != nil {
+			t.Fatalf("final Put: %v", err)
+		}
+	})
+}
+
 // TestPoolPruneExpired verifies Get prunes idle clients past MaxIdleTime. |
 // TestPoolPruneExpired 校验 Get 清理超过 MaxIdleTime 的空闲客户端。
 func TestPoolPruneExpired(t *testing.T) {

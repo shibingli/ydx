@@ -1,10 +1,12 @@
 package kmip
 
 import (
+	"context"
 	"encoding/binary"
 	"errors"
 	"io"
 	"net"
+	"sync"
 	"testing"
 	"time"
 )
@@ -347,5 +349,152 @@ func TestServerServeFraming(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("Serve did not stop after the client closed | 客户端关闭后 Serve 未停止")
+	}
+}
+
+// TestServerServeListenerCloseUnderChurn exercises concurrent accept, dial and Close to catch
+// WaitGroup ordering defects. | TestServerServeListenerCloseUnderChurn 通过并发 accept、拨号与 Close
+// 捕获 WaitGroup 顺序缺陷。
+func TestServerServeListenerCloseUnderChurn(t *testing.T) {
+	server, err := NewServer(ServerConfig{AllowPlaintext: true, Store: NewMemoryStore(), ShutdownTimeout: 2 * time.Second})
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	t.Cleanup(func() { _ = server.Close() })
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("Listen: %v", err)
+	}
+	serveErr := make(chan error, 1)
+	go func() { serveErr <- server.ServeListener(listener) }()
+
+	address := listener.Addr().String()
+	stop := make(chan struct{})
+	var dialers sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		dialers.Add(1)
+		go func() {
+			defer dialers.Done()
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				conn, dialErr := net.DialTimeout("tcp", address, time.Second)
+				if dialErr != nil {
+					return
+				}
+				_ = conn.Close()
+			}
+		}()
+	}
+	time.Sleep(20 * time.Millisecond)
+	if err := server.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	close(stop)
+	dialers.Wait()
+	if err := <-serveErr; err != nil {
+		t.Fatalf("ServeListener: %v", err)
+	}
+}
+
+// TestReadRequestRejectsUnexpectedRootTag covers root-tag validation before body allocation.
+// | TestReadRequestRejectsUnexpectedRootTag 覆盖正文分配前的根标签校验。
+func TestReadRequestRejectsUnexpectedRootTag(t *testing.T) {
+	clientConn, serverConn := net.Pipe()
+	defer func() { _ = clientConn.Close() }()
+	defer func() { _ = serverConn.Close() }()
+	go func() {
+		var header [ttlvHeaderSize]byte
+		tag := uint32(TagResponseMessage)
+		header[0] = byte(tag >> 16)
+		header[1] = byte(tag >> 8)
+		header[2] = byte(tag)
+		header[3] = byte(TypeStructure)
+		_, _ = clientConn.Write(header[:])
+	}()
+	if _, err := readRequest(serverConn, 1024); !errors.Is(err, ErrMalformed) {
+		t.Fatalf("readRequest err = %v, want ErrMalformed", err)
+	}
+}
+
+// listCountingStore counts List calls. | listCountingStore 统计 List 调用。
+type listCountingStore struct {
+	*MemoryStore
+	listMu sync.Mutex
+	lists  int
+}
+
+// List counts one call and delegates to the memory store. | List 计数一次并委托给内存存储。
+func (s *listCountingStore) List(ctx context.Context) ([]ObjectRecord, error) {
+	s.listMu.Lock()
+	s.lists++
+	s.listMu.Unlock()
+	return s.MemoryStore.List(ctx)
+}
+
+// resetLists zeroes the call counter. | resetLists 清零调用计数。
+func (s *listCountingStore) resetLists() {
+	s.listMu.Lock()
+	s.lists = 0
+	s.listMu.Unlock()
+}
+
+// listCount returns the call counter. | listCount 返回调用计数。
+func (s *listCountingStore) listCount() int {
+	s.listMu.Lock()
+	defer s.listMu.Unlock()
+	return s.lists
+}
+
+// TestServerBatchUndoSkipsSnapshotForReadOnlyBatch covers lazy undo snapshotting. |
+// TestServerBatchUndoSkipsSnapshotForReadOnlyBatch 覆盖按需拍摄撤销快照。
+func TestServerBatchUndoSkipsSnapshotForReadOnlyBatch(t *testing.T) {
+	store := &listCountingStore{MemoryStore: NewMemoryStore()}
+	server, err := NewServer(ServerConfig{AllowPlaintext: true, Store: store})
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	t.Cleanup(func() { _ = server.Close() })
+	uid := createSymmetric(t, server)
+
+	store.resetLists()
+	response := roundTrip(t, server, RequestMessage{
+		Header: RequestHeader{ProtocolVersion: DefaultProtocolVersion, BatchErrorContinuationOption: BatchUndo},
+		BatchItems: []RequestBatchItem{
+			{Operation: OpGet, Payload: mustItem(t, GetRequest{UniqueIdentifier: uid})},
+			{Operation: OpGet, Payload: mustItem(t, GetRequest{UniqueIdentifier: uid})},
+		},
+	})
+	for i, item := range response.BatchItems {
+		if item.ResultStatus != ResultStatusSuccess {
+			t.Fatalf("read-only item %d status = %v | 只读项状态错误", i, item.ResultStatus)
+		}
+	}
+	if lists := store.listCount(); lists != 0 {
+		t.Fatalf("read-only Batch Undo took %d snapshots, want 0 | 只读 Batch Undo 拍摄了 %d 次快照", lists, lists)
+	}
+
+	store.resetLists()
+	failed := roundTrip(t, server, RequestMessage{
+		Header: RequestHeader{ProtocolVersion: DefaultProtocolVersion, BatchErrorContinuationOption: BatchUndo},
+		BatchItems: []RequestBatchItem{
+			{Operation: OpGet, Payload: mustItem(t, GetRequest{UniqueIdentifier: uid})},
+			{Operation: OpGet, Payload: mustItem(t, GetRequest{UniqueIdentifier: "missing-undo"})},
+		},
+	})
+	if len(failed.BatchItems) != 2 {
+		t.Fatalf("failed batch items = %d, want 2", len(failed.BatchItems))
+	}
+	if failed.BatchItems[0].ResultStatus != ResultStatusOperationUndone {
+		t.Fatalf("successful read status = %v, want OperationUndone", failed.BatchItems[0].ResultStatus)
+	}
+	if failed.BatchItems[0].Payload.Type != 0 {
+		t.Fatal("undone read retained its payload | 已撤销的读取保留了负载")
+	}
+	if lists := store.listCount(); lists != 0 {
+		t.Fatalf("failed read-only Batch Undo took %d snapshots, want 0 | 失败的只读 Batch Undo 拍摄了 %d 次快照", lists, lists)
 	}
 }
