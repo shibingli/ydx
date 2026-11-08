@@ -140,6 +140,12 @@ func TestPipelinedProposalsProgress(t *testing.T) {
 		cfg.MessageQueue = 65536
 		cfg.OutboundQueue = 65536
 		cfg.SnapshotEntries = 1 << 30
+		// This test saturates every replica with 160k pipelined proposals; the default 40ms
+		// election timeout is below shared-runner scheduling jitter, so a healthy leader can
+		// miss heartbeats and step down. Elections are not under test here. |
+		// 本测试用 16 万条流水线提案压满每个副本；默认 40ms 选举超时低于共享运行器的调度抖动，
+		// 健康领导者可能错过心跳而退位。此处不测试选举。
+		cfg.ElectionTicks = 200
 	})
 	leader := c.waitLeader(5 * time.Second)
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
