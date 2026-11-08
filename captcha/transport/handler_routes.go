@@ -22,5 +22,7 @@ func (h *Handler) Bind(r *router.Router) {
 	r.Handle(http.MethodPost, h.prefix+"/token/consume", handle)
 	r.GET(h.prefix+"/image/*key", handle)
 	r.GET(h.prefix+"/assets/*file", handle)
+	r.Handle(http.MethodHead, h.prefix+"/image/*key", handle)
+	r.Handle(http.MethodHead, h.prefix+"/assets/*file", handle)
 	r.Handle(http.MethodOptions, h.prefix+"/*rest", handle)
 }

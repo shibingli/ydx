@@ -157,6 +157,21 @@ func TestSendCodeTTL(t *testing.T) {
 	}
 }
 
+func TestSendCodeExpiresInRoundsUp(t *testing.T) {
+	sender := SenderFunc{Ch: ChannelSMS, Fn: func(context.Context, Message) error { return nil }}
+	m := newTestManager(t, func(o *Options) {
+		o.Senders = map[Channel]Sender{ChannelSMS: sender}
+		o.ChallengeTTL = 1500 * time.Millisecond
+	})
+	ch, err := m.SendCode(context.Background(), SendRequest{Channel: ChannelSMS, Target: "13800138000", Action: "login", Meta: testMeta()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ch.ExpiresIn != 2 {
+		t.Fatalf("expires_in = %d, want 2 (rounded up) | expires_in = %d，期望向上取整为 2", ch.ExpiresIn, ch.ExpiresIn)
+	}
+}
+
 func TestNormalizePhoneToE164(t *testing.T) {
 	cases := []struct {
 		in   string

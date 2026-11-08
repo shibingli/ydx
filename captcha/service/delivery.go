@@ -87,7 +87,7 @@ func (m *Manager) SendCode(ctx context.Context, req SendRequest) (*Challenge, er
 	targetHash := m.keyedDigest(string(req.Channel) + ":" + target)
 	release, err := m.reserveCooldown(ctx, req.Channel, targetHash)
 	if err != nil {
-		m.auditSince(ctx, start, AuditEvent{RequestID: req.Meta.RequestID, Action: req.Action, Type: typ, Outcome: AuditRateLimited, IP: req.Meta.IP, Target: MaskTarget(req.Channel, target), Risk: assessment.Score, Reasons: auditReasons, ErrorCode: core.ErrorCode(err)})
+		m.auditSince(ctx, start, AuditEvent{RequestID: req.Meta.RequestID, Action: req.Action, Type: typ, Outcome: auditOutcome(err), IP: req.Meta.IP, Target: MaskTarget(req.Channel, target), Risk: assessment.Score, Reasons: auditReasons, ErrorCode: core.ErrorCode(err)})
 		return nil, err
 	}
 	reserved := true
@@ -173,7 +173,7 @@ func (m *Manager) SendCode(ctx context.Context, req SendRequest) (*Challenge, er
 		Notice:    notice,
 		Channel:   req.Channel,
 		Target:    record.Target,
-		ExpiresIn: int64(m.opts.ChallengeTTL / time.Second),
+		ExpiresIn: secondsCeil(m.opts.ChallengeTTL),
 	}, nil
 }
 

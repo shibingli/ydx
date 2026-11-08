@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -92,6 +93,40 @@ func goodTrack() Track {
 	return Track{StartedAt: 0, EndedAt: 330, Points: points}
 }
 
+// goodScratchTrack scribbles over the default glyph band. | goodScratchTrack 在默认字符区域上来回刮擦。
+func goodScratchTrack() Track {
+	points := make([]TrackPoint, 0, 96)
+	var elapsed int64
+	for row := 0; row < 8; row++ {
+		y := 10 + row*25
+		for column := 0; column < 12; column++ {
+			x := 10 + column*27
+			if row%2 == 1 {
+				x = 310 - column*27
+			}
+			points = append(points, TrackPoint{T: elapsed, X: x, Y: y, Kind: "scratch"})
+			elapsed += 12
+		}
+	}
+	return Track{StartedAt: 0, EndedAt: elapsed - 12, Points: points}
+}
+
+// assertChallengeImagesGone verifies every public image URL no longer resolves. |
+// assertChallengeImagesGone 验证所有公开图片 URL 均已失效。
+func assertChallengeImagesGone(t *testing.T, m *Manager, ch *Challenge) {
+	t.Helper()
+	if len(ch.Images) == 0 {
+		t.Fatal("challenge has no images | 挑战没有图片")
+	}
+	for _, img := range ch.Images {
+		key := strings.TrimPrefix(img.URL, "image/")
+		data, mime, ok, err := m.Image(context.Background(), key)
+		if err != nil || ok || data != nil || mime != "" {
+			t.Fatalf("image %s still stored: ok=%v mime=%q err=%v | 图片 %s 仍可读取", img.URL, ok, mime, err, img.URL)
+		}
+	}
+}
+
 func createVisual(t *testing.T, m *Manager, typ Type, meta Meta) (*Challenge, *Record) {
 	t.Helper()
 	ch, err := m.Create(context.Background(), CreateRequest{
@@ -118,7 +153,7 @@ func createVisual(t *testing.T, m *Manager, typ Type, meta Meta) (*Challenge, *R
 func answerFor(t *testing.T, record *Record) Answer {
 	t.Helper()
 	switch record.Type {
-	case TypeText, TypeScratch:
+	case TypeText:
 		var state struct {
 			Text string `json:"text"`
 		}
@@ -126,6 +161,14 @@ func answerFor(t *testing.T, record *Record) Answer {
 			t.Fatal(err)
 		}
 		return Answer{Text: state.Text, Track: goodTrack()}
+	case TypeScratch:
+		var state struct {
+			Text string `json:"text"`
+		}
+		if err := json.Unmarshal(record.Answer, &state); err != nil {
+			t.Fatal(err)
+		}
+		return Answer{Text: state.Text, Track: goodScratchTrack()}
 	case TypeClickText, TypeClickIcon, TypeSemantic:
 		var state struct {
 			Points []Point `json:"points"`

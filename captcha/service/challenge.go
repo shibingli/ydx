@@ -157,6 +157,16 @@ func (m *Manager) Verify(ctx context.Context, req VerifyRequest) (*VerifyResult,
 		return nil, errs.Wrap(err, ErrStore)
 	}
 	if !ok {
+		// Unknown IDs must consume the same IP bucket as real attempts; otherwise
+		// random IDs bypass verify rate limiting and can probe the store cheaply. |
+		// 未知 ID 也必须消耗与真实尝试相同的 IP 桶；否则随机 ID 会绕过验证限流并低成本探测存储。
+		assessment := Assessment{}
+		ipText := strings.TrimSpace(req.Meta.IP)
+		addr, _ := netip.ParseAddr(ipText)
+		if rateErr := m.checkRate(ctx, ipText, addr, "", phaseVerify, &assessment); rateErr != nil {
+			m.auditSince(ctx, start, AuditEvent{RequestID: req.Meta.RequestID, ChallengeID: id, Outcome: auditOutcome(rateErr), IP: req.Meta.IP, Risk: assessment.Score, Reasons: assessment.Reasons, ErrorCode: core.ErrorCode(rateErr)})
+			return nil, rateErr
+		}
 		return nil, ErrNotFound
 	}
 	record, err := decodeRecord(payload)
@@ -164,6 +174,7 @@ func (m *Manager) Verify(ctx context.Context, req VerifyRequest) (*VerifyResult,
 		return nil, err
 	}
 	if !record.ExpiresAt.After(now) {
+		m.deleteImages(ctx, record)
 		m.auditSince(ctx, start, AuditEvent{RequestID: req.Meta.RequestID, ChallengeID: id, Action: record.Action, Type: record.Type, Outcome: AuditError, IP: req.Meta.IP, Risk: record.Risk, ErrorCode: core.ErrorCode(ErrExpired)})
 		return nil, ErrExpired
 	}
@@ -182,6 +193,11 @@ func (m *Manager) Verify(ctx context.Context, req VerifyRequest) (*VerifyResult,
 	if err != nil {
 		if isLimitError(err) || errors.Is(err, ErrStore) || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			m.restoreRecord(record, now)
+		} else {
+			// Terminal policy, geo or capture decisions consume the challenge;
+			// remove its images instead of leaving them until TTL. | 终态策略、地理或
+			// 录屏决策会消费挑战；同时删除图片，避免其滞留到 TTL。
+			m.deleteImages(ctx, record)
 		}
 		m.auditSince(ctx, start, AuditEvent{RequestID: req.Meta.RequestID, ChallengeID: id, Action: record.Action, Type: record.Type, Outcome: auditOutcome(err), IP: req.Meta.IP, Country: assessment.Geo.Country, Target: record.Target, Risk: assessment.Score, Reasons: assessment.Reasons, ErrorCode: core.ErrorCode(err)})
 		return nil, err

@@ -189,7 +189,7 @@ type Options struct {
 	RiskRejectScore int
 	// MaxAttempts is the per-challenge attempt budget. | MaxAttempts 是单挑战尝试次数。
 	MaxAttempts int
-	// TextLength is the number of characters in a text challenge. | TextLength 是文本挑战字符数。
+	// TextLength is the number of characters in a text challenge, from 4 to 6. | TextLength 是文本挑战字符数，范围为 4 到 6。
 	TextLength int
 	// Width is the challenge image width. | Width 是挑战图片宽度。
 	Width int
@@ -238,8 +238,21 @@ func (o Options) Defaults() Options {
 	} else {
 		o.DefaultLocale = canonicalLocaleTag(o.DefaultLocale)
 	}
+	if len(o.Secret) > 0 {
+		o.Secret = append([]byte(nil), o.Secret...)
+	}
 	if len(o.DigestKey) > 0 {
 		o.DigestKey = append([]byte(nil), o.DigestKey...)
+	}
+	if len(o.Keys) > 0 {
+		keys := make(map[string][]byte, len(o.Keys))
+		for id, key := range o.Keys {
+			keys[id] = append([]byte(nil), key...)
+		}
+		o.Keys = keys
+	}
+	if len(o.Types) > 0 {
+		o.Types = append([]Type(nil), o.Types...)
 	}
 	if len(o.Messages) > 0 {
 		messages := make(map[string]map[string]string, len(o.Messages))
@@ -315,8 +328,8 @@ func (o Options) Validate() error {
 	if o.Height < 80 || o.Height > 768 {
 		return errs.Detail(ErrInvalidOptions, "height %d outside [80,768] | 高度 %d 超出 [80,768]", o.Height, o.Height)
 	}
-	if o.TextLength < 3 || o.TextLength > 8 {
-		return errs.Detail(ErrInvalidOptions, "text length %d outside [3,8] | 文本长度 %d 超出 [3,8]", o.TextLength, o.TextLength)
+	if o.TextLength < 4 || o.TextLength > 6 {
+		return errs.Detail(ErrInvalidOptions, "text length %d outside [4,6] | 文本长度 %d 超出 [4,6]", o.TextLength, o.TextLength)
 	}
 	if o.MaxAttempts > 10 {
 		return errs.Detail(ErrInvalidOptions, "max attempts %d exceeds 10 | 最大尝试次数 %d 超过 10", o.MaxAttempts, o.MaxAttempts)
@@ -395,7 +408,6 @@ func (o Options) Validate() error {
 	if limits.Store == nil {
 		return errs.Detail(ErrInvalidOptions, "nil rate-limit store | 限流存储为 nil")
 	}
-	o.Limits = limits
 	return nil
 }
 

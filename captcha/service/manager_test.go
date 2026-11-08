@@ -95,6 +95,7 @@ func TestExpiredChallenge(t *testing.T) {
 	if _, err := m.Verify(context.Background(), VerifyRequest{ID: ch.ID, Answer: Answer{Text: "x"}, Meta: testMeta()}); !errors.Is(err, ErrExpired) {
 		t.Fatalf("expected expired, got %v", err)
 	}
+	assertChallengeImagesGone(t, m, ch)
 }
 
 func TestDynamicPolicyDeniesCreate(t *testing.T) {

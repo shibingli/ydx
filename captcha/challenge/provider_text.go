@@ -36,7 +36,7 @@ func (p *textProvider) Generate(ctx context.Context, req GenerateRequest) (*Gene
 	if err != nil {
 		return nil, err
 	}
-	length := clampInt(p.length, 3, 8)
+	length := clampInt(p.length, 4, 6)
 	runes := pickRunes(r, textPool(atlas, req.Locale), length)
 	text := string(runes)
 	c := newCanvas(req.Width, req.Height, r)
@@ -83,7 +83,7 @@ func textPool(atlas *glyphAtlas, locale string) []rune {
 
 // textLayout fits the requested number of glyphs inside the canvas. | textLayout 让指定数量的字形适配画布。
 func textLayout(width, height, length int) (size, spacing, start, total int) {
-	length = clampInt(length, 3, 8)
+	length = clampInt(length, 4, 6)
 	maxWidth := width - 16
 	size = (width - 40) / maxInt(1, length)
 	size = clampInt(size, 10, 76)

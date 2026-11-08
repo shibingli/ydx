@@ -108,7 +108,8 @@ func (p *semanticProvider) Generate(ctx context.Context, req GenerateRequest) (*
 		categoryLabel = category.ZH
 	}
 	if req.Translate != nil {
-		if translated := req.Translate("category." + category.Name); translated != "" {
+		key := "category." + category.Name
+		if translated := req.Translate(key); translated != "" && translated != key {
 			categoryLabel = translated
 		}
 	}

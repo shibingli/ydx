@@ -14,10 +14,10 @@ func localizedPrompt(req GenerateRequest, textKey, hintKey, fallbackText, fallba
 	text := fallbackText
 	hint := fallbackHint
 	if req.Translate != nil {
-		if translated := req.Translate(textKey, args...); translated != "" {
+		if translated := req.Translate(textKey, args...); translated != "" && translated != textKey {
 			text = translated
 		}
-		if translated := req.Translate(hintKey); translated != "" {
+		if translated := req.Translate(hintKey); translated != "" && translated != hintKey {
 			hint = translated
 		}
 	}
@@ -51,7 +51,8 @@ func iconLabel(req GenerateRequest, spec iconSpec) string {
 		fallback = spec.ZH
 	}
 	if req.Translate != nil {
-		if translated := req.Translate("icon." + spec.Name); translated != "" {
+		key := "icon." + spec.Name
+		if translated := req.Translate(key); translated != "" && translated != key {
 			return translated
 		}
 	}

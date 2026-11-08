@@ -1178,23 +1178,36 @@
     maybeReady();
     maybeReady();
     var drawing = false;
-    function scratch(event) {
+    var lastScratch = null;
+    function scratch(event, kind) {
       var point = self.stagePoint(event, baseImage);
+      var radius = Math.max(12, baseImage.width / 20);
       coverCtx.globalCompositeOperation = 'destination-out';
+      if (lastScratch) {
+        coverCtx.beginPath();
+        coverCtx.lineWidth = radius * 2;
+        coverCtx.lineCap = 'round';
+        coverCtx.lineJoin = 'round';
+        coverCtx.moveTo(lastScratch.x, lastScratch.y);
+        coverCtx.lineTo(point.x, point.y);
+        coverCtx.stroke();
+      }
       coverCtx.beginPath();
-      coverCtx.arc(point.x, point.y, Math.max(12, baseImage.width / 20), 0, Math.PI * 2);
+      coverCtx.arc(point.x, point.y, radius, 0, Math.PI * 2);
       coverCtx.fill();
-      self.tracker.add('scratch', point.x, point.y);
+      lastScratch = point;
+      self.tracker.add(kind || 'scratch', point.x, point.y);
     }
     this.bindPointer(cover, {
       down: function (event) {
         if (event.preventDefault) event.preventDefault();
         drawing = true;
-        scratch(event);
+        lastScratch = null;
+        scratch(event, 'down');
         if (cover.setPointerCapture && event.pointerId !== undefined) cover.setPointerCapture(event.pointerId);
       },
       move: function (event) { if (drawing) scratch(event); },
-      up: function () { drawing = false; }
+      up: function () { drawing = false; lastScratch = null; }
     });
     var input = make('input', 'yd-captcha__input');
     input.type = 'text';
@@ -1332,6 +1345,9 @@
     _labels: labelsFor,
     _sha256: sha256Bytes,
     _leadingZeroBits: leadingZeroBits,
-    _screenshotShortcut: screenshotShortcut
+    _screenshotShortcut: screenshotShortcut,
+    _joinURL: joinURL,
+    _requestJSON: requestJSON,
+    _Tracker: Tracker
   };
 });

@@ -158,6 +158,9 @@ func (m *Manager) ErrorMessage(locale string, err error) string {
 	if err == nil {
 		return ""
 	}
+	if m == nil {
+		return err.Error()
+	}
 	code := core.ErrorCode(err)
 	if message := m.localizer.Message(locale, core.ErrorMessageKey(code)); message != "" {
 		return message
@@ -367,7 +370,7 @@ func isLimitError(err error) bool {
 // auditOutcome maps an error to an audit outcome. | auditOutcome 把错误映射为审计结果。
 func auditOutcome(err error) string {
 	switch {
-	case isLimitError(err):
+	case isLimitError(err), errors.Is(err, ErrCooldown), errors.Is(err, ErrTooManyAttempts):
 		return AuditRateLimited
 	case errors.Is(err, ErrForbidden), errors.Is(err, ErrGeoBlocked), errors.Is(err, ErrGeoMismatch), errors.Is(err, ErrRiskRejected), errors.Is(err, ErrCaptureDetected), errors.Is(err, ErrFallbackDisabled), errors.Is(err, ErrUnsupportedMediaType):
 		return AuditBlocked

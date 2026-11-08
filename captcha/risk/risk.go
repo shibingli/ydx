@@ -60,12 +60,16 @@ func ScoreTrack(track Track, expectedPoints int) (int, []string) {
 	var path float64
 	unique := make(map[Point]struct{}, len(points))
 	monotonic := true
+	dense := false
 	for _, point := range points {
 		if lastT >= 0 {
 			if point.T < lastT {
 				monotonic = false
 			} else if point.T-lastT < 4 && len(points) > 8 {
-				add(5, "track_timestamps_dense")
+				// High-polling-rate pointers legitimately report sub-4ms gaps;
+				// score the condition once instead of once per interval. | 高轮询率
+				// 指针会正常上报小于 4ms 的间隔；该条件只计一次，不按间隔累加。
+				dense = true
 			}
 			path += math.Hypot(float64(point.X-lastX), float64(point.Y-lastY))
 		}
@@ -75,6 +79,9 @@ func ScoreTrack(track Track, expectedPoints int) (int, []string) {
 	}
 	if !monotonic {
 		add(20, "track_time_reversed")
+	}
+	if dense {
+		add(5, "track_timestamps_dense")
 	}
 	if len(unique) < 3 {
 		add(20, "track_positions_static")
