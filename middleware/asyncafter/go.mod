@@ -19,7 +19,7 @@ require (
 	github.com/shibingli/ydx/buffpool v0.1.5 // indirect
 	github.com/shibingli/ydx/protocol v0.1.5 // indirect
 	github.com/shibingli/ydx/regexpx v0.1.13 // indirect
-	github.com/shibingli/ydx/xml v0.1.1 // indirect
+	github.com/shibingli/ydx/xml v0.1.2 // indirect
 	github.com/spf13/afero v1.15.0 // indirect
 	golang.org/x/text v0.43.0 // indirect
 )

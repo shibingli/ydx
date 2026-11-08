@@ -20,7 +20,7 @@ require (
 require (
 	github.com/quic-go/qpack v0.6.0 // indirect
 	github.com/shibingli/ydx/afs v0.1.6 // indirect
-	github.com/shibingli/ydx/xml v0.1.1 // indirect
+	github.com/shibingli/ydx/xml v0.1.2 // indirect
 	github.com/spf13/afero v1.15.0 // indirect
 	golang.org/x/crypto v0.58.0 // indirect
 	golang.org/x/sys v0.49.0 // indirect

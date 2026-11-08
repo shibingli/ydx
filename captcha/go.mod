@@ -18,7 +18,7 @@ require (
 	github.com/shibingli/ydx/afs v0.1.6 // indirect
 	github.com/shibingli/ydx/protocol v0.1.5 // indirect
 	github.com/shibingli/ydx/sysinfo v0.1.4 // indirect
-	github.com/shibingli/ydx/xml v0.1.1 // indirect
+	github.com/shibingli/ydx/xml v0.1.2 // indirect
 	github.com/spf13/afero v1.15.0 // indirect
 	github.com/yuin/gopher-lua v1.1.2 // indirect
 	go.uber.org/atomic v1.12.0 // indirect

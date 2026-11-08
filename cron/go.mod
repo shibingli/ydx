@@ -22,7 +22,7 @@ require (
 	github.com/shibingli/ydx/base64 v0.1.14 // indirect
 	github.com/shibingli/ydx/protocol v0.1.5 // indirect
 	github.com/shibingli/ydx/sysinfo v0.1.4 // indirect
-	github.com/shibingli/ydx/xml v0.1.1 // indirect
+	github.com/shibingli/ydx/xml v0.1.2 // indirect
 	github.com/spf13/afero v1.15.0 // indirect
 	github.com/spf13/cast v1.10.0 // indirect
 	github.com/spf13/pflag v1.0.10 // indirect

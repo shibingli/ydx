@@ -23,7 +23,7 @@ require (
 	github.com/shibingli/ydx/regexpx v0.1.13 // indirect
 	github.com/shibingli/ydx/router v0.1.14 // indirect
 	github.com/shibingli/ydx/sysinfo v0.1.4 // indirect
-	github.com/shibingli/ydx/xml v0.1.1 // indirect
+	github.com/shibingli/ydx/xml v0.1.2 // indirect
 	github.com/spf13/afero v1.15.0 // indirect
 	golang.org/x/text v0.43.0 // indirect
 )
