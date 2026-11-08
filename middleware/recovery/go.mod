@@ -4,9 +4,9 @@ go 1.27.3
 
 require (
 	github.com/shibingli/ydx/json v0.1.18
-	github.com/shibingli/ydx/log v0.1.11
-	github.com/shibingli/ydx/middleware/requestid v0.1.12
-	github.com/shibingli/ydx/router v0.1.12
+	github.com/shibingli/ydx/log v0.1.12
+	github.com/shibingli/ydx/middleware/requestid v0.1.15
+	github.com/shibingli/ydx/router v0.1.14
 )
 
 require (
@@ -16,6 +16,7 @@ require (
 	github.com/shibingli/ydx/protocol v0.1.5 // indirect
 	github.com/shibingli/ydx/regexpx v0.1.13 // indirect
 	github.com/shibingli/ydx/sysinfo v0.1.4 // indirect
+	github.com/shibingli/ydx/xml v0.1.1 // indirect
 	github.com/spf13/afero v1.15.0 // indirect
 	golang.org/x/text v0.43.0 // indirect
 )

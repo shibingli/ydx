@@ -3,8 +3,8 @@ module github.com/shibingli/ydx/middleware/cors
 go 1.27.3
 
 require (
-	github.com/shibingli/ydx/middleware/reqlog v0.1.12
-	github.com/shibingli/ydx/router v0.1.12
+	github.com/shibingli/ydx/middleware/reqlog v0.1.14
+	github.com/shibingli/ydx/router v0.1.14
 )
 
 require (
@@ -13,9 +13,10 @@ require (
 	github.com/shibingli/ydx/buffpool v0.1.5 // indirect
 	github.com/shibingli/ydx/errs v0.1.4 // indirect
 	github.com/shibingli/ydx/json v0.1.18 // indirect
-	github.com/shibingli/ydx/log v0.1.11 // indirect
+	github.com/shibingli/ydx/log v0.1.12 // indirect
 	github.com/shibingli/ydx/protocol v0.1.5 // indirect
 	github.com/shibingli/ydx/sysinfo v0.1.4 // indirect
+	github.com/shibingli/ydx/xml v0.1.1 // indirect
 	github.com/spf13/afero v1.15.0 // indirect
 	golang.org/x/text v0.43.0 // indirect
 )

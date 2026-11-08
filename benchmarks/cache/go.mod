@@ -10,8 +10,8 @@ require (
 	github.com/hashicorp/golang-lru/v2 v2.0.7
 	github.com/jellydator/ttlcache/v3 v3.4.1
 	github.com/patrickmn/go-cache v2.1.0+incompatible
-	github.com/shibingli/ydx/cache v0.1.17
-	github.com/shibingli/ydx/log v0.1.11
+	github.com/shibingli/ydx/cache v0.1.18
+	github.com/shibingli/ydx/log v0.1.12
 )
 
 require (

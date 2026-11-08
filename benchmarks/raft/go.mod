@@ -5,7 +5,7 @@ go 1.27.3
 require (
 	github.com/hashicorp/raft v1.8.0
 	github.com/lni/dragonboat/v4 v4.0.0-20250723143628-076c7f6497dc
-	github.com/shibingli/ydx/raft v0.1.10
+	github.com/shibingli/ydx/raft v0.1.12
 	go.etcd.io/raft/v3 v3.7.0
 	google.golang.org/protobuf v1.36.12
 )
@@ -55,8 +55,8 @@ require (
 	github.com/shibingli/ydx/errs v0.1.4 // indirect
 	github.com/shibingli/ydx/guomi v0.1.2 // indirect
 	github.com/shibingli/ydx/json v0.1.18 // indirect
-	github.com/shibingli/ydx/log v0.1.11 // indirect
-	github.com/shibingli/ydx/rdma v0.1.5 // indirect
+	github.com/shibingli/ydx/log v0.1.12 // indirect
+	github.com/shibingli/ydx/rdma v0.1.6 // indirect
 	github.com/shibingli/ydx/sysinfo v0.1.4 // indirect
 	github.com/shibingli/ydx/wal v0.3.2 // indirect
 	github.com/valyala/fastrand v1.1.0 // indirect

@@ -3,16 +3,16 @@ module github.com/shibingli/ydx/middleware
 go 1.27.3
 
 require (
-	github.com/shibingli/ydx/cache v0.1.17
-	github.com/shibingli/ydx/log v0.1.11
-	github.com/shibingli/ydx/middleware/accesslog v0.1.12
-	github.com/shibingli/ydx/middleware/asyncafter v0.1.12
-	github.com/shibingli/ydx/middleware/compress v0.1.12
-	github.com/shibingli/ydx/middleware/cors v0.1.12
-	github.com/shibingli/ydx/middleware/ratelimit v0.1.12
-	github.com/shibingli/ydx/middleware/recovery v0.1.12
-	github.com/shibingli/ydx/middleware/requestid v0.1.12
-	github.com/shibingli/ydx/router v0.1.12
+	github.com/shibingli/ydx/cache v0.1.18
+	github.com/shibingli/ydx/log v0.1.12
+	github.com/shibingli/ydx/middleware/accesslog v0.1.16
+	github.com/shibingli/ydx/middleware/asyncafter v0.1.16
+	github.com/shibingli/ydx/middleware/compress v0.1.14
+	github.com/shibingli/ydx/middleware/cors v0.1.14
+	github.com/shibingli/ydx/middleware/ratelimit v0.1.13
+	github.com/shibingli/ydx/middleware/recovery v0.1.15
+	github.com/shibingli/ydx/middleware/requestid v0.1.15
+	github.com/shibingli/ydx/router v0.1.14
 )
 
 require (
@@ -30,11 +30,12 @@ require (
 	github.com/shibingli/ydx/config v0.1.8 // indirect
 	github.com/shibingli/ydx/errs v0.1.4 // indirect
 	github.com/shibingli/ydx/json v0.1.18 // indirect
-	github.com/shibingli/ydx/middleware/reqlog v0.1.12 // indirect
+	github.com/shibingli/ydx/middleware/reqlog v0.1.14 // indirect
 	github.com/shibingli/ydx/nodeid v0.1.4 // indirect
 	github.com/shibingli/ydx/protocol v0.1.5 // indirect
 	github.com/shibingli/ydx/regexpx v0.1.13 // indirect
 	github.com/shibingli/ydx/sysinfo v0.1.4 // indirect
+	github.com/shibingli/ydx/xml v0.1.1 // indirect
 	github.com/spf13/afero v1.15.0 // indirect
 	github.com/spf13/cast v1.10.0 // indirect
 	github.com/spf13/pflag v1.0.10 // indirect
