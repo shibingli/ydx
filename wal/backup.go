@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/shibingli/ydx/buffpool"
@@ -32,6 +33,10 @@ type backupItem struct {
 	seg      *segment
 	attempts int
 	state    backupState
+	// deleted is set when Truncate retires the segment before upload. A worker
+	// that already took the item checks it before opening or uploading. |
+	// Truncate 在上传前退休分段时置位；已取出条目的 worker 在打开或上传前检查。
+	deleted atomic.Bool
 }
 
 // errBackupDeleted marks a segment removed before upload. | errBackupDeleted 标记上传前已删除的分段。
@@ -182,6 +187,9 @@ func backoffFor(item *backupItem) time.Duration {
 
 // runBackup uploads one item and writes its .bak marker. | runBackup 上传一个条目并写入 .bak 标记。
 func (w *WAL) runBackup(item *backupItem) error {
+	if item.deleted.Load() {
+		return errBackupDeleted
+	}
 	seg := item.seg
 	if seg.size <= int64(segmentHeaderSize) {
 		return nil
@@ -196,7 +204,28 @@ func (w *WAL) runBackup(item *backupItem) error {
 	seg.metaMu.RUnlock()
 	targetID := backupTargetID(w.backupTarget)
 	if validBackupMarker(seg.bakPath, targetID, meta) {
-		return nil
+		// A marker only proves this WAL once observed success. When the target
+		// implements BackupVerifier, confirm the object still exists there before
+		// trusting it; otherwise a lost remote object would never be re-uploaded.
+		// | 标记只证明本 WAL 曾观察到成功。目标实现 BackupVerifier 时必须确认
+		// 远端对象仍存在才可信任标记，否则丢失的远端对象永远不会被重传。
+		v, ok := w.opts.backup.(BackupVerifier)
+		if !ok {
+			return nil
+		}
+		vctx, cancel := context.WithTimeout(w.backupCtx, w.opts.backupVerifyTimeout)
+		verr := safeVerify(vctx, v, meta)
+		cancel()
+		if verr == nil {
+			return nil
+		}
+		// The marker is stale or the object is gone. Re-upload instead of trusting
+		// an unverifiable marker: returning an error here would only retry the
+		// verification forever and never repair the target. A transient verify
+		// failure costs one re-upload; a real target loss is repaired. | 标记已陈旧
+		// 或对象已丢失。不能信任无法校验的标记，应重新上传：在此返回错误只会永远
+		// 重试校验而不会修复目标。校验的瞬时失败只多一次上传；目标确实丢失时则被
+		// 修复。
 	}
 	f, err := os.Open(seg.path)
 	if err != nil {
@@ -208,6 +237,15 @@ func (w *WAL) runBackup(item *backupItem) error {
 	defer f.Close()
 	if err := validateSegmentIdentity(seg, f); err != nil {
 		return err
+	}
+	// validateSegmentIdentity performs a positional read. On Windows blocking
+	// handles that advances the shared file cursor, so rewind before exposing the
+	// file to a sequential Backup implementation; otherwise the uploaded object
+	// silently loses its 64-byte header. | validateSegmentIdentity 执行位置读；
+	// Windows 阻塞句柄上这会推进共享文件游标。交给顺序读取的 Backup 实现前必须
+	// 回退，否则上传对象会静默丢失 64 字节段头。
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
+		return errs.WrapDetail(err, ErrBackup, "seek segment %s to start | 定位分段 %s 到起点失败", seg.path, seg.path)
 	}
 	var idx *os.File
 	if idf, err := os.Open(seg.idxPath); err == nil {
@@ -263,11 +301,20 @@ func (w *WAL) finishBackup(item *backupItem, state backupState, cause error) {
 	}
 }
 
-// markBackupDeleted marks an item as deleted by truncation. | markBackupDeleted
-// 把条目标记为已被截断删除。
+// markBackupDeleted marks an item as deleted by truncation. Pending items are
+// removed from the queue immediately; a running item keeps its in-flight
+// reference and observes the flag before its next upload step. | markBackupDeleted
+// 把条目标记为已被截断删除。待办条目立即出队；运行中的条目保留在途引用，
+// 并在下一步上传前观察到该标志。
 func (w *WAL) markBackupDeleted(seq uint64) {
 	w.backupMu.Lock()
-	delete(w.backupItems, seq)
+	if item, ok := w.backupItems[seq]; ok {
+		item.deleted.Store(true)
+		if item.state == backupPending {
+			item.state = backupDeleted
+			delete(w.backupItems, seq)
+		}
+	}
 	if w.opts.backupMaxPending > 0 && w.backupPendingLocked() <= w.opts.backupMaxPending {
 		w.backupWarned = false
 	}

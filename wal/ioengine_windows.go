@@ -23,62 +23,29 @@ func (e *defaultEngine) initPlatform() {
 	e.dirSyncDurable = false
 }
 
-// WriteAt merges small batches into one write and synchronizes explicitly. |
-// WriteAt 把小批次合并为一次写入并显式同步。
+// WriteAt merges small batches into one positional write and synchronizes
+// explicitly. Every write carries an explicit offset; the engine never uses the
+// handle's file position, so a Seek failure cannot leave the writer at the wrong
+// offset. | WriteAt 把小批次合并为一次位置写并显式同步。每次写入都携带显式
+// 偏移；引擎从不使用句柄文件位置，因此 Seek 失败不会让写入方停在错误偏移。
 func (e *defaultEngine) WriteAt(f *os.File, parts [][]byte, off int64, syncData bool) error {
 	total, _ := totalParts(parts)
 	if total > 0 {
-		if !e.lastValid || e.lastFile != f || e.lastOff != off {
-			if _, err := f.Seek(off, io.SeekStart); err != nil {
-				e.lastValid = false
-				return writePositional(f, parts, off, total, syncData)
+		if limit := e.stagingJoinMax.Load(); limit > 0 && len(parts) > 1 && total <= limit {
+			buf := buffpool.Get(int(total))
+			buf = buf[:total]
+			pos := 0
+			for _, p := range parts {
+				pos += copy(buf[pos:], p)
 			}
-			e.lastFile, e.lastOff, e.lastValid = f, off, true
-		}
-	}
-	if limit := e.stagingJoinMax.Load(); limit > 0 && len(parts) > 1 && total > 0 && total <= limit {
-		buf := buffpool.Get(int(total))
-		buf = buf[:total]
-		pos := 0
-		for _, p := range parts {
-			pos += copy(buf[pos:], p)
-		}
-		err := writeFull(f, buf)
-		buffpool.Put(buf[:0])
-		if err != nil {
-			e.lastValid = false
+			err := writeFullAtRaw(f, buf, off)
+			buffpool.Put(buf[:0])
+			if err != nil {
+				return wrapStorage("WriteAt", err)
+			}
+		} else if err := writePartsPositional(f, parts, off); err != nil {
 			return wrapStorage("WriteAt", err)
 		}
-	} else if err := writePartsAtEnd(f, parts); err != nil {
-		e.lastValid = false
-		return wrapStorage("WriteAt", err)
-	}
-	e.lastOff += total
-	if syncData {
-		if err := syncDataFile(f, true); err != nil {
-			return wrapStorage("FlushFileBuffers", err)
-		}
-	}
-	return nil
-}
-
-// writePositional is the fallback for non-seekable handles. | writePositional
-// 是不可定位句柄的回退路径。
-func writePositional(f *os.File, parts [][]byte, off, total int64, syncData bool) error {
-	if total > 0 && total <= defaultStagingJoinBytes {
-		buf := buffpool.Get(int(total))
-		buf = buf[:total]
-		pos := 0
-		for _, p := range parts {
-			pos += copy(buf[pos:], p)
-		}
-		err := writeFullAtRaw(f, buf, off)
-		buffpool.Put(buf[:0])
-		if err != nil {
-			return wrapStorage("WriteAt", err)
-		}
-	} else if err := writePartsSequential(f, parts, off); err != nil {
-		return wrapStorage("WriteAt", err)
 	}
 	if syncData {
 		if err := syncDataFile(f, true); err != nil {
@@ -88,32 +55,17 @@ func writePositional(f *os.File, parts [][]byte, off, total int64, syncData bool
 	return nil
 }
 
-// writePartsAtEnd writes parts in order through the current file position. |
-// writePartsAtEnd 通过当前文件位置按顺序写出分片。
-func writePartsAtEnd(f *os.File, parts [][]byte) error {
+// writePartsPositional writes parts in order with explicit OVERLAPPED offsets. |
+// writePartsPositional 使用显式 OVERLAPPED 偏移按顺序写出各分片。
+func writePartsPositional(f *os.File, parts [][]byte, off int64) error {
 	for _, p := range parts {
 		if len(p) == 0 {
 			continue
 		}
-		if err := writeFull(f, p); err != nil {
+		if err := writeFullAtRaw(f, p, off); err != nil {
 			return err
 		}
-	}
-	return nil
-}
-
-// writeFull writes p through f, retrying short writes. | writeFull 通过 f 写入 p，
-// 并重试短写。
-func writeFull(f *os.File, p []byte) error {
-	for len(p) > 0 {
-		n, err := f.Write(p)
-		if err != nil {
-			return err
-		}
-		if n == 0 {
-			return io.ErrShortWrite
-		}
-		p = p[n:]
+		off += int64(len(p))
 	}
 	return nil
 }

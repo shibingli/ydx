@@ -81,6 +81,43 @@ func (c *indexCache) acquire(seq uint64, load func() (*indexEntry, error)) (*ind
 	return e, e.release, nil
 }
 
+// adopt registers an index rebuilt in memory and returns a lease that keeps it
+// resident until the caller finishes using it. Entries rebuilt without a
+// sidecar previously escaped the byte budget forever; going through the cache
+// lets LRU eviction release them after the lease. When max<=0 the cache is
+// disabled and adoption is a no-op. | adopt 把内存中重建的索引登记进缓存，并返回
+// 一个租约，使调用方使用期间条目保持驻留。此前无侧车的重建索引会永久绕过字节
+// 预算；走缓存后 LRU 可在租约结束后释放。max<=0 表示缓存停用，登记为空操作。
+func (c *indexCache) adopt(e *indexEntry, seg *segment, gen uint64) func() {
+	if e == nil || c.max <= 0 {
+		return func() {}
+	}
+	e.seq = seg.seq
+	e.cache = c
+	e.seg = seg
+	e.gen = gen
+	e.size = e.estimateSize()
+	c.mu.Lock()
+	// A leased entry for the same seq may still be in the LRU. Detach its map
+	// ownership so its eventual removal cannot delete the new entry; the guard
+	// in removeLocked protects the reverse order as well. | 同一 seq 的旧条目可能
+	// 仍被租用；先解除其映射归属，避免其最终移除时删掉新条目；removeLocked 的
+	// 守卫同时覆盖相反顺序。
+	if old, ok := c.entries[e.seq]; ok && old != e {
+		old.evict = true
+		if old.refs == 0 {
+			c.removeLocked(old)
+		}
+	}
+	e.refs = 1
+	e.elem = c.lru.PushFront(e)
+	c.entries[e.seq] = e
+	c.size += e.size
+	c.evictLocked()
+	c.mu.Unlock()
+	return e.release
+}
+
 // bind associates a cached entry with the segment fields it installed. It is
 // called under the segment lock, so the cache mutex orders the write against
 // eviction. | bind 把缓存条目与它安装的分段字段关联；调用方持有分段锁，缓存
@@ -151,7 +188,9 @@ func (c *indexCache) removeLocked(e *indexEntry) {
 		c.lru.Remove(e.elem)
 		e.elem = nil
 	}
-	delete(c.entries, e.seq)
+	if cur, ok := c.entries[e.seq]; ok && cur == e {
+		delete(c.entries, e.seq)
+	}
 	c.size -= e.size
 	if c.size < 0 {
 		c.size = 0

@@ -3,6 +3,7 @@ package wal
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"errors"
 	"os"
 	"path/filepath"
@@ -21,6 +22,25 @@ func backupSetForTest(t *testing.T, dir string) BackupSet {
 		t.Fatal(err)
 	}
 	return set
+}
+
+// resealBackupSetForTest recomputes the trailing CRC after a hostile patch. |
+// resealBackupSetForTest 在恶意篡改后重新计算尾部 CRC。
+func resealBackupSetForTest(data []byte) {
+	body := data[:len(data)-backupSnapshotTrailer]
+	binary.LittleEndian.PutUint32(data[len(data)-backupSnapshotTrailer:], checksum(body))
+}
+
+// backupSetCodecBaseForTest returns a valid two-segment set for codec tests. |
+// backupSetCodecBaseForTest 返回用于编解码测试的合法两分段集合。
+func backupSetCodecBaseForTest() BackupSet {
+	return BackupSet{
+		WalID: [16]byte{1}, FirstLSN: 1, LastLSN: 20, NextLSN: 21, NextSeq: 3,
+		Segments: []SegmentMeta{
+			{Seq: 1, BaseLSN: 1, LastLSN: 10, Bytes: uint64(segmentHeaderSize)},
+			{Seq: 2, BaseLSN: 11, LastLSN: 20, Bytes: uint64(segmentHeaderSize)},
+		},
+	}
 }
 
 // TestBackupNowPublishesRestoreCompleteSet verifies that BackupNow publishes
@@ -358,5 +378,98 @@ func TestConcurrentBackupNowPublishesValidSnapshot(t *testing.T) {
 		if _, err := w2.Read(lsn); err != nil {
 			t.Fatalf("read restored LSN %d: %v", lsn, err)
 		}
+	}
+}
+
+// TestRestoreRejectsSegmentHeaderIdentityMismatch verifies that a segment whose
+// self-describing header disagrees with the backup set is rejected even when
+// the set CRC covers the file bytes. | 验证段头自描述标识与备份集合不一致的
+// 分段被拒绝，即使文件字节与集合 CRC 一致。
+func TestRestoreRejectsSegmentHeaderIdentityMismatch(t *testing.T) {
+	ctx := context.Background()
+	src := t.TempDir()
+	backupDir := t.TempDir()
+	w, err := Open(src, WithBackup(DirBackup(backupDir)), WithBackupWorkers(1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.Append(ctx, Record{Data: []byte("identity")}); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.BackupNow(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	files, err := filepath.Glob(filepath.Join(backupDir, "*.wal"))
+	if err != nil || len(files) == 0 {
+		t.Fatalf("backup files: %v", err)
+	}
+	data, err := os.ReadFile(files[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	hdr, err := decodeSegmentHeader(data[:segmentHeaderSize])
+	if err != nil {
+		t.Fatal(err)
+	}
+	hdr.walID[0] ^= 0xFF
+	encodeSegmentHeader(data[:segmentHeaderSize], hdr)
+	if err := os.WriteFile(files[0], data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	dst := filepath.Join(t.TempDir(), "restored")
+	if err := RestoreDir(ctx, backupDir, dst); !errors.Is(err, ErrBackup) {
+		t.Fatalf("RestoreDir err = %v, want ErrBackup for a header identity mismatch", err)
+	}
+	if _, err := os.Stat(dst); !os.IsNotExist(err) {
+		t.Fatalf("destination exists after failed restore: %v", err)
+	}
+}
+
+// TestBackupSetRejectsOverlappingSegments verifies that encoding and decoding
+// reject segment entries that claim the same LSN. | 验证编码与解码都会拒绝声明
+// 相同 LSN 的分段条目。
+func TestBackupSetRejectsOverlappingSegments(t *testing.T) {
+	set := backupSetCodecBaseForTest()
+	set.Segments[1].BaseLSN = set.Segments[0].LastLSN
+	if _, err := EncodeBackupSet(set); !errors.Is(err, ErrCorrupt) {
+		t.Fatalf("EncodeBackupSet err = %v, want ErrCorrupt", err)
+	}
+	valid, err := EncodeBackupSet(backupSetCodecBaseForTest())
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Patch the second entry's BaseLSN to overlap the first and reseal. | 把第二个
+	// 条目的 BaseLSN 改成与第一个重叠，并重算校验和。
+	off := int(backupSnapshotHeaderSize) + backupSegmentEntrySize + 8
+	binary.LittleEndian.PutUint64(valid[off:], 10)
+	resealBackupSetForTest(valid)
+	if _, err := DecodeBackupSet(valid); !errors.Is(err, ErrCorrupt) {
+		t.Fatalf("DecodeBackupSet err = %v, want ErrCorrupt", err)
+	}
+}
+
+// TestBackupSetRejectsEncryptedWithoutKCV verifies that an encrypted set with
+// no active key check value cannot be encoded or decoded, because such a
+// restored META can never be opened. | 验证缺少活动密钥校验值的加密集合无法编码
+// 或解码，因为这样的恢复 META 永远无法打开。
+func TestBackupSetRejectsEncryptedWithoutKCV(t *testing.T) {
+	set := backupSetCodecBaseForTest()
+	set.Encrypted = true
+	set.ActiveKeyID = 1
+	if _, err := EncodeBackupSet(set); !errors.Is(err, ErrCipherMismatch) {
+		t.Fatalf("EncodeBackupSet err = %v, want ErrCipherMismatch", err)
+	}
+	set.ActiveKeyKCV = 9
+	valid, err := EncodeBackupSet(set)
+	if err != nil {
+		t.Fatal(err)
+	}
+	binary.LittleEndian.PutUint64(valid[bsOffActiveKCV:], 0)
+	resealBackupSetForTest(valid)
+	if _, err := DecodeBackupSet(valid); !errors.Is(err, ErrCipherMismatch) {
+		t.Fatalf("DecodeBackupSet err = %v, want ErrCipherMismatch", err)
 	}
 }

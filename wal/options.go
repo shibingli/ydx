@@ -356,14 +356,6 @@ func WithLinuxFastPath(f FastPathOptions) Option { return func(o *options) { o.f
 // WithIOEngine installs a custom positional I/O engine. | WithIOEngine 安装自定义位置写 I/O 引擎。
 func WithIOEngine(e IOEngine) Option { return func(o *options) { o.ioEngine = e } }
 
-// WithSyncOnRotate controls whether rotation flushes pending data before it
-// writes segment metadata. Default true. Disable it only together with
-// SyncNever and when losing unsynced records on a crash is acceptable; raft
-// uses it for its NoSync test mode to avoid a full-segment flush at every
-// rotation. | WithSyncOnRotate 控制轮转在写分段元数据前是否刷新待同步数据，默认
-// true。仅在与 SyncNever 搭配且接受崩溃丢失未同步记录时关闭；raft 的 NoSync 测试
-// 模式用它避免每次轮转都刷新整个分段。
-// WithSyncOnRotate sets whether rotation flushes the sealed segment. | WithSyncOnRotate 设置轮转时是否刷新封存分段。
 // WithWriteBuffer enables a userspace append buffer of n bytes. Un-synced
 // appends collect in memory and are written when the buffer fills, on Sync,
 // rotation, truncation, backup capture, read, or close. It is intended for
@@ -384,6 +376,13 @@ func WithWriteBuffer(n int) Option { return func(o *options) { o.writeBufferByte
 // 缓冲；各字段非零时覆盖对应的学习值。
 func WithSizePolicy(p SizePolicy) Option { return func(o *options) { o.sizePolicy = p } }
 
+// WithSyncOnRotate controls whether rotation flushes pending data before it
+// writes segment metadata. Default true. Disable it only together with
+// SyncNever and when losing unsynced records on a crash is acceptable; raft
+// uses it for its NoSync test mode to avoid a full-segment flush at every
+// rotation. | WithSyncOnRotate 控制轮转在写分段元数据前是否刷新待同步数据，默认
+// true。仅在与 SyncNever 搭配且接受崩溃丢失未同步记录时关闭；raft 的 NoSync 测试
+// 模式用它避免每次轮转都刷新整个分段。
 func WithSyncOnRotate(enabled bool) Option { return func(o *options) { o.syncOnRotate = enabled } }
 
 // WithMacOSFullFsync selects F_FULLFSYNC on macOS. | WithMacOSFullFsync 选择 macOS 上使用 F_FULLFSYNC。

@@ -77,6 +77,13 @@ func TestNewValidatesTargetAndSchedule(t *testing.T) {
 	if _, err := New(ctx, nil, cfg, cron.Options{}); !errors.Is(err, ErrNilTarget) {
 		t.Fatalf("nil target err = %v, want ErrNilTarget", err)
 	}
+	// A typed nil pointer must be rejected instead of panicking in the first
+	// Target method call. | typed-nil 指针必须被拒绝，而不是在首次 Target 方法
+	// 调用时 panic。
+	var typedNil *fakeTarget
+	if _, err := New(ctx, typedNil, cfg, cron.Options{}); !errors.Is(err, ErrNilTarget) {
+		t.Fatalf("typed-nil target err = %v, want ErrNilTarget", err)
+	}
 	unconfigured := newFakeTarget()
 	unconfigured.configured = false
 	if _, err := New(ctx, unconfigured, cfg, cron.Options{}); !errors.Is(err, ErrNoBackupTarget) {

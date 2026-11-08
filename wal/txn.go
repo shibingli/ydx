@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/rand"
 	"io"
-	"time"
 
 	"github.com/shibingli/ydx/errs"
 )
@@ -187,6 +186,17 @@ func (tx *Tx) AppendBatch(ctx context.Context, recs []Record) error {
 			return err
 		}
 	}
+	// Check the whole batch against the remaining buffer before mutating it, so
+	// ErrTxnTooLarge cannot leave a partial prefix that a later Commit would
+	// persist as a complete transaction. | 修改缓冲前先按剩余容量检查整批，
+	// 避免 ErrTxnTooLarge 留下前缀、随后被 Commit 当作完整事务写入。
+	cost := int64(0)
+	for _, rec := range recs {
+		cost += int64(txnRecordOverhead + len(rec.Key) + len(rec.Data))
+	}
+	if tx.bytes+cost > tx.w.opts.txnMaxBytes || uint64(len(tx.records)+len(recs)) > tx.w.opts.txnMaxRecords {
+		return ErrTxnTooLarge
+	}
 	for _, rec := range recs {
 		if err := tx.addRecord(rec, false); err != nil {
 			return err
@@ -228,11 +238,22 @@ func (tx *Tx) AppendStream(ctx context.Context, r io.Reader, opts ...StreamOptio
 		return StreamInfo{}, err
 	}
 	s := &txStream{info: StreamInfo{ID: id}, firstRecord: -1, lastRecord: -1, endRecord: -1}
+	// A failed AppendStream must not leave a half stream buffered for a later
+	// Commit; the transaction itself stays active. | 失败的 AppendStream 不得把
+	// 半个流留在缓冲中供后续 Commit 写入；事务本身保持 active。
+	baseRecords, baseBytes, basePayload, baseStreams := len(tx.records), tx.bytes, tx.payloadBytes, len(tx.streams)
+	dropPartial := func() {
+		tx.records = tx.records[:baseRecords]
+		tx.bytes = baseBytes
+		tx.payloadBytes = basePayload
+		tx.streams = tx.streams[:baseStreams]
+	}
 	buf := make([]byte, so.chunkSize)
 	for {
 		if ctx != nil {
 			select {
 			case <-ctx.Done():
+				dropPartial()
 				return s.info, ctx.Err()
 			default:
 			}
@@ -242,6 +263,7 @@ func (tx *Tx) AppendStream(ctx context.Context, r io.Reader, opts ...StreamOptio
 			chunk := append([]byte(nil), buf[:n]...)
 			rec := Record{Flags: FlagStreamChunk, Key: id[:], Data: chunk}
 			if err := tx.addRecord(rec, true); err != nil {
+				dropPartial()
 				return s.info, err
 			}
 			if s.firstRecord < 0 {
@@ -256,11 +278,13 @@ func (tx *Tx) AppendStream(ctx context.Context, r io.Reader, opts ...StreamOptio
 			break
 		}
 		if rerr != nil {
+			dropPartial()
 			return s.info, rerr
 		}
 	}
 	end := Record{Flags: FlagStreamEnd, Key: id[:]}
 	if err := tx.addRecord(end, true); err != nil {
+		dropPartial()
 		return s.info, err
 	}
 	s.endRecord = len(tx.records) - 1
@@ -375,14 +399,25 @@ func (tx *Tx) Commit(ctx context.Context) (TxnInfo, error) {
 
 // Rollback discards buffered records. | Rollback 丢弃缓冲的记录。
 func (tx *Tx) Rollback() error {
-	if tx.state == txnActive {
+	switch tx.state {
+	case txnActive:
 		tx.state = txnRolledBack
 		tx.records = nil
 		tx.streams = nil
 		tx.w.counters.openTxns.Add(-1)
 		tx.w.counters.txnRollbacks.Add(1)
+		return nil
+	case txnFailed:
+		// A failed Commit is terminal and already closed the transaction; the
+		// first Rollback is a documented no-op, but it still moves the state to
+		// closed so a repeated Rollback returns ErrTxnClosed. | 失败的 Commit 已是
+		// 终态并已关闭事务；第一次 Rollback 是文档规定的 no-op，但仍把状态推进到
+		// 关闭，使重复 Rollback 返回 ErrTxnClosed。
+		tx.state = txnRolledBack
+		return nil
+	default:
+		return ErrTxnClosed
 	}
-	return nil
 }
 
 // Snapshot returns the transaction read snapshot. | Snapshot 返回事务读快照。
@@ -436,6 +471,12 @@ func txnStreamsFinal(tx *Tx, lsns []uint64) []StreamInfo {
 		if s.endRecord >= 0 && s.endRecord < len(lsns) {
 			info.LastLSN = lsns[s.endRecord]
 			info.Complete = true
+		} else if s.lastRecord >= 0 && s.lastRecord < len(lsns) {
+			// Defensive: an incomplete stream (only possible through an
+			// unexpected failure path) reports its last buffered chunk instead
+			// of a zero LastLSN. | 防御性处理：不完整的流（只可能来自意外失败
+			// 路径）报告最后一个已缓冲分块，而不是零 LastLSN。
+			info.LastLSN = lsns[s.lastRecord]
 		}
 		if info.FirstLSN == 0 {
 			info.FirstLSN = info.LastLSN
@@ -456,6 +497,3 @@ func newStreamID() ([16]byte, error) {
 
 // txnRecordOverhead is the per-record buffer cost. | txnRecordOverhead 是每条记录的缓冲开销。
 const txnRecordOverhead = 96
-
-// txnCommittedUnixNano is a small helper for tests and callers. | txnCommittedUnixNano 是供测试与调用方使用的小辅助函数。
-func txnCommittedUnixNano() int64 { return time.Now().UnixNano() }

@@ -182,10 +182,14 @@ func (s *StreamReader) Read(p []byte) (int, error) {
 		}
 		rec, err := s.reader.Next()
 		if err == io.EOF {
+			// A FlagStreamEnd record is the only proof that a stream completed.
+			// Reaching the end of the readable range without observing it means
+			// the end record was never committed (for example a torn tail), so
+			// never report clean EOF even when the caller's StreamInfo claims
+			// Complete. | 只有观察到 FlagStreamEnd 记录才能证明流已完整。读到
+			// 可读区间末尾却没有观察到它，说明 end 记录从未提交（例如撕裂尾部），
+			// 因此即使调用方提供的 StreamInfo 声称 Complete，也不得返回干净的 EOF。
 			s.end = true
-			if s.info.Complete {
-				return 0, io.EOF
-			}
 			return 0, ErrStreamIncomplete
 		}
 		if err != nil {

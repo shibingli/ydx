@@ -734,6 +734,52 @@ func (w *WAL) recover() error {
 	return nil
 }
 
+// sweepOrphanSidecars removes .idx/.bak files whose .wal no longer exists. The
+// cleaner unlinks the segment first and its sidecars best-effort afterwards, so
+// a crash between the unlinks leaves an orphan that recovery would otherwise
+// ignore forever. | sweepOrphanSidecars 删除没有对应 .wal 的 .idx/.bak 文件。
+// cleaner 先删除分段、再尽力删除侧车，两次 unlink 之间崩溃会留下恢复永远忽略
+// 的孤儿文件。
+func (w *WAL) sweepOrphanSidecars() {
+	entries, err := os.ReadDir(w.dir)
+	if err != nil {
+		w.counters.cleanupErrors.Add(1)
+		return
+	}
+	live := make(map[uint64]struct{}, len(entries))
+	for _, e := range entries {
+		if seq, ok := parseSequence(e.Name(), ".wal"); ok {
+			live[seq] = struct{}{}
+		}
+	}
+	removed := false
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		seq, ok := parseSequence(e.Name(), ".idx")
+		if !ok {
+			seq, ok = parseSequence(e.Name(), ".bak")
+		}
+		if !ok {
+			continue
+		}
+		if _, exists := live[seq]; exists {
+			continue
+		}
+		if err := os.Remove(filepath.Join(w.dir, e.Name())); err != nil && !os.IsNotExist(err) {
+			w.counters.cleanupErrors.Add(1)
+			continue
+		}
+		removed = true
+	}
+	if removed {
+		if err := syncDir(w.dir); err != nil {
+			w.counters.cleanupErrors.Add(1)
+		}
+	}
+}
+
 // scanDirectory rebuilds segment summaries by reading the directory. | scanDirectory
 // 通过读取目录重建分段摘要。
 func (w *WAL) scanDirectory() (map[uint64]*segment, *retiredSet, uint64, uint64, error) {
@@ -914,12 +960,19 @@ func (w *WAL) openLastSegment(seg *segment, state metaState, walID [16]byte, fir
 			trusted = true
 		}
 	}
+	staleSidecar := false
 	if sc, err := loadSidecar(seg.idxPath); err == nil && stateTrusted && sc.seq == seg.seq && sc.baseLSN == h.baseLSN && sc.walID == walID {
 		if sc.segmentBytes > uint64(fileSize) {
-			_ = f.Close()
-			return nil, 0, state.commitSeq, state.firstLSN, errs.Detail(ErrCorrupt, "checkpoint sidecar exceeds segment size | 检查点侧车超过分段大小")
-		}
-		if !sc.checkpoint && sc.segmentBytes == uint64(fileSize) {
+			// B5: a crash before the sidecar invalidation can leave a sidecar that
+			// claims bytes past the current file end. Do not trust it as a prefix;
+			// scan from the header (or MANIFEST prefix) and accept only when the
+			// committed waterline reaches the file end, after which the normal
+			// non-empty path rewrites the sidecar. | B5：侧车失效前崩溃可能留下
+			// segmentBytes 超过当前文件大小的侧车。不得把它当作可信前缀；从段头
+			// （或 MANIFEST 前缀）扫描，仅当已提交水位到达文件末尾时接受，随后正常的
+			// 非空路径会重写侧车。
+			staleSidecar = true
+		} else if !sc.checkpoint && sc.segmentBytes == uint64(fileSize) {
 			seg.metaMu.Lock()
 			seg.lastLSN = sc.lastLSN
 			seg.recordCount = sc.recordCount
@@ -936,18 +989,20 @@ func (w *WAL) openLastSegment(seg *segment, state metaState, walID [16]byte, fir
 			}
 			return nil, 0, sc.commitSeq, state.firstLSN, nil
 		}
-		// The sidecar prefix carries the sparse/key index and commitSeq. It is at
-		// least as new as the MANIFEST summary and keeps the indexes complete, so
-		// prefer it. | 侧车前缀携带稀疏/Key 索引与 commitSeq，不旧于 MANIFEST 摘要
-		// 且能保持索引完整，因此优先使用。
-		start = int64(sc.segmentBytes)
-		base = scanBase{
-			lastLSN: sc.lastLSN, recordCount: sc.recordCount, crc: sc.segmentCRC,
-			commitSeq: sc.commitSeq, minTime: sc.minTime, maxTime: sc.maxTime,
-			sparse: sc.sparse, keyIndex: sc.keyIndex, keyIndexComplete: sc.keyIndexComplete,
-			atHeader: false,
+		if !staleSidecar {
+			// The sidecar prefix carries the sparse/key index and commitSeq. It is at
+			// least as new as the MANIFEST summary and keeps the indexes complete, so
+			// prefer it. | 侧车前缀携带稀疏/Key 索引与 commitSeq，不旧于 MANIFEST 摘要
+			// 且能保持索引完整，因此优先使用。
+			start = int64(sc.segmentBytes)
+			base = scanBase{
+				lastLSN: sc.lastLSN, recordCount: sc.recordCount, crc: sc.segmentCRC,
+				commitSeq: sc.commitSeq, minTime: sc.minTime, maxTime: sc.maxTime,
+				sparse: sc.sparse, keyIndex: sc.keyIndex, keyIndexComplete: sc.keyIndexComplete,
+				atHeader: false,
+			}
+			trusted = true
 		}
-		trusted = true
 	}
 	out, err := w.scanSegment(seg, f, start, fileSize, base, true)
 	if err != nil {
@@ -956,6 +1011,11 @@ func (w *WAL) openLastSegment(seg *segment, state metaState, walID [16]byte, fir
 	}
 	if !trusted && out.verifiedEnd < int64(segmentHeaderSize) {
 		out.truncateTo = int64(segmentHeaderSize)
+	}
+	if staleSidecar && out.truncateTo != fileSize {
+		_ = f.Close()
+		return nil, 0, state.commitSeq, state.firstLSN,
+			errs.Detail(ErrCorrupt, "stale segment sidecar exceeds the file and the scan does not reach its end | 陈旧分段侧车超过文件大小且扫描水位未达文件末尾")
 	}
 	if stateTrusted {
 		if state.encrypted() && out.sawPlain {
@@ -1973,8 +2033,16 @@ func (w *WAL) scanSegment(seg *segment, f *os.File, start, limit int64, base sca
 					return out, errs.Detail(ErrCorrupt, "transaction control does not match its data block | 事务控制与数据块不匹配")
 				}
 				pending = txnPending{}
-			} else if tc.recordCount != 0 || tc.firstLSN != 0 || tc.lastLSN != 0 || tc.bytes != 0 {
-				return out, errs.Detail(ErrCorrupt, "transaction control has no data block | 事务控制缺少数据块")
+			} else {
+				// The record header TxnID must equal the control payload
+				// CommitSeq even for an empty transaction. | 即使是空事务，记录头
+				// TxnID 也必须等于控制记录 payload 的 CommitSeq。
+				if hdr.txnID != tc.commitSeq {
+					return out, errs.Detail(ErrCorrupt, "transaction control header does not match its commit sequence | 事务控制记录头与提交序号不匹配")
+				}
+				if tc.recordCount != 0 || tc.firstLSN != 0 || tc.lastLSN != 0 || tc.bytes != 0 {
+					return out, errs.Detail(ErrCorrupt, "transaction control has no data block | 事务控制缺少数据块")
+				}
 			}
 			if tc.commitSeq > out.commitSeq {
 				out.commitSeq = tc.commitSeq

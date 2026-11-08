@@ -10,20 +10,12 @@ import (
 
 // defaultEngine is the portable positional I/O engine. | defaultEngine 是可移植的位置写 I/O 引擎。
 type defaultEngine struct {
-	// Windows sequential-write state. The writer appends records in order, so
-	// the file position only needs one Seek when the file or expected offset
-	// changes; subsequent writes use the faster pointer-based Write. |
-	// Windows 顺序写状态。写入方按顺序追加记录，只有文件或预期偏移变化时需要一次
-	// Seek；后续写入使用更快的基于指针的 Write。
-	lastFile       *os.File
 	maxIovecs      int
-	lastOff        int64
 	stagingJoinMax atomic.Int64
 	pwritev2       atomic.Bool
 	fastPath       FastPathOptions
 	macFullFsync   bool
 	dirSyncDurable bool
-	lastValid      bool
 }
 
 // defaultIOEngine builds the platform engine. | defaultIOEngine 构建平台引擎。
@@ -78,9 +70,6 @@ func (e *defaultEngine) Sync(f *os.File) error {
 
 // Close releases engine resources. | Close 释放引擎资源。
 func (e *defaultEngine) Close() error {
-	e.lastFile = nil
-	e.lastOff = 0
-	e.lastValid = false
 	return nil
 }
 

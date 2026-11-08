@@ -157,6 +157,29 @@ func TestWriteBufferRotationFlushes(t *testing.T) {
 	}
 }
 
+// TestWriteBufferVerifyFlushes verifies that Verify takes a read lease and
+// therefore flushes buffered appends before comparing on-disk bytes with the
+// published segment summary. | TestWriteBufferVerifyFlushes 验证 Verify 会获取
+// 读租约，因此在把磁盘字节与已发布的分段摘要比较前刷新缓冲的追加。
+func TestWriteBufferVerifyFlushes(t *testing.T) {
+	w, _ := openBufferedWAL(t)
+	ctx := context.Background()
+	for i := 0; i < 3; i++ {
+		if _, err := w.Append(ctx, Record{Data: []byte{byte(i)}}); err != nil {
+			t.Fatalf("append %d: %v", i, err)
+		}
+	}
+	if len(w.writeBuf) == 0 {
+		t.Fatal("appends were not buffered")
+	}
+	if err := w.Verify(ctx); err != nil {
+		t.Fatalf("Verify with buffered appends: %v", err)
+	}
+	if len(w.writeBuf) != 0 {
+		t.Fatalf("Verify left %d buffered bytes", len(w.writeBuf))
+	}
+}
+
 // TestWriteBufferSyncFlushes verifies that an explicit Sync flushes buffered
 // bytes before synchronizing. | TestWriteBufferSyncFlushes 验证显式 Sync 在同步前
 // 刷新缓冲字节。

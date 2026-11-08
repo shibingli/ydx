@@ -60,7 +60,7 @@ func main() {
 | 备份 | 异步封段备份、`.bak` 标记、`BackupVerifier`、本地 `DirBackup`；`BackupNow` 发布含元数据的 `BACKUP.snap` |
 | 定时备份 | 可选独立模块 `wal/cronbackup`：用 ydx/cron 调度 `BackupNow`，校验备份目标、默认跳过重入 |
 | 恢复 | `RestoreDir`/`RestoreBackup` 原子还原完整备份集 |
-| 自愈 | 独立恢复锚点（双槽原位写）+ 段头/侧车扫描；清理创建期残缺段；空段头原子替换；META、MANIFEST、锚点全失时默认重建 |
+| 自愈 | 独立恢复锚点（双槽原位写）+ 段头/侧车扫描；清理创建期残缺段；可写打开清理无对应 `.wal` 的孤儿 `.idx`/`.bak`；空段头原子替换；META、MANIFEST、锚点全失时默认重建 |
 | 缺口 | 有序缺口区间集合持久化到锚点；默认自动接受并报告，可关闭自动修复 |
 | 保留 | 自动保留（年龄/总量），严格从最旧段开始 |
 | 读取 | `Reader`/`Follow`/`Scan`/`Query`/`ReadInto`，并发读；随机读 1 alloc；旧侧车 Key 索引按需重建 |
@@ -174,11 +174,23 @@ err := w.BackupNow(ctx) // 轮转活动段并等待其备份完成
   `ErrUnsupported`。
 - `.bak` 是“已备份”的持久证据；`DirBackup` 同时实现 `BackupVerifier` 与
   `SnapshotBackup`。发布快照前会校验每个分段的大小与 CRC；任何分段未完整上传
-  都不会被快照引用。
-- 自动保留必须看到匹配当前 `Backup.Target()` 的 `.bak` 且通过 `Verify` 才删除；
-  严格从最旧段开始，遇到未备份段停止。
+  都不会被快照引用。已有 `.bak` 但目标实现 `BackupVerifier` 且校验失败时，该
+  标记不被信任：worker 会重新上传分段并重写标记，避免远端对象丢失后永远不再
+  上传。
+- 自动保留必须看到匹配当前 `Backup.Target()` 的有效 `.bak`；目标实现
+  `BackupVerifier` 时还要通过 `Verify`（目标对象存在且大小/CRC/walID 匹配）才
+  删除。严格从最旧段开始，遇到未备份段停止。远程目标未实现 `BackupVerifier`
+  时，自动保留的可靠性仅与远端一致，建议删除前人工或外部校验。
+- 待办分段被 `Truncate` 退休时标记为 deleted 并立即移出待办；worker 在打开
+  前检查该标记，已删除/ENOENT 视为终态跳过，不重试、不调用 `ErrorHandler`。
+  `FlushBackups` 把 deleted 视为满足；`BackupNow` 取非严格语义：若并发的
+  `Truncate` 删除了集合中的分段，快照校验会失败并返回 `ErrBackup`，不会发布
+  缺段的恢复集。
 - `RestoreDir(ctx, backupDir, walDir)` 在私有临时目录中校验并复制全部分段、
-  重建 META/恢复锚点，最后用一次 rename 发布；目标已存在且非空时拒绝。
+  重建 META/恢复锚点，最后用一次 rename 发布；目标已存在且非空时拒绝。复制时
+  除大小/CRC 外还校验段头的 `seq`/`baseLSN`/`walID` 与集合条目一致。备份集解码
+  同时拒绝重叠的分段 LSN 区间与缺少活动 KCV 的加密集合，避免发布无法打开或
+  记录归属含糊的恢复集。
   `RestoreBackup` 在还原后直接 `Open`。加密备份不需要在还原阶段提供密钥，
   打开时用 KCV 校验密钥是否正确。
 

@@ -136,6 +136,32 @@ func TestFaultWritePoisonsWithoutPartialBatch(t *testing.T) {
 	}
 }
 
+// TestFaultReadFlushFailurePoisons verifies that a read lease whose write
+// buffer flush fails poisons the WAL instead of silently losing acknowledged
+// records and later appending past a hole. | 验证读租约的写缓冲刷新失败会 poison
+// WAL，而不是静默丢失已确认记录并在之后跨越空洞追加。
+func TestFaultReadFlushFailurePoisons(t *testing.T) {
+	engine := &faultEngine{}
+	engine.failWrite.Store(1)
+	w, _ := openBufferedWAL(t, WithIOEngine(engine))
+	ctx := context.Background()
+	if _, err := w.Append(ctx, Record{Data: []byte("buffered")}); err != nil {
+		t.Fatal(err)
+	}
+	if len(w.writeBuf) == 0 {
+		t.Fatal("append was not buffered")
+	}
+	if _, err := w.NewReader(); !errors.Is(err, ErrStorage) {
+		t.Fatalf("NewReader with failing flush err = %v, want ErrStorage", err)
+	}
+	if !w.Stats().Poisoned {
+		t.Fatal("flush failure during a read lease did not poison the WAL")
+	}
+	if _, err := w.Append(ctx, Record{Data: []byte("after")}); !errors.Is(err, ErrStorage) {
+		t.Fatalf("Append after poisoned flush err = %v, want ErrStorage", err)
+	}
+}
+
 // TestFaultSyncKeepsBatchAtomic verifies the commit-marker rule: a batch whose
 // fsync failed is either fully visible or fully absent after reopen. | 验证
 // 提交标记规则：fsync 失败的批次在重开后要么完整可见，要么完全不存在。

@@ -228,6 +228,11 @@ func (w *WAL) Scan(ctx context.Context, from, to uint64, fn func(Record) error) 
 	if to == 0 {
 		to = snap.LastLSN
 	}
+	// To above the call-time committed high-water is clamped, not followed. |
+	// 超过调用时已提交高水位的 To 会被截断，而不是继续跟随。
+	if to > snap.LastLSN {
+		to = snap.LastLSN
+	}
 	if from > to {
 		return nil
 	}
@@ -274,6 +279,11 @@ func (w *WAL) Query(ctx context.Context, q Query, fn func(Record) error) (int, e
 	}
 	to := q.To
 	if to == 0 {
+		to = snap.LastLSN
+	}
+	// To above the call-time committed high-water is clamped, not followed. |
+	// 超过调用时已提交高水位的 To 会被截断，而不是继续跟随。
+	if to > snap.LastLSN {
 		to = snap.LastLSN
 	}
 	if from > to || (!q.Since.IsZero() && !q.Until.IsZero() && q.Since.After(q.Until)) {
@@ -388,6 +398,7 @@ func (w *WAL) queryKeyIndex(ctx context.Context, q Query, from, to uint64, fn fu
 		complete := seg.keyIndexComplete && !seg.keyIndexOverflow
 		loaded := seg.keyIndexLoaded
 		seg.metaMu.RUnlock()
+		release := func() {}
 		if seg.currentState() == segmentSealed {
 			// Prefer a complete on-disk sidecar; only scan when it is missing,
 			// stale, or was written by an old format. | 优先加载完整侧车；只有
@@ -400,8 +411,9 @@ func (w *WAL) queryKeyIndex(ctx context.Context, q Query, from, to uint64, fn fu
 			}
 			if !complete {
 				var err error
-				complete, err = w.ensureKeyIndex(seg)
+				complete, release, err = w.ensureKeyIndex(seg)
 				if err != nil {
+					release()
 					// The segment may have been retired between retain and the
 					// on-disk index rebuild. Skip it only when its whole range
 					// is already below FirstLSN. | 分段可能在固定与重建索引之间被
@@ -417,11 +429,13 @@ func (w *WAL) queryKeyIndex(ctx context.Context, q Query, from, to uint64, fn fu
 			lsns := w.segmentKeyLSNs(seg, key, from, to)
 			n, err := w.readIndexedLSNs(ctx, seg, q.Key, lsns, q.Limit-count, fn)
 			count += n
+			release()
 			if err != nil {
 				return count, true, err
 			}
 			continue
 		}
+		release()
 		n, err := w.scanSegmentForKey(ctx, seg, q.Key, from, to, q.Limit-count, fn)
 		count += n
 		if err != nil {
@@ -596,16 +610,18 @@ func (w *WAL) scanSegmentForKey(ctx context.Context, seg *segment, key []byte, f
 
 // ensureKeyIndex rebuilds a sealed segment's sparse and Key indexes when they
 // are missing or were written by an older sidecar format. It upgrades the
-// sidecar on disk and installs the rebuilt index in memory. | ensureKeyIndex
-// 在稀疏/Key 索引缺失或来自旧侧车格式时重建封段索引；同时升级磁盘侧车并把
-// 重建结果装入内存。
-func (w *WAL) ensureKeyIndex(seg *segment) (bool, error) {
+// sidecar on disk, installs the rebuilt index in memory, registers it with the
+// bounded index cache, and returns a lease that must be released after the
+// caller finishes using the installed index. | ensureKeyIndex 在稀疏/Key 索引
+// 缺失或来自旧侧车格式时重建封段索引；同时升级磁盘侧车、把重建结果装入内存并
+// 登记到有界索引缓存，返回的租约须在调用方用完装入的索引后释放。
+func (w *WAL) ensureKeyIndex(seg *segment) (bool, func(), error) {
 	seg.metaMu.RLock()
 	complete := seg.keyIndexComplete && !seg.keyIndexOverflow
 	size := seg.size
 	seg.metaMu.RUnlock()
 	if complete {
-		return true, nil
+		return true, func() {}, nil
 	}
 	if size <= int64(segmentHeaderSize) {
 		seg.metaMu.Lock()
@@ -613,7 +629,7 @@ func (w *WAL) ensureKeyIndex(seg *segment) (bool, error) {
 		seg.keyIndex, seg.keyIndexLoaded, seg.keyIndexComplete, seg.keyIndexOverflow = nil, true, true, false
 		seg.indexGen++
 		seg.metaMu.Unlock()
-		return true, nil
+		return true, func() {}, nil
 	}
 	seg.indexMu.Lock()
 	defer seg.indexMu.Unlock()
@@ -622,39 +638,40 @@ func (w *WAL) ensureKeyIndex(seg *segment) (bool, error) {
 	size = seg.size
 	seg.metaMu.RUnlock()
 	if complete {
-		return true, nil
+		return true, func() {}, nil
 	}
 	f, err := os.Open(seg.path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return false, errs.Detail(ErrMissingSegment, "segment %[1]d is missing | 分段 %[1]d 缺失", seg.seq)
+			return false, func() {}, errs.Detail(ErrMissingSegment, "segment %[1]d is missing | 分段 %[1]d 缺失", seg.seq)
 		}
-		return false, wrapStorage("open segment for index rebuild", err)
+		return false, func() {}, wrapStorage("open segment for index rebuild", err)
 	}
 	defer f.Close()
 	if err := validateSegmentIdentity(seg, f); err != nil {
-		return false, err
+		return false, func() {}, err
 	}
 	info, err := f.Stat()
 	if err != nil {
-		return false, wrapStorage("stat segment for index rebuild", err)
+		return false, func() {}, wrapStorage("stat segment for index rebuild", err)
 	}
 	if info.Size() != size {
-		return false, errs.Detail(ErrCorrupt, "segment %[1]d size %[2]d does not match summary %[3]d | 分段 %[1]d 大小 %[2]d 与摘要 %[3]d 不一致",
+		return false, func() {}, errs.Detail(ErrCorrupt, "segment %[1]d size %[2]d does not match summary %[3]d | 分段 %[1]d 大小 %[2]d 与摘要 %[3]d 不一致",
 			seg.seq, info.Size(), size)
 	}
 	out, err := w.scanSegment(seg, f, int64(segmentHeaderSize), size, scanBase{lastLSN: seg.baseLSN - 1, atHeader: true}, false)
 	if err != nil {
-		return false, err
+		return false, func() {}, err
 	}
 	seg.metaMu.RLock()
 	wantLast, wantCount, wantSize := seg.lastLSN, seg.recordCount, seg.size
 	seg.metaMu.RUnlock()
 	if out.lastLSN != wantLast || out.recordCount != wantCount || out.size != wantSize {
-		return false, errs.Detail(ErrCorrupt, "segment %[1]d index rebuild disagrees with its summary | 分段 %[1]d 索引重建结果与摘要不一致", seg.seq)
+		return false, func() {}, errs.Detail(ErrCorrupt, "segment %[1]d index rebuild disagrees with its summary | 分段 %[1]d 索引重建结果与摘要不一致", seg.seq)
 	}
 	seg.metaMu.Lock()
 	seg.indexGen++
+	gen := seg.indexGen
 	seg.sparse = out.sparse
 	seg.sparseLoaded = true
 	seg.sparseComplete = out.sparseComplete
@@ -667,6 +684,14 @@ func (w *WAL) ensureKeyIndex(seg *segment) (bool, error) {
 	// the index installed above. | 丢弃陈旧 LRU 条目；代次校验会阻止它清除
 	// 上面装入的新索引。
 	w.idxcache.evict(seg.seq)
+	// Register the rebuilt index with the LRU so the configured byte budget can
+	// eventually evict it; the lease keeps it valid until the caller is done. |
+	// 把重建索引登记进 LRU，使配置的字节预算最终可以淘汰它；租约保证调用方
+	// 用完前索引仍然有效。
+	release := w.idxcache.adopt(&indexEntry{
+		sparse: out.sparse, keyIndex: out.keyIndex,
+		hasKeyIndex: out.keyIndex != nil, keyIndexComplete: out.keyIndexComplete,
+	}, seg, gen)
 	w.counters.keyIndexRebuild.Add(1)
 	if !w.opts.readOnly {
 		// Serialize with Close: after Close's barrier below, closedFlag is set
@@ -684,7 +709,7 @@ func (w *WAL) ensureKeyIndex(seg *segment) (bool, error) {
 		}
 		w.idxWriteMu.Unlock()
 	}
-	return out.keyIndexComplete && !out.keyIndexOverflow, nil
+	return out.keyIndexComplete && !out.keyIndexOverflow, release, nil
 }
 
 // Verify validates every record, commit marker, and transaction control record
@@ -697,6 +722,15 @@ func (w *WAL) Verify(ctx context.Context) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	// Verify reads segment sizes and record bytes, so it needs the same read
+	// lease as every other read entry: the lease flushes any userspace write
+	// buffer before sizes are observed and prevents Close from zeroing the key
+	// ring while decoding is in flight. | Verify 与其它读入口一样需要读租约：
+	// 租约在观察分段大小前刷新用户态写缓冲，并防止 Close 在解码期间清零密钥环。
+	if err := w.beginRead(); err != nil {
+		return err
+	}
+	defer w.endRead()
 	snap := w.Snapshot()
 	if snap.LastLSN < w.FirstLSN() {
 		return nil

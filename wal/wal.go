@@ -263,6 +263,13 @@ func Open(dir string, opts ...Option) (*WAL, error) {
 		return nil, err
 	}
 	if !o.readOnly {
+		// A segment retired by an earlier cleaner may have lost its .wal but kept
+		// its .idx/.bak after a crash; remove those orphans before serving reads. |
+		// 早先的 cleaner 可能已删除 .wal 却因崩溃留下 .idx/.bak；在提供读取前
+		// 清掉这些孤儿文件。
+		w.sweepOrphanSidecars()
+	}
+	if !o.readOnly {
 		// A clean default open defers the anchor read. If META already records
 		// that the anchor exists, no stat is needed; otherwise check once, and
 		// when the anchor is missing write it before META so the new META
@@ -510,9 +517,13 @@ func (w *WAL) EngineInfo() EngineInfo {
 	return info
 }
 
-// Append writes one record and returns its LSN. It returns only after the
-// record is durable, so the caller may reuse Key/Data afterwards. | Append 写入
-// 一条记录并返回其 LSN；返回时记录已持久化，调用方之后可复用 Key/Data。
+// Append writes one record and returns its LSN. It returns after the record
+// reaches the configured durability policy: durable before returning with the
+// default SyncAlways, while SyncInterval and SyncNever return once the writer
+// accepted the record. The caller may reuse Key/Data afterwards. | Append 写入
+// 一条记录并返回其 LSN；返回时记录已达到配置的持久级别：默认 SyncAlways 在返回前
+// 已持久化，SyncInterval 与 SyncNever 则在写入者接受记录后返回。调用方之后可复用
+// Key/Data。
 func (w *WAL) Append(ctx context.Context, rec Record) (uint64, error) {
 	if w.opts.readOnly {
 		return 0, ErrReadOnly
@@ -1026,6 +1037,13 @@ func (w *WAL) beginRead() error {
 	w.readersActive.Add(1)
 	w.readMu.Unlock()
 	if err := w.flushWriteBuf(); err != nil {
+		// flushWriteBufLocked discards the userspace buffer on failure, so
+		// records already acknowledged under SyncInterval/SyncNever are gone;
+		// continuing would append past a hole in the segment. Poison exactly
+		// like every other write/sync failure site. | flushWriteBufLocked 失败时
+		// 会丢弃用户态缓冲，SyncInterval/SyncNever 下已确认的记录因此丢失；继续
+		// 追加会在分段中留下空洞。与其它写/同步失败路径一样 poison。
+		w.setPoison(err)
 		w.readersActive.Add(-1)
 		w.readMu.Lock()
 		w.readLeases--

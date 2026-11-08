@@ -3,8 +3,6 @@ package wal
 import (
 	"context"
 	"time"
-
-	"github.com/shibingli/ydx/errs"
 )
 
 // retentionLoop runs automatic retention outside the writer. | retentionLoop
@@ -122,12 +120,4 @@ func (w *WAL) runRetention(ctx context.Context) error {
 		return res.err
 	}
 	return nil
-}
-
-// retentionError annotates a retention failure. | retentionError 注解保留失败。
-func retentionError(err error) error {
-	if err == nil {
-		return nil
-	}
-	return errs.Wrap(err, ErrStorage)
 }

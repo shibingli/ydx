@@ -3,8 +3,11 @@ package zstd
 import (
 	"bytes"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
+
+	kzstd "github.com/klauspost/compress/zstd"
 )
 
 // codecContract mirrors wal.Codec without importing the wal module. | codecContract
@@ -97,6 +100,39 @@ func TestCorruptAndTruncated(t *testing.T) {
 	short := make([]byte, len(src)-1)
 	if _, err := c.Decompress(short, compressed); err == nil {
 		t.Fatal("short destination was accepted")
+	}
+}
+
+// TestDecompressRejectsWindowLargerThanPlaintext verifies that the decoder binds
+// its window and memory to the validated plaintext length, so a crafted frame
+// cannot force a large window allocation for a small record. | 验证解码器把窗口
+// 与内存绑定到已校验的明文长度，使构造帧无法用小记录触发大窗口分配。
+func TestDecompressRejectsWindowLargerThanPlaintext(t *testing.T) {
+	payload := bytes.Repeat([]byte("window-bound"), 1<<15)
+	var framed bytes.Buffer
+	enc, err := kzstd.NewWriter(&framed,
+		kzstd.WithEncoderConcurrency(1),
+		kzstd.WithEncoderLevel(kzstd.SpeedFastest),
+		kzstd.WithWindowSize(1<<20),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := enc.Write(payload); err != nil {
+		t.Fatal(err)
+	}
+	if err := enc.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	c := New(3)
+	dst := make([]byte, 0, len(payload))
+	_, err = c.Decompress(dst, framed.Bytes())
+	if !errors.Is(err, ErrCorrupt) {
+		t.Fatalf("err = %v, want ErrCorrupt for a window larger than the declared plaintext", err)
+	}
+	if !strings.Contains(err.Error(), "window size exceeded") {
+		t.Fatalf("err = %v, want the zstd window-size bound to trigger", err)
 	}
 }
 

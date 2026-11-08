@@ -109,7 +109,18 @@ func (c *Codec) Decompress(dst, src []byte) ([]byte, error) {
 		return nil, ErrCodecUnavailable
 	}
 	defer c.dec.Put(dec)
-	if err := dec.Reset(bytes.NewReader(src)); err != nil {
+	// Bind decoder memory and window to the already validated plaintext length
+	// (with the zstd minimum window) so a hostile frame cannot force a large
+	// window allocation for a small record. | 把解码器内存与窗口绑定到已校验的
+	// 明文长度（不低于 zstd 最小窗口），防止恶意帧用小记录触发大窗口分配。
+	bound := uint64(expected)
+	if bound < uint64(kzstd.MinWindowSize) {
+		bound = uint64(kzstd.MinWindowSize)
+	}
+	if err := dec.ResetWithOptions(bytes.NewReader(src),
+		kzstd.WithDecoderMaxMemory(bound),
+		kzstd.WithDecoderMaxWindow(bound),
+	); err != nil {
 		return nil, errs.Wrap(err, ErrCorrupt)
 	}
 	out := dst[:expected]

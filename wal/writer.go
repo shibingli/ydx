@@ -253,6 +253,15 @@ func benignControlError(err error) bool {
 // finishWriter seals the final segment without writing META. | finishWriter 封存最终分段但不写 META。
 func (w *WAL) finishWriter() {
 	if w.poisonedErr() != nil {
+		// Records acknowledged before the poison may still live in the
+		// userspace write buffer. A normal Close must synchronize every
+		// acknowledged record, so make one best-effort flush before the final
+		// sync; a second failure cannot make the already-poisoned state worse.
+		// META and sidecars stay untouched, matching the poisoned-close rule. |
+		// poison 之前确认的记录可能仍在用户态写缓冲中。正常 Close 必须同步所有
+		// 已确认记录，因此最终同步前做一次尽力刷新；再次失败不会使已 poison 的
+		// 状态更糟。META 与侧车仍不写入，符合 poisoned Close 规则。
+		_ = w.flushWriteBuf()
 		if w.active != nil {
 			_ = w.engine.Sync(w.active.f)
 			w.active.closeWriter()
@@ -702,6 +711,11 @@ func (w *WAL) retireSegment(seg *segment) {
 	}
 	delete(w.segBySeq, seg.seq)
 	w.mu.Unlock()
+	// Stop a queued backup before it uploads a segment that is being retired;
+	// the cleaner calls this again after the unlink, which is harmless. |
+	// 阻止排队中的备份上传正在退休的分段；cleaner 在 unlink 后会再次调用，重复
+	// 调用无副作用。
+	w.markBackupDeleted(seg.seq)
 	w.cleanerMu.Lock()
 	w.cleanerQ = append(w.cleanerQ, seg)
 	w.cleanerMu.Unlock()
@@ -717,20 +731,6 @@ func (w *WAL) triggerRetention() {
 	case w.retentionTrigger <- struct{}{}:
 	default:
 	}
-}
-
-// syncActive is used by finite shutdown paths. | syncActive 供有限关闭路径使用。
-func (w *WAL) syncActive() error {
-	if w.active == nil || w.active.f == nil {
-		return nil
-	}
-	if err := w.flushWriteBuf(); err != nil {
-		return err
-	}
-	if err := w.engine.Sync(w.active.f); err != nil {
-		return wrapStorage("sync active segment", err)
-	}
-	return nil
 }
 
 // ensureActive creates the first active segment when needed. | ensureActive 在需要时创建首个活动段。

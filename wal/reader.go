@@ -126,6 +126,12 @@ func (w *WAL) NewReader(opts ...ReaderOption) (*Reader, error) {
 		w.endRead()
 		return nil, errs.Detail(ErrNotFound, "LSN %[1]d is below FirstLSN %[2]d | LSN %[1]d 小于 FirstLSN %[2]d", ro.from, first)
 	}
+	// An explicit To above the call-time committed high-water is clamped; it
+	// must not turn a finite reader into a follower of future appends. |
+	// 显式 To 超过调用时已提交高水位时会被截断，不能把有限读取器变成对未来追加的跟随。
+	if ro.hasTo && ro.to > last {
+		ro.to = last
+	}
 	r := &Reader{
 		w:             w,
 		from:          ro.from,
@@ -141,9 +147,6 @@ func (w *WAL) NewReader(opts ...ReaderOption) (*Reader, error) {
 	r.cond = sync.NewCond(&r.stateMu)
 	if ro.follow {
 		w.followReaders.Add(1)
-	}
-	if ro.from > last && !ro.follow {
-		r.from = last + 1
 	}
 	if ro.pinAll {
 		w.mu.RLock()
@@ -400,7 +403,12 @@ func (w *WAL) resolveRecordView(seg *segment, f *os.File, refOff int64, hdr reco
 	}
 	th, tpayload, tbuf, tscratch, err := w.decodeRecord(seg, f, int64(ref.offset), scratch, nil, header)
 	if err != nil {
-		return Record{}, scratch, err
+		// Any decode failure of the referenced target means the reference cannot
+		// be trusted; surface it as ErrDedupCorrupt while keeping the original
+		// cause (for example ErrAuth or ErrCorrupt) matchable. | 引用目标解码失败
+		// 意味着引用不可信；以 ErrDedupCorrupt 返回，同时保留原始原因（例如
+		// ErrAuth 或 ErrCorrupt）可判定。
+		return Record{}, scratch, errs.WrapDetail(err, ErrDedupCorrupt, "dedup target is unreadable | 去重目标不可读")
 	}
 	if tscratch != nil {
 		scratch = tscratch

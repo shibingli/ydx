@@ -2,6 +2,7 @@ package cronbackup
 
 import (
 	"context"
+	"reflect"
 	"strings"
 	"sync"
 	"time"
@@ -285,10 +286,27 @@ func (j *Job) ID() string {
 	return j.id
 }
 
+// nilTarget reports whether target is nil, including a typed nil pointer stored
+// in the interface. Startup-time reflection keeps a nil *wal.WAL from panicking
+// inside validateTarget. | nilTarget 判断 target 是否为 nil，包括接口中保存的
+// typed-nil 指针；启动期反射避免 nil *wal.WAL 在 validateTarget 中触发 panic。
+func nilTarget(target Target) bool {
+	if target == nil {
+		return true
+	}
+	v := reflect.ValueOf(target)
+	switch v.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Ptr, reflect.Slice:
+		return v.IsNil()
+	default:
+		return false
+	}
+}
+
 // validateTarget ensures the WAL can actually publish a backup on every fire. |
 // validateTarget 确保 WAL 在每次触发时确实能发布备份。
 func validateTarget(target Target) error {
-	if target == nil {
+	if nilTarget(target) {
 		return ErrNilTarget
 	}
 	if !target.BackupConfigured() {

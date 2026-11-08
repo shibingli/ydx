@@ -3,9 +3,49 @@ package wal
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"testing"
 )
+
+// TestStreamReaderRequiresEndRecord verifies that a StreamInfo claiming to be
+// complete cannot hide a missing FlagStreamEnd record: reaching the readable
+// range end without observing it returns ErrStreamIncomplete. | 验证声称完整但
+// 缺少 FlagStreamEnd 记录的 StreamInfo 不能掩盖缺失的结束记录：到达可读区间末尾
+// 仍未观察到它时必须返回 ErrStreamIncomplete。
+func TestStreamReaderRequiresEndRecord(t *testing.T) {
+	ctx := context.Background()
+	w, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer w.Close()
+	id, err := newStreamID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := w.appendStreamRecord(ctx, Record{Flags: FlagStreamChunk, Key: id[:], Data: []byte("abc")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	last, err := w.appendStreamRecord(ctx, Record{Flags: FlagStreamChunk, Key: id[:], Data: []byte("def")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	info := StreamInfo{ID: id, FirstLSN: first, LastLSN: last, Chunks: 2, Bytes: 6, Complete: true}
+	sr, err := w.NewStreamReader(info)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sr.Close()
+	got, err := io.ReadAll(sr)
+	if !errors.Is(err, ErrStreamIncomplete) {
+		t.Fatalf("ReadAll err = %v, want ErrStreamIncomplete", err)
+	}
+	if string(got) != "abcdef" {
+		t.Fatalf("ReadAll data = %q, want %q", got, "abcdef")
+	}
+}
 
 func TestAppendReadCloseReopen(t *testing.T) {
 	dir := t.TempDir()

@@ -312,24 +312,42 @@ func openMetaStore(dir string, fileMode os.FileMode) (*metaStore, error) {
 	return s, nil
 }
 
-// checkMetaTransition rejects generation/high-water rollback. | checkMetaTransition
-// 拒绝代次/高水位回退。
+// checkMetaTransition rejects generation/flag/high-water rollback. On an
+// existing WAL a flag bit may never be cleared; the only permitted additions
+// are the anchor bit at any time and, on an empty WAL, serializable durability
+// or encryption turning from off to on. The digest algorithm may only change
+// while serializable durability itself is being enabled, because persisted
+// write-key digests of different algorithms must never be mixed. | checkMetaTransition
+// 拒绝代次/标志/高水位回退。已有 WAL 上任何标志位都不得被清除；唯一允许新增
+// 的是任意时刻的锚点位，以及空 WAL 上可串行化持久化位或加密位由 0 置 1。哈希
+// 算法只能在同时启用可串行化持久化时确定，绝不能混用不同算法的持久写键摘要。
 func checkMetaTransition(newer, older metaState) error {
 	if newer.walID != older.walID {
 		return errs.Detail(ErrCorrupt, "META walID changed across generations | META walID 跨代改变")
 	}
 	if newer.flags != older.flags {
-		anchorEnabled := older.flags&metaFlagAnchor == 0 && newer.flags&metaFlagAnchor != 0
-		otherChanged := newer.flags&^metaFlagAnchor != older.flags&^metaFlagAnchor
-		if otherChanged {
-			enableSerializable := older.flags&metaFlagSerializable == 0 && newer.flags&metaFlagSerializable != 0
-			enableEncryption := older.flags&metaFlagEncrypted == 0 && newer.flags&metaFlagEncrypted != 0
+		if newer.flags&older.flags != older.flags {
+			return errs.Detail(ErrCorrupt, "META flags were cleared across generations | META flags 跨代被清除")
+		}
+		added := newer.flags &^ older.flags
+		allowed := metaFlagAnchor
+		enableSerializable := added&metaFlagSerializable != 0
+		if enableSerializable {
+			// SHA256 is encoded as 0, so only nonzero hash bits are additions. |
+			// SHA256 编码为 0，因此只有非零哈希位才是新增位。
+			allowed |= metaFlagSerializable | (metaFlagHashMask << metaFlagHashShift)
+		}
+		if added&metaFlagEncrypted != 0 {
+			allowed |= metaFlagEncrypted
+		}
+		if added&^allowed != 0 {
+			return errs.Detail(ErrCorrupt, "META flags changed across generations | META flags 跨代改变")
+		}
+		if enableSerializable || added&metaFlagEncrypted != 0 {
 			empty := newer.nextLSN == older.nextLSN && newer.firstLSN == older.firstLSN && newer.commitSeq == older.commitSeq
-			if (!enableSerializable && !enableEncryption) || !empty {
-				return errs.Detail(ErrCorrupt, "META flags changed across generations | META flags 跨代改变")
+			if !empty {
+				return errs.Detail(ErrCorrupt, "META flags changed on a non-empty WAL | 非空 WAL 上 META flags 发生改变")
 			}
-		} else if !anchorEnabled {
-			return errs.Detail(ErrCorrupt, "META anchor flag was cleared | META 锚点标志被清除")
 		}
 	}
 	if newer.nextSeq < older.nextSeq || newer.nextLSN < older.nextLSN ||

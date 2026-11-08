@@ -128,6 +128,31 @@ func copyBackupSegment(ctx context.Context, src, dst string, m SegmentMeta) erro
 		return errs.Detail(ErrBackup, "backup segment %[1]d size %[2]d, want %[3]d | 备份分段 %[1]d 大小 %[2]d，期望 %[3]d",
 			m.Seq, info.Size(), m.Bytes)
 	}
+	// The set's CRC proves the file bytes match the set, not that the file is
+	// the segment the set names. Check the self-describing header too, so a
+	// swapped or renamed segment cannot be published under the wrong seq/LSN
+	// range. | 集合 CRC 只能证明文件字节与集合一致，不能证明文件就是集合所指的
+	// 分段。这里同时校验自描述段头，避免被调换或改名的分段以错误 seq/LSN
+	// 区间发布。
+	var hdrBuf [segmentHeaderSize]byte
+	if err := readAtFull(in, hdrBuf[:], 0); err != nil {
+		return errs.WrapDetail(err, ErrBackup, "read backup segment header %d | 读取备份分段 %d 头失败", m.Seq, m.Seq)
+	}
+	hdr, err := decodeSegmentHeader(hdrBuf[:])
+	if err != nil {
+		return errs.WrapDetail(err, ErrBackup, "decode backup segment header %d | 解码备份分段 %d 头失败", m.Seq, m.Seq)
+	}
+	if hdr.seq != m.Seq || hdr.baseLSN != m.BaseLSN || (m.WalID != ([16]byte{}) && hdr.walID != m.WalID) {
+		return errs.Detail(ErrBackup,
+			"backup segment %[1]d header identity does not match the set | 备份分段 %[1]d 段头标识与集合不匹配", m.Seq)
+	}
+	// A positional read advances the shared cursor on Windows blocking handles.
+	// Rewind so the sequential copy below starts at byte zero on every platform.
+	// | Windows 阻塞句柄上的位置读会推进共享游标；回退到起点，保证下面的顺序复制
+	// 在所有平台都从第 0 字节开始。
+	if _, err := in.Seek(0, io.SeekStart); err != nil {
+		return errs.WrapDetail(err, ErrBackup, "rewind backup segment %d | 回退备份分段 %d 失败", m.Seq, m.Seq)
+	}
 	out, err := os.OpenFile(dst, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 	if err != nil {
 		return errs.WrapDetail(err, ErrStorage, "create restored segment | 创建恢复分段失败")

@@ -367,6 +367,102 @@ func TestReadIntoMatchesRead(t *testing.T) {
 	}
 }
 
+// TestReaderClampsExplicitToAndFrom verifies that an explicit To above the
+// call-time high-water never follows later appends, and that From above the
+// high-water does not consume a future record. | 验证显式 To 超过调用时高水位时
+// 不会跟随后续追加，且 From 高于高水位时不会消费未来记录。
+func TestReaderClampsExplicitToAndFrom(t *testing.T) {
+	ctx := context.Background()
+	w, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer w.Close()
+	if _, err := w.Append(ctx, Record{Data: []byte("one")}); err != nil {
+		t.Fatal(err)
+	}
+	bounded, err := w.NewReader(To(100))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer bounded.Close()
+	if rec, err := bounded.Next(); err != nil || rec.LSN != 1 {
+		t.Fatalf("first Next = %d/%v", rec.LSN, err)
+	}
+	if _, err := w.Append(ctx, Record{Data: []byte("two")}); err != nil {
+		t.Fatal(err)
+	}
+	if rec, err := bounded.Next(); !errors.Is(err, io.EOF) {
+		t.Fatalf("bounded Next after append = %d/%v, want io.EOF", rec.LSN, err)
+	}
+
+	future, err := w.NewReader(From(5))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer future.Close()
+	if _, err := w.Append(ctx, Record{Data: []byte("three")}); err != nil {
+		t.Fatal(err)
+	}
+	if rec, err := future.Next(); !errors.Is(err, io.EOF) {
+		t.Fatalf("future From Next = %d/%v, want io.EOF", rec.LSN, err)
+	}
+}
+
+// TestScanAndQueryClampExplicitTo verifies that Scan and Query clamp an
+// explicit To above the call-time high-water, so a callback that appends a new
+// record cannot extend the finite range. | 验证 Scan 与 Query 会截断超过调用时
+// 高水位的显式 To，回调中的新追加不能扩展该有限范围。
+func TestScanAndQueryClampExplicitTo(t *testing.T) {
+	ctx := context.Background()
+	open := func(t *testing.T) *WAL {
+		t.Helper()
+		w, err := Open(t.TempDir())
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = w.Close() })
+		if _, err := w.Append(ctx, Record{Data: []byte("one")}); err != nil {
+			t.Fatal(err)
+		}
+		return w
+	}
+	appendTwo := func(t *testing.T, w *WAL) error {
+		t.Helper()
+		_, err := w.Append(ctx, Record{Data: []byte("two")})
+		return err
+	}
+
+	t.Run("Scan", func(t *testing.T) {
+		w := open(t)
+		count := 0
+		if err := w.Scan(ctx, 1, 100, func(Record) error {
+			count++
+			if count == 1 {
+				return appendTwo(t, w)
+			}
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if count != 1 {
+			t.Fatalf("Scan returned %d records, want 1", count)
+		}
+	})
+	t.Run("Query", func(t *testing.T) {
+		w := open(t)
+		count, err := w.Query(ctx, Query{From: 1, To: 100}, func(Record) error {
+			return appendTwo(t, w)
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if count != 1 {
+			t.Fatalf("Query returned %d records, want 1", count)
+		}
+	})
+}
+
 // TestNewRangeReaderSkipsTruncatedStart verifies that a range whose start was
 // truncated away is retried from the new FirstLSN instead of failing with
 // ErrNotFound. | 验证起点已被截断的范围会从新的 FirstLSN 重试，而不是返回

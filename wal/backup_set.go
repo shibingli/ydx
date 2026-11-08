@@ -63,6 +63,14 @@ func validateBackupSet(set BackupSet) error {
 	if set.Encrypted != (set.ActiveKeyID != 0) {
 		return errs.Detail(ErrCipherMismatch, "backup set encryption flag and key ID disagree | 备份集加密标志与密钥 ID 不一致")
 	}
+	if set.Encrypted && set.ActiveKeyKCV == 0 {
+		// A restored META with an active key but no check value can never be
+		// opened: key resolution would compare the real KCV against zero. Reject
+		// the set instead of publishing an unrestorable WAL. | 带活动密钥却无校验值
+		// 的 META 永远无法打开：密钥解析会用真实 KCV 与零比较。直接拒绝该集合，
+		// 而不是发布一个不可恢复的 WAL。
+		return errs.Detail(ErrCipherMismatch, "encrypted backup set has no active key check value | 加密备份集缺少活动密钥校验值")
+	}
 	if !set.Serializable && set.HashAlgorithm != HashSHA256 {
 		return errs.Detail(ErrCorrupt, "backup set hash algorithm set without serializable durability | 备份集未启用可串行化持久化却设置哈希算法")
 	}
@@ -79,6 +87,7 @@ func validateBackupSet(set BackupSet) error {
 	}
 	var maxSeq, maxLast uint64
 	prevSeq := uint64(0)
+	var prevLast uint64
 	for i, m := range set.Segments {
 		if m.Seq == 0 || m.BaseLSN == 0 || m.LastLSN < m.BaseLSN-1 ||
 			m.Bytes < uint64(segmentHeaderSize) {
@@ -87,10 +96,18 @@ func validateBackupSet(set BackupSet) error {
 		if i > 0 && m.Seq <= prevSeq {
 			return errs.Detail(ErrCorrupt, "backup segments are not strictly ordered | 备份分段未严格排序")
 		}
+		if i > 0 && m.BaseLSN <= prevLast {
+			// Two segments claiming the same LSN makes record ownership, gap
+			// accounting, and reader clamping ambiguous. | 两个分段声明同一 LSN
+			// 会使记录归属、缺口核算与读取区间收窄产生歧义。
+			return errs.Detail(ErrCorrupt, "backup segment %[1]d overlaps the previous segment at LSN %[2]d | 备份分段 %[1]d 与前一分段在 LSN %[2]d 重叠",
+				m.Seq, m.BaseLSN)
+		}
 		if m.WalID != ([16]byte{}) && m.WalID != set.WalID {
 			return errs.Detail(ErrCorrupt, "backup segment walID mismatch | 备份分段 walID 不匹配")
 		}
 		prevSeq = m.Seq
+		prevLast = m.LastLSN
 		if m.Seq > maxSeq {
 			maxSeq = m.Seq
 		}

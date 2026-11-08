@@ -123,11 +123,3 @@ func (w *WAL) FlushCleanup(ctx context.Context) error {
 		}
 	}
 }
-
-// cleanupError identifies a cleanup failure. | cleanupError 标识清理失败。
-func cleanupError(err error) error {
-	if err == nil {
-		return nil
-	}
-	return errs.Wrap(err, ErrStorage)
-}
