@@ -206,6 +206,11 @@ type SignOptions struct {
 	Header map[string]string
 	// Kid sets the "kid" header parameter; empty means the parameter is omitted. | Kid 设置 "kid" 头部参数；为空表示省略该参数。
 	Kid string
+	// LowS normalizes ES256, ES384 and ES512 signatures to the canonical low-S form, whose s
+	// half is at most half the curve order. It has no effect on other algorithms. | LowS 把
+	// ES256、ES384 与 ES512 签名规范化为规范的 low-S 形式，即 s 半值不超过曲线阶的一半。其它
+	// 算法不受影响。
+	LowS bool
 }
 
 // Sign builds a compact JWS from claims and key. | Sign 用 claims 与 key 生成紧凑 JWS。
@@ -267,7 +272,7 @@ func signPayload(payload []byte, key any, alg Alg, o SignOptions) (string, error
 	s.input = base64.RawURLEncoding.AppendEncode(s.input[:0], s.header)
 	s.input = append(s.input, '.')
 	s.input = base64.RawURLEncoding.AppendEncode(s.input, payload)
-	sig, err := signRaw(alg, key, s.input, s)
+	sig, err := signRaw(alg, key, s.input, s, o.LowS)
 	if err != nil {
 		return "", err
 	}
@@ -415,7 +420,10 @@ func algCurve(alg Alg) elliptic.Curve {
 }
 
 // signRaw signs input with key for alg. | signRaw 用 key 按 alg 对 input 签名。
-func signRaw(alg Alg, key any, input []byte, s *scratch) ([]byte, error) {
+//
+// lowS selects the canonical low-S form for the ECDSA algorithms. | lowS 为 ECDSA 算法选择
+// 规范的 low-S 形式。
+func signRaw(alg Alg, key any, input []byte, s *scratch, lowS bool) ([]byte, error) {
 	switch alg {
 	case EdDSA:
 		k, ok := key.(ed25519.PrivateKey)
@@ -486,6 +494,9 @@ func signRaw(alg Alg, key any, input []byte, s *scratch) ([]byte, error) {
 		if err != nil {
 			return nil, errs.WrapDetail(err, ErrSignatureInvalid, "ECDSA signing | ECDSA 签名")
 		}
+		if lowS {
+			sv = toLowS(k.Curve, sv)
+		}
 		return appendFixedWidth(nil, r, sv, curveWidth(alg)), nil
 	}
 	return nil, errs.Detail(ErrAlgNotAllowed, "alg=%[1]q | 算法=%[1]q", string(alg))
@@ -493,15 +504,16 @@ func signRaw(alg Alg, key any, input []byte, s *scratch) ([]byte, error) {
 
 // verify checks the signature of a compact token. | verify 校验紧凑 token 的签名。
 //
-// input is the raw "header.payload" signing input and sig is the decoded signature. | input 是原始的
-// "header.payload" 签名输入，sig 是解码后的签名。
+// input is the raw "header.payload" signing input and sig is the decoded signature. requireLowS
+// additionally rejects a non-canonical high-S ECDSA signature. | input 是原始的
+// "header.payload" 签名输入，sig 是解码后的签名。requireLowS 还会拒绝非规范的高 S ECDSA 签名。
 //
 // A key from the wrong family is reported as ErrSignatureInvalid, never as an internal panic or a confusing
 // success; that single rule closes algorithm confusion in both directions. A private key of the matching
 // family is accepted and only its public half is used, so one key value can serve both Sign and Parse. |
 // 密钥族不符一律报告 ErrSignatureInvalid，既不 panic 也不会误判成功；这一条规则同时封堵了两个方向的
 // 算法混淆。匹配族的私钥也可以传入，且只会使用其公钥部分，因此同一个密钥取值可同时服务 Sign 与 Parse。
-func verify(alg Alg, key any, input, sig []byte, s *scratch) bool {
+func verify(alg Alg, key any, input, sig []byte, s *scratch, requireLowS bool) bool {
 	switch alg {
 	case EdDSA:
 		k, ok := ed25519VerifyKey(key)
@@ -546,6 +558,9 @@ func verify(alg Alg, key any, input, sig []byte, s *scratch) bool {
 		}
 		width := curveWidth(alg)
 		if len(sig) != 2*width {
+			return false
+		}
+		if requireLowS && !isLowS(k.Curve, sig[width:]) {
 			return false
 		}
 		digest := algHashPool(alg).sum(input, s.mac[:0])
@@ -640,6 +655,45 @@ func appendFixedWidth(dst []byte, r, s *big.Int, width int) []byte {
 	r.FillBytes(dst[base : base+width])
 	s.FillBytes(dst[base+width:])
 	return dst
+}
+
+// toLowS returns s or its curve-order complement, whichever is not greater than half the order. | toLowS
+// 返回 s 或其曲线阶补值中不大于阶一半的那个。
+//
+// ECDSA admits both s and N-s; pinning the low half removes signature malleability. The caller only
+// invokes this when SignOptions.LowS is set, so the default signing path is unchanged. | ECDSA 同时接受
+// s 与 N-s；固定取低半值可消除签名可塑性。调用方仅在设置 SignOptions.LowS 时使用，默认签发路径不变。
+func toLowS(curve elliptic.Curve, s *big.Int) *big.Int {
+	if curve == nil || s == nil {
+		return s
+	}
+	n := curve.Params().N
+	if n == nil {
+		return s
+	}
+	half := new(big.Int).Rsh(n, 1)
+	if s.Cmp(half) > 0 {
+		return new(big.Int).Sub(n, s)
+	}
+	return s
+}
+
+// isLowS reports whether the fixed-width s half is in the canonical low-S range (1 <= s <= N/2). | isLowS
+// 报告定宽 s 半值是否位于规范的 low-S 范围（1 <= s <= N/2）。
+func isLowS(curve elliptic.Curve, s []byte) bool {
+	if curve == nil || len(s) == 0 {
+		return false
+	}
+	n := curve.Params().N
+	if n == nil {
+		return false
+	}
+	v := new(big.Int).SetBytes(s)
+	if v.Sign() <= 0 {
+		return false
+	}
+	half := new(big.Int).Rsh(n, 1)
+	return v.Cmp(half) <= 0
 }
 
 // rsaVerifyKey extracts the public half of an RSA verification key. | rsaVerifyKey 提取 RSA 验签

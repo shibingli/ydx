@@ -309,13 +309,92 @@ func TestDynamicMessageAuthenticator(t *testing.T) {
 		server := newUDPMock(t, secret, func(request *Packet, raw []byte) ([]byte, error) {
 			return signedResponse(request, secret, CodeCoAACK, nil)
 		})
-		client := newTestClient(t, ClientConfig{Address: server.Addr(), Secret: secret})
+		client := newTestClient(t, ClientConfig{Address: server.Addr(), Secret: secret, Timeout: 80 * time.Millisecond})
+		start := time.Now()
 		_, err := client.SendCoA(context.Background(), &CoARequest{
 			SessionID:                   "session-1",
 			IncludeMessageAuthenticator: true,
 		})
-		if !errors.Is(err, ErrMessageAuthenticator) {
-			t.Fatalf("error = %v, want ErrMessageAuthenticator", err)
+		if !errors.Is(err, ErrTimeout) {
+			t.Fatalf("error = %v, want ErrTimeout", err)
+		}
+		if elapsed := time.Since(start); elapsed < 60*time.Millisecond {
+			t.Fatalf("missing response Message-Authenticator failed the attempt after only %v", elapsed)
+		}
+	})
+	t.Run("invalid then valid response message authenticator", func(t *testing.T) {
+		cases := []struct {
+			name         string
+			responseCode Code
+			send         sendDynamicFunc
+		}{
+			{
+				name:         "coa",
+				responseCode: CodeCoAACK,
+				send: func(client *Client, ctx context.Context) error {
+					_, err := client.SendCoA(ctx, &CoARequest{
+						SessionID:                   "session-1",
+						IncludeMessageAuthenticator: true,
+					})
+					return err
+				},
+			},
+			{
+				name:         "disconnect",
+				responseCode: CodeDisconnectACK,
+				send: func(client *Client, ctx context.Context) error {
+					_, err := client.SendDisconnect(ctx, &DisconnectRequest{
+						SessionID:                   "session-1",
+						IncludeMessageAuthenticator: true,
+					})
+					return err
+				},
+			},
+		}
+		for _, testCase := range cases {
+			t.Run(testCase.name+"/invalid then valid", func(t *testing.T) {
+				server := newScriptedUDPServer(t, func(request *Packet) ([][]byte, error) {
+					bad, err := signedResponse(request, secret, testCase.responseCode, Attributes{
+						NewAttribute(AttrMessageAuthenticator, make([]byte, 16)),
+					})
+					if err != nil {
+						return nil, err
+					}
+					good, err := signedMessageResponse(request, secret, testCase.responseCode, nil)
+					if err != nil {
+						return nil, err
+					}
+					return [][]byte{bad, good}, nil
+				})
+				client := newTestClient(t, ClientConfig{
+					Address: server.LocalAddr().String(),
+					Secret:  secret,
+					Timeout: 500 * time.Millisecond,
+				})
+				if err := testCase.send(client, context.Background()); err != nil {
+					t.Fatalf("send: %v", err)
+				}
+			})
+			t.Run(testCase.name+"/invalid only times out", func(t *testing.T) {
+				server := newUDPMock(t, secret, func(request *Packet, raw []byte) ([]byte, error) {
+					return signedResponse(request, secret, testCase.responseCode, Attributes{
+						NewAttribute(AttrMessageAuthenticator, make([]byte, 16)),
+					})
+				})
+				client := newTestClient(t, ClientConfig{
+					Address: server.Addr(),
+					Secret:  secret,
+					Timeout: 80 * time.Millisecond,
+				})
+				start := time.Now()
+				err := testCase.send(client, context.Background())
+				if !errors.Is(err, ErrTimeout) {
+					t.Fatalf("error = %v, want ErrTimeout", err)
+				}
+				if elapsed := time.Since(start); elapsed < 60*time.Millisecond {
+					t.Fatalf("invalid response Message-Authenticator failed the attempt after only %v", elapsed)
+				}
+			})
 		}
 	})
 	t.Run("invalid response message authenticator", func(t *testing.T) {
@@ -456,15 +535,74 @@ func TestDynamicRetransmissionKeepsPacket(t *testing.T) {
 
 func TestDynamicRejectsMalformedResponse(t *testing.T) {
 	secret := []byte("testing-secret")
-	server := newUDPMock(t, secret, func(request *Packet, raw []byte) ([]byte, error) {
-		malformed := make([]byte, 10)
-		malformed[0] = byte(CodeCoAACK)
-		malformed[1] = request.Identifier
-		return malformed, nil
-	})
-	client := newTestClient(t, ClientConfig{Address: server.Addr(), Secret: secret})
-	if _, err := client.SendCoA(context.Background(), &CoARequest{SessionID: "session-1"}); !errors.Is(err, ErrInvalidResponse) {
-		t.Fatalf("error = %v, want ErrInvalidResponse", err)
+	malformedResponse := func(request *Packet, responseCode Code) [][]byte {
+		short := make([]byte, 10)
+		short[0] = byte(responseCode)
+		short[1] = request.Identifier
+		badLength := make([]byte, HeaderLength)
+		badLength[0] = byte(responseCode)
+		badLength[1] = request.Identifier
+		binary.BigEndian.PutUint16(badLength[2:4], HeaderLength+32)
+		return [][]byte{short, badLength}
+	}
+	cases := []struct {
+		name         string
+		responseCode Code
+		send         sendDynamicFunc
+	}{
+		{
+			name:         "coa",
+			responseCode: CodeCoAACK,
+			send: func(client *Client, ctx context.Context) error {
+				_, err := client.SendCoA(ctx, &CoARequest{SessionID: "session-1"})
+				return err
+			},
+		},
+		{
+			name:         "disconnect",
+			responseCode: CodeDisconnectACK,
+			send: func(client *Client, ctx context.Context) error {
+				_, err := client.SendDisconnect(ctx, &DisconnectRequest{SessionID: "session-1"})
+				return err
+			},
+		},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name+"/bad structure then good", func(t *testing.T) {
+			server := newScriptedUDPServer(t, func(request *Packet) ([][]byte, error) {
+				good, err := signedResponse(request, secret, testCase.responseCode, nil)
+				if err != nil {
+					return nil, err
+				}
+				return append(malformedResponse(request, testCase.responseCode), good), nil
+			})
+			client := newTestClient(t, ClientConfig{
+				Address: server.LocalAddr().String(),
+				Secret:  secret,
+				Timeout: 500 * time.Millisecond,
+			})
+			if err := testCase.send(client, context.Background()); err != nil {
+				t.Fatalf("send: %v", err)
+			}
+		})
+		t.Run(testCase.name+"/bad structure only times out", func(t *testing.T) {
+			server := newUDPMock(t, secret, func(request *Packet, raw []byte) ([]byte, error) {
+				return malformedResponse(request, testCase.responseCode)[0], nil
+			})
+			client := newTestClient(t, ClientConfig{
+				Address: server.Addr(),
+				Secret:  secret,
+				Timeout: 80 * time.Millisecond,
+			})
+			start := time.Now()
+			err := testCase.send(client, context.Background())
+			if !errors.Is(err, ErrTimeout) {
+				t.Fatalf("error = %v, want ErrTimeout", err)
+			}
+			if elapsed := time.Since(start); elapsed < 60*time.Millisecond {
+				t.Fatalf("malformed response failed the exchange after only %v", elapsed)
+			}
+		})
 	}
 }
 

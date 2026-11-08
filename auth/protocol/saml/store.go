@@ -135,6 +135,18 @@ func artifactStoreOf(store Store) (ArtifactStore, error) {
 	return artifactStore, nil
 }
 
+// AssertionReplayStore records assertion identifiers to enforce Conditions/OneTimeUse. It is an
+// optional extension of Store: providers discover it by type assertion on the configured Store and
+// also accept it directly through ResponseValidationOptions and ServiceProviderConfig. |
+// AssertionReplayStore 记录断言标识以强制 Conditions/OneTimeUse。它是 Store 的可选扩展：提供方通过
+// 类型断言已配置的 Store 发现它，也可通过 ResponseValidationOptions 与 ServiceProviderConfig 直接配置。
+type AssertionReplayStore interface {
+	// SeenAndStore atomically records assertionID until expiresAt and reports whether the identifier
+	// was already recorded. A true result means the assertion is a replay. | SeenAndStore 原子记录
+	// assertionID 直到 expiresAt，并报告该标识是否已被记录。返回 true 表示断言重放。
+	SeenAndStore(ctx context.Context, assertionID string, expiresAt, now time.Time) (seen bool, err error)
+}
+
 // Store persists request correlation, assertion replay and IdP sessions. | Store 持久化请求关联、
 // 断言重放与 IdP 会话。
 type Store interface {
@@ -205,17 +217,27 @@ func (s *MemoryStore) ConsumeRequest(_ context.Context, id string, now time.Time
 }
 
 // SaveAssertion records an assertion ID. | SaveAssertion 记录断言 ID。
-func (s *MemoryStore) SaveAssertion(_ context.Context, id string, expiresAt, now time.Time) (bool, error) {
+func (s *MemoryStore) SaveAssertion(ctx context.Context, id string, expiresAt, now time.Time) (bool, error) {
+	seen, err := s.SeenAndStore(ctx, id, expiresAt, now)
+	if err != nil {
+		return false, err
+	}
+	return !seen, nil
+}
+
+// SeenAndStore atomically records an assertion ID for one-time-use enforcement. | SeenAndStore
+// 原子记录断言标识以强制一次性使用。
+func (s *MemoryStore) SeenAndStore(_ context.Context, id string, expiresAt, now time.Time) (bool, error) {
 	if id == "" {
 		return false, errs.Detail(ErrInvalidResponse, "assertion id is empty | 断言标识为空")
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if existing, ok := s.assertions[id]; ok && now.Before(existing) {
-		return false, nil
+		return true, nil
 	}
 	s.assertions[id] = expiresAt
-	return true, nil
+	return false, nil
 }
 
 // SaveArtifact stores an artifact record. | SaveArtifact 保存工件记录。

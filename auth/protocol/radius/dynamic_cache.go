@@ -45,6 +45,8 @@ type DynamicDuplicateKey struct {
 // DynamicDuplicateCacheConfig configures a DynamicDuplicateCache. | DynamicDuplicateCacheConfig
 // 配置 DynamicDuplicateCache。
 type DynamicDuplicateCacheConfig struct {
+	// Clock overrides the time source; nil uses time.Now. | Clock 替换时间源；nil 使用 time.Now。
+	Clock func() time.Time
 	// Capacity is the maximum number of cached responses; zero selects
 	// DefaultDynamicDuplicateCapacity and negative values are rejected. | Capacity 是缓存响应的
 	// 最大条数；零值选择 DefaultDynamicDuplicateCapacity，负值会被拒绝。
@@ -53,8 +55,6 @@ type DynamicDuplicateCacheConfig struct {
 	// negative values are rejected. | TTL 是缓存响应的有效期；零值选择
 	// DefaultDynamicDuplicateTTL，负值会被拒绝。
 	TTL time.Duration
-	// Clock overrides the time source; nil uses time.Now. | Clock 替换时间源；nil 使用 time.Now。
-	Clock func() time.Time
 }
 
 // DynamicDuplicateCache caches authenticated CoA-ACK, CoA-NAK, Disconnect-ACK and Disconnect-NAK
@@ -69,20 +69,20 @@ type DynamicDuplicateCacheConfig struct {
 // TTL 后过期，超出 Capacity 时淘汰最旧条目，因此内存占用有界。缓存可并发使用。Get 返回副本，
 // Put 复制响应，调用方永远无法修改缓存字节。
 type DynamicDuplicateCache struct {
-	mu       sync.Mutex
-	capacity int
-	ttl      time.Duration
 	clock    func() time.Time
 	entries  map[DynamicDuplicateKey]*list.Element
 	order    *list.List
+	capacity int
+	ttl      time.Duration
+	mu       sync.Mutex
 }
 
 // dynamicDuplicateEntry is one cached response in insertion order. | dynamicDuplicateEntry 是按插入
 // 顺序保存的一条缓存响应。
 type dynamicDuplicateEntry struct {
-	key       DynamicDuplicateKey
-	response  []byte
 	expiresAt time.Time
+	response  []byte
+	key       DynamicDuplicateKey
 }
 
 // NewDynamicDuplicateCache validates config and returns a cache. | NewDynamicDuplicateCache 校验

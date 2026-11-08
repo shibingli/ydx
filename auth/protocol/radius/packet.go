@@ -16,14 +16,14 @@ import (
 // 头部；Attributes 携带属性列表。Length 在 MarshalBinary 时由编码后的属性推导，并在
 // UnmarshalBinary 时校验。
 type Packet struct {
+	// Attributes is the ordered attribute list. | Attributes 是有序属性列表。
+	Attributes Attributes
+	// Authenticator is the Request or Response Authenticator. | Authenticator 是请求或响应认证符。
+	Authenticator [16]byte
 	// Code is the packet type. | Code 是报文类型。
 	Code Code
 	// Identifier matches requests with responses. | Identifier 用于匹配请求与响应。
 	Identifier uint8
-	// Authenticator is the Request or Response Authenticator. | Authenticator 是请求或响应认证符。
-	Authenticator [16]byte
-	// Attributes is the ordered attribute list. | Attributes 是有序属性列表。
-	Attributes Attributes
 }
 
 // MarshalBinary encodes p to its RFC 2865 wire form. | MarshalBinary 将 p 编码为 RFC 2865 线格式。

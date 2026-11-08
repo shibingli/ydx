@@ -103,6 +103,74 @@ func TestSASLPlainEmptyPasswordDoesNotDial(t *testing.T) {
 	}
 }
 
+// TestSASLPlainRequiresTLS verifies Config.RequireSASLPlainTLS rejects a
+// cleartext bind without sending credentials and accepts a TLS-protected bind. |
+// TestSASLPlainRequiresTLS 校验 Config.RequireSASLPlainTLS 拒绝明文绑定且不发送凭据，
+// 并接受 TLS 保护下的绑定。
+func TestSASLPlainRequiresTLS(t *testing.T) {
+	t.Run("rejects cleartext", func(t *testing.T) {
+		server := startMockServer(t, func(session *mockSession, message *LDAPMessage) error {
+			if _, ok := message.Op.(*BindRequest); ok {
+				t.Error("cleartext PLAIN bind reached the server")
+				return session.writeSimpleResult(message.MessageID, &BindResponse{Result: LDAPResult{Code: ResultSuccess}})
+			}
+			return errors.New("unexpected operation")
+		})
+		client, err := DialURL(context.Background(), server.URL(), Config{RequireSASLPlainTLS: true})
+		if err != nil {
+			t.Fatalf("DialURL: %v", err)
+		}
+		defer client.Close()
+		if err := client.BindSASLPlain(context.Background(), "alice", "secret"); !errors.Is(err, ErrTLSRequired) {
+			t.Fatalf("BindSASLPlain error = %v", err)
+		}
+		if err := client.BindSASLPlainAuthzID(context.Background(), "dn:cn=admin", "alice", "secret"); !errors.Is(err, ErrTLSRequired) {
+			t.Fatalf("BindSASLPlainAuthzID error = %v", err)
+		}
+		if client.auth != nil {
+			t.Fatalf("rejected bind stored authentication: %+v", client.auth)
+		}
+	})
+	t.Run("accepts TLS", func(t *testing.T) {
+		certificate, pool := testCertificate(t)
+		var (
+			mu          sync.Mutex
+			credentials [][]byte
+		)
+		server := startMockServerTLS(t, &tls.Config{Certificates: []tls.Certificate{certificate}, MinVersion: tls.VersionTLS12},
+			func(session *mockSession, message *LDAPMessage) error {
+				request, ok := message.Op.(*BindRequest)
+				if !ok {
+					return errors.New("expected bind")
+				}
+				auth, ok := request.Authentication.(SASLAuthentication)
+				if !ok || auth.Mechanism != SASLMechanismPlain {
+					return errors.New("expected PLAIN")
+				}
+				mu.Lock()
+				credentials = append(credentials, append([]byte(nil), auth.Credentials...))
+				mu.Unlock()
+				return session.writeSimpleResult(message.MessageID, &BindResponse{Result: LDAPResult{Code: ResultSuccess}})
+			})
+		client, err := DialURL(context.Background(), server.URL(), Config{
+			TLSConfig:           testTLSConfig(pool),
+			RequireSASLPlainTLS: true,
+		})
+		if err != nil {
+			t.Fatalf("DialURL: %v", err)
+		}
+		defer client.Close()
+		if err := client.BindSASLPlain(context.Background(), "alice", "secret"); err != nil {
+			t.Fatalf("BindSASLPlain: %v", err)
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		if len(credentials) != 1 || !bytes.Equal(credentials[0], []byte("\x00alice\x00secret")) {
+			t.Fatalf("credentials = %q", credentials)
+		}
+	})
+}
+
 // TestSASLExternal verifies EXTERNAL requires TLS and handles one challenge. |
 // TestSASLExternal 校验 EXTERNAL 需要 TLS 并处理一次挑战。
 func TestSASLExternal(t *testing.T) {

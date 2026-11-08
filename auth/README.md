@@ -255,6 +255,40 @@ JWK/PKCS#8/PKIX 导出策略；OIDC 的 `SigningKey`、SAML 的 `XMLDSigSigner` 
 - **KMS/KMIP**：导入非对称材料校验公私钥配对；KMIP 拒绝重复标量标签与重复 ProtocolVersion
   字段，读取前校验根标签，只读 Batch 不再取全 Store 快照；其余见各包文档。
 
+## 第三轮边界修复行为变更（v0.1.2）
+
+本轮补齐可落地的协议边界；新增能力均为显式配置，安全默认失败关闭：
+
+- **JWT/JOSE**：新增 `ValidateIssuedAt`/`RequireIssuedAt`、`Issuers`/`Audiences`、JWS
+  General/Flattened JSON 序列化、detached payload、ECDSA low-S 选项。JWE 仍为 compact-only，
+  b64=false 继续拒绝；仅 protected 头部可携带 `alg`。
+- **OAuth2/OIDC**：Front-Channel Logout 接收端需配置 `FrontchannelLogoutClientID`，否则 500；
+  新增第三方 OP 的 `BackchannelLogoutIssuer`/`BackchannelLogoutKeySet`/`BackchannelLogoutJWKSURI`/
+  `BackchannelLogoutKeyResolver`；mTLS 客户端必须有 subject DN 或 SAN 绑定，自签名证书校验
+  有效期；`request_uri` 单次使用记录上限 4096。
+- **SAML/WS-Fed**：`OneTimeUse` 默认要求 `AssertionReplayStore`（否则失败关闭，可用
+  `AllowOneTimeUseWithoutReplayStore` 显式放行）；强制 `SessionNotOnOrAfter`；Artifact
+  Resolution 支持 SOAP 1.2、多端点 failover 与总超时。WS-Fed 的 `RequireSigned` 必须有
+  `SignatureVerifier`，签名断言不可验证时拒绝，并固定 issuer；状态码缺失不再视为成功。
+- **CAS**：登记前端登出 URL 后浏览器登出渲染前端 SLO 页面（默认最多 10 个服务）；入站
+  LogoutRequest 支持 XML 签名校验，`RequireSignedLogoutRequest` 打开时失败关闭。
+- **RADIUS**：UDP 上结构畸形、Identifier 不匹配、Response Authenticator/Message-Authenticator
+  错误的报文全部静默丢弃并等待；流传输仍立即失败并关闭连接。新增 UDP/TCP/TLS `AccessServer`
+  与 `AccountingServer`（PAP/CHAP、MA、并发/尺寸/关闭控制）；relay 与完整 EAP 状态机仍不在范围。
+- **SCIM/LDAP**：写请求默认要求 `application/scim+json` 或 `application/json`（415，可用
+  `AllowAnyContentType` 放宽）；新增口令预检与失败补偿（版本条件写）；LDAP 连接池可选空闲探测
+  （默认关闭）；`RequireSASLPlainTLS` 可强制 SASL PLAIN 仅 TLS。
+- **OTP/WebAuthn/RBAC**：新增 `SafetyNetPolicy` 与 `AndroidKeyPolicy`；RBAC 快照装载失败会
+  恢复旧状态，恢复失败返回 `ErrSnapshotRestore`；`Validator.ValidateHOTP` 拒绝计数器回退。
+- **KMS/KMIP**：REST 新增 `AllowedOrigins`/`AllowedHosts`/`RequireSameOrigin`/
+  `CookieAuth`/`CSRFCheck`；静态加密新写入使用版本化 `KMSM2`（随机盐、参数入包，旧 `KMSM1`
+  仍可解）；`DeriveKey` 仅允许对称密钥；KMIP 实现 1.4 `Export`，协议版本仅接受 1.4/2.0，
+  客户端断线后惰性重连且不重放失败请求；Batch Undo 仍为完整快照（已在文档说明原因）。
+- **核心 auth/CN**：`RotateAfter` 在两种 HTTP 入口自动轮换；`NewManagedMemoryStores` 提供
+  周期清理；`RequireEmailVerification` 下联邦未验证邮箱新用户置为 `UserPending`；
+  `PasswordPolicy` 支持逐字段默认；`Config.RequireMFAToken` 可关闭旧空 MFAToken 路径；
+  identity/cn 默认客户端仅跟随同源/HTTPS 升级重定向，响应字段超限与解码错误不再回显原文。
+
 ## 与主流实现的对比
 
 `benchmarks/auth` 对 JOSE/JWS、JWE、OTP、RBAC、LDAP 过滤器与 XMLDSig 做主流程同进程对比，

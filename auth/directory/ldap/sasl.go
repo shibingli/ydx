@@ -50,14 +50,18 @@ type SCRAMOptions struct {
 }
 
 // BindSASLPlain authenticates with RFC 4616 PLAIN. Empty passwords are rejected
-// before any network I/O. | BindSASLPlain 使用 RFC 4616 PLAIN 认证。空口令会在任何
-// 网络 I/O 之前被拒绝。
+// before any network I/O. When Config.RequireSASLPlainTLS is set, the bind is
+// rejected unless the connection is TLS-protected. | BindSASLPlain 使用 RFC 4616
+// PLAIN 认证。空口令会在任何网络 I/O 之前被拒绝。启用 Config.RequireSASLPlainTLS 后，
+// 除非连接受 TLS 保护，否则绑定会被拒绝。
 func (c *Client) BindSASLPlain(ctx context.Context, username, password string) error {
 	return c.BindSASLPlainAuthzID(ctx, "", username, password)
 }
 
 // BindSASLPlainAuthzID authenticates with RFC 4616 PLAIN and an authorization
-// identity. | BindSASLPlainAuthzID 使用 RFC 4616 PLAIN 与授权身份认证。
+// identity. When Config.RequireSASLPlainTLS is set, the bind is rejected unless
+// the connection is TLS-protected. | BindSASLPlainAuthzID 使用 RFC 4616 PLAIN 与授权
+// 身份认证。启用 Config.RequireSASLPlainTLS 后，除非连接受 TLS 保护，否则绑定会被拒绝。
 func (c *Client) BindSASLPlainAuthzID(ctx context.Context, authzID, username, password string) error {
 	if password == "" {
 		return ErrEmptyPassword
@@ -168,8 +172,15 @@ func (c *Client) saslBindLocked(ctx context.Context, mechanism string, credentia
 }
 
 // performSASLPlainLocked performs one PLAIN exchange without changing replay
-// state. | performSASLPlainLocked 执行一次 PLAIN 交换且不改变重放状态。
+// state. It refuses to send credentials when Config.RequireSASLPlainTLS is set
+// and the transport is not TLS-protected, which also covers authentication
+// replay after a reconnect. | performSASLPlainLocked 执行一次 PLAIN 交换且不改变重放
+// 状态。启用 Config.RequireSASLPlainTLS 且传输未受 TLS 保护时，它拒绝发送凭据；重连后的认证
+// 重放同样受此保护。
 func (c *Client) performSASLPlainLocked(ctx context.Context, authzID, username, password string) error {
+	if c.cfg.RequireSASLPlainTLS && (c.conn == nil || !c.conn.secure) {
+		return ErrTLSRequired
+	}
 	credentials := make([]byte, 0, len(authzID)+len(username)+len(password)+2)
 	credentials = append(credentials, authzID...)
 	credentials = append(credentials, 0)

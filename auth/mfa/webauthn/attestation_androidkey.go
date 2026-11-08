@@ -20,8 +20,14 @@ const (
 // Android AuthorizationList tags inspected by the verifier. | 校验器检查的 Android AuthorizationList 标签。
 const (
 	androidTagPurpose                  = 1
+	androidTagKeySize                  = 3
+	androidTagDigest                   = 5
+	androidTagECCurve                  = 10
 	androidTagAllApplications          = 600
 	androidTagOrigin                   = 702
+	androidTagRootOfTrust              = 704
+	androidTagOSVersion                = 705
+	androidTagOSPatchLevel             = 706
 	androidTagAttestationApplicationID = 709
 )
 
@@ -47,12 +53,23 @@ type androidKeyDescription struct {
 
 // androidAuthorizationList carries the security-relevant fields of an AuthorizationList. | androidAuthorizationList 携带 AuthorizationList 的安全相关字段。
 type androidAuthorizationList struct {
-	purposes           []int
-	packageNames       []string
-	origin             int
-	hasOrigin          bool
-	hasAllApplications bool
-	hasApplicationID   bool
+	purposes             []int
+	packageNames         []string
+	applicationDigests   [][]byte
+	keySizes             []int
+	digests              []int
+	ecCurves             []int
+	origin               int
+	verifiedBootState    int
+	osVersion            int
+	osPatchLevel         int
+	hasOrigin            bool
+	hasAllApplications   bool
+	hasApplicationID     bool
+	hasRootOfTrust       bool
+	hasVerifiedBootState bool
+	hasOSVersion         bool
+	hasOSPatchLevel      bool
 }
 
 // verifyAndroidKey implements the android-key attestation format. | verifyAndroidKey 实现 android-key 认证声明格式。
@@ -110,7 +127,7 @@ func (o *AttestationObject) verifyAndroidKey(ctx context.Context, result *Attest
 		result.TrustVerified = trustVerified
 		return nil
 	}
-	if err := verifyAndroidKeyExtension(leaf, clientDataHash, expectedPackage); err != nil {
+	if err := verifyAndroidKeyExtensionWithPolicy(leaf, clientDataHash, expectedPackage, opts.AndroidKeyPolicy); err != nil {
 		return err
 	}
 	verified, err := verifyCertificateChain(certs, opts.withAndroidKeyRoots())
@@ -123,8 +140,19 @@ func (o *AttestationObject) verifyAndroidKey(ctx context.Context, result *Attest
 	return nil
 }
 
-// verifyAndroidKeyExtension checks the Android key attestation certificate extension. | verifyAndroidKeyExtension 校验 Android 密钥认证证书扩展。
+// verifyAndroidKeyExtension checks the Android key attestation certificate extension with the
+// baseline policy. | verifyAndroidKeyExtension 使用基线策略校验 Android 密钥认证证书扩展。
 func verifyAndroidKeyExtension(cert *x509.Certificate, clientDataHash []byte, expectedPackage string) error {
+	return verifyAndroidKeyExtensionWithPolicy(cert, clientDataHash, expectedPackage, AndroidKeyPolicy{})
+}
+
+// verifyAndroidKeyExtensionWithPolicy checks the Android key attestation certificate extension and
+// applies policy after the baseline checks. | verifyAndroidKeyExtensionWithPolicy 校验 Android 密钥
+// 认证证书扩展，并在基线校验后应用 policy。
+func verifyAndroidKeyExtensionWithPolicy(cert *x509.Certificate, clientDataHash []byte, expectedPackage string, policy AndroidKeyPolicy) error {
+	if err := policy.validate(); err != nil {
+		return err
+	}
 	value, ok := certificateExtension(cert, androidKeyAttestationOID)
 	if !ok {
 		return errs.Detail(ErrInvalidAttestation, "certificate lacks the Android key attestation extension | 证书缺少 Android 密钥认证扩展")
@@ -145,7 +173,7 @@ func verifyAndroidKeyExtension(cert *x509.Certificate, clientDataHash []byte, ex
 	if err != nil {
 		return err
 	}
-	if software.hasAllApplications || tee.hasAllApplications {
+	if (software.hasAllApplications || tee.hasAllApplications) && !policy.AllowAllApplications {
 		return errs.Detail(ErrInvalidAttestation, "Android key attestation allows all applications | Android 密钥认证允许所有应用")
 	}
 	if !software.hasOrigin && !tee.hasOrigin {
@@ -172,7 +200,7 @@ func verifyAndroidKeyExtension(cert *x509.Certificate, clientDataHash []byte, ex
 				expectedPackage, expectedPackage)
 		}
 	}
-	return nil
+	return verifyAndroidKeyPolicy(cert, software, tee, policy)
 }
 
 // parseAndroidAuthorizationList parses the security-relevant fields of an AuthorizationList. |
@@ -203,30 +231,69 @@ func parseAndroidAuthorizationList(raw asn1.RawValue) (androidAuthorizationList,
 				return list, err
 			}
 			list.purposes = append(list.purposes, purposes...)
+		case androidTagKeySize:
+			keySize, err := parseAndroidExplicitInt(element.content, "keySize")
+			if err != nil {
+				return list, err
+			}
+			list.keySizes = append(list.keySizes, keySize)
+		case androidTagDigest:
+			digests, err := parseAndroidEnumSet(element.content, "digest")
+			if err != nil {
+				return list, err
+			}
+			list.digests = append(list.digests, digests...)
+		case androidTagECCurve:
+			curve, err := parseAndroidExplicitInt(element.content, "ecCurve")
+			if err != nil {
+				return list, err
+			}
+			list.ecCurves = append(list.ecCurves, curve)
 		case androidTagAllApplications:
 			list.hasAllApplications = true
 		case androidTagOrigin:
-			content := element.content
-			if inner, ok := explicitAndroidElement(content, derTagInteger); ok {
-				content = inner.content
-			}
-			origin, err := parseDERPositiveInt(content)
+			origin, err := parseAndroidExplicitInt(element.content, "origin")
 			if err != nil {
-				return list, errs.WrapDetail(err, ErrInvalidAttestation, "Android authorization origin is malformed | Android 授权 origin 格式非法")
+				return list, err
 			}
 			list.hasOrigin = true
 			list.origin = origin
+		case androidTagRootOfTrust:
+			root, err := parseAndroidRootOfTrust(element.content)
+			if err != nil {
+				return list, err
+			}
+			list.hasRootOfTrust = true
+			if root.hasVerifiedBootState {
+				list.hasVerifiedBootState = true
+				list.verifiedBootState = root.verifiedBootState
+			}
+		case androidTagOSVersion:
+			version, err := parseAndroidExplicitInt(element.content, "osVersion")
+			if err != nil {
+				return list, err
+			}
+			list.hasOSVersion = true
+			list.osVersion = version
+		case androidTagOSPatchLevel:
+			patchLevel, err := parseAndroidExplicitInt(element.content, "osPatchLevel")
+			if err != nil {
+				return list, err
+			}
+			list.hasOSPatchLevel = true
+			list.osPatchLevel = patchLevel
 		case androidTagAttestationApplicationID:
 			content := element.content
 			if inner, ok := explicitAndroidElement(content, derTagOctetString); ok {
 				content = inner.content
 			}
-			packages, err := parseAndroidAttestationApplicationID(content)
+			applicationID, err := parseAndroidAttestationApplicationIDFull(content)
 			if err != nil {
 				return list, err
 			}
 			list.hasApplicationID = true
-			list.packageNames = append(list.packageNames, packages...)
+			list.packageNames = append(list.packageNames, applicationID.packageNames...)
+			list.applicationDigests = append(list.applicationDigests, applicationID.signatureDigests...)
 		}
 	}
 	return list, nil
@@ -244,90 +311,168 @@ func explicitAndroidElement(content []byte, tag int) (derElement, bool) {
 	return inner, true
 }
 
+// parseAndroidExplicitInt parses an INTEGER wrapped in an EXPLICIT context-specific field, while
+// still accepting the legacy implicit encoding. | parseAndroidExplicitInt 解析 EXPLICIT 上下文特定字段
+// 包裹的 INTEGER，同时仍接受旧式隐式编码。
+func parseAndroidExplicitInt(content []byte, field string) (int, error) {
+	if inner, ok := explicitAndroidElement(content, derTagInteger); ok {
+		content = inner.content
+	}
+	value, err := parseDERPositiveInt(content)
+	if err != nil {
+		return 0, errs.WrapDetail(err, ErrInvalidAttestation, "Android authorization %s is malformed | Android 授权 %s 格式非法", field, field)
+	}
+	return value, nil
+}
+
 // parseAndroidPurposes parses the SET OF INTEGER in the purpose field. | parseAndroidPurposes 解析 purpose 字段中的 SET OF INTEGER。
 func parseAndroidPurposes(content []byte) ([]int, error) {
+	return parseAndroidEnumSet(content, "purpose")
+}
+
+// parseAndroidEnumSet parses a SET OF INTEGER in an AuthorizationList field. | parseAndroidEnumSet
+// 解析 AuthorizationList 字段中的 SET OF INTEGER。
+func parseAndroidEnumSet(content []byte, field string) ([]int, error) {
 	set, rest, err := parseDERElement(content)
 	if err != nil || len(rest) != 0 || set.class != derClassUniversal || set.tag != derTagSet {
-		return nil, errs.Detail(ErrInvalidAttestation, "Android purpose is not a SET | Android purpose 不是 SET")
+		return nil, errs.Detail(ErrInvalidAttestation, "Android %s is not a SET | Android %s 不是 SET", field, field)
 	}
 	elements, err := derElements(set.content)
 	if err != nil {
-		return nil, errs.WrapDetail(err, ErrInvalidAttestation, "Android purpose SET is malformed | Android purpose SET 格式非法")
+		return nil, errs.WrapDetail(err, ErrInvalidAttestation, "Android %s SET is malformed | Android %s SET 格式非法", field, field)
 	}
-	purposes := make([]int, 0, len(elements))
+	values := make([]int, 0, len(elements))
 	for _, element := range elements {
 		if element.class != derClassUniversal || element.tag != derTagInteger {
-			return nil, errs.Detail(ErrInvalidAttestation, "Android purpose entry is not an INTEGER | Android purpose 条目不是 INTEGER")
+			return nil, errs.Detail(ErrInvalidAttestation, "Android %s entry is not an INTEGER | Android %s 条目不是 INTEGER", field, field)
 		}
 		value, err := parseDERPositiveInt(element.content)
 		if err != nil {
-			return nil, errs.WrapDetail(err, ErrInvalidAttestation, "Android purpose entry is negative or malformed | Android purpose 条目为负数或格式非法")
+			return nil, errs.WrapDetail(err, ErrInvalidAttestation, "Android %s entry is negative or malformed | Android %s 条目为负数或格式非法", field, field)
 		}
-		purposes = append(purposes, value)
+		values = append(values, value)
 	}
-	return purposes, nil
+	return values, nil
+}
+
+// androidRootOfTrust carries the parsed rootOfTrust fields used by the policy. | androidRootOfTrust
+// 携带策略使用的已解析 rootOfTrust 字段。
+type androidRootOfTrust struct {
+	verifiedBootState    int
+	hasVerifiedBootState bool
+}
+
+// parseAndroidRootOfTrust parses an EXPLICIT RootOfTrust sequence. The AOSP schema is
+// SEQUENCE { verifiedBootKey OCTET STRING, deviceLocked BOOLEAN, verifiedBootState ENUMERATED,
+// verifiedBootHash OCTET STRING OPTIONAL }. | parseAndroidRootOfTrust 解析 EXPLICIT RootOfTrust 序列。
+// AOSP 模式为 SEQUENCE { verifiedBootKey OCTET STRING, deviceLocked BOOLEAN, verifiedBootState
+// ENUMERATED, verifiedBootHash OCTET STRING OPTIONAL }。
+func parseAndroidRootOfTrust(content []byte) (androidRootOfTrust, error) {
+	var root androidRootOfTrust
+	if inner, ok := explicitAndroidElement(content, derTagSequence); ok {
+		content = inner.content
+	}
+	elements, err := derElements(content)
+	if err != nil || len(elements) < 3 || len(elements) > 4 {
+		return root, errs.Detail(ErrInvalidAttestation, "Android rootOfTrust is malformed | Android rootOfTrust 格式非法")
+	}
+	if elements[0].class != derClassUniversal || elements[0].tag != derTagOctetString ||
+		elements[1].class != derClassUniversal || elements[1].tag != derTagBoolean || len(elements[1].content) != 1 ||
+		elements[2].class != derClassUniversal || elements[2].tag != derTagEnumerated {
+		return root, errs.Detail(ErrInvalidAttestation, "Android rootOfTrust fields are malformed | Android rootOfTrust 字段格式非法")
+	}
+	if len(elements) == 4 &&
+		(elements[3].class != derClassUniversal || elements[3].tag != derTagOctetString) {
+		return root, errs.Detail(ErrInvalidAttestation, "Android rootOfTrust hash is malformed | Android rootOfTrust 哈希格式非法")
+	}
+	state, err := parseDERPositiveInt(elements[2].content)
+	if err != nil {
+		return root, errs.WrapDetail(err, ErrInvalidAttestation, "Android rootOfTrust verifiedBootState is malformed | Android rootOfTrust verifiedBootState 格式非法")
+	}
+	root.verifiedBootState = state
+	root.hasVerifiedBootState = true
+	return root, nil
 }
 
 // parseAndroidAttestationApplicationID parses the package names in an AttestationApplicationId. |
 // parseAndroidAttestationApplicationID 解析 AttestationApplicationId 中的包名。
+func parseAndroidAttestationApplicationID(content []byte) ([]string, error) {
+	applicationID, err := parseAndroidAttestationApplicationIDFull(content)
+	if err != nil {
+		return nil, err
+	}
+	return applicationID.packageNames, nil
+}
+
+// androidAttestationApplicationID carries the parsed package names and signature digests. |
+// androidAttestationApplicationID 携带已解析的包名与签名摘要。
+type androidAttestationApplicationID struct {
+	packageNames     []string
+	signatureDigests [][]byte
+}
+
+// parseAndroidAttestationApplicationIDFull parses an AttestationApplicationId. |
+// parseAndroidAttestationApplicationIDFull 解析 AttestationApplicationId。
 //
 // The DER structure is SEQUENCE { SEQUENCE OF PackageInfo, SEQUENCE OF OCTET STRING }, where
 // PackageInfo is SEQUENCE { packageName OCTET STRING, version INTEGER }. | DER 结构为
 // SEQUENCE { SEQUENCE OF PackageInfo, SEQUENCE OF OCTET STRING }，其中 PackageInfo 为
 // SEQUENCE { packageName OCTET STRING, version INTEGER }。
-func parseAndroidAttestationApplicationID(content []byte) ([]string, error) {
+func parseAndroidAttestationApplicationIDFull(content []byte) (androidAttestationApplicationID, error) {
+	var applicationID androidAttestationApplicationID
 	sequence, rest, err := parseDERElement(content)
 	if err != nil || len(rest) != 0 || sequence.class != derClassUniversal || sequence.tag != derTagSequence {
-		return nil, errs.Detail(ErrInvalidAttestation, "Android attestationApplicationId is not a SEQUENCE | Android attestationApplicationId 不是 SEQUENCE")
+		return applicationID, errs.Detail(ErrInvalidAttestation, "Android attestationApplicationId is not a SEQUENCE | Android attestationApplicationId 不是 SEQUENCE")
 	}
 	fields, err := derElements(sequence.content)
 	if err != nil {
-		return nil, errs.WrapDetail(err, ErrInvalidAttestation, "Android attestationApplicationId is malformed | Android attestationApplicationId 格式非法")
+		return applicationID, errs.WrapDetail(err, ErrInvalidAttestation, "Android attestationApplicationId is malformed | Android attestationApplicationId 格式非法")
 	}
 	if len(fields) != 2 ||
 		fields[0].class != derClassUniversal || fields[0].tag != derTagSequence ||
 		fields[1].class != derClassUniversal || fields[1].tag != derTagSequence {
-		return nil, errs.Detail(ErrInvalidAttestation, "Android attestationApplicationId lacks package infos or signature digests | Android attestationApplicationId 缺少包信息或签名摘要")
+		return applicationID, errs.Detail(ErrInvalidAttestation, "Android attestationApplicationId lacks package infos or signature digests | Android attestationApplicationId 缺少包信息或签名摘要")
 	}
 	infoElements, err := derElements(fields[0].content)
 	if err != nil {
-		return nil, errs.WrapDetail(err, ErrInvalidAttestation, "Android attestationApplicationId package infos are malformed | Android attestationApplicationId 包信息格式非法")
+		return applicationID, errs.WrapDetail(err, ErrInvalidAttestation, "Android attestationApplicationId package infos are malformed | Android attestationApplicationId 包信息格式非法")
 	}
 	if len(infoElements) == 0 {
-		return nil, errs.Detail(ErrInvalidAttestation, "Android attestationApplicationId has no package infos | Android attestationApplicationId 没有包信息")
+		return applicationID, errs.Detail(ErrInvalidAttestation, "Android attestationApplicationId has no package infos | Android attestationApplicationId 没有包信息")
 	}
-	names := make([]string, 0, len(infoElements))
+	applicationID.packageNames = make([]string, 0, len(infoElements))
 	for _, info := range infoElements {
 		if info.class != derClassUniversal || info.tag != derTagSequence {
-			return nil, errs.Detail(ErrInvalidAttestation, "Android package info is not a SEQUENCE | Android 包信息不是 SEQUENCE")
+			return applicationID, errs.Detail(ErrInvalidAttestation, "Android package info is not a SEQUENCE | Android 包信息不是 SEQUENCE")
 		}
 		parts, err := derElements(info.content)
 		if err != nil {
-			return nil, errs.WrapDetail(err, ErrInvalidAttestation, "Android package info is malformed | Android 包信息格式非法")
+			return applicationID, errs.WrapDetail(err, ErrInvalidAttestation, "Android package info is malformed | Android 包信息格式非法")
 		}
 		if len(parts) != 2 ||
 			parts[0].class != derClassUniversal || parts[0].tag != derTagOctetString ||
 			parts[1].class != derClassUniversal || parts[1].tag != derTagInteger {
-			return nil, errs.Detail(ErrInvalidAttestation, "Android package info lacks a name or version | Android 包信息缺少名称或版本")
+			return applicationID, errs.Detail(ErrInvalidAttestation, "Android package info lacks a name or version | Android 包信息缺少名称或版本")
 		}
 		if len(parts[0].content) == 0 {
-			return nil, errs.Detail(ErrInvalidAttestation, "Android package name is empty | Android 包名为空")
+			return applicationID, errs.Detail(ErrInvalidAttestation, "Android package name is empty | Android 包名为空")
 		}
 		if _, err := parseDERPositiveInt(parts[1].content); err != nil {
-			return nil, errs.WrapDetail(err, ErrInvalidAttestation, "Android package version is malformed | Android 包版本格式非法")
+			return applicationID, errs.WrapDetail(err, ErrInvalidAttestation, "Android package version is malformed | Android 包版本格式非法")
 		}
-		names = append(names, string(parts[0].content))
+		applicationID.packageNames = append(applicationID.packageNames, string(parts[0].content))
 	}
 	digests, err := derElements(fields[1].content)
 	if err != nil {
-		return nil, errs.WrapDetail(err, ErrInvalidAttestation, "Android signature digests are malformed | Android 签名摘要格式非法")
+		return applicationID, errs.WrapDetail(err, ErrInvalidAttestation, "Android signature digests are malformed | Android 签名摘要格式非法")
 	}
 	for _, digest := range digests {
 		if digest.class != derClassUniversal || digest.tag != derTagOctetString || len(digest.content) == 0 {
-			return nil, errs.Detail(ErrInvalidAttestation, "Android signature digest is not a non-empty OCTET STRING | Android 签名摘要不是非空 OCTET STRING")
+			return applicationID, errs.Detail(ErrInvalidAttestation, "Android signature digest is not a non-empty OCTET STRING | Android 签名摘要不是非空 OCTET STRING")
 		}
+		applicationID.signatureDigests = append(applicationID.signatureDigests, append([]byte(nil), digest.content...))
 	}
-	return names, nil
+	return applicationID, nil
 }
 
 // containsString reports whether values contains want. | containsString 报告 values 是否包含 want。

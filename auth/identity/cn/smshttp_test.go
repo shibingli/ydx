@@ -156,6 +156,58 @@ func TestHTTPProviderFailures(t *testing.T) {
 	}
 }
 
+func TestHTTPProviderResponseFieldLimits(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name  string
+		field string
+		body  string
+	}{
+		{"requestId", "requestId", `{"requestId":"` + strings.Repeat("r", maxProviderRequestIDLength+1) + `"}`},
+		{"messageId", "messageId", `{"messageId":"` + strings.Repeat("m", maxProviderRequestIDLength+1) + `"}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				_, _ = io.WriteString(w, tc.body)
+			}))
+			defer srv.Close()
+			provider, err := NewHTTPProvider(HTTPProviderConfig{URL: srv.URL})
+			if err != nil {
+				t.Fatalf("NewHTTPProvider: %v", err)
+			}
+			_, err = provider.Send(context.Background(), "+8613800138000", "template", nil)
+			if !errors.Is(err, ErrProviderResponse) {
+				t.Fatalf("Send = %v, want ErrProviderResponse", err)
+			}
+			if strings.Contains(err.Error(), strings.Repeat(tc.field[:1], 16)) {
+				t.Fatalf("error %q echoes the oversized %s value", err, tc.field)
+			}
+		})
+	}
+}
+
+func TestHTTPProviderDecodeErrorDoesNotEchoBody(t *testing.T) {
+	t.Parallel()
+	const mobile = "13800138000"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, `{"mobile":"`+mobile+`",`)
+	}))
+	defer srv.Close()
+	provider, err := NewHTTPProvider(HTTPProviderConfig{URL: srv.URL})
+	if err != nil {
+		t.Fatalf("NewHTTPProvider: %v", err)
+	}
+	_, err = provider.Send(context.Background(), "+8613800138000", "template", nil)
+	if !errors.Is(err, ErrProviderResponse) {
+		t.Fatalf("Send = %v, want ErrProviderResponse", err)
+	}
+	if strings.Contains(err.Error(), mobile) {
+		t.Fatalf("error %q echoes the provider body", err)
+	}
+}
+
 func TestHTTPProviderSignAndDecodeFailures(t *testing.T) {
 	t.Parallel()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

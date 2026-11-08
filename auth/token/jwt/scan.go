@@ -460,6 +460,7 @@ const (
 	claimNone = iota
 	claimExp
 	claimNbf
+	claimIat
 	claimIss
 	claimAud
 )
@@ -475,6 +476,8 @@ func registeredClaim(raw []byte) int {
 			return claimExp
 		case keyMatches(raw, "nbf"):
 			return claimNbf
+		case keyMatches(raw, "iat"):
+			return claimIat
 		case keyMatches(raw, "iss"):
 			return claimIss
 		case keyMatches(raw, "aud"):
@@ -497,6 +500,9 @@ func registeredClaim(raw []byte) int {
 	case 'i':
 		if raw[1] == 's' && raw[2] == 's' {
 			return claimIss
+		}
+		if raw[1] == 'a' && raw[2] == 't' {
+			return claimIat
 		}
 	case 'a':
 		if raw[1] == 'u' && raw[2] == 'd' {

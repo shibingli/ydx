@@ -201,9 +201,11 @@ type ResponseStatus struct {
 	Reason string `xml:"http://docs.oasis-open.org/ws-sx/ws-trust/200512 Reason,omitempty"`
 }
 
-// Success reports whether the status is absent or a success code. | Success 报告状态缺失或为成功码。
+// Success reports whether the status carries the WS-Trust success code. A present status without a
+// code is malformed and does not count as success. | Success 报告状态是否携带 WS-Trust 成功码。存在但
+// 没有状态码的状态属于非法状态，不算成功。
 func (s *ResponseStatus) Success() bool {
-	return s == nil || s.Code == "" || s.Code == StatusSuccess
+	return s != nil && s.Code == StatusSuccess
 }
 
 // Fault is a WS-Federation fault body. | Fault 是 WS-Federation 故障正文。

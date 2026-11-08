@@ -131,6 +131,17 @@ type AttestationOptions struct {
 	CurrentTime time.Time
 	// SafetyNetVerifier overrides the built-in SafetyNet JWS checks. | SafetyNetVerifier 覆盖内置 SafetyNet JWS 校验。
 	SafetyNetVerifier SafetyNetVerifier
+	// SafetyNetPolicy tightens the built-in android-safetynet checks. It is ignored when
+	// SafetyNetVerifier is set. The zero value keeps the baseline ctsProfileMatch, nonce, signature
+	// and one-minute timestamp checks. | SafetyNetPolicy 收紧内置 android-safetynet 校验。设置
+	// SafetyNetVerifier 时忽略本字段。零值保持基线 ctsProfileMatch、nonce、签名与一分钟时间戳校验。
+	SafetyNetPolicy SafetyNetPolicy
+	// AndroidKeyPolicy tightens the built-in android-key KeyDescription checks. It is ignored when
+	// AndroidKeyVerifier is set. The zero value keeps the baseline origin, purpose,
+	// attestationApplicationId, package and allApplications checks. | AndroidKeyPolicy 收紧内置
+	// android-key KeyDescription 校验。设置 AndroidKeyVerifier 时忽略本字段。零值保持基线 origin、
+	// purpose、attestationApplicationId、包名与 allApplications 校验。
+	AndroidKeyPolicy AndroidKeyPolicy
 	// ClientData carries the verified client data when available. | ClientData 在可用时携带已校验的客户端数据。
 	ClientData *ClientData
 }

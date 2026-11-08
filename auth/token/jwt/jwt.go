@@ -54,6 +54,8 @@ var (
 	ErrTokenExpired = errs.New("jwt: token expired | jwt：令牌已过期")
 	// ErrTokenNotValidYet reports an nbf claim in the future, beyond the leeway. | ErrTokenNotValidYet 表示 nbf 声明位于未来，且超出容差。
 	ErrTokenNotValidYet = errs.New("jwt: token not valid yet | jwt：令牌尚未生效")
+	// ErrTokenUsedBeforeIssued reports an iat claim in the future, beyond the leeway. | ErrTokenUsedBeforeIssued 表示 iat 声明位于未来，且超出容差。
+	ErrTokenUsedBeforeIssued = errs.New("jwt: token used before issued | jwt：令牌在签发时间之前被使用")
 	// ErrAlgNotAllowed reports an alg header that is unsupported, unknown, or outside the allow list. | ErrAlgNotAllowed 表示 alg 头部不受支持、未知，或不在白名单内。
 	ErrAlgNotAllowed = errs.New("jwt: algorithm not allowed | jwt：算法不被允许")
 	// ErrIssuerMismatch reports an iss claim that differs from the expected issuer. | ErrIssuerMismatch 表示 iss 声明与期望的签发方不一致。
@@ -62,6 +64,8 @@ var (
 	ErrAudienceMismatch = errs.New("jwt: audience mismatch | jwt：受众不匹配")
 	// ErrMissingExp reports a token without an exp claim while ParseOptions.RequireExp is set. | ErrMissingExp 表示已开启 ParseOptions.RequireExp 但 token 缺少 exp 声明。
 	ErrMissingExp = errs.New("jwt: missing exp claim | jwt：缺少 exp 声明")
+	// ErrMissingIssuedAt reports a token without an iat claim while ParseOptions.RequireIssuedAt is set. | ErrMissingIssuedAt 表示已开启 ParseOptions.RequireIssuedAt 但 token 缺少 iat 声明。
+	ErrMissingIssuedAt = errs.New("jwt: missing iat claim | jwt：缺少 iat 声明")
 	// ErrClaimNotFound reports a claim that an accessor could not find. | ErrClaimNotFound 表示访问器找不到该声明。
 	ErrClaimNotFound = errs.New("jwt: claim not found | jwt：声明不存在")
 	// ErrInvalidClaims reports claims that jsonx cannot serialize. | ErrInvalidClaims 表示 jsonx 无法序列化的声明。
@@ -134,18 +138,49 @@ type ParseOptions struct {
 	// Now overrides the clock; it lets tests run deterministically. | Now 用于替换时钟，便于实现确定性测试。
 	Now func() time.Time
 	// Issuer, when non-empty, must equal the iss claim. | Issuer 非空时必须与 iss 声明相等。
+	//
+	// Issuer and Issuers are combined: when either yields a non-empty expected issuer, iss must
+	// equal Issuer or one of the non-empty entries of Issuers. | Issuer 与 Issuers 会合并：只要两者
+	// 之一给出非空的期望签发方，iss 就必须等于 Issuer 或 Issuers 中的某个非空条目。
 	Issuer string
+	// Issuers, when it contains a non-empty entry, must contain the iss claim; the token passes
+	// when iss equals any one entry. Empty entries are ignored. | Issuers 含非空条目时必须包含
+	// iss 声明；iss 等于任意一个条目即通过。空条目会被忽略。
+	Issuers []string
 	// Audience, when non-empty, must be contained in the aud claim. | Audience 非空时必须包含于 aud 声明。
+	//
+	// Audience and Audiences are combined: when either yields a non-empty expected audience, the
+	// token aud must contain Audience or at least one non-empty entry of Audiences. | Audience 与
+	// Audiences 会合并：只要两者之一给出非空的期望受众，token 的 aud 就必须包含 Audience 或
+	// Audiences 中的至少一个非空条目。
 	Audience string
+	// Audiences, when it contains a non-empty entry, must have at least one entry contained in
+	// the token aud claim. Empty entries are ignored. | Audiences 含非空条目时，其中至少一个条目
+	// 必须包含于 token 的 aud 声明。空条目会被忽略。
+	Audiences []string
 	// ValidAlgs restricts the accepted algorithms; nil means every supported algorithm. | ValidAlgs 限定可接受的算法；nil 表示全部受支持的算法。
 	//
 	// Setting it is recommended: the allow list is the first line of defence against algorithm confusion. | 建议显式设置：
 	// 白名单是抵御算法混淆攻击的第一道防线。
 	ValidAlgs []Alg
-	// Leeway is the tolerance applied to exp and nbf to absorb clock skew. | Leeway 是施加于 exp 与 nbf 的容差，用于吸收时钟漂移。
+	// Leeway is the tolerance applied to exp, nbf and iat to absorb clock skew. | Leeway 是施加于
+	// exp、nbf 与 iat 的容差，用于吸收时钟漂移。
 	Leeway time.Duration
 	// RequireExp rejects a token without an exp claim. | RequireExp 拒绝缺少 exp 声明的 token。
 	RequireExp bool
+	// ValidateIssuedAt rejects an iat claim later than Now plus Leeway. A token without iat
+	// passes this check; combine it with RequireIssuedAt to demand the claim. | ValidateIssuedAt
+	// 拒绝晚于 Now 加 Leeway 的 iat 声明。缺少 iat 的 token 通过该检查；如需强制该声明，请同时
+	// 设置 RequireIssuedAt。
+	ValidateIssuedAt bool
+	// RequireIssuedAt rejects a token without a valid iat claim and implies ValidateIssuedAt, so
+	// a future iat is rejected as well. | RequireIssuedAt 拒绝缺少合法 iat 声明的 token，并隐含
+	// ValidateIssuedAt，因此未来的 iat 同样会被拒绝。
+	RequireIssuedAt bool
+	// RequireLowS rejects ECDSA signatures whose s half exceeds half the curve order, the
+	// non-canonical high-S form. It applies to ES256, ES384 and ES512 only. | RequireLowS 拒绝
+	// s 半值超过曲线阶一半的 ECDSA 签名，即非规范的高 S 形式。仅对 ES256、ES384 与 ES512 生效。
+	RequireLowS bool
 	// MaxTokenSize caps the compact token length in bytes; zero uses DefaultMaxTokenSize. A negative
 	// value is also treated as the default. | MaxTokenSize 限制紧凑 token 的字节长度；零值使用
 	// DefaultMaxTokenSize，负值同样按默认值处理。
@@ -228,8 +263,8 @@ func unsafeString(b []byte) string {
 //  1. the header must be well formed and its alg must be supported and allowed, | 头部必须结构良好，且 alg 必须受支持并落在白名单内；
 //  2. the payload must be a well-formed JSON object, | 载荷必须是结构良好的 JSON 对象；
 //  3. only then is the key requested and the signature verified, | 此后才索取密钥并校验签名；
-//  4. only then are exp / nbf / iss / aud validated, because an unverified claim must never influence a
-//     decision. | 最后才校验 exp / nbf / iss / aud，因为未经校验的声明绝不应影响任何判定。
+//  4. only then are exp / nbf / iat / iss / aud validated, because an unverified claim must never influence a
+//     decision. | 最后才校验 exp / nbf / iat / iss / aud，因为未经校验的声明绝不应影响任何判定。
 func Parse(token string, keyFn KeyFunc, o ParseOptions) (*Token, error) {
 	if keyFn == nil {
 		return nil, ErrNoKeyFunc
@@ -330,7 +365,7 @@ func Parse(token string, keyFn KeyFunc, o ParseOptions) (*Token, error) {
 	// []byte conversion happens; the bytes are the ones from the token, unchanged. | 签名输入通过
 	// append(dst, string...) 拷入池化缓冲，不产生中间的 []byte 转换；其字节与 token 中的完全一致。
 	s.input = append(s.input[:0], token[:first+1+second]...)
-	if !verify(hdr.Alg, key, s.input, s.sig, s) {
+	if !verify(hdr.Alg, key, s.input, s.sig, s, o.RequireLowS) {
 		return nil, ErrSignatureInvalid
 	}
 

@@ -710,10 +710,22 @@ func isBcryptHash(encoded string) bool {
 }
 
 // PasswordPolicy configures password strength and lifecycle rules. | PasswordPolicy 配置口令强度与生命周期规则。
+//
+// When used as Config.Policy, unset length fields and a nil CommonPasswords are filled per field
+// from DefaultPasswordPolicy, so a partially specified policy still gets sane bounds. Boolean rules
+// are literal: false means disabled and is never replaced by a default. Start from
+// DefaultPasswordPolicy when overriding one field but keeping its DisallowUsername and
+// DisallowEmail rules. | 作为 Config.Policy 使用时，未设置的长度字段与 nil 的 CommonPasswords 会
+// 逐字段从 DefaultPasswordPolicy 补齐，因此部分配置仍获得合理边界。布尔规则按字面值生效：false
+// 表示禁用，绝不会被默认值替换。若只覆盖单个字段又希望保留默认的 DisallowUsername 与
+// DisallowEmail 规则，请从 DefaultPasswordPolicy 出发。
 type PasswordPolicy struct {
-	// MinLength is the minimum Unicode code point count; 0 defaults to 8. | MinLength 是最小 Unicode 码点数；0 默认 8。
+	// MinLength is the minimum Unicode code point count. Zero or negative defaults to 8; use 1 for
+	// single-character passwords, because there is no unlimited mode. | MinLength 是最小 Unicode 码点数。
+	// 零或负数默认 8；如需允许单字符口令请设为 1，不存在无限模式。
 	MinLength int
-	// MaxLength is the maximum byte count; 0 defaults to 1024. | MaxLength 是最大字节数；0 默认 1024。
+	// MaxLength is the maximum byte count. Zero or negative defaults to 1024. | MaxLength 是最大字节数。
+	// 零或负数默认 1024。
 	MaxLength int
 	// RequireUppercase, RequireLowercase, RequireDigit and RequireSymbol add composition rules. | RequireUppercase、RequireLowercase、RequireDigit 与 RequireSymbol 增加组成规则。
 	RequireUppercase bool
@@ -733,7 +745,10 @@ type PasswordPolicy struct {
 	MaxAge time.Duration
 	// History is the number of previous hashes checked for reuse; zero disables the check. | History 是检查复用的历史哈希数；零值禁用检查。
 	History int
-	// CommonPasswords is an additional case-insensitive deny list. | CommonPasswords 是额外的大小写不敏感拒绝列表。
+	// CommonPasswords is an additional case-insensitive deny list. A nil map gets the built-in
+	// DefaultCommonPasswords; a non-nil empty map disables the built-in list while keeping any
+	// explicitly supplied entries. | CommonPasswords 是额外的大小写不敏感拒绝列表。nil 映射使用内置
+	// DefaultCommonPasswords；非 nil 的空映射禁用内置列表，同时保留显式提供的条目。
 	CommonPasswords map[string]struct{}
 	// BreachCheck optionally checks a password against an external breach corpus. | BreachCheck 可选地对外部泄露语料库检查口令。
 	BreachCheck func(ctx context.Context, password string) (bool, error)
@@ -751,6 +766,36 @@ func DefaultPasswordPolicy() PasswordPolicy {
 		CommonPasswords:    DefaultCommonPasswords(),
 		DisallowWhitespace: false,
 	}
+}
+
+// empty reports whether no field of p is set. | empty 报告 p 是否没有任何字段被设置。
+func (p PasswordPolicy) empty() bool {
+	return p.MinLength == 0 && p.MaxLength == 0 &&
+		!p.RequireUppercase && !p.RequireLowercase && !p.RequireDigit && !p.RequireSymbol &&
+		!p.DisallowWhitespace && !p.DisallowUsername && !p.DisallowEmail &&
+		p.MaxAge == 0 && p.History == 0 && p.CommonPasswords == nil && p.BreachCheck == nil
+}
+
+// withDefaults returns DefaultPasswordPolicy for an entirely unset policy. A partially specified
+// policy gets unset bounds and a nil deny list per field from DefaultPasswordPolicy, while boolean
+// and lifecycle fields keep their explicit values. | withDefaults 对完全未设置的策略返回
+// DefaultPasswordPolicy。部分配置的策略按字段从 DefaultPasswordPolicy 补齐未设置的边界与 nil 拒绝
+// 列表，布尔与生命周期字段保留显式值。
+func (p PasswordPolicy) withDefaults() PasswordPolicy {
+	if p.empty() {
+		return DefaultPasswordPolicy()
+	}
+	def := DefaultPasswordPolicy()
+	if p.MinLength <= 0 {
+		p.MinLength = def.MinLength
+	}
+	if p.MaxLength <= 0 {
+		p.MaxLength = def.MaxLength
+	}
+	if p.CommonPasswords == nil {
+		p.CommonPasswords = def.CommonPasswords
+	}
+	return p
 }
 
 // Validate checks password against the policy for user. | Validate 按策略针对 user 检查 password。

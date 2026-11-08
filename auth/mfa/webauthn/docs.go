@@ -148,6 +148,31 @@
 // android-safetynet 与 android-key 认证声明还会绑定 APK 包名。两种格式都不携带主机名，因此 RP ID 与
 // 来源绑定来自已校验的客户端数据，而不是认证声明。
 //
+// SafetyNetPolicy tightens the built-in android-safetynet path: it can require basicIntegrity,
+// pin the apkCertificateDigestSha256 values, restrict evaluationType and ver, and widen or narrow
+// the timestamp window. The mandatory ctsProfileMatch, nonce and signature checks remain in force.
+// AndroidKeyPolicy tightens the built-in android-key path: it can require a verified boot state,
+// enforce OS version and patch-level minimums, restrict key size and EC curves, allowlist declared
+// digest algorithms, pin the attestationApplicationId signature digests, and opt into
+// allApplications. Declared keySize and ecCurve values are cross-checked against the certificate
+// public key. Both policies apply only to the built-in verification paths; a custom SafetyNetVerifier
+// or AndroidKeyVerifier replaces those paths and owns the corresponding checks. | SafetyNetPolicy
+// 收紧内置 android-safetynet 路径：可要求 basicIntegrity、固定 apkCertificateDigestSha256、限制
+// evaluationType 与 ver，并放宽或收窄时间戳窗口；强制的 ctsProfileMatch、nonce 与签名校验仍然生效。
+// AndroidKeyPolicy 收紧内置 android-key 路径：可要求已验证的启动状态、强制 OS 版本与补丁级别下限、
+// 限制密钥位数与 EC 曲线、允许声明摘要算法、固定 attestationApplicationId 签名摘要，并选择启用
+// allApplications。声明的 keySize 与 ecCurve 会与证书公钥交叉校验。两种策略仅作用于内置校验路径；
+// 自定义 SafetyNetVerifier 或 AndroidKeyVerifier 会替换该路径并自行负责对应校验。
+//
+// TPM verification covers TPMS_ATTEST, pubArea, extraData, the AIK certificate profile and the
+// attestation signature, but it does not perform EK credential activation: that protocol needs a
+// TPM transport and a challenge/response exchange with the TPM, neither of which exists in a
+// WebAuthn attestation object. Callers that require EK credential activation must implement it out
+// of band and must not treat TrustVerified as proof of it. | TPM 校验覆盖 TPMS_ATTEST、pubArea、
+// extraData、AIK 证书配置与认证签名，但不执行 EK 凭据激活：该协议需要 TPM 传输通道以及与 TPM 的
+// 挑战应答交换，二者都不存在于 WebAuthn 认证声明对象中。需要 EK 凭据激活的调用方必须在带外实现，
+// 且不得把 TrustVerified 当作其证明。
+//
 // ECDAA is intentionally unsupported. WebAuthn Level 3 removed the ecdaa attestation format, so the
 // package reports it as an unsupported format instead of implementing a superseded algorithm. |
 // ECDAA 有意不支持。WebAuthn Level 3 已移除 ecdaa 认证声明格式，因此本包将其报告为不支持的格式，而

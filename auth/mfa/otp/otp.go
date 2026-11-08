@@ -250,9 +250,13 @@ func HOTP(secret string, counter uint64, cfg Config) (string, error) {
 // ValidateHOTP reports whether code matches secret anywhere in the counter window
 // [counter-Skew, counter+Skew] and returns the matched counter. A code that is not exactly
 // Digits ASCII digits is a non-match and yields (0, false, nil); errors are reserved for invalid
-// configuration or secrets. | ValidateHOTP 报告 code 是否匹配 secret 在计数器窗口
-// [counter-Skew, counter+Skew] 内的任意值，并返回命中的计数器。不是恰好 Digits 位 ASCII 数字的
-// 口令视为不匹配并返回 (0, false, nil)；错误仅用于非法配置或密钥。
+// configuration or secrets. The function is stateless, so with Skew > 0 it can report a match
+// below counter; callers that persist the counter must reject such values, as Validator does, or
+// an already-consumed code can be replayed and the counter rewound. | ValidateHOTP 报告 code 是否
+// 匹配 secret 在计数器窗口 [counter-Skew, counter+Skew] 内的任意值，并返回命中的计数器。不是恰好
+// Digits 位 ASCII 数字的口令视为不匹配并返回 (0, false, nil)；错误仅用于非法配置或密钥。该函数无
+// 状态，因此 Skew > 0 时可能返回低于 counter 的命中；持久化计数器的调用方必须像 Validator 那样拒绝
+// 这类值，否则已消费的口令可被重放且计数器会回退。
 func ValidateHOTP(secret, code string, counter uint64, cfg Config) (uint64, bool, error) {
 	c, err := cfg.Normalize()
 	if err != nil {

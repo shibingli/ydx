@@ -97,13 +97,22 @@ type Config struct {
 	Stores Stores
 	// Passwords is the password hash manager; nil means Argon2id with recommended parameters. | Passwords 是口令哈希管理器；空值表示推荐参数的 Argon2id。
 	Passwords PasswordHasher
-	// Policy is the password policy; the zero value uses DefaultPasswordPolicy. | Policy 是口令策略；零值使用 DefaultPasswordPolicy。
+	// Policy is the password policy. Unset length fields and a nil CommonPasswords are filled per
+	// field from DefaultPasswordPolicy; boolean rules keep their literal values. | Policy 是口令策略。
+	// 未设置的长度字段与 nil 的 CommonPasswords 会逐字段从 DefaultPasswordPolicy 补齐；布尔规则按
+	// 字面值生效。
 	Policy PasswordPolicy
 	// Session is the session configuration; the zero value uses DefaultSessionConfig. | Session 是会话配置；零值使用 DefaultSessionConfig。
 	Session SessionConfig
 	// Lockout is the failed-login policy; the zero value uses DefaultLockoutPolicy. | Lockout 是登录失败策略；零值使用 DefaultLockoutPolicy。
 	Lockout LockoutPolicy
-	// RequireEmailVerification puts new accounts in UserPending until the email is verified. | RequireEmailVerification 让新账号在邮箱验证前处于 UserPending。
+	// RequireEmailVerification puts new accounts in UserPending until the email is verified. It
+	// applies to password registration and to federated provisioning when the upstream identity
+	// carries a non-empty but unverified email. Identities without an email and already linked
+	// accounts are never moved to UserPending, so existing users cannot be locked out. |
+	// RequireEmailVerification 让新账号在邮箱验证前处于 UserPending。该规则适用于口令注册，以及上游
+	// 身份带有非空但未验证邮箱时的联邦预配。没有邮箱的身份与已关联账号绝不会被置为 UserPending，
+	// 因此既有用户不会被锁死。
 	RequireEmailVerification bool
 	// ResetTokenTTL is the password-reset token lifetime; zero defaults to one hour. | ResetTokenTTL 是口令重置令牌寿命；零值默认 1 小时。
 	ResetTokenTTL time.Duration
@@ -112,6 +121,13 @@ type Config struct {
 	// MFATokenTTL is the password-phase MFA challenge lifetime; zero defaults to 5 minutes. | MFATokenTTL
 	// 是口令阶段 MFA 挑战的寿命；零值默认 5 分钟。
 	MFATokenTTL time.Duration
+	// RequireMFAToken rejects CompleteMFA calls that omit the MFAToken returned by Authenticate. The
+	// default false preserves the legacy flow, where knowledge of a user ID and a valid factor code
+	// is enough; that flow skips proof of the password phase and should be disabled for new
+	// deployments. | RequireMFAToken 拒绝未回传 Authenticate 所返回 MFAToken 的 CompleteMFA 调用。
+	// 默认 false 保留旧流程：只要知道用户 ID 与有效因素验证码即可完成，跳过了口令阶段证明，新部署
+	// 应禁用该旧流程。
+	RequireMFAToken bool
 	// LoginSnapshot reports whether Service updates LastLoginAt and LastLoginIP. | LoginSnapshot 报告 Service 是否更新 LastLoginAt 与 LastLoginIP。
 	LoginSnapshot bool
 	// Hooks are optional lifecycle callbacks. | Hooks 是可选生命周期回调。
@@ -152,10 +168,7 @@ func New(config Config) (*Service, error) {
 		}
 		hash = defaultHash
 	}
-	policy := config.Policy
-	if policy.MinLength == 0 && policy.MaxLength == 0 && policy.CommonPasswords == nil {
-		policy = DefaultPasswordPolicy()
-	}
+	policy := config.Policy.withDefaults()
 	lockout := config.Lockout
 	defaults := DefaultLockoutPolicy()
 	if lockout.MaxAttempts <= 0 {
@@ -538,12 +551,17 @@ func (s *Service) consumeMFAChallenge(ctx context.Context, raw string, now time.
 //
 // When Authenticate returned a non-empty MFAToken the caller must pass it back; the token binds the
 // completion to the password phase, expires quickly and is consumed on success. Failed attempts
-// share the password lockout counter so the factor cannot be brute forced without limit. | 当
-// Authenticate 返回非空 MFAToken 时调用方必须回传；该令牌把完成动作绑定到口令阶段、快速过期并在
-// 成功时消费。失败尝试与口令锁定计数共享，因素无法被无限暴力尝试。
+// share the password lockout counter so the factor cannot be brute forced without limit. With
+// Config.RequireMFAToken enabled an empty MFAToken is rejected, closing the legacy flow that trusts
+// a caller-supplied UserID. | 当 Authenticate 返回非空 MFAToken 时调用方必须回传；该令牌把完成
+// 动作绑定到口令阶段、快速过期并在成功时消费。失败尝试与口令锁定计数共享，因素无法被无限暴力
+// 尝试。启用 Config.RequireMFAToken 后空的 MFAToken 会被拒绝，从而关闭信任调用方 UserID 的旧流程。
 func (s *Service) CompleteMFA(ctx context.Context, input CompleteMFAInput) (*AuthenticateResult, error) {
 	if input.UserID == "" {
 		return nil, errs.Detail(ErrInvalidRequest, "user id is empty | 用户 ID 为空")
+	}
+	if input.MFAToken == "" && s.config.RequireMFAToken {
+		return nil, errs.Detail(ErrInvalidRequest, "MFA token is required | 必须提供 MFA 令牌")
 	}
 	now := s.nowTime()
 	user, err := s.stores.Users.GetUser(ctx, input.UserID)
@@ -989,8 +1007,13 @@ func (s *Service) UserByIdentity(ctx context.Context, provider, subject string) 
 // EnsureUserFromIdentity returns the linked user or provisions a new account. | EnsureUserFromIdentity 返回已关联用户或预配新账号。
 //
 // Account linking by verified email is opt-in through linkByEmail. Without it a new account is
-// created, which avoids an account-takeover path through an unverified upstream claim. | 通过已验证
-// 邮箱自动关联需显式开启 linkByEmail；未开启时创建新账号，避免经由未验证上游声明接管账号。
+// created, which avoids an account-takeover path through an unverified upstream claim. When
+// RequireEmailVerification is enabled, a new account whose upstream email is non-empty but
+// unverified is provisioned as UserPending; identities without an email and already linked
+// accounts are returned unchanged so existing users are not locked out. | 通过已验证邮箱自动关联需
+// 显式开启 linkByEmail；未开启时创建新账号，避免经由未验证上游声明接管账号。启用
+// RequireEmailVerification 时，上游邮箱非空但未验证的新账号会以 UserPending 预配；没有邮箱的身份
+// 与已关联账号原样返回，避免锁死既有用户。
 func (s *Service) EnsureUserFromIdentity(ctx context.Context, identity *Identity, linkByEmail bool) (*User, error) {
 	if identity == nil || identity.Provider == "" || identity.Subject == "" {
 		return nil, errs.Detail(ErrInvalidRequest, "identity fields are empty | 身份字段为空")
@@ -1015,19 +1038,24 @@ func (s *Service) EnsureUserFromIdentity(ctx context.Context, identity *Identity
 	if username == "" {
 		username = identity.Provider + "_" + sanitizeUsername(identity.Subject)
 	}
+	status := UserActive
+	if s.config.RequireEmailVerification && identity.Email != "" && !identity.EmailVerified {
+		// An unverified upstream email cannot prove ownership; keep the new account pending until
+		// the user completes email verification locally. Identities without an email stay active
+		// because there is nothing to verify. | 未验证的上游邮箱无法证明归属；新账号保持待定，直到
+		// 用户在本地完成邮箱验证。没有邮箱的身份保持活跃，因为没有可验证对象。
+		status = UserPending
+	}
 	user := &User{
 		ID:            NewID("usr"),
 		Username:      username,
 		Email:         identity.Email,
 		EmailVerified: identity.EmailVerified,
 		DisplayName:   identity.Name,
-		Status:        UserActive,
+		Status:        status,
 		CreatedAt:     now,
 		UpdatedAt:     now,
 		Metadata:      cloneStrings(identity.Raw),
-	}
-	if user.EmailVerified {
-		user.Status = UserActive
 	}
 	if err := s.stores.Users.CreateUser(ctx, user); err != nil {
 		return nil, err

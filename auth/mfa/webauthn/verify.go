@@ -315,6 +315,8 @@ func (s *Service) attestationVerifyOptions(clientData *ClientData) AttestationOp
 		AndroidPackageName: s.androidPackage,
 		CurrentTime:        s.now(),
 		SafetyNetVerifier:  s.safetynet,
+		SafetyNetPolicy:    s.safetyNetPolicy,
+		AndroidKeyPolicy:   s.androidPolicy,
 		ClientData:         clientData,
 	}
 }

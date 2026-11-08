@@ -3,6 +3,7 @@ package radius
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"errors"
 	"net"
 	"strings"
@@ -296,16 +297,59 @@ func TestAccessRejectsUnexpectedCode(t *testing.T) {
 
 func TestAccessRejectsMalformedResponse(t *testing.T) {
 	secret := []byte("testing-secret")
-	server := newUDPMock(t, secret, func(request *Packet, raw []byte) ([]byte, error) {
-		malformed := make([]byte, 10)
-		malformed[0] = byte(CodeAccessAccept)
-		malformed[1] = request.Identifier
-		return malformed, nil
-	})
-	client := newTestClient(t, ClientConfig{Address: server.Addr(), Secret: secret})
-	if _, err := client.AccessRequest(context.Background(), &AccessRequest{UserName: "alice"}); !errors.Is(err, ErrInvalidResponse) {
-		t.Fatalf("error = %v, want ErrInvalidResponse", err)
+	malformedResponse := func(request *Packet) [][]byte {
+		short := make([]byte, 10)
+		short[0] = byte(CodeAccessAccept)
+		short[1] = request.Identifier
+		// A complete header whose declared length exceeds the received payload: ParsePacket fails,
+		// so RFC 2865 section 3 requires the client to silently discard it. | 完整头部但声明长度超过
+		// 收到的负载：ParsePacket 失败，RFC 2865 第 3 节要求客户端静默丢弃。
+		badLength := make([]byte, HeaderLength)
+		badLength[0] = byte(CodeAccessAccept)
+		badLength[1] = request.Identifier
+		binary.BigEndian.PutUint16(badLength[2:4], HeaderLength+32)
+		return [][]byte{short, badLength}
 	}
+	t.Run("bad structure then good", func(t *testing.T) {
+		server := newScriptedUDPServer(t, func(request *Packet) ([][]byte, error) {
+			good, err := signedResponse(request, secret, CodeAccessAccept, nil)
+			if err != nil {
+				return nil, err
+			}
+			return append(malformedResponse(request), good), nil
+		})
+		client := newTestClient(t, ClientConfig{
+			Address: server.LocalAddr().String(),
+			Secret:  secret,
+			Timeout: 500 * time.Millisecond,
+		})
+		response, err := client.AccessRequest(context.Background(), &AccessRequest{UserName: "alice"})
+		if err != nil {
+			t.Fatalf("AccessRequest: %v", err)
+		}
+		if !response.Accepted() {
+			t.Fatalf("unexpected response: %+v", response)
+		}
+	})
+	t.Run("bad structure only times out", func(t *testing.T) {
+		server := newUDPMock(t, secret, func(request *Packet, raw []byte) ([]byte, error) {
+			out := malformedResponse(request)
+			return out[0], nil
+		})
+		client := newTestClient(t, ClientConfig{
+			Address: server.Addr(),
+			Secret:  secret,
+			Timeout: 80 * time.Millisecond,
+		})
+		start := time.Now()
+		_, err := client.AccessRequest(context.Background(), &AccessRequest{UserName: "alice"})
+		if !errors.Is(err, ErrTimeout) {
+			t.Fatalf("error = %v, want ErrTimeout", err)
+		}
+		if elapsed := time.Since(start); elapsed < 60*time.Millisecond {
+			t.Fatalf("malformed response failed the exchange after only %v", elapsed)
+		}
+	})
 }
 
 func TestAccessEAPMessageAuthenticator(t *testing.T) {
@@ -352,13 +396,17 @@ func TestAccessRequiresMessageAuthenticatorInResponse(t *testing.T) {
 		server := newUDPMock(t, secret, func(request *Packet, raw []byte) ([]byte, error) {
 			return signedResponse(request, secret, CodeAccessAccept, nil)
 		})
-		client := newTestClient(t, ClientConfig{Address: server.Addr(), Secret: secret})
+		client := newTestClient(t, ClientConfig{Address: server.Addr(), Secret: secret, Timeout: 80 * time.Millisecond})
+		start := time.Now()
 		_, err := client.AccessRequest(context.Background(), &AccessRequest{
 			Method:      AuthEAP,
 			EAPMessages: [][]byte{{1}},
 		})
-		if !errors.Is(err, ErrMessageAuthenticator) {
-			t.Fatalf("error = %v, want ErrMessageAuthenticator", err)
+		if !errors.Is(err, ErrTimeout) {
+			t.Fatalf("error = %v, want ErrTimeout", err)
+		}
+		if elapsed := time.Since(start); elapsed < 60*time.Millisecond {
+			t.Fatalf("missing response Message-Authenticator failed the attempt after only %v", elapsed)
 		}
 	})
 	t.Run("invalid", func(t *testing.T) {
@@ -367,27 +415,31 @@ func TestAccessRequiresMessageAuthenticatorInResponse(t *testing.T) {
 				NewAttribute(AttrMessageAuthenticator, make([]byte, 16)),
 			})
 		})
-		client := newTestClient(t, ClientConfig{Address: server.Addr(), Secret: secret})
+		client := newTestClient(t, ClientConfig{Address: server.Addr(), Secret: secret, Timeout: 80 * time.Millisecond})
+		start := time.Now()
 		_, err := client.AccessRequest(context.Background(), &AccessRequest{
 			Method:      AuthEAP,
 			EAPMessages: [][]byte{{1}},
 		})
-		if !errors.Is(err, ErrMessageAuthenticator) {
-			t.Fatalf("error = %v, want ErrMessageAuthenticator", err)
+		if !errors.Is(err, ErrTimeout) {
+			t.Fatalf("error = %v, want ErrTimeout", err)
+		}
+		if elapsed := time.Since(start); elapsed < 60*time.Millisecond {
+			t.Fatalf("invalid response Message-Authenticator failed the attempt after only %v", elapsed)
 		}
 	})
 	t.Run("extra EAP attribute", func(t *testing.T) {
 		server := newUDPMock(t, secret, func(request *Packet, raw []byte) ([]byte, error) {
 			return signedResponse(request, secret, CodeAccessAccept, nil)
 		})
-		client := newTestClient(t, ClientConfig{Address: server.Addr(), Secret: secret})
+		client := newTestClient(t, ClientConfig{Address: server.Addr(), Secret: secret, Timeout: 80 * time.Millisecond})
 		_, err := client.AccessRequest(context.Background(), &AccessRequest{
 			UserName:   "alice",
 			Method:     AuthNone,
 			Attributes: Attributes{NewAttribute(AttrEAPMessage, []byte{1})},
 		})
-		if !errors.Is(err, ErrMessageAuthenticator) {
-			t.Fatalf("error = %v, want ErrMessageAuthenticator", err)
+		if !errors.Is(err, ErrTimeout) {
+			t.Fatalf("error = %v, want ErrTimeout", err)
 		}
 		request := server.nextRequest(t)
 		present, valid, err := verifyMessageAuthenticatorRaw(request.raw, secret, request.packet.Authenticator)
@@ -399,20 +451,49 @@ func TestAccessRequiresMessageAuthenticatorInResponse(t *testing.T) {
 		server := newUDPMock(t, secret, func(request *Packet, raw []byte) ([]byte, error) {
 			return signedResponse(request, secret, CodeAccessAccept, nil)
 		})
-		client := newTestClient(t, ClientConfig{Address: server.Addr(), Secret: secret})
+		client := newTestClient(t, ClientConfig{Address: server.Addr(), Secret: secret, Timeout: 80 * time.Millisecond})
 		_, err := client.AccessRequest(context.Background(), &AccessRequest{
 			UserName:                    "alice",
 			Method:                      AuthPAP,
 			Password:                    "secret",
 			IncludeMessageAuthenticator: true,
 		})
-		if !errors.Is(err, ErrMessageAuthenticator) {
-			t.Fatalf("error = %v, want ErrMessageAuthenticator", err)
+		if !errors.Is(err, ErrTimeout) {
+			t.Fatalf("error = %v, want ErrTimeout", err)
 		}
 		request := server.nextRequest(t)
 		present, valid, err := verifyMessageAuthenticatorRaw(request.raw, secret, request.packet.Authenticator)
 		if err != nil || !present || !valid {
 			t.Fatalf("request Message-Authenticator = %v, %v, %v", present, valid, err)
+		}
+	})
+	t.Run("invalid then valid message authenticator", func(t *testing.T) {
+		server := newScriptedUDPServer(t, func(request *Packet) ([][]byte, error) {
+			bad, err := signedResponse(request, secret, CodeAccessAccept, Attributes{
+				NewAttribute(AttrMessageAuthenticator, make([]byte, 16)),
+			})
+			if err != nil {
+				return nil, err
+			}
+			good, err := signedMessageResponse(request, secret, CodeAccessAccept, nil)
+			if err != nil {
+				return nil, err
+			}
+			return [][]byte{bad, good}, nil
+		})
+		client := newTestClient(t, ClientConfig{
+			Address: server.LocalAddr().String(),
+			Secret:  secret,
+			Timeout: 500 * time.Millisecond,
+		})
+		response, err := client.AccessRequest(context.Background(), &AccessRequest{
+			UserName:                    "alice",
+			Method:                      AuthPAP,
+			Password:                    "secret",
+			IncludeMessageAuthenticator: true,
+		})
+		if err != nil || !response.Accepted() {
+			t.Fatalf("AccessRequest = %+v, %v", response, err)
 		}
 	})
 	t.Run("non-EAP signed response", func(t *testing.T) {

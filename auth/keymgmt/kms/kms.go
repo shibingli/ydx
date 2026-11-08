@@ -70,6 +70,9 @@ type Service struct {
 	// wrapper encrypts private material at rest; nil stores material as provided. | wrapper 静态加密
 	// 私钥材料；nil 表示按提供的内容存储。
 	wrapper Wrapper
+	// wrapperMu guards wrapper swaps during at-rest key rotation. | wrapperMu 在静态密钥轮换期间
+	// 保护 wrapper 的替换。
+	wrapperMu sync.RWMutex
 	// exportPolicy authorizes private export service-wide. | exportPolicy 在服务范围授权私钥导出。
 	exportPolicy ExportPolicy
 	// defaultRotation is copied to new keys without an explicit interval. | defaultRotation 复制到
@@ -165,7 +168,10 @@ func (s *Service) AtRestEnabled() bool {
 	if s == nil {
 		return false
 	}
-	return s.wrapper != nil
+	s.wrapperMu.RLock()
+	enabled := s.wrapper != nil
+	s.wrapperMu.RUnlock()
+	return enabled
 }
 
 // Keys returns the material-safe read facade. | Keys 返回材料安全读取门面。

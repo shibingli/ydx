@@ -51,21 +51,34 @@ type ClientConfig struct {
 }
 
 // Client is a KMIP client. It serializes requests on one connection, so a single Client is safe for
-// concurrent use. A Client does not reconnect automatically; dial a new one after a transport error.
-// | Client 是 KMIP 客户端。它在单条连接上串行发送请求，因此单个 Client 可安全并发使用。
-// Client 不会自动重连；传输错误后应重新拨号。
+// concurrent use.
+//
+// A Client reconnects lazily: after a transport failure it closes the broken connection and the next
+// request dials a fresh one. The request that observed the failure is never replayed, because it may
+// already have been written to the server; only the caller can decide whether retrying is safe. A
+// transport error therefore means "outcome unknown" for mutating requests. Close is permanent. | Client
+// 是 KMIP 客户端。它在单条连接上串行发送请求，因此单个 Client 可安全并发使用。
+//
+// Client 采用惰性重连：传输失败后关闭损坏的连接，下一个请求重新拨号。观察到失败的请求绝不会被重放，
+// 因为它可能已经写入服务器；只有调用方能判断重试是否安全。因此对变更类请求而言，传输错误表示“结果未知”。
+// Close 是永久性的。
 type Client struct {
-	cfg     ClientConfig
-	limits  Limits
-	conn    net.Conn
-	mu      sync.Mutex
-	closed  bool
-	closing atomic.Bool
+	cfg      ClientConfig
+	limits   Limits
+	connMu   sync.Mutex
+	conn     net.Conn
+	mu       sync.Mutex
+	closed   bool
+	closing  atomic.Bool
+	closeCtx context.Context
+	closeFn  context.CancelFunc
 }
 
 // DialContext connects to the KMIP server described by cfg. | DialContext 连接 cfg 描述的 KMIP 服务器。
 //
-// The returned Client owns the connection; callers must close it. | 返回的 Client 拥有该连接，调用方必须关闭它。
+// The returned Client owns the connection; callers must close it. A non-zero ProtocolVersion must be
+// KMIP 1.4 or 2.0; other versions return ErrUnsupported. | 返回的 Client 拥有该连接，调用方必须关闭它。
+// 非零 ProtocolVersion 必须是 KMIP 1.4 或 2.0；其它版本返回 ErrUnsupported。
 func DialContext(ctx context.Context, cfg ClientConfig) (*Client, error) {
 	if cfg.Address == "" {
 		return nil, errs.Detail(ErrInvalidRequest, "client address is empty | 客户端地址为空")
@@ -79,6 +92,22 @@ func DialContext(ctx context.Context, cfg ClientConfig) (*Client, error) {
 	if !cfg.ProtocolVersion.Valid() {
 		cfg.ProtocolVersion = DefaultProtocolVersion
 	}
+	if !cfg.ProtocolVersion.Supported() {
+		return nil, errs.Detail(ErrUnsupported,
+			"protocol version %s is not supported; use KMIP 1.4 or 2.0 | 协议版本 %s 不受支持；请使用 KMIP 1.4 或 2.0",
+			cfg.ProtocolVersion, cfg.ProtocolVersion)
+	}
+	conn, err := dialConn(ctx, cfg)
+	if err != nil {
+		return nil, err
+	}
+	closeCtx, closeFn := context.WithCancel(context.Background())
+	return &Client{cfg: cfg, limits: cfg.Limits.normalized(), conn: conn, closeCtx: closeCtx, closeFn: closeFn}, nil
+}
+
+// dialConn establishes the TCP connection and optional TLS handshake described by cfg. | dialConn 建立 cfg
+// 描述的 TCP 连接与可选 TLS 握手。
+func dialConn(ctx context.Context, cfg ClientConfig) (net.Conn, error) {
 	dialer := &net.Dialer{Timeout: cfg.DialTimeout}
 	conn, err := dialer.DialContext(ctx, "tcp", cfg.Address)
 	if err != nil {
@@ -104,18 +133,83 @@ func DialContext(ctx context.Context, cfg ClientConfig) (*Client, error) {
 		}
 		conn = tlsConn
 	}
-	return &Client{cfg: cfg, limits: cfg.Limits.normalized(), conn: conn}, nil
+	return conn, nil
+}
+
+// connectLocked dials a replacement connection. The caller must hold c.mu. | connectLocked 拨号替换连接；
+// 调用方必须持有 c.mu。
+func (c *Client) connectLocked(ctx context.Context) error {
+	if c.closing.Load() {
+		return errs.Detail(ErrClosed, "client is closing | 客户端正在关闭")
+	}
+	dialCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	stop := context.AfterFunc(c.closeCtx, cancel)
+	defer stop()
+	conn, err := dialConn(dialCtx, c.cfg)
+	if err != nil {
+		if c.closing.Load() {
+			return errs.Detail(ErrClosed, "client is closing | 客户端正在关闭")
+		}
+		return err
+	}
+	if c.closing.Load() {
+		_ = conn.Close()
+		return errs.Detail(ErrClosed, "client is closing | 客户端正在关闭")
+	}
+	c.setConn(conn)
+	return nil
+}
+
+// currentConn returns the active connection, if any. | currentConn 返回当前活动连接（如有）。
+func (c *Client) currentConn() net.Conn {
+	c.connMu.Lock()
+	defer c.connMu.Unlock()
+	return c.conn
+}
+
+// setConn installs conn as the active connection. | setConn 把 conn 设为活动连接。
+func (c *Client) setConn(conn net.Conn) {
+	c.connMu.Lock()
+	c.conn = conn
+	c.connMu.Unlock()
+}
+
+// takeConn removes and returns the active connection. | takeConn 移除并返回活动连接。
+func (c *Client) takeConn() net.Conn {
+	c.connMu.Lock()
+	conn := c.conn
+	c.conn = nil
+	c.connMu.Unlock()
+	return conn
+}
+
+// discardConn closes conn and clears it when it is still the active connection. | discardConn 关闭 conn，
+// 并在它仍是活动连接时清除它。
+func (c *Client) discardConn(conn net.Conn) {
+	if conn == nil {
+		return
+	}
+	c.connMu.Lock()
+	if c.conn == conn {
+		c.conn = nil
+	}
+	c.connMu.Unlock()
+	_ = conn.Close()
 }
 
 // Close closes the client connection. It is idempotent. A pending request is interrupted instead of
-// blocking Close indefinitely. | Close 关闭客户端连接，可重复调用。进行中的请求会被中断，避免 Close
-// 无限阻塞。
+// blocking Close indefinitely. After Close, the client never reconnects. | Close 关闭客户端连接，可重复调用。
+// 进行中的请求会被中断，避免 Close 无限阻塞。Close 之后客户端不再重连。
 func (c *Client) Close() error {
 	c.closing.Store(true)
-	if c.conn != nil {
+	if c.closeFn != nil {
+		c.closeFn()
+	}
+	if conn := c.currentConn(); conn != nil {
 		// Wake an in-flight request blocked in connection I/O; net.Conn permits concurrent deadline
 		// updates. | 唤醒阻塞在连接 I/O 上的请求；net.Conn 允许并发更新截止时间。
-		_ = c.conn.SetDeadline(time.Now())
+		_ = conn.SetDeadline(time.Now())
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -123,10 +217,11 @@ func (c *Client) Close() error {
 		return nil
 	}
 	c.closed = true
-	if c.conn == nil {
+	conn := c.takeConn()
+	if conn == nil {
 		return nil
 	}
-	if err := c.conn.Close(); err != nil {
+	if err := conn.Close(); err != nil {
 		return errs.Wrap(err, ErrClosed)
 	}
 	return nil
@@ -134,19 +229,33 @@ func (c *Client) Close() error {
 
 // Do sends one batch of requests and returns the response. Requests on one Client are serialized.
 // A non-success batch item is returned in the response; callers should check ResponseBatchItem.Err.
-// | Do 发送一批请求并返回响应。同一 Client 上的请求串行执行。非成功的批处理项会原样返回，
-// 调用方应检查 ResponseBatchItem.Err。
+//
+// The first request after a transport failure dials a new connection. A request is never retried:
+// when write, read or decode fails after the connection was used, Do invalidates the connection and
+// returns the error. Mutating requests should therefore be retried only when the caller can tolerate
+// a duplicate, for example by supplying a caller-chosen Unique Identifier. | Do 发送一批请求并返回响应。
+// 同一 Client 上的请求串行执行。非成功的批处理项会原样返回，调用方应检查 ResponseBatchItem.Err。
+//
+// 传输失败后的第一个请求会重新拨号。请求绝不重试：连接使用后若写入、读取或解码失败，Do 会使连接失效
+// 并返回错误。因此变更类请求只应在调用方能容忍重复时重试，例如提供调用方选定的唯一标识符。
 func (c *Client) Do(ctx context.Context, items ...RequestBatchItem) (ResponseMessage, error) {
 	if len(items) == 0 {
 		return ResponseMessage{}, errs.Detail(ErrInvalidRequest, "no batch items | 没有批处理项")
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.closed || c.closing.Load() || c.conn == nil {
+	if c.closed || c.closing.Load() {
 		return ResponseMessage{}, errs.Detail(ErrClosed, "client is closed | 客户端已关闭")
 	}
 	if err := ctx.Err(); err != nil {
 		return ResponseMessage{}, err
+	}
+	conn := c.currentConn()
+	if conn == nil {
+		if err := c.connectLocked(ctx); err != nil {
+			return ResponseMessage{}, err
+		}
+		conn = c.currentConn()
 	}
 	request := RequestMessage{
 		Header: RequestHeader{
@@ -163,13 +272,15 @@ func (c *Client) Do(ctx context.Context, items ...RequestBatchItem) (ResponseMes
 	}
 	defer zeroize(encoded)
 	stop := context.AfterFunc(ctx, func() {
-		_ = c.conn.SetDeadline(time.Now())
+		_ = conn.SetDeadline(time.Now())
 	})
 	defer stop()
-	if err := c.setDeadline(ctx, c.cfg.WriteTimeout); err != nil {
+	if err := c.setDeadline(conn, ctx, c.cfg.WriteTimeout); err != nil {
+		c.discardConn(conn)
 		return ResponseMessage{}, err
 	}
-	if err := writeAll(c.conn, encoded); err != nil {
+	if err := writeAll(conn, encoded); err != nil {
+		c.discardConn(conn)
 		if c.closing.Load() {
 			return ResponseMessage{}, errs.Detail(ErrClosed, "client closed during request | 请求期间客户端关闭")
 		}
@@ -178,11 +289,13 @@ func (c *Client) Do(ctx context.Context, items ...RequestBatchItem) (ResponseMes
 		}
 		return ResponseMessage{}, errs.WrapDetail(err, ErrTransport, "write request | 写入请求失败")
 	}
-	if err := c.setDeadline(ctx, c.cfg.ReadTimeout); err != nil {
+	if err := c.setDeadline(conn, ctx, c.cfg.ReadTimeout); err != nil {
+		c.discardConn(conn)
 		return ResponseMessage{}, err
 	}
-	raw, err := readResponse(c.conn, c.cfg.MaxResponseSize)
+	raw, err := readResponse(conn, c.cfg.MaxResponseSize)
 	if err != nil {
+		c.discardConn(conn)
 		if c.closing.Load() {
 			return ResponseMessage{}, errs.Detail(ErrClosed, "client closed during request | 请求期间客户端关闭")
 		}
@@ -197,16 +310,18 @@ func (c *Client) Do(ctx context.Context, items ...RequestBatchItem) (ResponseMes
 	// 调用方通过对象辅助方法清零密钥材料。
 	response, err := DecodeResponseWithLimits(raw, c.limits)
 	if err != nil {
+		// A broken response leaves the stream position unknown. | 损坏的响应使流位置不可知。
+		c.discardConn(conn)
 		return ResponseMessage{}, err
 	}
 	return response, nil
 }
 
-// setDeadline applies the earlier of the context deadline and timeout. | setDeadline 应用上下文截止时间与
-// timeout 中较早的一个。
-func (c *Client) setDeadline(ctx context.Context, timeout time.Duration) error {
+// setDeadline applies the earlier of the context deadline and timeout to conn. | setDeadline 把上下文截止
+// 时间与 timeout 中较早的一个应用到 conn。
+func (c *Client) setDeadline(conn net.Conn, ctx context.Context, timeout time.Duration) error {
 	if c.closing.Load() {
-		_ = c.conn.SetDeadline(time.Now())
+		_ = conn.SetDeadline(time.Now())
 		return errs.Detail(ErrClosed, "client is closing | 客户端正在关闭")
 	}
 	var deadline time.Time
@@ -216,7 +331,7 @@ func (c *Client) setDeadline(ctx context.Context, timeout time.Duration) error {
 	if d, ok := ctx.Deadline(); ok && (deadline.IsZero() || d.Before(deadline)) {
 		deadline = d
 	}
-	if err := c.conn.SetDeadline(deadline); err != nil {
+	if err := conn.SetDeadline(deadline); err != nil {
 		return errs.WrapDetail(err, ErrTransport, "set connection deadline | 设置连接截止时间失败")
 	}
 	return nil

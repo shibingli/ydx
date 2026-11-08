@@ -64,17 +64,25 @@
 // LogoutCallbackTimeout. Browser logout destroys the TGC family, expires the cookie, and performs
 // the same delivery. Failures are recorded in LogoutDeliveryResult and reported through
 // LogoutObserver; they never fail the local logout. Replaying a request whose session is gone is an
-// idempotent no-op, and only a request without SessionIndex falls back to NameIdentifier. There is
-// no front-channel browser redirect to services, and logoutRequest signatures are not verified;
-// authenticity rests on unguessable session indices plus network controls. Configure a shared
-// ServiceSessionRegistry for multi-node deployments. | 校验 ST 或 PT 时按票据标识记录一个在其
+// idempotent no-op, and only a request without SessionIndex falls back to NameIdentifier. When the
+// service registry registers front-channel logout URLs (or ServerConfig.FrontChannelLogoutResolver is
+// set), browser logout answers with a page that loads one hidden frame per distinct registered URL,
+// capped by MaxFrontChannelLogoutServices; otherwise it redirects straight to the registered service
+// parameter. Inbound LogoutRequest XML signatures are checked by an optional
+// LogoutRequestSignatureVerifier; RequireSignedLogoutRequest rejects unsigned requests, and the
+// built-in verifier binds the signature to the request ID so wrapped signatures fail. Configure a
+// shared ServiceSessionRegistry for multi-node deployments. | 校验 ST 或 PT 时按票据标识记录一个在其
 // TGT/PGT 生命周期内存活的 ServiceSession。POST /logout 携带 logoutRequest 表单参数中的 SAML 1.1
 // LogoutRequest（原始 XML 或 base64 XML，GET 或 POST）时，撤销指定 TGT 族，并并行地向其它每个已记录
 // 服务发送后端 logoutRequest POST，每次受 LogoutCallbackTimeout 限制。浏览器登出销毁 TGC 族、过期
 // Cookie，并执行同样的投递。失败记录在 LogoutDeliveryResult 中并通过 LogoutObserver 报告，绝不会使
 // 本地登出失败。重放会话已不存在的请求是幂等空操作，只有不带 SessionIndex 的请求才回退到
-// NameIdentifier。没有面向服务的前端浏览器重定向，也不校验 logoutRequest 签名；真实性依赖不可猜测的
-// 会话索引与网络控制。多节点部署应配置共享的 ServiceSessionRegistry。
+// NameIdentifier。当服务注册表登记了前端登出 URL（或设置了
+// ServerConfig.FrontChannelLogoutResolver）时，浏览器登出返回一个为每个不同已注册 URL 加载一个隐藏
+// 框架的页面，数量受 MaxFrontChannelLogoutServices 限制；否则直接重定向到已注册的 service 参数。
+// 入站 LogoutRequest 的 XML 签名由可选的 LogoutRequestSignatureVerifier 校验；
+// RequireSignedLogoutRequest 拒绝未签名请求，内置校验器把签名绑定到请求 ID，使包裹签名失败。多节点
+// 部署应配置共享的 ServiceSessionRegistry。
 //
 // # Client | 客户端
 //

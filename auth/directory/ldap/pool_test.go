@@ -446,6 +446,229 @@ func TestPoolContextCancellation(t *testing.T) {
 	}
 }
 
+// poolHealthHandler answers the Who Am I and root DSE probes used by health
+// checks. | poolHealthHandler 应答健康检查使用的 Who Am I 与根 DSE 探测。
+func poolHealthHandler(session *mockSession, message *LDAPMessage) error {
+	switch op := message.Op.(type) {
+	case *ExtendedRequest:
+		if op.Name != OIDWhoAmI {
+			return errors.New("unexpected extended operation")
+		}
+		return session.writeSimpleResult(message.MessageID, &ExtendedResponse{
+			Result: LDAPResult{Code: ResultSuccess},
+			Value:  []byte("dn:cn=pool"),
+		})
+	case *SearchRequest:
+		if err := session.writeEntry(message.MessageID, "", Attribute{Type: "objectClass", Values: []string{"top"}}); err != nil {
+			return err
+		}
+		return session.writeSearchDone(message.MessageID, LDAPResult{Code: ResultSuccess})
+	default:
+		return errors.New("unexpected operation")
+	}
+}
+
+// poolHealthModeName returns a subtest name for a health check mode. |
+// poolHealthModeName 返回健康检查模式的子测试名。
+func poolHealthModeName(mode HealthCheckMode) string {
+	switch mode {
+	case HealthCheckWhoAmI:
+		return "whoami"
+	case HealthCheckRootDSE:
+		return "rootdse"
+	default:
+		return "disabled"
+	}
+}
+
+// TestPoolHealthCheckValidation verifies health check configuration validation
+// and defaulting. | TestPoolHealthCheckValidation 校验健康检查配置的校验与默认值。
+func TestPoolHealthCheckValidation(t *testing.T) {
+	if _, err := NewPool(Config{URL: "ldap://example.com", HealthCheck: HealthCheckMode(99)}); !errors.Is(err, ErrInvalidConfig) {
+		t.Fatalf("invalid health check mode error = %v", err)
+	}
+	if _, err := NewPool(Config{URL: "ldap://example.com", IdleHealthCheckTimeout: -time.Second}); !errors.Is(err, ErrInvalidConfig) {
+		t.Fatalf("negative health check timeout error = %v", err)
+	}
+	pool, err := NewPool(Config{URL: "ldap://example.com", HealthCheck: HealthCheckWhoAmI})
+	if err != nil {
+		t.Fatalf("NewPool: %v", err)
+	}
+	defer pool.Close()
+	if pool.cfg.IdleHealthCheckTimeout != DefaultIdleHealthCheckTimeout {
+		t.Fatalf("idle health check timeout = %v", pool.cfg.IdleHealthCheckTimeout)
+	}
+}
+
+// TestPoolHealthCheckRecyclesDeadIdle verifies a failed probe discards a dead
+// idle connection and Get dials a replacement. | TestPoolHealthCheckRecyclesDeadIdle
+// 校验探测失败会丢弃失效的空闲连接，并由 Get 拨号替代连接。
+func TestPoolHealthCheckRecyclesDeadIdle(t *testing.T) {
+	for _, mode := range []HealthCheckMode{HealthCheckWhoAmI, HealthCheckRootDSE} {
+		t.Run(poolHealthModeName(mode), func(t *testing.T) {
+			server := startMockServer(t, poolHealthHandler)
+			pool, err := NewPool(Config{
+				URL:                    server.URL(),
+				PoolSize:               1,
+				MaxIdleTime:            time.Minute,
+				Timeout:                2 * time.Second,
+				HealthCheck:            mode,
+				IdleHealthCheckTimeout: time.Second,
+			})
+			if err != nil {
+				t.Fatalf("NewPool: %v", err)
+			}
+			defer pool.Close()
+			first, err := pool.Get(context.Background())
+			if err != nil {
+				t.Fatalf("Get: %v", err)
+			}
+			if err := pool.Put(first); err != nil {
+				t.Fatalf("Put: %v", err)
+			}
+			server.closeAllConns(t)
+			second, err := pool.Get(context.Background())
+			if err != nil {
+				t.Fatalf("Get after dead idle: %v", err)
+			}
+			if second == first {
+				t.Fatal("dead idle client was returned")
+			}
+			if !first.IsClosed() {
+				t.Fatal("dead idle client was not closed")
+			}
+			if stats := pool.Stats(); stats.Open != 1 || stats.Idle != 0 {
+				t.Fatalf("stats = %+v", stats)
+			}
+			if _, err := second.RootDSE(context.Background()); err != nil {
+				t.Fatalf("replacement RootDSE: %v", err)
+			}
+			if err := pool.Put(second); err != nil {
+				t.Fatalf("Put replacement: %v", err)
+			}
+		})
+	}
+}
+
+// TestPoolHealthCheckProbeTimeout verifies a hung probe is bounded by
+// IdleHealthCheckTimeout rather than Timeout or the server. | TestPoolHealthCheckProbeTimeout
+// 校验挂起的探测受 IdleHealthCheckTimeout 限制，而不是 Timeout 或服务端。
+func TestPoolHealthCheckProbeTimeout(t *testing.T) {
+	const (
+		probeTimeout = 150 * time.Millisecond
+		serverDelay  = 750 * time.Millisecond
+	)
+	var probes atomic.Int32
+	server := startMockServer(t, func(session *mockSession, message *LDAPMessage) error {
+		if _, ok := message.Op.(*ExtendedRequest); !ok {
+			return errors.New("unexpected operation")
+		}
+		probes.Add(1)
+		time.Sleep(serverDelay)
+		return nil
+	})
+	pool, err := NewPool(Config{
+		URL:                    server.URL(),
+		PoolSize:               1,
+		MaxIdleTime:            time.Minute,
+		Timeout:                5 * time.Second,
+		HealthCheck:            HealthCheckWhoAmI,
+		IdleHealthCheckTimeout: probeTimeout,
+	})
+	if err != nil {
+		t.Fatalf("NewPool: %v", err)
+	}
+	defer pool.Close()
+	first, err := pool.Get(context.Background())
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if err := pool.Put(first); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	start := time.Now()
+	second, err := pool.Get(context.Background())
+	elapsed := time.Since(start)
+	if err != nil {
+		t.Fatalf("Get after probe timeout: %v", err)
+	}
+	if second == first || !first.IsClosed() {
+		t.Fatal("timed-out idle client was not recycled")
+	}
+	if elapsed < probeTimeout/2 || elapsed >= serverDelay {
+		t.Fatalf("probe elapsed = %v, want bounded by %v", elapsed, probeTimeout)
+	}
+	if probes.Load() != 1 {
+		t.Fatalf("probes = %d, want 1", probes.Load())
+	}
+	if err := pool.Put(second); err != nil {
+		t.Fatalf("Put replacement: %v", err)
+	}
+}
+
+// TestPoolHealthCheckConcurrentReuse verifies probes and borrowers stay bounded
+// concurrently. | TestPoolHealthCheckConcurrentReuse 校验探测与借用方在并发下仍然有界。
+func TestPoolHealthCheckConcurrentReuse(t *testing.T) {
+	var active atomic.Int32
+	var peak atomic.Int32
+	server := startMockServer(t, func(session *mockSession, message *LDAPMessage) error {
+		current := active.Add(1)
+		for {
+			previous := peak.Load()
+			if current <= previous || peak.CompareAndSwap(previous, current) {
+				break
+			}
+		}
+		defer active.Add(-1)
+		return poolHealthHandler(session, message)
+	})
+	const (
+		poolSize = 3
+		workers  = 12
+	)
+	pool, err := NewPool(Config{
+		URL:         server.URL(),
+		PoolSize:    poolSize,
+		MaxIdleTime: time.Minute,
+		HealthCheck: HealthCheckWhoAmI,
+	})
+	if err != nil {
+		t.Fatalf("NewPool: %v", err)
+	}
+	defer pool.Close()
+	var wg sync.WaitGroup
+	errsCh := make(chan error, workers)
+	for index := 0; index < workers; index++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for iteration := 0; iteration < 10; iteration++ {
+				if err := pool.Do(context.Background(), func(client *Client) error {
+					_, err := client.WhoAmI(context.Background())
+					return err
+				}); err != nil {
+					errsCh <- err
+					return
+				}
+			}
+			errsCh <- nil
+		}()
+	}
+	wg.Wait()
+	close(errsCh)
+	for err := range errsCh {
+		if err != nil {
+			t.Fatalf("Do: %v", err)
+		}
+	}
+	if peak.Load() > poolSize {
+		t.Fatalf("peak concurrency = %d", peak.Load())
+	}
+	if stats := pool.Stats(); stats.Open > poolSize || stats.Idle > poolSize {
+		t.Fatalf("stats = %+v", stats)
+	}
+}
+
 // TestPoolConfigBind verifies pooled clients replay the configured bind. | TestPoolConfigBind
 // 校验池客户端重放配置绑定。
 func TestPoolConfigBind(t *testing.T) {

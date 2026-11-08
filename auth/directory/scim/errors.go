@@ -50,6 +50,15 @@ var (
 	// ErrBulkRollbackFailed reports that the atomic bulk rollback could not restore prior state. |
 	// ErrBulkRollbackFailed 表示原子批量回滚无法恢复先前状态。
 	ErrBulkRollbackFailed = errs.New("scim: bulk rollback failed | scim：批量回滚失败")
+	// ErrPasswordRollbackConflict reports that a password hook rejected an update and the prior
+	// profile could not be restored because the resource changed concurrently. The newer profile
+	// is kept. | ErrPasswordRollbackConflict 表示口令钩子拒绝了更新，且由于资源被并发修改而无法
+	// 恢复先前资料。较新的资料会被保留。
+	ErrPasswordRollbackConflict = errs.New("scim: password rollback conflict | scim：口令回滚冲突")
+	// ErrPasswordRollbackFailed reports that a password hook rejected an update and the prior
+	// profile could not be restored. | ErrPasswordRollbackFailed 表示口令钩子拒绝了更新且无法恢复
+	// 先前资料。
+	ErrPasswordRollbackFailed = errs.New("scim: password rollback failed | scim：口令回滚失败")
 	// ErrMutability reports a write to a read-only or immutable attribute. | ErrMutability 表示写入
 	// 只读或不可变属性。
 	ErrMutability = errs.New("scim: attribute is not mutable | scim：属性不可修改")
@@ -109,6 +118,10 @@ func classifyError(err error) scimError {
 	case errors.Is(err, ErrBulkRollbackFailed):
 		return scimError{status: http.StatusInternalServerError}
 	case errors.Is(err, ErrBulkRollbackConflict):
+		return scimError{status: http.StatusConflict}
+	case errors.Is(err, ErrPasswordRollbackFailed):
+		return scimError{status: http.StatusInternalServerError}
+	case errors.Is(err, ErrPasswordRollbackConflict):
 		return scimError{status: http.StatusConflict}
 	case errors.Is(err, ErrInvalidFilter):
 		return scimError{status: http.StatusBadRequest, scimType: "invalidFilter"}

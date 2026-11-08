@@ -82,7 +82,10 @@ type ClientMetadata struct {
 	BackchannelLogoutURI string `json:"backchannel_logout_uri,omitempty"`
 	// BackchannelLogoutSessionRequired requires the sid parameter at logout. | BackchannelLogoutSessionRequired 要求登出时携带 sid 参数。
 	BackchannelLogoutSessionRequired bool `json:"backchannel_logout_session_required,omitempty"`
-	// TLSClientAuthSubjectDN is the allowed subject DN for tls_client_auth. | TLSClientAuthSubjectDN 是 tls_client_auth 允许的主体 DN。
+	// TLSClientAuthSubjectDN is the allowed subject DN for tls_client_auth. Registrations using
+	// tls_client_auth or self_signed_tls_client_auth must supply it or TLSClientAuthSANs. |
+	// TLSClientAuthSubjectDN 是 tls_client_auth 允许的主体 DN。使用 tls_client_auth 或
+	// self_signed_tls_client_auth 的注册必须提供它或 TLSClientAuthSANs。
 	TLSClientAuthSubjectDN string `json:"tls_client_auth_subject_dn,omitempty"`
 	// TLSClientAuthSANs are allowed DNS/IP SANs for tls_client_auth. | TLSClientAuthSANs 是 tls_client_auth 允许的 DNS/IP SAN。
 	TLSClientAuthSANs []string `json:"tls_client_auth_san_dns,omitempty"`
@@ -311,6 +314,22 @@ func validateClientMetadata(metadata *ClientMetadata) error {
 		return errs.Detail(ErrInvalidRequest, "client_secret_jwt is not supported because only a secret hash is stored; use private_key_jwt or client_secret_basic | 不支持 client_secret_jwt，因为只保存密钥哈希；请使用 private_key_jwt 或 client_secret_basic")
 	default:
 		return errs.Detail(ErrInvalidRequest, "unsupported token_endpoint_auth_method | 不支持的 token_endpoint_auth_method")
+	}
+	if metadata.TokenEndpointAuthMethod == oauth2.TLSClientAuth || metadata.TokenEndpointAuthMethod == oauth2.SelfSignedTLSClientAuth {
+		// The runtime pairing is fail-closed without a binding, so reject such registrations
+		// instead of creating a client that can never authenticate. | 运行时在缺少绑定时按失败
+		// 关闭处理，因此拒绝这类注册，而不是创建一个永远无法认证的客户端。
+		hasSubject := strings.TrimSpace(metadata.TLSClientAuthSubjectDN) != ""
+		hasSAN := false
+		for _, san := range metadata.TLSClientAuthSANs {
+			if strings.TrimSpace(san) != "" {
+				hasSAN = true
+				break
+			}
+		}
+		if !hasSubject && !hasSAN {
+			return errs.Detail(ErrInvalidRequest, "tls_client_auth and self_signed_tls_client_auth require tls_client_auth_subject_dn or tls_client_auth_san_dns | tls_client_auth 与 self_signed_tls_client_auth 需要 tls_client_auth_subject_dn 或 tls_client_auth_san_dns")
+		}
 	}
 	switch metadata.SubjectType {
 	case "", SubjectTypePublic, SubjectTypePairwise:

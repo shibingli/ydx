@@ -100,6 +100,16 @@ type ServerConfig struct {
 	// deployments should always configure it. | ServiceRegistry 限制服务 URL。空值允许每个非空
 	// URL；生产部署应始终配置它。
 	ServiceRegistry ServiceRegistry
+	// FrontChannelLogoutResolver supplies the registered front-channel logout URL of each service.
+	// When nil, ServiceRegistry is used if it implements FrontChannelLogoutResolver. When neither
+	// does, browser logout only performs back-channel delivery and redirects as before. |
+	// FrontChannelLogoutResolver 提供服务已注册的前端登出 URL。为空时，若 ServiceRegistry 实现了
+	// FrontChannelLogoutResolver 则使用它；两者都没有时，浏览器登出只执行后端投递并按原行为重定向。
+	FrontChannelLogoutResolver FrontChannelLogoutResolver
+	// MaxFrontChannelLogoutServices caps how many distinct front-channel logout frames one page
+	// loads; zero uses DefaultMaxFrontChannelLogoutServices. | MaxFrontChannelLogoutServices 限制
+	// 单个页面加载的前端登出框架数量；零值使用 DefaultMaxFrontChannelLogoutServices。
+	MaxFrontChannelLogoutServices int
 	// TicketStore persists tickets. Nil creates an owned MemoryTicketStore with a janitor that
 	// Server.Close stops. | TicketStore 持久化票据。空值创建由 Server 持有的 MemoryTicketStore，
 	// 其清理器由 Server.Close 停止。
@@ -138,6 +148,19 @@ type ServerConfig struct {
 	// delivery is never returned to the logging-out user. | LogoutObserver 接收每个后端登出投递结果。
 	// 它只用于观测：投递失败绝不会返回给执行登出的用户。
 	LogoutObserver LogoutObserver
+	// LogoutRequestSignatureVerifier verifies the XML signature of an inbound LogoutRequest. When
+	// nil, unsigned requests are accepted unless RequireSignedLogoutRequest is set, while a request
+	// that does carry a Signature is rejected because it cannot be verified. A configured verifier
+	// must require the signature to reference the LogoutRequest's own ID, which defeats signature
+	// wrapping; LogoutRequestXMLDSigVerifier does this. | LogoutRequestSignatureVerifier 校验入站
+	// LogoutRequest 的 XML 签名。为空时，未签名请求除非设置 RequireSignedLogoutRequest 否则被接受，
+	// 而携带 Signature 的请求因无法校验而被拒绝。配置的校验器必须要求签名引用 LogoutRequest 自身的
+	// ID，以抵御签名包裹；LogoutRequestXMLDSigVerifier 满足该要求。
+	LogoutRequestSignatureVerifier LogoutRequestSignatureVerifier
+	// RequireSignedLogoutRequest rejects inbound LogoutRequests that carry no XML signature. It has
+	// no effect on browser logout. | RequireSignedLogoutRequest 拒绝不带 XML 签名的入站
+	// LogoutRequest。它不影响浏览器登出。
+	RequireSignedLogoutRequest bool
 	// SAMLResponseBuilder replaces the default unsigned SAML 1.1 response. | SAMLResponseBuilder
 	// 替换默认的不签名 SAML 1.1 响应。
 	SAMLResponseBuilder SAMLResponseBuilder
@@ -187,6 +210,7 @@ type ServerConfig struct {
 type Server struct {
 	store         TicketStore
 	sessions      ServiceSessionRegistry
+	frontChannel  FrontChannelLogoutResolver
 	ownedStore    *MemoryTicketStore
 	ownedSessions *MemoryServiceSessionRegistry
 	now           func() time.Time
@@ -223,6 +247,9 @@ func NewServer(config ServerConfig) (*Server, error) {
 	if config.ProxyTicketTimeout <= 0 {
 		config.ProxyTicketTimeout = DefaultProxyTicketTimeout
 	}
+	if config.MaxFrontChannelLogoutServices <= 0 {
+		config.MaxFrontChannelLogoutServices = DefaultMaxFrontChannelLogoutServices
+	}
 	if config.ClockSkew < 0 {
 		return nil, errs.Detail(ErrInvalidConfig, "clock skew must not be negative | 时钟偏移不得为负")
 	}
@@ -246,6 +273,12 @@ func NewServer(config ServerConfig) (*Server, error) {
 	server := &Server{
 		config: config,
 		now:    func() time.Time { return auth.Now(config.Clock) },
+	}
+	server.frontChannel = config.FrontChannelLogoutResolver
+	if server.frontChannel == nil {
+		if resolver, ok := config.ServiceRegistry.(FrontChannelLogoutResolver); ok {
+			server.frontChannel = resolver
+		}
 	}
 	if config.TicketStore == nil {
 		store := NewMemoryTicketStore()

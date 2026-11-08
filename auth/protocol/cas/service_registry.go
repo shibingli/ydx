@@ -3,6 +3,9 @@ package cas
 import (
 	"context"
 	"strings"
+	"sync"
+
+	"github.com/shibingli/ydx/errs"
 )
 
 // ServiceRegistry decides which service URLs may receive tickets and whether a validation request
@@ -22,6 +25,22 @@ type ServiceRegistry interface {
 	Matches(bound, requested string) bool
 }
 
+// FrontChannelLogoutResolver resolves the front-channel logout URL registered for a service. The
+// server consults it during browser logout and renders one hidden frame per distinct URL so the
+// browser can end the service sessions too. Implementations must only return URLs that were
+// explicitly registered for the exact service URL; the server additionally requires every returned
+// URL to be an absolute http(s) URL, which keeps an accidental or malicious value from becoming an
+// open redirect or a script URL. | FrontChannelLogoutResolver 解析为服务注册的前端登出 URL。服务端在
+// 浏览器登出时查询它，并为每个不同 URL 渲染一个隐藏框架，使浏览器也能结束服务会话。实现必须只返回
+// 为精确服务 URL 显式注册的 URL；服务端还要求每个返回的 URL 都是绝对 http(s) URL，避免意外或恶意取值
+// 变成开放重定向或脚本 URL。
+type FrontChannelLogoutResolver interface {
+	// FrontChannelLogoutURL returns the registered front-channel logout URL of service. The boolean
+	// reports whether a URL is registered. | FrontChannelLogoutURL 返回 service 已注册的前端登出
+	// URL。布尔值报告是否注册了 URL。
+	FrontChannelLogoutURL(ctx context.Context, service string) (string, bool)
+}
+
 // StaticServiceRegistry is a ServiceRegistry built from a fixed list of exact URLs and wildcard
 // patterns. | StaticServiceRegistry 是由固定精确 URL 与通配模式列表构建的 ServiceRegistry。
 //
@@ -33,12 +52,17 @@ type ServiceRegistry interface {
 type StaticServiceRegistry struct {
 	// exact holds registered URLs without wildcards. | exact 保存不含通配符的注册 URL。
 	exact map[string]struct{}
+	// frontChannel maps an exact service URL to its registered front-channel logout URL. |
+	// frontChannel 把精确服务 URL 映射到已注册的前端登出 URL。
+	frontChannel map[string]string
 	// patterns holds the registered wildcard patterns in registration order. | patterns 按注册顺序保存通配模式。
 	patterns []string
 	// services preserves the constructor input for introspection. | services 保留构造输入以便自省。
 	services []string
 	// allowAll accepts every non-empty URL. | allowAll 接受每个非空 URL。
 	allowAll bool
+	// mu guards frontChannel. | mu 保护 frontChannel。
+	mu sync.RWMutex
 }
 
 // NewStaticServiceRegistry returns a registry for the given exact URLs and wildcard patterns. Empty
@@ -70,6 +94,48 @@ func NewStaticServiceRegistry(services ...string) *StaticServiceRegistry {
 // 测试与本地开发；校验仍要求请求 URL 与票据绑定的 URL 完全相等。
 func NewAllowAllServiceRegistry() *StaticServiceRegistry {
 	return &StaticServiceRegistry{allowAll: true}
+}
+
+// SetFrontChannelLogoutURL registers the front-channel logout URL of an already registered service.
+// The service must pass Allows, and logoutURL must be an absolute http(s) URL without embedded user
+// information, so browser logout can never be pointed at an arbitrary or script URL. Registering a
+// second URL for the same service replaces the first. | SetFrontChannelLogoutURL 为已注册服务登记
+// 前端登出 URL。服务必须通过 Allows，logoutURL 必须是不含内嵌用户信息的绝对 http(s) URL，因此浏览器
+// 登出绝不会指向任意 URL 或脚本 URL。为同一服务重复登记会替换前一个 URL。
+func (r *StaticServiceRegistry) SetFrontChannelLogoutURL(service, logoutURL string) error {
+	if r == nil {
+		return errs.Detail(ErrInvalidConfig, "service registry is nil | 服务注册表为空")
+	}
+	service = strings.TrimSpace(service)
+	logoutURL = strings.TrimSpace(logoutURL)
+	if !r.Allows(context.Background(), service) {
+		return errs.Detail(ErrServiceNotRegistered, "service %[1]q is not registered | 服务 %[1]q 未注册", service)
+	}
+	if !validServiceURL(logoutURL) {
+		return errs.Detail(ErrInvalidService, "front-channel logout URL %[1]q is not an absolute http(s) URL | 前端登出 URL %[1]q 不是绝对 http(s) URL", logoutURL)
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.frontChannel == nil {
+		r.frontChannel = make(map[string]string)
+	}
+	r.frontChannel[service] = logoutURL
+	return nil
+}
+
+// FrontChannelLogoutURL returns the URL registered by SetFrontChannelLogoutURL for service. |
+// FrontChannelLogoutURL 返回 SetFrontChannelLogoutURL 为 service 登记的 URL。
+func (r *StaticServiceRegistry) FrontChannelLogoutURL(_ context.Context, service string) (string, bool) {
+	if r == nil || service == "" {
+		return "", false
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	logoutURL, ok := r.frontChannel[service]
+	if !ok || logoutURL == "" {
+		return "", false
+	}
+	return logoutURL, true
 }
 
 // Allows reports whether service is registered. | Allows 报告 service 是否已注册。

@@ -190,8 +190,10 @@ func certificateExtension(cert *x509.Certificate, oid asn1.ObjectIdentifier) ([]
 const (
 	derClassUniversal = 0
 	derClassContext   = 2
+	derTagBoolean     = 1
 	derTagInteger     = 2
 	derTagOctetString = 4
+	derTagEnumerated  = 10
 	derTagSequence    = 16
 	derTagSet         = 17
 )

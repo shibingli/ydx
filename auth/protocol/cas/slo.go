@@ -418,17 +418,30 @@ func (s *Server) deliverLogoutRequest(ctx context.Context, session *ServiceSessi
 }
 
 // handleLogoutRequest processes a SAML logout request carried by the logoutRequest parameter. A
-// syntactically valid request always answers 200, even when its session was already revoked, so
-// retries and replays are harmless. Malformed and oversized requests are rejected before any state
-// changes. | handleLogoutRequest 处理 logoutRequest 参数携带的 SAML 登出请求。语法合法的请求始终
-// 返回 200，即使其会话已被撤销，因此重试与重放无害。格式错误与超大的请求在任何状态变更之前被拒绝。
+// syntactically valid and accepted request answers 200, even when its session was already revoked,
+// so retries and replays are harmless. Malformed, oversized, unsigned-when-required and
+// badly-signed requests are rejected before any state changes. | handleLogoutRequest 处理
+// logoutRequest 参数携带的 SAML 登出请求。语法合法且被接受的请求返回 200，即使其会话已被撤销，因此
+// 重试与重放无害。格式错误、超大、在要求签名时未签名以及签名错误的请求会在任何状态变更之前被拒绝。
 func (s *Server) handleLogoutRequest(w http.ResponseWriter, r *http.Request, value string) {
 	if len(value) > maxProtocolBody {
 		s.fail(w, r, http.StatusRequestEntityTooLarge, errs.Detail(ErrInvalidLogoutRequest, "logoutRequest is too large | logoutRequest 过大"))
 		return
 	}
-	request, err := ParseLogoutRequest(value)
+	// Decode once and parse the XML bytes directly so signature verification and parsing observe the
+	// same document; re-decoding could otherwise disagree with the exact signed octets. | 只解码一次并
+	// 直接解析 XML 字节，使签名校验与解析看到同一文档；重复解码可能与实际签名字节不一致。
+	document, err := decodeLogoutRequestValue(value)
 	if err != nil {
+		s.fail(w, r, http.StatusBadRequest, err)
+		return
+	}
+	request, err := ParseLogoutRequest(string(document))
+	if err != nil {
+		s.fail(w, r, http.StatusBadRequest, err)
+		return
+	}
+	if err := s.verifyLogoutRequestSignature(r.Context(), document, request); err != nil {
 		s.fail(w, r, http.StatusBadRequest, err)
 		return
 	}

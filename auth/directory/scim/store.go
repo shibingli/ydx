@@ -68,6 +68,19 @@ type Store interface {
 	ListGroups(ctx context.Context, query ListQuery) ([]*Group, int, error)
 }
 
+// UserVersionReplacer is an optional Store extension that replaces a User only when the stored
+// entity tag still equals expectedVersion. The server uses it to compensate a failed password
+// provisioning without overwriting a concurrent change. An empty expectedVersion disables the
+// precondition. Implementations should return ErrPreconditionFailed when the tags differ. |
+// UserVersionReplacer 是可选 Store 扩展，仅当已存储实体标签仍等于 expectedVersion 时替换 User。
+// 服务端用它补偿失败的口令预配，同时不覆盖并发修改。expectedVersion 为空时禁用前置条件。实现应在
+// 标签不同时返回 ErrPreconditionFailed。
+type UserVersionReplacer interface {
+	// ReplaceUserIfVersion replaces the User when its current entity tag matches expectedVersion.
+	// | ReplaceUserIfVersion 在当前实体标签匹配 expectedVersion 时替换 User。
+	ReplaceUserIfVersion(ctx context.Context, user *User, expectedVersion string) (*User, error)
+}
+
 // MemoryStore is a concurrency-safe in-memory Store. It keeps creation order so pagination is
 // deterministic. | MemoryStore 是并发安全的内存 Store。它保留创建顺序，使分页结果确定。
 type MemoryStore struct {
@@ -163,6 +176,19 @@ func (s *MemoryStore) GetUser(ctx context.Context, id string) (*User, error) {
 // ReplaceUser replaces the stored User with the same identifier. | ReplaceUser 替换具有相同标识的
 // 已存储 User。
 func (s *MemoryStore) ReplaceUser(ctx context.Context, user *User) (*User, error) {
+	return s.replaceUser(ctx, user, "")
+}
+
+// ReplaceUserIfVersion replaces the stored User only when its entity tag matches expectedVersion.
+// An empty expectedVersion disables the precondition. | ReplaceUserIfVersion 仅在已存储 User 的实体
+// 标签匹配 expectedVersion 时替换它。expectedVersion 为空时禁用前置条件。
+func (s *MemoryStore) ReplaceUserIfVersion(ctx context.Context, user *User, expectedVersion string) (*User, error) {
+	return s.replaceUser(ctx, user, expectedVersion)
+}
+
+// replaceUser implements ReplaceUser and ReplaceUserIfVersion. | replaceUser 实现 ReplaceUser 与
+// ReplaceUserIfVersion。
+func (s *MemoryStore) replaceUser(ctx context.Context, user *User, expectedVersion string) (*User, error) {
 	if err := storeContextError(ctx); err != nil {
 		return nil, err
 	}
@@ -178,6 +204,10 @@ func (s *MemoryStore) ReplaceUser(ctx context.Context, user *User) (*User, error
 	existing, ok := s.users[stored.ID]
 	if !ok {
 		return nil, errs.Detail(ErrNotFound, "User %q not found | User %q 不存在", stored.ID, stored.ID)
+	}
+	if expectedVersion != "" && normalizeETag(userVersion(existing)) != normalizeETag(expectedVersion) {
+		return nil, errs.Detail(ErrPreconditionFailed, "User %q version changed | User %q 版本已变化",
+			stored.ID, stored.ID)
 	}
 	nameKey := strings.ToLower(strings.TrimSpace(stored.UserName))
 	if owner, exists := s.userNames[nameKey]; exists && owner != stored.ID {

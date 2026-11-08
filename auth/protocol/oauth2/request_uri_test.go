@@ -340,6 +340,22 @@ func TestRequestURICacheCapacity(t *testing.T) {
 	}
 }
 
+func TestRequestURISingleUseCapacity(t *testing.T) {
+	cache := newRequestURICache(RequestURIConfig{
+		Enabled:   true,
+		CacheTTL:  time.Minute,
+		SingleUse: true,
+	}, func() time.Time { return flowNow })
+	for i := 0; i < requestURISingleUseCapacity+8; i++ {
+		if !cache.beginUse("https://client.example/object?i=" + strconv.Itoa(i)) {
+			t.Fatalf("beginUse(%d) reported a duplicate", i)
+		}
+	}
+	if len(cache.used) != requestURISingleUseCapacity {
+		t.Fatalf("single-use size = %d want %d", len(cache.used), requestURISingleUseCapacity)
+	}
+}
+
 func TestRequestURIHelpers(t *testing.T) {
 	if !requestObjectContentType("application/oauth-authz-req+jwt; charset=utf-8") {
 		t.Fatal("request object media type rejected")

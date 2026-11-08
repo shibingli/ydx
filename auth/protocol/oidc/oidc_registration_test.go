@@ -61,6 +61,34 @@ func TestRegistrationRejectsClientSecretJWT(t *testing.T) {
 	}
 }
 
+// TestRegistrationRejectsUnboundTLSClientAuth verifies registration refuses mTLS methods whose
+// certificate binding is missing, because such a client can never authenticate safely. |
+// TestRegistrationRejectsUnboundTLSClientAuth 校验注册会拒绝缺少证书绑定的 mTLS 方法，因为这类
+// 客户端永远无法安全认证。
+func TestRegistrationRejectsUnboundTLSClientAuth(t *testing.T) {
+	fixture := newOIDCFixture(t, true)
+	endpoint := fixture.server.URL + RegistrationPath
+	for _, method := range []string{oauth2.TLSClientAuth, oauth2.SelfSignedTLSClientAuth} {
+		t.Run(method, func(t *testing.T) {
+			body, err := json.Marshal(map[string]any{
+				"redirect_uris":              []string{"https://client.example/cb"},
+				"token_endpoint_auth_method": method,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			resp, out := registrationCall(t, http.MethodPost, endpoint, string(body), "")
+			if resp.StatusCode != http.StatusBadRequest || out["error"] != "invalid_client_metadata" {
+				t.Fatalf("register = %d body=%v | 注册 = %d 正文 = %v", resp.StatusCode, out, resp.StatusCode, out)
+			}
+			description, _ := out["error_description"].(string)
+			if !strings.Contains(description, "tls_client_auth") {
+				t.Fatalf("error_description = %q | error_description = %q", description, description)
+			}
+		})
+	}
+}
+
 func TestDynamicRegistrationLifecycle(t *testing.T) {
 	fixture := newOIDCFixture(t, true)
 	endpoint := fixture.server.URL + RegistrationPath

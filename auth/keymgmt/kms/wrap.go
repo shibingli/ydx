@@ -141,9 +141,11 @@ func (s *Service) GenerateDataKey(ctx context.Context, id string, length int, aa
 // DeriveKey derives length bytes with HKDF-SHA256 from the current version of the key named by id. | DeriveKey
 // 用 HKDF-SHA256 从 id 对应密钥的当前版本派生 length 字节。
 //
-// info is domain separation between uses. The key must permit UsageDeriveKey. length 0 means 32
-// bytes; MaxDataKeyLength caps the output. The operation is audited. | info 用于用途域分离。密钥
-// 必须允许 UsageDeriveKey。length 为 0 表示 32 字节；MaxDataKeyLength 限制输出上限。该操作会写入审计。
+// The key must be symmetric (AES, ChaCha20 or SM4) and permit UsageDeriveKey; asymmetric keys
+// return ErrInvalidKeyType. info is domain separation between uses. length 0 means 32
+// bytes; MaxDataKeyLength caps the output. The operation is audited. | 密钥必须为对称密钥
+// （AES、ChaCha20 或 SM4）并允许 UsageDeriveKey；非对称密钥返回 ErrInvalidKeyType。info 用于用途
+// 域分离。length 为 0 表示 32 字节；MaxDataKeyLength 限制输出上限。该操作会写入审计。
 func (s *Service) DeriveKey(ctx context.Context, id string, length int, info string, salt []byte) ([]byte, error) {
 	if length == 0 {
 		length = 32
@@ -160,6 +162,11 @@ func (s *Service) DeriveKey(ctx context.Context, id string, length int, info str
 	defer key.eraseMaterial()
 	version := key.Version
 	if err := authorizeUse(key, key.CurrentVersion(), UsageDeriveKey); err != nil {
+		s.fail(ctx, OperationDeriveKey, key.ID, version, err)
+		return nil, err
+	}
+	if !key.IsSymmetric() {
+		err := errs.Detail(ErrInvalidKeyType, "DeriveKey requires a symmetric key, got %s | DeriveKey 需要对称密钥，实际为 %s", key.Type, key.Type)
 		s.fail(ctx, OperationDeriveKey, key.ID, version, err)
 		return nil, err
 	}

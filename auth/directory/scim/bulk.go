@@ -19,14 +19,16 @@ import (
 // By default operations run sequentially and are not transactional: each operation commits
 // independently, a failed operation is reported in place, and later failures never roll back
 // resources created or changed by earlier operations. A single operation can also fail after the
-// store committed a change, for example when a password hook rejects the write; no compensating
-// action is attempted. FailOnErrors only stops processing subsequent operations. When the server
+// store committed a change, for example when a password hook rejects the write; the server
+// compensates only that operation by restoring its own prior profile, while earlier operations stay
+// committed. FailOnErrors only stops processing subsequent operations. When the server
 // enables Options.BulkAtomic, the request becomes transactional instead: the first failure rolls
 // back every applied operation in reverse order, removes their bulkId mappings, and FailOnErrors is
 // ignored. | 默认情况下操作按顺序执行且不具备事务性：每个操作独立提交，失败的操作就地报告，后续失败
 // 绝不会回滚先前操作创建或修改的资源。单个操作也可能在存储已提交变更后失败，例如口令钩子拒绝写入；
-// 实现不会尝试补偿。FailOnErrors 只会停止处理后续操作。服务端启用 Options.BulkAtomic 后请求转为
-// 事务性：首次失败会按逆序回滚所有已应用操作、移除其 bulkId 映射，并忽略 FailOnErrors。
+// 服务端只补偿该操作并恢复它自己的先前资料，更早的操作保持已提交。FailOnErrors 只会停止处理后续
+// 操作。服务端启用 Options.BulkAtomic 后请求转为事务性：首次失败会按逆序回滚所有已应用操作、移除
+// 其 bulkId 映射，并忽略 FailOnErrors。
 type BulkRequest struct {
 	// Schemas is the message schema list; BulkRequestSchema is required by the RFC. | Schemas 是消息
 	// Schema 列表；RFC 要求包含 BulkRequestSchema。
@@ -96,6 +98,9 @@ type BulkResponseOperation struct {
 func (s *Server) handleBulk(w http.ResponseWriter, r *http.Request) {
 	if err := s.authorize(r, ActionCreate, ResourceBulk); err != nil {
 		writeError(w, err)
+		return
+	}
+	if !s.requireWriteContentType(w, r) {
 		return
 	}
 	request, err := s.decodeBulkRequest(r)
@@ -313,23 +318,14 @@ func (s *Server) runBulkUser(ctx context.Context, r *http.Request, response Bulk
 		}
 		password := patched.Password
 		patched.Password = ""
-		if password != "" && s.passwordSetter == nil {
-			return bulkFailure(response, errs.Detail(ErrNotConfigured,
-				"password provisioning requires PasswordSetter | 口令预配需要 PasswordSetter"))
-		}
 		patched.ID = existing.ID
 		patched.Meta = nil
-		patched.Groups = existing.Clone().Groups
 		handle, err := undo.prepareUserRestore(existing, response.BulkID)
 		if err != nil {
 			return bulkFailure(response, err)
 		}
-		stored, err := s.store.ReplaceUser(ctx, patched)
+		stored, err := s.replaceUser(ctx, existing, patched, password, handle)
 		if err != nil {
-			return bulkFailure(response, err)
-		}
-		handle.markApplied(userVersion(stored))
-		if err := s.setPassword(ctx, stored, password); err != nil {
 			return bulkFailure(response, err)
 		}
 		return s.bulkResourceResult(response, r, ids, http.StatusOK, stored.ID, userVersion(stored), stored), nil

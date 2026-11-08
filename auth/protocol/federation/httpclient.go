@@ -77,7 +77,7 @@ func doRequest(ctx context.Context, client *http.Client, method, endpoint string
 		}
 		return 0, nil, errs.Detail(ErrTransport, "provider request failed | 提供方请求失败")
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	data, err := io.ReadAll(io.LimitReader(resp.Body, maxProviderResponse+1))
 	if err != nil {
 		if cause := ctx.Err(); cause != nil {

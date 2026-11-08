@@ -257,3 +257,60 @@ func TestHTTPVerifierInvalidResponse(t *testing.T) {
 		t.Fatalf("error = %v, want ErrProviderResponse", err)
 	}
 }
+
+func TestHTTPVerifierResponseFieldLimits(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		body string
+	}{
+		{"requestId", `{"verified":true,"requestId":"` + strings.Repeat("r", maxProviderRequestIDLength+1) + `"}`},
+		{"message", `{"verified":true,"message":"` + strings.Repeat("m", maxProviderMessageLength+1) + `"}`},
+		{"provider", `{"verified":true,"provider":"` + strings.Repeat("p", maxProviderNameLength+1) + `"}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				_, _ = io.WriteString(w, tc.body)
+			}))
+			defer srv.Close()
+			verifier, err := NewHTTPVerifier(HTTPVerifierConfig{URL: srv.URL})
+			if err != nil {
+				t.Fatalf("NewHTTPVerifier: %v", err)
+			}
+			_, err = verifier.Verify(context.Background(), RealNameRequest{Name: "张三", IDNumber: "11010519491231002X"})
+			if !errors.Is(err, ErrProviderResponse) {
+				t.Fatalf("Verify = %v, want ErrProviderResponse", err)
+			}
+			if strings.Contains(err.Error(), strings.Repeat(tc.name[:1], 16)) {
+				t.Fatalf("error %q echoes the oversized %s value", err, tc.name)
+			}
+		})
+	}
+}
+
+func TestHTTPVerifierDecodeErrorDoesNotEchoPII(t *testing.T) {
+	t.Parallel()
+	const (
+		name     = "张三"
+		idNumber = "11010519491231002X"
+	)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, `{"message":"`+name+` `+idNumber+`",`)
+	}))
+	defer srv.Close()
+	verifier, err := NewHTTPVerifier(HTTPVerifierConfig{URL: srv.URL})
+	if err != nil {
+		t.Fatalf("NewHTTPVerifier: %v", err)
+	}
+	_, err = verifier.Verify(context.Background(), RealNameRequest{Name: name, IDNumber: idNumber})
+	if !errors.Is(err, ErrProviderResponse) {
+		t.Fatalf("Verify = %v, want ErrProviderResponse", err)
+	}
+	for _, secret := range []string{name, idNumber} {
+		if strings.Contains(err.Error(), secret) {
+			t.Fatalf("error %q leaks %q", err, secret)
+		}
+	}
+}

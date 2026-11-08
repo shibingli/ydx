@@ -19,17 +19,28 @@ const maxUint32Value = ^uint32(0)
 // Start、Stop 与 Interim-Update 请求要求 SessionID，并携带八位组、报文与会话时间计数。
 // Accounting-On 与 Accounting-Off 请求省略这些计数。
 type AccountingRequest struct {
-	// StatusType is the Acct-Status-Type value and is required. | StatusType 是 Acct-Status-Type 值，必填。
-	StatusType AcctStatusType
+	// EventTimestamp is Event-Timestamp; the current time is used when zero. | EventTimestamp 是
+	// Event-Timestamp；为零时使用当前时间。
+	EventTimestamp time.Time
 	// SessionID is the Acct-Session-Id value; required for session statuses. | SessionID 是
 	// Acct-Session-Id 值；会话状态必填。
 	SessionID string
 	// UserName is the User-Name value. | UserName 是 User-Name 值。
 	UserName string
-	// NASIPAddress overrides the client NAS-IP-Address. | NASIPAddress 覆盖客户端的 NAS-IP-Address。
-	NASIPAddress net.IP
 	// NASIdentifier overrides the client NAS-Identifier. | NASIdentifier 覆盖客户端的 NAS-Identifier。
 	NASIdentifier string
+	// CallingStationID is the Calling-Station-Id value. | CallingStationID 是 Calling-Station-Id 值。
+	CallingStationID string
+	// CalledStationID is the Called-Station-Id value. | CalledStationID 是 Called-Station-Id 值。
+	CalledStationID string
+	// NASIPAddress overrides the client NAS-IP-Address. | NASIPAddress 覆盖客户端的 NAS-IP-Address。
+	NASIPAddress net.IP
+	// Class is the Class value echoed from the Access-Accept. | Class 是从 Access-Accept 回显的 Class 值。
+	Class []byte
+	// Attributes carries additional attributes. | Attributes 携带附加属性。
+	Attributes Attributes
+	// StatusType is the Acct-Status-Type value and is required. | StatusType 是 Acct-Status-Type 值，必填。
+	StatusType AcctStatusType
 	// NASPort is the NAS-Port value; zero omits it. | NASPort 是 NAS-Port 值；零值省略该属性。
 	NASPort uint32
 	// NASPortType is the NAS-Port-Type value; zero omits it. | NASPortType 是 NAS-Port-Type 值；
@@ -53,52 +64,42 @@ type AccountingRequest struct {
 	// TerminateCause is Acct-Terminate-Cause; zero omits it. | TerminateCause 是
 	// Acct-Terminate-Cause；零值省略该属性。
 	TerminateCause AcctTerminateCause
-	// EventTimestamp is Event-Timestamp; the current time is used when zero. | EventTimestamp 是
-	// Event-Timestamp；为零时使用当前时间。
-	EventTimestamp time.Time
-	// CallingStationID is the Calling-Station-Id value. | CallingStationID 是 Calling-Station-Id 值。
-	CallingStationID string
-	// CalledStationID is the Called-Station-Id value. | CalledStationID 是 Called-Station-Id 值。
-	CalledStationID string
-	// Class is the Class value echoed from the Access-Accept. | Class 是从 Access-Accept 回显的 Class 值。
-	Class []byte
-	// Attributes carries additional attributes. | Attributes 携带附加属性。
-	Attributes Attributes
 }
 
 // AccountingResponse is the decoded answer to an Accounting-Request. | AccountingResponse 是
 // Accounting-Request 的解码应答。
 type AccountingResponse struct {
+	// ReplyMessage is the first Reply-Message. | ReplyMessage 是首个 Reply-Message。
+	ReplyMessage string
+	// Attributes holds every response attribute in wire order. | Attributes 按线序保存全部响应属性。
+	Attributes Attributes
+	// Authenticator is the verified Response Authenticator. | Authenticator 是已校验的 Response Authenticator。
+	Authenticator [16]byte
 	// Code is the response code, normally Accounting-Response. | Code 是响应码，通常为 Accounting-Response。
 	Code Code
 	// Identifier is the response packet identifier. | Identifier 是响应报文标识符。
 	Identifier uint8
-	// Authenticator is the verified Response Authenticator. | Authenticator 是已校验的 Response Authenticator。
-	Authenticator [16]byte
-	// Attributes holds every response attribute in wire order. | Attributes 按线序保存全部响应属性。
-	Attributes Attributes
-	// ReplyMessage is the first Reply-Message. | ReplyMessage 是首个 Reply-Message。
-	ReplyMessage string
 }
 
 // AccountRequest sends an Accounting-Request and verifies the response. | AccountRequest 发送
 // Accounting-Request 并校验响应。
 //
 // The Request Authenticator is computed as specified by RFC 2866 and the response must carry a
-// matching Response Authenticator. UDP responses with a mismatching authenticator are silently
-// discarded and reading continues until a valid response or the attempt deadline, as RFC 2866
-// section 4 requires; stream transports fail the attempt so the connection can be closed. Every
-// attempt uses a fresh Identifier and an updated Acct-Delay-Time. | Request Authenticator 按
-// RFC 2866 计算，响应必须携带匹配的 Response Authenticator。按 RFC 2866 第 4 节要求，UDP 响应中
-// 认证符不匹配者被静默丢弃，读取继续直到收到合法响应或本次尝试超时；流传输则让本次尝试失败以便
-// 关闭连接。每次尝试使用新的 Identifier 和更新后的 Acct-Delay-Time。
+// matching Response Authenticator. UDP responses that are malformed, carry another identifier, or
+// fail Response Authenticator verification are silently discarded and reading continues until a
+// valid response or the attempt deadline, as RFC 2866 section 4 requires; stream transports fail
+// the attempt so the connection can be closed. Every attempt uses a fresh Identifier and an updated
+// Acct-Delay-Time. | Request Authenticator 按 RFC 2866 计算，响应必须携带匹配的 Response
+// Authenticator。按 RFC 2866 第 4 节要求，UDP 响应中结构畸形、标识符不同或认证符不匹配者被静默
+// 丢弃，读取继续直到收到合法响应或本次尝试超时；流传输则让本次尝试失败以便关闭连接。每次尝试使用
+// 新的 Identifier 和更新后的 Acct-Delay-Time。
 func (c *Client) AccountRequest(ctx context.Context, request *AccountingRequest) (*AccountingResponse, error) {
 	prepared, eventTimestamp, err := prepareAccountingRequest(request)
 	if err != nil {
 		return nil, err
 	}
 	start := time.Now()
-	packet, raw, requestAuthenticator, err := c.exchange(ctx, CodeAccountingRequest, func(int) ([]byte, [16]byte, error) {
+	packet, raw, requestAuthenticator, err := c.exchange(ctx, CodeAccountingRequest, false, func(int) ([]byte, [16]byte, error) {
 		return c.buildAccountingRequest(prepared, start, eventTimestamp)
 	})
 	if err != nil {

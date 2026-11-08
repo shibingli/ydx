@@ -13,10 +13,14 @@ import (
 //
 // Browser logout (no logoutRequest parameter) destroys the TGT carried by the TGC cookie, every
 // ticket derived from it, and every recorded service session, then expires the cookie. When the
-// optional service or url parameter names a registered service, the browser is redirected there;
-// an unregistered target is ignored rather than followed. | 浏览器登出（不带 logoutRequest 参数）销毁
-// TGC Cookie 携带的 TGT、由它派生的全部票据以及全部已记录的服务会话，然后过期 Cookie。可选的 service
-// 或 url 参数指向已注册服务时，浏览器随后被重定向到该地址；未注册的目标会被忽略而不是跟随。
+// ServiceRegistry also registers front-channel logout URLs (see FrontChannelLogoutResolver), the
+// answer is a page that loads one hidden frame per distinct registered URL; otherwise the browser is
+// redirected immediately when the optional service or url parameter names a registered service.
+// An unregistered target is ignored rather than followed. | 浏览器登出（不带 logoutRequest 参数）
+// 销毁 TGC Cookie 携带的 TGT、由它派生的全部票据以及全部已记录的服务会话，然后过期 Cookie。当
+// ServiceRegistry 还登记了前端登出 URL（见 FrontChannelLogoutResolver）时，响应是一个为每个不同
+// 已注册 URL 加载一个隐藏框架的页面；否则，可选的 service 或 url 参数指向已注册服务时浏览器立即被
+// 重定向。未注册的目标会被忽略而不是跟随。
 //
 // Back-channel logout (a logoutRequest parameter, sent by a service as SAML 1.1 LogoutRequest POST)
 // revokes the named session family and notifies the other participating services. See
@@ -50,6 +54,24 @@ func (s *Server) Logout(w http.ResponseWriter, r *http.Request) {
 	}
 	http.SetCookie(w, s.clearTGCCookie())
 	_ = s.DeliverLogoutRequests(r.Context(), sessions, "")
+	frontChannel := s.frontChannelLogoutURLs(r.Context(), sessions)
+	target := s.logoutTarget(r)
+	if len(frontChannel) > 0 {
+		s.renderFrontChannelLogoutPage(w, frontChannel, target)
+		return
+	}
+	if target != "" {
+		http.Redirect(w, r, target, http.StatusFound)
+		return
+	}
+	s.renderLoggedOutPage(w)
+}
+
+// logoutTarget returns the registered service the logout request asked to return to, or an empty
+// string when the parameter is absent or not registered. Only registered services are ever returned,
+// which keeps the following redirect from becoming an open redirect. | logoutTarget 返回登出请求要求
+// 返回的已注册服务；参数缺失或未注册时返回空串。只会返回已注册服务，避免后续重定向变成开放重定向。
+func (s *Server) logoutTarget(r *http.Request) string {
 	target := strings.TrimSpace(r.URL.Query().Get("service"))
 	if target == "" {
 		target = strings.TrimSpace(r.URL.Query().Get("url"))
@@ -62,11 +84,10 @@ func (s *Server) Logout(w http.ResponseWriter, r *http.Request) {
 			target = strings.TrimSpace(r.PostForm.Get("url"))
 		}
 	}
-	if target != "" && s.allowsService(r.Context(), target) {
-		http.Redirect(w, r, target, http.StatusFound)
-		return
+	if target == "" || !s.allowsService(r.Context(), target) {
+		return ""
 	}
-	s.renderLoggedOutPage(w)
+	return target
 }
 
 // renderLoggedOutPage writes the built-in sign-out confirmation page. | renderLoggedOutPage 写出内置的退出确认页面。

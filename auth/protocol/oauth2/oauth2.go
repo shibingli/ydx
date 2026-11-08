@@ -327,7 +327,11 @@ type Client struct {
 	JWKSURI string `json:"jwks_uri,omitempty"`
 	// JWKS is an inline client key set in JSON form. | JWKS 是 JSON 形式的内联客户端密钥集。
 	JWKS []byte `json:"jwks,omitempty"`
-	// TLSClientAuthSubjectDN is the allowed subject DN for tls_client_auth. | TLSClientAuthSubjectDN 是 tls_client_auth 允许的主体 DN。
+	// TLSClientAuthSubjectDN is the allowed subject DN for tls_client_auth. At least one of it
+	// and TLSClientAuthSANs is required for tls_client_auth and self_signed_tls_client_auth; a
+	// client with neither binding fails closed. | TLSClientAuthSubjectDN 是 tls_client_auth 允许的
+	// 主体 DN。tls_client_auth 与 self_signed_tls_client_auth 至少需要它与 TLSClientAuthSANs
+	// 之一；两者都缺失时客户端按失败关闭处理。
 	TLSClientAuthSubjectDN string `json:"tls_client_auth_subject_dn,omitempty"`
 	// TLSClientAuthSANs are allowed DNS/IP SANs for tls_client_auth. | TLSClientAuthSANs 是 tls_client_auth 允许的 DNS/IP SAN。
 	TLSClientAuthSANs []string `json:"tls_client_auth_san_dns,omitempty"`

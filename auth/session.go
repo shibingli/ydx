@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/shibingli/ydx/errs"
@@ -79,6 +80,36 @@ type SessionManager struct {
 	clock func() time.Time
 	// buildPrincipal projects a user and session into a principal. | buildPrincipal 把用户与会话投影为主体。
 	buildPrincipal func(ctx context.Context, user *User, session *Session) (*Principal, error)
+	// locks serializes validation and rotation per session stripe so a concurrent rotation cannot be
+	// duplicated and a concurrent touch cannot resurrect a revoked session. | locks 按会话分片串行化
+	// 校验与轮换，避免并发轮换重复执行，也避免并发触碰把已撤销会话写回。
+	locks [sessionLockStripes]sync.Mutex
+}
+
+// sessionLockStripes is the number of per-session lock stripes. | sessionLockStripes 是每会话锁分片数。
+const sessionLockStripes = 64
+
+// lockSession acquires the stripe lock for id and returns its release function. | lockSession 获取 id
+// 对应的分片锁并返回释放函数。
+func (m *SessionManager) lockSession(id string) func() {
+	lock := &m.locks[sessionLockIndex(id)]
+	lock.Lock()
+	return lock.Unlock
+}
+
+// sessionLockIndex maps a session identifier to a lock stripe with FNV-1a. | sessionLockIndex 用
+// FNV-1a 把会话标识映射到锁分片。
+func sessionLockIndex(id string) uint32 {
+	const (
+		offset32 = 2166136261
+		prime32  = 16777619
+	)
+	h := uint32(offset32)
+	for i := 0; i < len(id); i++ {
+		h ^= uint32(id[i])
+		h *= prime32
+	}
+	return h % sessionLockStripes
 }
 
 // NewSessionManager returns a session manager. | NewSessionManager 返回会话管理器。
@@ -95,6 +126,11 @@ func NewSessionManager(store SessionStore, users UserStore, config SessionConfig
 	}
 	if config.Path == "" {
 		config.Path = def.Path
+	}
+	if config.SameSite == 0 {
+		// The zero value selects the documented Lax default instead of an omitted attribute. | 零值选择
+		// 文档约定的 Lax 默认值，而不是省略该属性。
+		config.SameSite = def.SameSite
 	}
 	if config.CSRFHeader == "" {
 		config.CSRFHeader = def.CSRFHeader
@@ -148,17 +184,18 @@ func (m *SessionManager) Create(ctx context.Context, userID, clientID string, r 
 		return nil, err
 	}
 	session := &Session{
-		ID:         id,
-		UserID:     userID,
-		ClientID:   clientID,
-		CreatedAt:  now,
-		UpdatedAt:  now,
-		LastSeenAt: now,
-		ExpiresAt:  now.Add(m.config.AbsoluteTimeout),
-		CSRFSecret: csrf,
-		AMR:        append([]string(nil), amr...),
-		ACR:        acr,
-		Data:       make(map[string]string),
+		ID:              id,
+		UserID:          userID,
+		ClientID:        clientID,
+		CreatedAt:       now,
+		AuthenticatedAt: now,
+		UpdatedAt:       now,
+		LastSeenAt:      now,
+		ExpiresAt:       now.Add(m.config.AbsoluteTimeout),
+		CSRFSecret:      csrf,
+		AMR:             append([]string(nil), amr...),
+		ACR:             acr,
+		Data:            make(map[string]string),
 	}
 	if m.config.IdleTimeout > 0 {
 		session.IdleExpiresAt = now.Add(m.config.IdleTimeout)
@@ -223,6 +260,8 @@ func (m *SessionManager) Get(ctx context.Context, id string) (*Session, error) {
 // Validate returns a session when it is active at now and refreshes its sliding deadline. | Validate
 // 在会话于 now 时刻活跃时返回它，并刷新滑动期限。
 func (m *SessionManager) Validate(ctx context.Context, id string) (*Session, error) {
+	unlock := m.lockSession(id)
+	defer unlock()
 	now := m.now()
 	session, err := m.store.GetSession(ctx, id)
 	if err != nil {
@@ -271,9 +310,24 @@ func (m *SessionManager) ValidateRequest(ctx context.Context, r *http.Request) (
 // Rotate replaces oldID with a fresh session identifier, preserving the user and attributes. | Rotate
 // 用新的会话标识替换 oldID，保留用户与属性。
 //
-// Callers must set the returned cookie; the old identifier is revoked immediately. | 调用方必须设置
-// 返回的 Cookie；旧标识立即被撤销。
+// Callers must set the returned cookie; the old identifier is revoked immediately. Explicit rotation
+// also issues a fresh CSRF secret. Automatic rotation performed by the middleware preserves the
+// secret so CSRF tokens already handed to the client stay valid for the rest of the request. | 调用方
+// 必须设置返回的 Cookie；旧标识立即被撤销。显式轮换还会生成新的 CSRF 密钥。中间件执行的自动轮换
+// 保留原密钥，使已下发给客户端的 CSRF 令牌在本次请求余下流程中继续有效。
 func (m *SessionManager) Rotate(ctx context.Context, oldID string) (*Session, error) {
+	return m.rotate(ctx, oldID, false)
+}
+
+// rotate replaces oldID; preserveCSRF keeps the existing CSRF secret. It serializes per session so
+// concurrent requests cannot create two replacement sessions. | rotate 替换 oldID；preserveCSRF 保留
+// 既有 CSRF 密钥。它按会话串行化，避免并发请求创建两个替代会话。
+func (m *SessionManager) rotate(ctx context.Context, oldID string, preserveCSRF bool) (*Session, error) {
+	if oldID == "" {
+		return nil, errs.Detail(ErrSessionNotFound, "session id is empty | 会话 ID 为空")
+	}
+	unlock := m.lockSession(oldID)
+	defer unlock()
 	now := m.now()
 	old, err := m.store.GetSession(ctx, oldID)
 	if err != nil {
@@ -282,13 +336,20 @@ func (m *SessionManager) Rotate(ctx context.Context, oldID string) (*Session, er
 	if old.RevokedAt != nil || !old.Active(now) {
 		return nil, ErrSessionExpired
 	}
+	authTime := old.AuthenticatedAt
+	if authTime.IsZero() {
+		authTime = old.CreatedAt
+	}
 	newID, err := RandomToken(32)
 	if err != nil {
 		return nil, err
 	}
-	csrf, err := RandomToken(32)
-	if err != nil {
-		return nil, err
+	csrf := old.CSRFSecret
+	if !preserveCSRF {
+		csrf, err = RandomToken(32)
+		if err != nil {
+			return nil, err
+		}
 	}
 	revoked := now
 	old.RevokedAt = &revoked
@@ -301,6 +362,7 @@ func (m *SessionManager) Rotate(ctx context.Context, oldID string) (*Session, er
 	rotated.ID = newID
 	rotated.CSRFSecret = csrf
 	rotated.CreatedAt = now
+	rotated.AuthenticatedAt = authTime
 	rotated.UpdatedAt = now
 	rotated.LastSeenAt = now
 	rotated.RevokedAt = nil
@@ -313,6 +375,38 @@ func (m *SessionManager) Rotate(ctx context.Context, oldID string) (*Session, er
 		return nil, err
 	}
 	return rotated, nil
+}
+
+// rotationDue reports whether session exceeded the configured rotation age. | rotationDue 报告会话是否
+// 已超过配置的轮换年龄。
+func (m *SessionManager) rotationDue(session *Session, now time.Time) bool {
+	if session == nil || m.config.RotateAfter <= 0 || session.CreatedAt.IsZero() {
+		return false
+	}
+	return now.Sub(session.CreatedAt) >= m.config.RotateAfter
+}
+
+// rotateIfDue rotates session when it is old enough, reports failures to opts, and writes the new
+// cookie through setCookie. A failed rotation leaves the validated session in use. | rotateIfDue 在
+// 会话足够旧时轮换，把失败上报给 opts，并通过 setCookie 写回新 Cookie。轮换失败时继续使用已校验会话。
+func (m *SessionManager) rotateIfDue(ctx context.Context, session *Session, opts SessionMiddlewareOptions, setCookie func(*http.Cookie)) *Session {
+	if !m.rotationDue(session, m.now()) {
+		return session
+	}
+	rotated, err := m.rotate(ctx, session.ID, true)
+	if err != nil {
+		// A concurrent request already rotated or revoked the session; that is not an operational
+		// failure and the validated session remains authoritative for this request. | 并发请求已完成
+		// 轮换或撤销；这不是运行故障，本次请求继续使用已校验会话。
+		if !errorsIsSessionExpired(err) && opts.RotateErrorHandler != nil {
+			opts.RotateErrorHandler(err)
+		}
+		return session
+	}
+	if setCookie != nil {
+		setCookie(m.Cookie(rotated))
+	}
+	return rotated
 }
 
 // Revoke marks a session revoked. | Revoke 标记会话已撤销。
@@ -464,7 +558,11 @@ func DefaultPrincipal(user *User, session *Session) *Principal {
 		DisplayName:   user.DisplayName,
 	}
 	if session != nil {
-		p.AuthTime = session.CreatedAt
+		authTime := session.AuthenticatedAt
+		if authTime.IsZero() {
+			authTime = session.CreatedAt
+		}
+		p.AuthTime = authTime
 		p.SessionID = session.ID
 		p.AMR = append([]string(nil), session.AMR...)
 		p.ACR = session.ACR
@@ -496,6 +594,11 @@ type SessionMiddlewareOptions struct {
 	EnforceCSRF bool
 	// ErrorHandler renders failures for ydx/router. | ErrorHandler 为 ydx/router 渲染失败响应。
 	ErrorHandler func(c *router.Ctx, err error)
+	// RotateErrorHandler observes automatic rotation failures after a session was validated. The
+	// request still proceeds with the validated session; benign concurrent-expiry errors are not
+	// reported. | RotateErrorHandler 观察会话通过校验后的自动轮换失败。请求仍使用已校验会话继续；
+	// 并发过期等良性错误不会上报。
+	RotateErrorHandler func(err error)
 }
 
 // Middleware returns a native ydx/router middleware that resolves the session cookie. | Middleware
@@ -519,6 +622,9 @@ func (m *SessionManager) Middleware(opts SessionMiddlewareOptions) router.Middle
 			m.failRouter(c, opts, ErrForbidden)
 			return
 		}
+		session = m.rotateIfDue(c.Request.Context(), session, opts, func(cookie *http.Cookie) {
+			c.SetCookie(cookie)
+		})
 		principal, err := m.Principal(c.Request.Context(), session)
 		if err != nil {
 			m.failRouter(c, opts, err)
@@ -549,6 +655,9 @@ func (m *SessionManager) HTTPMiddleware(opts SessionMiddlewareOptions) func(http
 				writeHTTPError(w, http.StatusForbidden, "forbidden")
 				return
 			}
+			session = m.rotateIfDue(r.Context(), session, opts, func(cookie *http.Cookie) {
+				http.SetCookie(w, cookie)
+			})
 			principal, err := m.Principal(r.Context(), session)
 			if err != nil {
 				writeHTTPError(w, http.StatusUnauthorized, "unauthorized")

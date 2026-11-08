@@ -79,6 +79,30 @@ func (s *mockServer) Addr() string {
 	return s.ln.Addr().String()
 }
 
+// closeAllConns waits until at least one session is registered and then closes
+// every live session. Waiting avoids racing a client that connected before the
+// accept loop recorded it. | closeAllConns 等待至少注册一条会话后关闭所有活动会话。等待
+// 可避免与已在 accept 循环记录前完成连接的客户端竞争。
+func (s *mockServer) closeAllConns(t *testing.T) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		s.mu.Lock()
+		if len(s.conns) > 0 {
+			for conn := range s.conns {
+				_ = conn.Close()
+			}
+			s.mu.Unlock()
+			return
+		}
+		s.mu.Unlock()
+		if time.Now().After(deadline) {
+			t.Fatal("mock server registered no connections")
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
 // Close stops accepting and closes every live session. | Close 停止接受并关闭所有活动会话。
 func (s *mockServer) Close() {
 	if s == nil {

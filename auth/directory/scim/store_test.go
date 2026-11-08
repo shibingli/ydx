@@ -264,6 +264,54 @@ func TestMemoryStoreConcurrentAccess(t *testing.T) {
 	}
 }
 
+// TestMemoryStoreReplaceUserIfVersion verifies the conditional replace used by password
+// compensation. | TestMemoryStoreReplaceUserIfVersion 校验口令补偿使用的条件替换。
+func TestMemoryStoreReplaceUserIfVersion(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemoryStore()
+	user, err := store.CreateUser(ctx, &User{UserName: "conditional", DisplayName: "Original"})
+	if err != nil {
+		t.Fatalf("CreateUser error = %v", err)
+	}
+	version := userVersion(user)
+
+	changed := user.Clone()
+	changed.DisplayName = "Changed"
+	updated, err := store.ReplaceUserIfVersion(ctx, changed, version)
+	if err != nil {
+		t.Fatalf("ReplaceUserIfVersion error = %v", err)
+	}
+	if updated.DisplayName != "Changed" {
+		t.Fatalf("updated display name = %q", updated.DisplayName)
+	}
+
+	stale := user.Clone()
+	stale.DisplayName = "Stale"
+	if _, err := store.ReplaceUserIfVersion(ctx, stale, version); !errors.Is(err, ErrPreconditionFailed) {
+		t.Fatalf("stale ReplaceUserIfVersion error = %v", err)
+	}
+	current, err := store.GetUser(ctx, user.ID)
+	if err != nil {
+		t.Fatalf("GetUser error = %v", err)
+	}
+	if current.DisplayName != "Changed" {
+		t.Fatalf("stale replace overwrote the profile: %q", current.DisplayName)
+	}
+
+	unconditional := user.Clone()
+	unconditional.DisplayName = "Unconditional"
+	if _, err := store.ReplaceUserIfVersion(ctx, unconditional, ""); err != nil {
+		t.Fatalf("empty version ReplaceUserIfVersion error = %v", err)
+	}
+	current, err = store.GetUser(ctx, user.ID)
+	if err != nil {
+		t.Fatalf("GetUser after unconditional error = %v", err)
+	}
+	if current.DisplayName != "Unconditional" {
+		t.Fatalf("unconditional replace display name = %q", current.DisplayName)
+	}
+}
+
 func userNames(users []*User) []string {
 	out := make([]string, len(users))
 	for i, user := range users {

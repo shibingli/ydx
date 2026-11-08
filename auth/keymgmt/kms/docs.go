@@ -52,6 +52,21 @@
 // 执行相同规则，Service.AtRestEnabled 报告包装是否生效。审计事件绝不包含明文、材料、口令或已包装
 // DEK。
 //
+// # At-rest format | 静态包装格式
+//
+// Passphrase wrapping writes a versioned KMSM2 blob: magic "KMSM2"[5] | KDF id[1] | iterations[4,
+// big endian] | key length[2, big endian] | salt length[1] | salt | nonce[12] | ciphertext+tag; the
+// header is authenticated as AAD. Every write draws a fresh random salt, and unwrap uses the
+// persisted iteration count and key length after bounds checks, so tampered parameters are rejected.
+// The first KMSM1 format (fixed salt, no header) remains decryptable. Rewrap converts one wrapped
+// blob between wrappers, and Service.RewrapAtRest rotates every wrapped key while keeping the old
+// wrapper as a read fallback if a partial rotation fails. | 口令包装写入带版本的 KMSM2 数据块：
+// 魔数 "KMSM2"[5] | KDF 编号[1] | 迭代次数[4，大端] | 密钥长度[2，大端] | 盐长度[1] | 盐 | nonce[12] |
+// 密文+标签；头部作为 AAD 参与认证。每次写入都使用新的随机盐，解包在边界检查后使用持久化的迭代次数与
+// 密钥长度，因此被篡改的参数会被拒绝。最早的 KMSM1 格式（固定盐、无头部）仍可解密。Rewrap 在包装器
+// 之间转换单个数据块，Service.RewrapAtRest 轮换所有已包装密钥，并在部分轮换失败时保留旧包装器作为
+// 读取回退。
+//
 // # YD router usage | YD 路由用法
 //
 //	store := kms.NewMemoryStore()
@@ -74,6 +89,12 @@
 //	// or mount directly: mux.Handle("/kms/", server.HTTPHandler("/kms"))
 //
 // The HTTP API uses ydx/json and ydx/base64, sets Cache-Control: no-store, and limits request
-// bodies to 1 MiB by default. | HTTP API 使用 ydx/json 与 ydx/base64，设置 Cache-Control: no-store，
-// 并默认把请求体限制为 1 MiB。
+// bodies to 1 MiB by default. ServerConfig.AllowedOrigins and AllowedHosts bound cross-origin
+// callers and Host headers; RequireSameOrigin (implied by CookieAuth) rejects state-changing browser
+// requests without a same-origin Origin or Sec-Fetch-Site header, and CSRFCheck adds token
+// validation. Leaving these fields empty keeps the permissive pre-existing behavior. | HTTP API 使用
+// ydx/json 与 ydx/base64，设置 Cache-Control: no-store，并默认把请求体限制为 1 MiB。
+// ServerConfig.AllowedOrigins 与 AllowedHosts 约束跨域调用方与 Host 头；RequireSameOrigin
+// （CookieAuth 会隐含开启）拒绝缺少同源 Origin 或 Sec-Fetch-Site 头的状态变更浏览器请求，
+// CSRFCheck 可追加令牌校验。上述字段留空时保持原有的宽松行为。
 package kms

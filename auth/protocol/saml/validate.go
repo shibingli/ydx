@@ -51,6 +51,16 @@ type ResponseValidationOptions struct {
 	// requiring InResponseTo should always configure a Store. | Store 关联请求并拒绝重放断言。携带签名
 	// 或要求 InResponseTo 的响应应始终配置 Store。
 	Store Store
+	// AssertionReplayStore enforces Conditions/OneTimeUse. When nil, Store is used when it implements
+	// AssertionReplayStore. When neither is available, OneTimeUse assertions are rejected unless
+	// AllowOneTimeUseWithoutReplayStore is set. | AssertionReplayStore 强制 Conditions/OneTimeUse。
+	// 为空时若 Store 实现 AssertionReplayStore 则使用它。两者均不可用时拒绝 OneTimeUse 断言，除非
+	// 设置 AllowOneTimeUseWithoutReplayStore。
+	AssertionReplayStore AssertionReplayStore
+	// AllowOneTimeUseWithoutReplayStore accepts OneTimeUse assertions without replay detection when
+	// no replay store is available. The default false fails closed. | AllowOneTimeUseWithoutReplayStore
+	// 在没有重放存储时接受 OneTimeUse 断言且不检测重放。默认 false 失败关闭。
+	AllowOneTimeUseWithoutReplayStore bool
 	// SignatureVerifier verifies XML signatures; nil means present signatures are rejected because
 	// they cannot be checked. | SignatureVerifier 校验 XML 签名；为空时因无法校验而拒绝存在的签名。
 	SignatureVerifier SignatureVerifier
@@ -402,10 +412,57 @@ func validateAssertion(ctx context.Context, entry assertionEntry, response Respo
 			expiresAt = parsed
 		}
 	}
+	// SessionNotOnOrAfter bounds the IdP session exactly like Conditions/NotOnOrAfter bounds the
+	// assertion: a value at or before the tolerated clock boundary is expired. | SessionNotOnOrAfter
+	// 与 Conditions/NotOnOrAfter 约束断言的方式一致地约束 IdP 会话：等于或早于容忍时钟边界即过期。
+	for index := range assertion.AuthnStatement {
+		statement := &assertion.AuthnStatement[index]
+		if statement.SessionNotOnOrAfter == "" {
+			continue
+		}
+		parsed, err := ParseTime(statement.SessionNotOnOrAfter)
+		if err != nil {
+			return nil, err
+		}
+		if !now.Add(-skew).Before(parsed) {
+			return nil, ErrResponseExpired
+		}
+		if parsed.Before(expiresAt) {
+			expiresAt = parsed
+		}
+	}
+	recorded := false
+	if assertion.Conditions != nil && assertion.Conditions.OneTimeUse != nil {
+		replayStore := opts.AssertionReplayStore
+		storeBacked := false
+		if replayStore == nil && opts.Store != nil {
+			if candidate, ok := opts.Store.(AssertionReplayStore); ok {
+				replayStore = candidate
+				storeBacked = true
+			}
+		}
+		if replayStore != nil {
+			seen, err := replayStore.SeenAndStore(ctx, assertion.ID, expiresAt, now)
+			if err != nil {
+				return nil, err
+			}
+			if seen {
+				return nil, ErrReplay
+			}
+			// The store already recorded this identifier; saving it again through Store would report
+			// the first legitimate use as a replay. A separately configured replay store does not
+			// satisfy Store's own replay detection, so both records are kept in that case. | 该存储已
+			// 记录此标识；再次经 Store 保存会把首次合法使用误报为重放。单独配置的重放存储不满足
+			// Store 自身的重放检测，因此该情况下两者都会记录。
+			recorded = storeBacked
+		} else if !opts.AllowOneTimeUseWithoutReplayStore {
+			return nil, errs.Detail(ErrInvalidConfig, "one-time-use assertion requires an AssertionReplayStore | 一次性断言需要 AssertionReplayStore")
+		}
+	}
 	// A nil Store disables replay detection; callers that accept signed assertions or rely on
 	// InResponseTo should always configure one. | Store 为空时禁用重放检测；接受签名断言或依赖
 	// InResponseTo 的调用方应始终配置 Store。
-	if opts.Store != nil {
+	if opts.Store != nil && !recorded {
 		fresh, err := opts.Store.SaveAssertion(ctx, assertion.ID, expiresAt, now)
 		if err != nil {
 			return nil, err

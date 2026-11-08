@@ -556,6 +556,9 @@ func (s *MemoryCredentialStore) list(keep func(*Credential) bool) []*Credential 
 type MemoryAuditStore struct {
 	mu     sync.RWMutex
 	events []*AuditEvent
+	// maxEvents is the retained event cap; zero or negative means unlimited. | maxEvents 是保留事件
+	// 上限；零或负数表示不限。
+	maxEvents int
 }
 
 // NewMemoryAuditStore returns an empty in-memory audit store. | NewMemoryAuditStore 返回空的内存审计存储。
@@ -571,6 +574,7 @@ func (s *MemoryAuditStore) RecordAudit(_ context.Context, event *AuditEvent) err
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.events = append(s.events, event.Clone())
+	s.trimLocked()
 	return nil
 }
 

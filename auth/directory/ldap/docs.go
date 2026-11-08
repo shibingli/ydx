@@ -55,6 +55,16 @@
 // through a Pool for parallel requests, and close the pool on shutdown. | 在 YD 或
 // net/http 服务中，于启动期创建客户端，通过 Pool 共享给并行请求，并在关闭时关闭连接池。
 //
+// A Pool normally returns idle connections without a round trip. Set
+// Config.HealthCheck to HealthCheckWhoAmI or HealthCheckRootDSE to probe a
+// reused connection within Config.IdleHealthCheckTimeout; a failed probe is
+// discarded and Get dials a replacement. Probing is disabled by default. Set
+// Config.RequireSASLPlainTLS to keep SASL PLAIN credentials off cleartext
+// links; it is disabled by default for compatibility. | 连接池通常不做往返即返回空闲连接。
+// 把 Config.HealthCheck 设为 HealthCheckWhoAmI 或 HealthCheckRootDSE，即可在
+// Config.IdleHealthCheckTimeout 内探测复用的连接；探测失败会丢弃并由 Get 重新拨号。默认关闭
+// 探测。设置 Config.RequireSASLPlainTLS 可避免 SASL PLAIN 凭据经过明文链路；为保持兼容默认关闭。
+//
 // NTLMv2 SASL authentication over LDAPS, using the peer certificate for
 // tls-server-end-point channel binding: | 通过 LDAPS 使用对端证书进行
 // tls-server-end-point 通道绑定的 NTLMv2 SASL 认证：

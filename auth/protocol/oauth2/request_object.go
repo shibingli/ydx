@@ -84,8 +84,9 @@ type RequestURIConfig struct {
 	// CacheTTL caches fetched request objects; zero means five minutes and a negative value
 	// disables caching. | CacheTTL 缓存已抓取的请求对象；零值表示 5 分钟，负值禁用缓存。
 	CacheTTL time.Duration
-	// SingleUse rejects every request_uri after its first use for CacheTTL. | SingleUse 在 CacheTTL
-	// 内拒绝每个 request_uri 的再次使用。
+	// SingleUse rejects every request_uri after its first use for CacheTTL. At most 4096 URIs are
+	// remembered; beyond that the earliest-expiring record is evicted. | SingleUse 在 CacheTTL
+	// 内拒绝每个 request_uri 的再次使用。最多记住 4096 个 URI，超出时淘汰最早到期的记录。
 	SingleUse bool
 }
 

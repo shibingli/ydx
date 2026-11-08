@@ -160,6 +160,15 @@ type Config struct {
 	AndroidPackageName string
 	// SafetyNetVerifier overrides the built-in Android SafetyNet JWS verification. | SafetyNetVerifier 覆盖内置 Android SafetyNet JWS 校验。
 	SafetyNetVerifier SafetyNetVerifier
+	// SafetyNetPolicy tightens the built-in android-safetynet verification. It is ignored when
+	// SafetyNetVerifier is set. The zero value keeps the baseline behavior. | SafetyNetPolicy 收紧
+	// 内置 android-safetynet 校验。设置 SafetyNetVerifier 时忽略本字段。零值保持基线行为。
+	SafetyNetPolicy SafetyNetPolicy
+	// AndroidKeyPolicy tightens the built-in android-key KeyDescription verification. It is
+	// ignored when AndroidKeyVerifier is set. The zero value keeps the baseline behavior. |
+	// AndroidKeyPolicy 收紧内置 android-key KeyDescription 校验。设置 AndroidKeyVerifier 时忽略本字段。
+	// 零值保持基线行为。
+	AndroidKeyPolicy AndroidKeyPolicy
 	// Clock supplies the current time. Nil uses time.Now. | Clock 提供当前时间。为空时使用 time.Now。
 	Clock func() time.Time
 	// Algorithms lists the offered COSE algorithms. Nil means DefaultAlgorithms. | Algorithms 列出提供的 COSE 算法。为空表示 DefaultAlgorithms。
@@ -178,53 +187,57 @@ type Config struct {
 //
 // A Service is safe for concurrent use after New returns. | New 返回后 Service 可安全并发使用。
 type Service struct {
-	rpDisplayName  string
-	rpID           string
-	origins        []string
-	challengeLen   int
-	timeout        time.Duration
-	userVerif      UserVerificationRequirement
-	attestation    ConveyancePreference
-	challenges     ChallengeStore
-	credentials    CredentialStore
-	counterPolicy  CounterPolicy
-	roots          *x509.CertPool
-	safetynetRoots *x509.CertPool
-	androidRoots   *x509.CertPool
-	androidKey     AndroidKeyVerifier
-	androidPackage string
-	safetynet      SafetyNetVerifier
-	clock          func() time.Time
-	algorithms     []int
-	tokenBinding   string
-	requireTB      bool
-	allowCross     bool
-	topOrigins     []string
-	signLocks      [64]sync.Mutex
+	rpDisplayName   string
+	rpID            string
+	origins         []string
+	challengeLen    int
+	timeout         time.Duration
+	userVerif       UserVerificationRequirement
+	attestation     ConveyancePreference
+	challenges      ChallengeStore
+	credentials     CredentialStore
+	counterPolicy   CounterPolicy
+	roots           *x509.CertPool
+	safetynetRoots  *x509.CertPool
+	androidRoots    *x509.CertPool
+	androidKey      AndroidKeyVerifier
+	androidPackage  string
+	safetynet       SafetyNetVerifier
+	safetyNetPolicy SafetyNetPolicy
+	androidPolicy   AndroidKeyPolicy
+	clock           func() time.Time
+	algorithms      []int
+	tokenBinding    string
+	requireTB       bool
+	allowCross      bool
+	topOrigins      []string
+	signLocks       [64]sync.Mutex
 }
 
 // New validates config and returns a Service. | New 校验 config 并返回 Service。
 func New(config Config) (*Service, error) {
 	s := &Service{
-		rpDisplayName:  strings.TrimSpace(config.RPDisplayName),
-		challengeLen:   config.ChallengeLength,
-		timeout:        config.Timeout,
-		userVerif:      config.UserVerification,
-		attestation:    config.Attestation,
-		challenges:     config.ChallengeStore,
-		credentials:    config.CredentialStore,
-		counterPolicy:  config.CounterPolicy,
-		roots:          config.AttestationRoots,
-		safetynetRoots: config.SafetyNetRoots,
-		androidRoots:   config.AndroidKeyRoots,
-		androidKey:     config.AndroidKeyVerifier,
-		androidPackage: strings.TrimSpace(config.AndroidPackageName),
-		safetynet:      config.SafetyNetVerifier,
-		clock:          config.Clock,
-		tokenBinding:   config.TokenBindingID,
-		requireTB:      config.RequireTokenBinding,
-		allowCross:     config.AllowCrossOrigin,
-		topOrigins:     config.AllowedTopOrigins,
+		rpDisplayName:   strings.TrimSpace(config.RPDisplayName),
+		challengeLen:    config.ChallengeLength,
+		timeout:         config.Timeout,
+		userVerif:       config.UserVerification,
+		attestation:     config.Attestation,
+		challenges:      config.ChallengeStore,
+		credentials:     config.CredentialStore,
+		counterPolicy:   config.CounterPolicy,
+		roots:           config.AttestationRoots,
+		safetynetRoots:  config.SafetyNetRoots,
+		androidRoots:    config.AndroidKeyRoots,
+		androidKey:      config.AndroidKeyVerifier,
+		androidPackage:  strings.TrimSpace(config.AndroidPackageName),
+		safetynet:       config.SafetyNetVerifier,
+		safetyNetPolicy: config.SafetyNetPolicy,
+		androidPolicy:   config.AndroidKeyPolicy,
+		clock:           config.Clock,
+		tokenBinding:    config.TokenBindingID,
+		requireTB:       config.RequireTokenBinding,
+		allowCross:      config.AllowCrossOrigin,
+		topOrigins:      config.AllowedTopOrigins,
 	}
 	if s.rpDisplayName == "" {
 		return nil, errs.Detail(ErrInvalidConfig, "RP display name is empty | RP 展示名称为空")
@@ -282,6 +295,12 @@ func New(config Config) (*Service, error) {
 	}
 	if !validCounterPolicy(s.counterPolicy) {
 		return nil, errs.Detail(ErrInvalidConfig, "counter policy %q | 计数器策略 %q", s.counterPolicy, s.counterPolicy)
+	}
+	if err := s.safetyNetPolicy.validate(); err != nil {
+		return nil, err
+	}
+	if err := s.androidPolicy.validate(); err != nil {
+		return nil, err
 	}
 	algorithms := config.Algorithms
 	if algorithms == nil {

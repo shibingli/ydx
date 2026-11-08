@@ -25,9 +25,12 @@ type idleClient struct {
 
 // Pool bounds a set of independent clients, each serialized individually. Get
 // borrows a client, Put returns it, and Do combines both. Clients are created
-// lazily and re-authenticated from Config. | Pool 限制一组彼此独立的客户端，每个客户端
-// 单独串行化。Get 借出客户端，Put 归还，Do 组合两者。客户端按需创建，并按 Config
-// 重新认证。
+// lazily and re-authenticated from Config. When Config.HealthCheck is enabled,
+// Get probes a reused idle connection with a bounded timeout and discards it on
+// failure instead of returning a dead connection. | Pool 限制一组彼此独立的客户端，每个
+// 客户端单独串行化。Get 借出客户端，Put 归还，Do 组合两者。客户端按需创建，并按 Config
+// 重新认证。启用 Config.HealthCheck 后，Get 会在有界超时内探测复用的空闲连接，失败时丢弃它
+// 而不是返回失效连接。
 type Pool struct {
 	cfg        normalizedConfig
 	mu         sync.Mutex
@@ -84,6 +87,16 @@ func (p *Pool) Get(ctx context.Context) (*Client, error) {
 			p.checkedOut[client] = struct{}{}
 			p.mu.Unlock()
 			closeClients(expired)
+			if err := p.probeIdle(client); err != nil {
+				p.discardProbed(client)
+				if ctxErr := ctx.Err(); ctxErr != nil {
+					return nil, ctxErr
+				}
+				continue
+			}
+			if client.IsClosed() {
+				return nil, ErrPoolClosed
+			}
 			return client, nil
 		}
 		if len(p.all)+p.creating < p.cfg.PoolSize {
@@ -250,6 +263,45 @@ func (p *Pool) pruneLocked() []*Client {
 		p.broadcastLocked()
 	}
 	return expired
+}
+
+// probeIdle runs the configured liveness probe on a reused idle client. It
+// returns nil when probing is disabled or the probe succeeds. The probe uses a
+// detached bounded context so a borrower's deadline cannot discard a healthy
+// connection and a hung server cannot stall Get beyond
+// Config.IdleHealthCheckTimeout. A client with no transport is reconnected by
+// the probe and kept when that succeeds. | probeIdle 对复用的空闲客户端执行配置的存活
+// 探测。探测被禁用或成功时返回 nil。探测使用独立的有界上下文，因此借用方期限不会丢弃健康连接，
+// 挂起的服务端也不能让 Get 阻塞超过 Config.IdleHealthCheckTimeout。没有传输的客户端会由探测
+// 重连，成功时保留。
+func (p *Pool) probeIdle(client *Client) error {
+	if client == nil || p.cfg.HealthCheck == HealthCheckDisabled {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), p.cfg.IdleHealthCheckTimeout)
+	defer cancel()
+	switch p.cfg.HealthCheck {
+	case HealthCheckWhoAmI:
+		_, err := client.WhoAmI(ctx)
+		return err
+	case HealthCheckRootDSE:
+		_, err := client.RootDSE(ctx)
+		return err
+	default:
+		return nil
+	}
+}
+
+// discardProbed removes a client whose idle probe failed and closes it. Removal
+// frees a PoolSize slot, so waiters are woken to dial a replacement. | discardProbed
+// 移除并关闭空闲探测失败的客户端。移除会释放一个 PoolSize 名额，因此会唤醒等待者去拨号替代连接。
+func (p *Pool) discardProbed(client *Client) {
+	p.mu.Lock()
+	delete(p.all, client)
+	delete(p.checkedOut, client)
+	p.broadcastLocked()
+	p.mu.Unlock()
+	_ = client.Close()
 }
 
 // broadcastLocked wakes every Get waiter. | broadcastLocked 唤醒所有 Get 等待者。

@@ -54,6 +54,35 @@ func TestAccessOverTLS(t *testing.T) {
 	server.nextRequest(t)
 }
 
+func TestStreamRejectsMalformedResponse(t *testing.T) {
+	secret := []byte("testing-secret")
+	server := newTCPMock(t, secret, func(request *Packet, raw []byte) ([]byte, error) {
+		malformed := make([]byte, 10)
+		malformed[0] = byte(CodeAccessAccept)
+		malformed[1] = request.Identifier
+		return malformed, nil
+	})
+	client := newTestClient(t, ClientConfig{Network: NetworkTCP, Address: server.Addr(), Secret: secret})
+	if _, err := client.AccessRequest(context.Background(), &AccessRequest{UserName: "alice"}); !errors.Is(err, ErrInvalidResponse) {
+		t.Fatalf("error = %v, want ErrInvalidResponse", err)
+	}
+}
+
+func TestStreamRejectsBadMessageAuthenticator(t *testing.T) {
+	secret := []byte("testing-secret")
+	server := newTCPMock(t, secret, func(request *Packet, raw []byte) ([]byte, error) {
+		return signedResponse(request, secret, CodeAccessAccept, nil)
+	})
+	client := newTestClient(t, ClientConfig{Network: NetworkTCP, Address: server.Addr(), Secret: secret})
+	_, err := client.AccessRequest(context.Background(), &AccessRequest{
+		Method:      AuthEAP,
+		EAPMessages: [][]byte{{1}},
+	})
+	if !errors.Is(err, ErrMessageAuthenticator) {
+		t.Fatalf("error = %v, want ErrMessageAuthenticator", err)
+	}
+}
+
 func TestClientContextCancellation(t *testing.T) {
 	secret := []byte("testing-secret")
 	server := newUDPMock(t, secret, func(request *Packet, raw []byte) ([]byte, error) {

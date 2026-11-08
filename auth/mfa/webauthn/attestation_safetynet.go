@@ -14,7 +14,8 @@ import (
 
 // verifyAndroidSafetyNet implements the android-safetynet attestation format. | verifyAndroidSafetyNet 实现 android-safetynet 认证声明格式。
 func (o *AttestationObject) verifyAndroidSafetyNet(ctx context.Context, result *AttestationResult, clientDataHash []byte, opts AttestationOptions) error {
-	if _, err := attestationStatementText(o.AttStmt, "ver"); err != nil {
+	version, err := attestationStatementText(o.AttStmt, "ver")
+	if err != nil {
 		return err
 	}
 	response, err := attestationStatementBytes(o.AttStmt, "response")
@@ -39,8 +40,15 @@ func (o *AttestationObject) verifyAndroidSafetyNet(ctx context.Context, result *
 		result.TrustVerified = verified
 		return nil
 	}
-	if err := verifySafetyNetJWS(jws, expectedNonce[:]); err != nil {
+	policy := opts.SafetyNetPolicy
+	if err := policy.validate(); err != nil {
 		return err
+	}
+	if err := verifySafetyNetJWSPolicy(jws, expectedNonce[:], policy); err != nil {
+		return err
+	}
+	if len(policy.AllowedVersions) > 0 && !containsString(policy.AllowedVersions, version) {
+		return errs.Detail(ErrInvalidAttestation, "SafetyNet version %q is not allowed | SafetyNet ver %q 不在允许列表", version, version)
 	}
 	expectedPackage := opts.expectedAndroidPackageName()
 	if expectedPackage != "" && jws.payload.APKPackageName != expectedPackage {
@@ -49,9 +57,9 @@ func (o *AttestationObject) verifyAndroidSafetyNet(ctx context.Context, result *
 	}
 	now := opts.currentTime()
 	attested := time.UnixMilli(jws.payload.TimestampMs)
-	const window = time.Minute
+	window := policy.timestampTolerance()
 	if attested.Before(now.Add(-window)) || attested.After(now.Add(window)) {
-		return errs.Detail(ErrInvalidAttestation, "SafetyNet timestamp is outside the one minute window | SafetyNet 时间戳超出一分钟窗口")
+		return errs.Detail(ErrInvalidAttestation, "SafetyNet timestamp is outside the %s window | SafetyNet 时间戳超出 %s 窗口", window, window)
 	}
 	verified, err := verifyCertificateChain(jws.certs, opts.withSafetyNetRoots())
 	if err != nil {

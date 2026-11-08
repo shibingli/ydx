@@ -25,6 +25,29 @@ const (
 	// DefaultMaxIdleTime is the default time an idle pooled connection is retained. |
 	// DefaultMaxIdleTime 是空闲池连接默认保留时间。
 	DefaultMaxIdleTime = 5 * time.Minute
+	// DefaultIdleHealthCheckTimeout bounds one idle-connection liveness probe. |
+	// DefaultIdleHealthCheckTimeout 限制单次空闲连接存活探测。
+	DefaultIdleHealthCheckTimeout = 2 * time.Second
+)
+
+// HealthCheckMode selects the liveness probe a Pool runs on an idle connection
+// before handing it to a borrower. | HealthCheckMode 选择连接池在把空闲连接交给借用方之前
+// 执行的存活探测。
+type HealthCheckMode int
+
+const (
+	// HealthCheckDisabled disables idle probing; Get returns a reused connection
+	// without a round trip. It is the default. | HealthCheckDisabled 关闭空闲探测；Get
+	// 不做往返即返回复用连接。这是默认值。
+	HealthCheckDisabled HealthCheckMode = iota
+	// HealthCheckWhoAmI probes with an RFC 4532 Who Am I request. It is the
+	// cheapest round trip but requires server support for the extension. |
+	// HealthCheckWhoAmI 使用 RFC 4532 Who Am I 请求探测。它是最便宜的往返，但需要服务端支持该扩展。
+	HealthCheckWhoAmI
+	// HealthCheckRootDSE probes with a base-scope search of the root DSE. Almost
+	// every LDAP server supports it, at the cost of one search. |
+	// HealthCheckRootDSE 通过根 DSE 的基础范围搜索探测。几乎所有 LDAP 服务端都支持，代价是一次搜索。
+	HealthCheckRootDSE
 )
 
 // ReferralHandler receives referral URIs. The client never follows referrals
@@ -63,6 +86,25 @@ type Config struct {
 	// MaxIdleTime bounds how long a Pool retains an idle connection. Zero uses
 	// DefaultMaxIdleTime. | MaxIdleTime 限制连接池保留空闲连接的时间。零使用 DefaultMaxIdleTime。
 	MaxIdleTime time.Duration
+	// HealthCheck selects the liveness probe a Pool runs before reusing an idle
+	// connection. A failed probe discards the connection and Get dials a
+	// replacement. Newly dialed connections are not probed. Dial ignores it. | HealthCheck
+	// 选择连接池复用空闲连接前执行的存活探测。探测失败会丢弃该连接，Get 重新拨号。新拨号的连接
+	// 不做探测。Dial 忽略该字段。
+	HealthCheck HealthCheckMode
+	// IdleHealthCheckTimeout bounds one idle probe. Zero uses
+	// DefaultIdleHealthCheckTimeout. The probe never inherits the borrower's
+	// deadline, so a short operation deadline cannot discard a healthy connection. |
+	// IdleHealthCheckTimeout 限制单次空闲探测。零使用 DefaultIdleHealthCheckTimeout。探测不继承
+	// 借用方的期限，因此短操作期限不会丢弃健康连接。
+	IdleHealthCheckTimeout time.Duration
+	// RequireSASLPlainTLS rejects SASL PLAIN when the connection is not
+	// TLS-protected. Empty credentials would otherwise cross the network in
+	// cleartext. The default is false for compatibility; enable it whenever the
+	// server supports StartTLS or LDAPS. | RequireSASLPlainTLS 在连接未受 TLS 保护时拒绝
+	// SASL PLAIN，否则凭据会以明文经过网络。为了兼容默认值为 false；当服务端支持 StartTLS 或
+	// LDAPS 时应启用。
+	RequireSASLPlainTLS bool
 	// BindDN optionally auto-binds with a simple bind after every connection. | BindDN
 	// 可选地在每次连接后执行简单绑定。
 	BindDN string
@@ -164,6 +206,12 @@ func normalizeConfig(cfg Config) (normalizedConfig, error) {
 	if cfg.PoolSize < 0 || cfg.MaxIdle < 0 || cfg.MaxIdleTime < 0 {
 		return normalizedConfig{}, errs.Detail(ErrInvalidConfig, "negative pool setting | 连接池设置为负")
 	}
+	if cfg.IdleHealthCheckTimeout < 0 {
+		return normalizedConfig{}, errs.Detail(ErrInvalidConfig, "negative idle health check timeout | 空闲健康检查超时为负")
+	}
+	if cfg.HealthCheck < HealthCheckDisabled || cfg.HealthCheck > HealthCheckRootDSE {
+		return normalizedConfig{}, errs.Detail(ErrInvalidConfig, "unsupported health check mode %d | 不支持的健康检查模式 %d", int(cfg.HealthCheck), int(cfg.HealthCheck))
+	}
 	if cfg.MaxMessageSize < 0 || cfg.MaxMessageSize > 1<<30 {
 		return normalizedConfig{}, errs.Detail(ErrInvalidConfig, "max message size %d is out of range | 最大消息大小 %d 超出范围", cfg.MaxMessageSize, cfg.MaxMessageSize)
 	}
@@ -190,6 +238,9 @@ func normalizeConfig(cfg Config) (normalizedConfig, error) {
 	}
 	if cfg.MaxIdleTime == 0 {
 		cfg.MaxIdleTime = DefaultMaxIdleTime
+	}
+	if cfg.IdleHealthCheckTimeout == 0 {
+		cfg.IdleHealthCheckTimeout = DefaultIdleHealthCheckTimeout
 	}
 	tlsConfig := cloneTLSConfig(cfg.TLSConfig, ep.serverName)
 	cfg.TLSConfig = nil

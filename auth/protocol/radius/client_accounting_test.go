@@ -2,6 +2,7 @@ package radius
 
 import (
 	"context"
+	"encoding/binary"
 	"errors"
 	"net"
 	"testing"
@@ -191,6 +192,60 @@ func TestAccountingDiscardsBadResponseAuthenticator(t *testing.T) {
 		}
 		if elapsed := time.Since(start); elapsed < 60*time.Millisecond {
 			t.Fatalf("bad response failed the exchange after only %v", elapsed)
+		}
+	})
+}
+
+func TestAccountingRejectsMalformedResponse(t *testing.T) {
+	secret := []byte("testing-secret")
+	request := &AccountingRequest{StatusType: AcctStatusAccountingOn}
+	malformedResponse := func(request *Packet) [][]byte {
+		short := make([]byte, 10)
+		short[0] = byte(CodeAccountingResponse)
+		short[1] = request.Identifier
+		badLength := make([]byte, HeaderLength)
+		badLength[0] = byte(CodeAccountingResponse)
+		badLength[1] = request.Identifier
+		binary.BigEndian.PutUint16(badLength[2:4], HeaderLength+32)
+		return [][]byte{short, badLength}
+	}
+	t.Run("bad structure then good", func(t *testing.T) {
+		server := newScriptedUDPServer(t, func(request *Packet) ([][]byte, error) {
+			good, err := signedResponse(request, secret, CodeAccountingResponse, nil)
+			if err != nil {
+				return nil, err
+			}
+			return append(malformedResponse(request), good), nil
+		})
+		client := newTestClient(t, ClientConfig{
+			Address: server.LocalAddr().String(),
+			Secret:  secret,
+			Timeout: 500 * time.Millisecond,
+		})
+		response, err := client.AccountRequest(context.Background(), request)
+		if err != nil {
+			t.Fatalf("AccountRequest: %v", err)
+		}
+		if response.Code != CodeAccountingResponse {
+			t.Fatalf("unexpected code %d", response.Code)
+		}
+	})
+	t.Run("bad structure only times out", func(t *testing.T) {
+		server := newUDPMock(t, secret, func(request *Packet, raw []byte) ([]byte, error) {
+			return malformedResponse(request)[0], nil
+		})
+		client := newTestClient(t, ClientConfig{
+			Address: server.Addr(),
+			Secret:  secret,
+			Timeout: 80 * time.Millisecond,
+		})
+		start := time.Now()
+		_, err := client.AccountRequest(context.Background(), request)
+		if !errors.Is(err, ErrTimeout) {
+			t.Fatalf("error = %v, want ErrTimeout", err)
+		}
+		if elapsed := time.Since(start); elapsed < 60*time.Millisecond {
+			t.Fatalf("malformed response failed the exchange after only %v", elapsed)
 		}
 	})
 }

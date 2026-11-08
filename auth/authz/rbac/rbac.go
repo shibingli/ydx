@@ -44,6 +44,11 @@ var (
 	ErrInvalidSnapshot = errs.New("rbac: invalid snapshot | rbac：快照非法")
 	// ErrUnsupportedVersion reports a snapshot version this package cannot load. | ErrUnsupportedVersion 表示本包无法加载的快照版本。
 	ErrUnsupportedVersion = errs.New("rbac: unsupported snapshot version | rbac：快照版本不受支持")
+	// ErrSnapshotRestore reports that a failed snapshot load could not restore the previous engine
+	// state. The returned error joins the load failure and the restore failure, so errors.Is also
+	// matches both underlying sentinels. | ErrSnapshotRestore 表示快照装载失败后无法恢复先前的引擎状态。
+	// 返回的错误会合并装载失败与恢复失败，因此 errors.Is 也能匹配两个底层哨兵。
+	ErrSnapshotRestore = errs.New("rbac: snapshot restore failed | rbac：快照恢复失败")
 	// ErrCanceled reports a canceled or expired context. | ErrCanceled 表示上下文已取消或超时。
 	ErrCanceled = errs.New("rbac: operation canceled | rbac：操作已取消")
 	// ErrNilEngine reports a nil engine passed to a middleware constructor. | ErrNilEngine 表示传给中间件构造函数的引擎为空。

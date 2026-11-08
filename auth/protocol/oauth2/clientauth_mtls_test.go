@@ -17,6 +17,13 @@ import (
 // 返回用于 mTLS 测试的自签名证书。
 func testClientCertificate(t *testing.T, subject string, dns []string) *x509.Certificate {
 	t.Helper()
+	return testClientCertificateWithValidity(t, subject, dns, time.Now().Add(-time.Hour), time.Now().Add(time.Hour))
+}
+
+// testClientCertificateWithValidity returns a self-signed certificate with an explicit validity
+// window. | testClientCertificateWithValidity 返回带显式有效期窗口的自签名证书。
+func testClientCertificateWithValidity(t *testing.T, subject string, dns []string, notBefore, notAfter time.Time) *x509.Certificate {
+	t.Helper()
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
 		t.Fatalf("GenerateKey: %v", err)
@@ -25,8 +32,8 @@ func testClientCertificate(t *testing.T, subject string, dns []string) *x509.Cer
 		SerialNumber:          big.NewInt(1),
 		Subject:               pkix.Name{CommonName: subject},
 		DNSNames:              dns,
-		NotBefore:             time.Now().Add(-time.Hour),
-		NotAfter:              time.Now().Add(time.Hour),
+		NotBefore:             notBefore,
+		NotAfter:              notAfter,
 		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageCertSign,
 		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
 		BasicConstraintsValid: true,
@@ -90,6 +97,29 @@ func TestVerifyTLSClient(t *testing.T) {
 	t.Run("san-mismatch", func(t *testing.T) {
 		client := &Client{ID: "mtls", TLSClientAuthSANs: []string{"other.example"}}
 		if err := verifyTLSClient(testTLSRequest(cert), client, TLSClientAuth); !errors.Is(err, ErrInvalidClient) {
+			t.Fatalf("error = %v, want ErrInvalidClient", err)
+		}
+	})
+	t.Run("no-binding", func(t *testing.T) {
+		// A certificate trusted by the TLS listener must not authenticate a client with no
+		// registered binding. | TLS 监听器信任的证书不得认证没有注册绑定的客户端。
+		if err := verifyTLSClient(testTLSRequest(cert), &Client{ID: "mtls"}, TLSClientAuth); !errors.Is(err, ErrInvalidClient) {
+			t.Fatalf("error = %v, want ErrInvalidClient", err)
+		}
+	})
+	t.Run("expired-self-signed", func(t *testing.T) {
+		expired := testClientCertificateWithValidity(t, "client.example", []string{"client.example"},
+			time.Now().Add(-2*time.Hour), time.Now().Add(-time.Hour))
+		client := &Client{ID: "mtls", TLSClientAuthSANs: []string{"client.example"}}
+		if err := verifyTLSClient(testTLSRequest(expired), client, SelfSignedTLSClientAuth); !errors.Is(err, ErrInvalidClient) {
+			t.Fatalf("error = %v, want ErrInvalidClient", err)
+		}
+	})
+	t.Run("not-yet-valid-self-signed", func(t *testing.T) {
+		future := testClientCertificateWithValidity(t, "client.example", []string{"client.example"},
+			time.Now().Add(time.Hour), time.Now().Add(2*time.Hour))
+		client := &Client{ID: "mtls", TLSClientAuthSANs: []string{"client.example"}}
+		if err := verifyTLSClient(testTLSRequest(future), client, SelfSignedTLSClientAuth); !errors.Is(err, ErrInvalidClient) {
 			t.Fatalf("error = %v, want ErrInvalidClient", err)
 		}
 	})

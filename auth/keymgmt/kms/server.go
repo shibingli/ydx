@@ -73,6 +73,31 @@ type ServerConfig struct {
 	Authorizer Authorizer
 	// MaxBodyBytes limits request bodies; <=0 means 1 MiB. | MaxBodyBytes 限制请求体；<=0 表示 1 MiB。
 	MaxBodyBytes int64
+	// AllowedOrigins lists browser origins permitted to call the API cross-origin, such as
+	// "https://console.example.com". "*" permits any origin but is rejected when CookieAuth is set.
+	// When every safe browser call is same-origin, leave it empty. | AllowedOrigins 列出允许跨域调用
+	// API 的浏览器来源，如 "https://console.example.com"。"*" 允许任意来源，但在设置 CookieAuth
+	// 时会被拒绝。所有安全浏览器调用均为同源时可留空。
+	AllowedOrigins []string
+	// AllowedHosts lists accepted Host header values to prevent DNS rebinding, such as
+	// "kms.example.com" or "kms.example.com:8443". "*" accepts any Host. Empty means no check. | AllowedHosts
+	// 列出接受的 Host 头值以防 DNS 重绑定，如 "kms.example.com" 或 "kms.example.com:8443"。"*"
+	// 接受任意 Host。空表示不检查。
+	AllowedHosts []string
+	// RequireSameOrigin rejects state-changing requests that carry neither a same-origin Origin nor
+	// a same-origin Sec-Fetch-Site header. Enable it for every browser-facing deployment. | RequireSameOrigin
+	// 拒绝既无同源 Origin 也无同源 Sec-Fetch-Site 头的状态变更请求。所有面向浏览器的部署都应开启。
+	RequireSameOrigin bool
+	// CookieAuth marks deployments that authenticate browsers with cookies. It implies
+	// RequireSameOrigin and adds Access-Control-Allow-Credentials to allowed cross-origin responses. | CookieAuth
+	// 标记使用 Cookie 认证浏览器的部署。它隐含 RequireSameOrigin，并在允许的跨域响应中加入
+	// Access-Control-Allow-Credentials。
+	CookieAuth bool
+	// CSRFCheck validates CSRF tokens on state-changing requests. A nil hook falls back to
+	// Origin/Sec-Fetch-Site checks. Returning any error denies the request with 403. | CSRFCheck
+	// 在状态变更请求上校验 CSRF 令牌。钩子为 nil 时回退到 Origin/Sec-Fetch-Site 校验。返回任何
+	// 错误都会以 403 拒绝请求。
+	CSRFCheck func(*http.Request) error
 }
 
 // Server exposes a Service over the YD router and net/http. | Server 通过 YD 路由与 net/http 暴露 Service。
@@ -83,11 +108,16 @@ type Server struct {
 	authorizer Authorizer
 	// maxBodyBytes limits request bodies. | maxBodyBytes 限制请求体。
 	maxBodyBytes int64
+	// security holds normalized Origin, Host and CSRF guards. | security 保存规范化后的 Origin、
+	// Host 与 CSRF 防护。
+	security serverSecurity
 }
 
 // NewServer builds an HTTP server for service. | NewServer 为 service 构建 HTTP 服务。
 //
-// It returns ErrInvalidConfig when service is nil. | service 为空时返回 ErrInvalidConfig。
+// It returns ErrInvalidConfig when service is nil, an allowed origin or host is malformed, or a
+// wildcard origin is combined with CookieAuth. | service 为空、允许来源或主机格式非法，或通配来源
+// 与 CookieAuth 同时使用时返回 ErrInvalidConfig。
 func NewServer(service *Service, config ServerConfig) (*Server, error) {
 	if service == nil {
 		return nil, errs.Detail(ErrInvalidConfig, "kms service is required | 必须提供 kms 服务")
@@ -96,7 +126,11 @@ func NewServer(service *Service, config ServerConfig) (*Server, error) {
 	if maxBody <= 0 {
 		maxBody = defaultMaxBodyBytes
 	}
-	return &Server{service: service, authorizer: config.Authorizer, maxBodyBytes: maxBody}, nil
+	security, err := newServerSecurity(config)
+	if err != nil {
+		return nil, err
+	}
+	return &Server{service: service, authorizer: config.Authorizer, maxBodyBytes: maxBody, security: security}, nil
 }
 
 // Service returns the backing service. | Service 返回底层服务。
@@ -136,6 +170,36 @@ func (s *Server) Register(r *router.Router, prefix string) {
 	r.Handle(http.MethodPost, mount+"/generate-data-key", s.routerHandler(s.handleGenerateDataKey))
 	r.Handle(http.MethodPost, mount+"/random", s.routerHandler(s.handleRandom))
 	r.Handle(http.MethodGet, mount+"/audit", s.routerHandler(s.handleListAudit))
+	for _, path := range serverRoutePaths {
+		r.Handle(http.MethodOptions, mount+path, s.preflightRouter)
+	}
+}
+
+// serverRoutePaths lists the route paths that answer OPTIONS preflight requests. | serverRoutePaths
+// 列出响应 OPTIONS 预检请求的路由路径。
+var serverRoutePaths = []string{
+	"/keys",
+	"/keys/:id",
+	"/keys/:id/activate",
+	"/keys/:id/deactivate",
+	"/keys/:id/compromise",
+	"/keys/:id/destroy",
+	"/keys/:id/rotate",
+	"/keys/:id/versions",
+	"/keys/:id/export",
+	"/encrypt",
+	"/decrypt",
+	"/sign",
+	"/verify",
+	"/generate-data-key",
+	"/random",
+	"/audit",
+}
+
+// preflightRouter answers OPTIONS requests on the YD router. | preflightRouter 在 YD 路由上响应
+// OPTIONS 请求。
+func (s *Server) preflightRouter(c *router.Ctx) {
+	s.applySecurity(c.Writer, c.Request)
 }
 
 // HTTPHandler returns the same API as a net/http handler. | HTTPHandler 以 net/http 处理器返回相同 API。
@@ -173,6 +237,9 @@ func (s *Server) HTTPHandler(prefix string) http.Handler {
 		w.Header().Set("Cache-Control", "no-store")
 		w.Header().Set("Pragma", "no-cache")
 		w.Header().Set("X-Content-Type-Options", "nosniff")
+		if !s.applySecurity(w, r) {
+			return
+		}
 		mux.ServeHTTP(w, r)
 	})
 }
@@ -181,6 +248,9 @@ func (s *Server) HTTPHandler(prefix string) http.Handler {
 // 适配为 YD 路由处理器。
 func (s *Server) lifecycleRouter(action string, fn func(*Service, context.Context, string) (*Key, error)) router.HandlerFunc {
 	return func(c *router.Ctx) {
+		if !s.applySecurity(c.Writer, c.Request) {
+			return
+		}
 		s.serveLifecycle(c.Writer, c.Request, c.ParamUnescaped("id"), action, fn)
 	}
 }
@@ -196,6 +266,9 @@ func (s *Server) lifecycleHTTP(action string, fn func(*Service, context.Context,
 // 适配为 YD 路由处理器。
 func (s *Server) routerHandler(fn http.HandlerFunc) router.HandlerFunc {
 	return func(c *router.Ctx) {
+		if !s.applySecurity(c.Writer, c.Request) {
+			return
+		}
 		fn(c.Writer, c.Request)
 	}
 }
@@ -204,6 +277,9 @@ func (s *Server) routerHandler(fn http.HandlerFunc) router.HandlerFunc {
 // 把带路径标识的 net/http 处理器适配到 YD 路由。
 func (s *Server) routerIDHandler(fn func(http.ResponseWriter, *http.Request, string)) router.HandlerFunc {
 	return func(c *router.Ctx) {
+		if !s.applySecurity(c.Writer, c.Request) {
+			return
+		}
 		fn(c.Writer, c.Request, c.ParamUnescaped("id"))
 	}
 }

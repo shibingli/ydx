@@ -419,6 +419,11 @@ type Session struct {
 	UserAgent string `json:"userAgent,omitempty"`
 	// CreatedAt is the creation time. | CreatedAt 是创建时间。
 	CreatedAt time.Time `json:"createdAt"`
+	// AuthenticatedAt is when the end user actually authenticated. Rotation advances CreatedAt but
+	// preserves AuthenticatedAt, so the OIDC auth_time stays stable. The zero value means CreatedAt. |
+	// AuthenticatedAt 是最终用户实际完成认证的时间。轮换会推进 CreatedAt 但保留 AuthenticatedAt，
+	// 因此 OIDC auth_time 保持稳定。零值表示使用 CreatedAt。
+	AuthenticatedAt time.Time `json:"authenticatedAt,omitempty"`
 	// UpdatedAt is the last persisted update time. | UpdatedAt 是最后持久化更新时间。
 	UpdatedAt time.Time `json:"updatedAt"`
 	// LastSeenAt is the last validation time. | LastSeenAt 是最后一次校验时间。

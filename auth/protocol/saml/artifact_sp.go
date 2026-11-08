@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 
 	"github.com/shibingli/ydx/auth"
@@ -15,9 +16,70 @@ import (
 	"github.com/shibingli/ydx/xml"
 )
 
+// Artifact resolution failover limits. | 工件解析故障转移限制。
+const (
+	// DefaultArtifactResolutionMaxEndpoints is the default number of resolution endpoints tried for
+	// one artifact. | DefaultArtifactResolutionMaxEndpoints 是单个工件默认尝试的解析端点数量。
+	DefaultArtifactResolutionMaxEndpoints = 8
+	// MaxArtifactResolutionEndpoints is the hard upper bound accepted for ArtifactResolutionMaxEndpoints.
+	// | MaxArtifactResolutionEndpoints 是 ArtifactResolutionMaxEndpoints 接受的硬上限。
+	MaxArtifactResolutionEndpoints = 16
+)
+
+// ArtifactResolutionAttempt records one endpoint attempt of an artifact resolution. | ArtifactResolutionAttempt
+// 记录一次工件解析中的单个端点尝试。
+type ArtifactResolutionAttempt struct {
+	// Index is the metadata endpoint index. | Index 是元数据端点索引。
+	Index int
+	// URL is the endpoint location that was tried. | URL 是尝试的端点位置。
+	URL string
+	// Err is the attempt failure; nil marks the successful attempt. | Err 是尝试失败；nil 表示成功尝试。
+	Err error
+}
+
+// ArtifactResolutionError aggregates the failed attempts of an artifact resolution. The attempted
+// errors remain available through errors.Is and errors.As. | ArtifactResolutionError 汇总一次工件
+// 解析的失败尝试。各尝试错误仍可通过 errors.Is 与 errors.As 获取。
+type ArtifactResolutionError struct {
+	// Attempts lists every attempted endpoint in order. | Attempts 按顺序列出每个尝试的端点。
+	Attempts []ArtifactResolutionAttempt
+}
+
+// Error returns the aggregate failure description. | Error 返回聚合失败描述。
+func (e *ArtifactResolutionError) Error() string {
+	count := 0
+	if e != nil {
+		count = len(e.Attempts)
+	}
+	return "saml: artifact resolution failed after " + strconv.Itoa(count) + " endpoint attempt(s) | saml：工件解析在 " + strconv.Itoa(count) + " 次端点尝试后失败"
+}
+
+// Unwrap returns the attempt errors for errors.Is and errors.As. | Unwrap 返回尝试错误以支持
+// errors.Is 与 errors.As。
+func (e *ArtifactResolutionError) Unwrap() []error {
+	if e == nil {
+		return nil
+	}
+	out := make([]error, 0, len(e.Attempts))
+	for _, attempt := range e.Attempts {
+		if attempt.Err != nil {
+			out = append(out, attempt.Err)
+		}
+	}
+	return out
+}
+
+// artifactResolutionEndpoint is one candidate Artifact Resolution Service endpoint. |
+// artifactResolutionEndpoint 是一个候选工件解析服务端点。
+type artifactResolutionEndpoint struct {
+	index    int
+	location string
+}
+
 // resolveArtifact resolves a SAMLart through the IdP Artifact Resolution Service and returns the
-// embedded Response XML. | resolveArtifact 通过 IdP 工件解析服务解析 SAMLart 并返回嵌入的 Response
-// XML。
+// embedded Response XML. The artifact endpoint index is tried first, then the remaining SOAP
+// endpoints in metadata order. | resolveArtifact 通过 IdP 工件解析服务解析 SAMLart 并返回嵌入的
+// Response XML。先尝试工件端点索引，再按元数据顺序尝试其余 SOAP 端点。
 func (sp *ServiceProvider) resolveArtifact(ctx context.Context, value string) ([]byte, error) {
 	artifact, err := DecodeArtifact(value)
 	if err != nil {
@@ -27,22 +89,119 @@ func (sp *ServiceProvider) resolveArtifact(ctx context.Context, value string) ([
 		subtle.ConstantTimeCompare(artifact.SourceID[:], sp.config.ArtifactSourceID) != 1 {
 		return nil, errs.Detail(ErrArtifactInvalid, "artifact source does not match | 工件源不匹配")
 	}
-	arsURL := sp.config.IDPMetadata.ArtifactResolutionURL(int(artifact.EndpointIndex))
-	if arsURL == "" {
+	endpoints, err := sp.artifactResolutionEndpoints(artifact)
+	if err != nil {
+		return nil, err
+	}
+	version := sp.config.ArtifactSOAPVersion
+	if version != SOAPVersion12 {
+		version = SOAPVersion11
+	}
+	totalCtx, cancel := context.WithTimeout(ctx, sp.config.ArtifactResolutionTotalTimeout)
+	defer cancel()
+	attempts := make([]ArtifactResolutionAttempt, 0, len(endpoints))
+	for _, endpoint := range endpoints {
+		attempt := ArtifactResolutionAttempt{Index: endpoint.index, URL: endpoint.location}
+		if err := totalCtx.Err(); err != nil {
+			attempt.Err = errs.WrapDetail(err, ErrInvalidResponse, "artifact resolution aborted | 工件解析已中止")
+			attempts = append(attempts, attempt)
+			break
+		}
+		if err := validateSOAPEndpoint(endpoint.location); err != nil {
+			attempt.Err = err
+			attempts = append(attempts, attempt)
+			continue
+		}
+		requestBody, requestID, err := sp.buildArtifactResolve(endpoint.location, artifact)
+		if err != nil {
+			attempt.Err = err
+			attempts = append(attempts, attempt)
+			continue
+		}
+		responseBody, status, contentType, err := sp.postArtifactResolve(totalCtx, endpoint.location, requestBody, version)
+		if err != nil {
+			attempt.Err = err
+			attempts = append(attempts, attempt)
+			if totalCtx.Err() != nil {
+				break
+			}
+			continue
+		}
+		raw, err := sp.parseArtifactResponseContentType(totalCtx, responseBody, status, requestID, contentType)
+		if err != nil {
+			attempt.Err = err
+			attempts = append(attempts, attempt)
+			if totalCtx.Err() != nil {
+				break
+			}
+			continue
+		}
+		return raw, nil
+	}
+	return nil, &ArtifactResolutionError{Attempts: attempts}
+}
+
+// artifactResolutionEndpoints returns the failover candidate endpoints for artifact. | artifactResolutionEndpoints
+// 返回 artifact 的故障转移候选端点。
+func (sp *ServiceProvider) artifactResolutionEndpoints(artifact *Artifact) ([]artifactResolutionEndpoint, error) {
+	if artifact == nil {
+		return nil, errs.Detail(ErrArtifactInvalid, "artifact is nil | 工件为空")
+	}
+	descriptor := sp.config.IDPMetadata
+	if descriptor == nil || descriptor.IDPSSODescriptor == nil {
+		return nil, errs.Detail(ErrInvalidMetadata, "IdP has no artifact resolution endpoint | IdP 没有工件解析端点")
+	}
+	services := descriptor.IDPSSODescriptor.ArtifactResolutionService
+	primaryIndex := int(artifact.EndpointIndex)
+	matched := false
+	endpoints := make([]artifactResolutionEndpoint, 0, len(services))
+	seen := make(map[string]struct{}, len(services))
+	appendEndpoint := func(endpoint IndexedEndpoint) {
+		key := strconv.Itoa(endpoint.Index) + "\x00" + strings.TrimSpace(endpoint.Location)
+		if _, ok := seen[key]; ok {
+			return
+		}
+		seen[key] = struct{}{}
+		endpoints = append(endpoints, artifactResolutionEndpoint{index: endpoint.Index, location: endpoint.Location})
+	}
+	// Prefer the SOAP binding of the artifact endpoint, then any binding with that index, matching
+	// EntityDescriptor.ArtifactResolutionURL. | 优先使用工件端点的 SOAP 绑定，其次使用该索引的任意
+	// 绑定，与 EntityDescriptor.ArtifactResolutionURL 一致。
+	for _, endpoint := range services {
+		if endpoint.Index == primaryIndex && endpoint.Binding == BindingSOAP {
+			matched = true
+			appendEndpoint(endpoint)
+			break
+		}
+	}
+	if !matched {
+		for _, endpoint := range services {
+			if endpoint.Index == primaryIndex {
+				matched = true
+				appendEndpoint(endpoint)
+				break
+			}
+		}
+	}
+	if !matched {
 		return nil, errs.Detail(ErrInvalidMetadata, "IdP has no artifact resolution endpoint %d | IdP 没有工件解析端点 %d", artifact.EndpointIndex, artifact.EndpointIndex)
 	}
-	if err := validateSOAPEndpoint(arsURL); err != nil {
-		return nil, err
+	// Remaining SOAP endpoints serve as failover candidates in metadata order. | 其余 SOAP 端点按元数据
+	// 顺序作为故障转移候选。
+	for _, endpoint := range services {
+		if endpoint.Binding != "" && endpoint.Binding != BindingSOAP {
+			continue
+		}
+		appendEndpoint(endpoint)
 	}
-	requestBody, requestID, err := sp.buildArtifactResolve(arsURL, artifact)
-	if err != nil {
-		return nil, err
+	limit := sp.config.ArtifactResolutionMaxEndpoints
+	if limit <= 0 || limit > MaxArtifactResolutionEndpoints {
+		limit = DefaultArtifactResolutionMaxEndpoints
 	}
-	responseBody, status, err := sp.postArtifactResolve(ctx, arsURL, requestBody)
-	if err != nil {
-		return nil, err
+	if len(endpoints) > limit {
+		endpoints = endpoints[:limit]
 	}
-	return sp.parseArtifactResponse(ctx, responseBody, status, requestID)
+	return endpoints, nil
 }
 
 // buildArtifactResolve builds a SOAP ArtifactResolve message and returns it with its request ID. |
@@ -67,35 +226,44 @@ func (sp *ServiceProvider) buildArtifactResolve(destination string, artifact *Ar
 			return nil, "", errs.Wrap(err, ErrInvalidSignature)
 		}
 	}
-	return buildSOAPEnvelope(document), request.ID, nil
+	version := sp.config.ArtifactSOAPVersion
+	if version != SOAPVersion12 {
+		version = SOAPVersion11
+	}
+	return buildSOAPEnvelopeVersion(version, document), request.ID, nil
 }
 
 // postArtifactResolve posts a SOAP ArtifactResolve and returns the bounded response body together
-// with its HTTP status. | postArtifactResolve 发送 SOAP ArtifactResolve，并返回受限制的响应正文与
-// HTTP 状态。
-func (sp *ServiceProvider) postArtifactResolve(ctx context.Context, arsURL string, body []byte) ([]byte, int, error) {
-	ctx, cancel := context.WithTimeout(ctx, sp.config.ArtifactResolutionTimeout)
+// with its HTTP status and content type. | postArtifactResolve 发送 SOAP ArtifactResolve，并返回受限的
+// 响应正文、HTTP 状态与内容类型。
+func (sp *ServiceProvider) postArtifactResolve(ctx context.Context, arsURL string, body []byte, version SOAPVersion) ([]byte, int, string, error) {
+	requestCtx, cancel := context.WithTimeout(ctx, sp.config.ArtifactResolutionTimeout)
 	defer cancel()
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, arsURL, bytes.NewReader(body))
+	request, err := http.NewRequestWithContext(requestCtx, http.MethodPost, arsURL, bytes.NewReader(body))
 	if err != nil {
-		return nil, 0, errs.WrapDetail(err, ErrInvalidMetadata, "artifact resolution request | 工件解析请求")
+		return nil, 0, "", errs.WrapDetail(err, ErrInvalidMetadata, "artifact resolution request | 工件解析请求")
 	}
-	request.Header.Set("Content-Type", SOAPContentType)
-	request.Header.Set("SOAPAction", SOAPActionArtifactResolve)
-	request.Header.Set("Accept", SOAPContentType)
+	if version == SOAPVersion12 {
+		request.Header.Set("Content-Type", SOAPContentType12+`; action="`+SOAPActionArtifactResolve+`"`)
+		request.Header.Set("Accept", SOAPContentType12)
+	} else {
+		request.Header.Set("Content-Type", SOAPContentType)
+		request.Header.Set("SOAPAction", SOAPActionArtifactResolve)
+		request.Header.Set("Accept", SOAPContentType)
+	}
 	response, err := sp.artifactHTTPClient().Do(request)
 	if err != nil {
-		return nil, 0, errs.WrapDetail(err, ErrInvalidResponse, "artifact resolution | 工件解析")
+		return nil, 0, "", errs.WrapDetail(err, ErrInvalidResponse, "artifact resolution | 工件解析")
 	}
 	defer func() { _ = response.Body.Close() }()
 	data, err := io.ReadAll(io.LimitReader(response.Body, MaxSOAPMessageBytes+1))
 	if err != nil {
-		return nil, response.StatusCode, errs.WrapDetail(err, ErrInvalidResponse, "artifact response | 工件响应")
+		return nil, response.StatusCode, response.Header.Get("Content-Type"), errs.WrapDetail(err, ErrInvalidResponse, "artifact response | 工件响应")
 	}
 	if len(data) > MaxSOAPMessageBytes {
-		return nil, response.StatusCode, errs.Detail(ErrLimit, "SOAP response exceeds %d bytes | SOAP 响应超过 %d 字节", MaxSOAPMessageBytes, MaxSOAPMessageBytes)
+		return nil, response.StatusCode, response.Header.Get("Content-Type"), errs.Detail(ErrLimit, "SOAP response exceeds %d bytes | SOAP 响应超过 %d 字节", MaxSOAPMessageBytes, MaxSOAPMessageBytes)
 	}
-	return data, response.StatusCode, nil
+	return data, response.StatusCode, response.Header.Get("Content-Type"), nil
 }
 
 // artifactHTTPClient returns the configured client or a bounded client that does not follow
@@ -113,9 +281,24 @@ func (sp *ServiceProvider) artifactHTTPClient() *http.Client {
 // parseArtifactResponse validates a SOAP ArtifactResponse and returns its embedded Response XML. |
 // parseArtifactResponse 校验 SOAP ArtifactResponse 并返回其嵌入的 Response XML。
 func (sp *ServiceProvider) parseArtifactResponse(ctx context.Context, body []byte, httpStatus int, requestID string) ([]byte, error) {
+	return sp.parseArtifactResponseContentType(ctx, body, httpStatus, requestID, "")
+}
+
+// parseArtifactResponseContentType validates a SOAP ArtifactResponse whose transport content type is
+// declared. A declared SOAP version must match the envelope, and a declared action must match
+// ArtifactResponse. | parseArtifactResponseContentType 校验传输内容类型已声明的 SOAP ArtifactResponse。
+// 声明的 SOAP 版本必须与信封一致，声明的 action 必须匹配 ArtifactResponse。
+func (sp *ServiceProvider) parseArtifactResponseContentType(ctx context.Context, body []byte, httpStatus int, requestID, contentType string) ([]byte, error) {
+	declared := soapVersionFromContentType(contentType)
 	envelope, err := parseSOAPEnvelope(body)
 	if err != nil {
 		return nil, soaplessResponseError(err, httpStatus)
+	}
+	if declared != "" && declared != envelope.version {
+		return nil, soaplessResponseError(errs.Detail(ErrInvalidResponse, "SOAP response version mismatch | SOAP 响应版本不匹配"), httpStatus)
+	}
+	if action := soapActionFromContentType(contentType); action != "" && action != SOAPActionArtifactResponse {
+		return nil, soaplessResponseError(errs.Detail(ErrInvalidResponse, "SOAP response action %[1]q | SOAP 响应动作 %[1]q", action), httpStatus)
 	}
 	payload, err := envelope.payload()
 	if err != nil {

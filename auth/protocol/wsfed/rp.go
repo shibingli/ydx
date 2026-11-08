@@ -167,6 +167,11 @@ type RelyingPartyConfig struct {
 	ReplyURL string
 	// IDPURL is the security token service sign-in endpoint. | IDPURL 是安全令牌服务登录端点。
 	IDPURL string
+	// Issuer pins the expected security-token-service issuer. When set, a SAML assertion must carry
+	// exactly this issuer and a JWT principal must report it through Principal.Issuer. | Issuer 固定
+	// 期望的安全令牌服务签发方。设置后 SAML 断言必须携带该签发方，JWT 主体必须通过 Principal.Issuer
+	// 报告该签发方。
+	Issuer string
 	// SignOutURL is the security token service sign-out endpoint; it falls back to IDPURL. |
 	// SignOutURL 是安全令牌服务登出端点；为空时回退到 IDPURL。
 	SignOutURL string
@@ -240,6 +245,7 @@ func NewRelyingParty(config RelyingPartyConfig) (*RelyingParty, error) {
 	config.ReplyURL = strings.TrimSpace(config.ReplyURL)
 	config.IDPURL = strings.TrimSpace(config.IDPURL)
 	config.SignOutURL = strings.TrimSpace(config.SignOutURL)
+	config.Issuer = strings.TrimSpace(config.Issuer)
 	if config.Realm == "" {
 		return nil, errs.Detail(ErrInvalidConfig, "realm is required | 需要 realm")
 	}
@@ -470,6 +476,12 @@ func (rp *RelyingParty) parseJWTResponse(r *http.Request, token *RequestedSecuri
 	if principal == nil {
 		return nil, errs.Detail(ErrInvalidResponse, "JWT verifier returned no principal | JWT 校验器未返回主体")
 	}
+	if rp.config.Issuer != "" {
+		issuer := strings.TrimSpace(principal.Issuer)
+		if !secureEqual(issuer, rp.config.Issuer) {
+			return nil, errs.Detail(ErrInvalidIssuer, "JWT issuer %[1]q does not match %[2]q | JWT 签发方 %[1]q 与 %[2]q 不匹配", issuer, rp.config.Issuer)
+		}
+	}
 	if expiresAt.IsZero() && response.Lifetime != nil && response.Lifetime.Expires != "" {
 		expiresAt, err = parseResponseTime(response.Lifetime.Expires, "lifetime expiry")
 		if err != nil {
@@ -519,6 +531,17 @@ func (rp *RelyingParty) validateAssertion(r *http.Request, raw string, assertion
 		}
 		if err := rp.config.SignatureVerifier.VerifySignature(r.Context(), []byte(raw), assertion.ID); err != nil {
 			return errs.WrapDetail(err, ErrInvalidSignature, "assertion %[1]q | 断言 %[1]q", assertion.ID)
+		}
+	} else if assertion.Signature != nil || rp.config.RequireSigned {
+		// A signature that cannot be verified is never ignored, and RequireSigned is enforced even
+		// when the constructor did not see a verifier. | 无法校验的签名绝不会被忽略；即使构造时未看到
+		// 校验器，RequireSigned 仍会强制生效。
+		return errs.Detail(ErrInvalidSignature, "assertion signature cannot be verified | 无法校验断言签名")
+	}
+	if rp.config.Issuer != "" {
+		issuer := strings.TrimSpace(assertionIssuer(assertion))
+		if !secureEqual(issuer, rp.config.Issuer) {
+			return errs.Detail(ErrInvalidIssuer, "assertion issuer %[1]q does not match %[2]q | 断言签发方 %[1]q 与 %[2]q 不匹配", issuer, rp.config.Issuer)
 		}
 	}
 	now := rp.now().UTC()

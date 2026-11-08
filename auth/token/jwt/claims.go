@@ -177,17 +177,22 @@ func (c Claims) numericDateClaim(key string) (time.Time, bool) {
 }
 
 // claimFields holds the registered claims that Parse validates, located and
-// (for exp/nbf) parsed in one pass. | claimFields 保存 Parse 需要校验的登记声明，
-// 这些声明在同一个遍历中定位并（对 exp/nbf）完成解析。
+// (for exp/nbf/iat) parsed in one pass. | claimFields 保存 Parse 需要校验的登记声明，
+// 这些声明在同一个遍历中定位并（对 exp/nbf/iat）完成解析。
 type claimFields struct {
-	exp, nbf       time.Time
-	iss, aud       []byte
-	hasExp, hasNbf bool
-	hasIss, hasAud bool
-	expOK, nbfOK   bool
+	exp, nbf, iat time.Time
+	iss, aud      []byte
+	hasExp        bool
+	hasNbf        bool
+	hasIat        bool
+	hasIss        bool
+	hasAud        bool
+	expOK         bool
+	nbfOK         bool
+	iatOK         bool
 }
 
-// scanRegistered validates the payload structure and locates exp, nbf, iss and aud in a single pass. | scanRegistered 一趟完成载荷结构校验，并定位 exp、nbf、iss 与 aud。
+// scanRegistered validates the payload structure and locates exp, nbf, iat, iss and aud in a single pass. | scanRegistered 一趟完成载荷结构校验，并定位 exp、nbf、iat、iss 与 aud。
 //
 // Duplicate claim names resolve to their last occurrence. NumericDate parsing happens here so that
 // checkRegistered does not repeat it; a parse failure is recorded and reported only after the
@@ -206,6 +211,9 @@ func scanRegistered(payload []byte, f *claimFields) bool {
 		case claimNbf:
 			f.nbf, f.nbfOK = numericDate(s.val)
 			f.hasNbf = true
+		case claimIat:
+			f.iat, f.iatOK = numericDate(s.val)
+			f.hasIat = true
 		case claimIss:
 			f.iss, f.hasIss = s.val, true
 		case claimAud:
@@ -243,15 +251,118 @@ func checkRegistered(f *claimFields, o ParseOptions) error {
 	} else if o.RequireExp {
 		return ErrMissingExp
 	}
-	if o.Issuer != "" {
-		if !f.hasIss || !jsonStringEquals(f.iss, o.Issuer) {
-			return errs.Detail(ErrIssuerMismatch, "want %[1]q | 期望 %[1]q", o.Issuer)
+	if o.ValidateIssuedAt || o.RequireIssuedAt {
+		if f.hasIat {
+			if !f.iatOK {
+				return errs.Detail(ErrMalformed, "iat is not a valid NumericDate | iat 不是合法的 NumericDate")
+			}
+			if f.iat.After(at.Add(o.Leeway)) {
+				return errs.Detail(ErrTokenUsedBeforeIssued, "iat=%[1]s | 签发时间=%[1]s", f.iat.Format(time.RFC3339))
+			}
+		} else if o.RequireIssuedAt {
+			return ErrMissingIssuedAt
 		}
 	}
-	if o.Audience != "" {
-		if !f.hasAud || !rawAudienceContains(f.aud, o.Audience) {
-			return errs.Detail(ErrAudienceMismatch, "want %[1]q | 期望 %[1]q", o.Audience)
+	if issuerRequired(o) {
+		if !f.hasIss || !issuerAllowed(f.iss, o) {
+			return errs.Detail(ErrIssuerMismatch, "want %[1]v | 期望 %[1]v", expectedIssuers(o))
+		}
+	}
+	if audienceRequired(o) {
+		if !f.hasAud || !audienceAllowed(f.aud, o) {
+			return errs.Detail(ErrAudienceMismatch, "want %[1]v | 期望 %[1]v", expectedAudiences(o))
 		}
 	}
 	return nil
+}
+
+// issuerRequired reports whether the options demand a particular issuer. | issuerRequired 报告选项是否要求特定签发方。
+//
+// Empty entries of Issuers impose no requirement, so an all-empty slice behaves like a nil one. |
+// Issuers 中的空条目不构成要求，因此全空切片与 nil 行为一致。
+func issuerRequired(o ParseOptions) bool {
+	if o.Issuer != "" {
+		return true
+	}
+	for _, want := range o.Issuers {
+		if want != "" {
+			return true
+		}
+	}
+	return false
+}
+
+// issuerAllowed reports whether rawIss, a raw JSON string value, equals Issuer or one of Issuers. |
+// issuerAllowed 报告原始 JSON 字符串 rawIss 是否等于 Issuer 或 Issuers 之一。
+func issuerAllowed(rawIss []byte, o ParseOptions) bool {
+	if o.Issuer != "" && jsonStringEquals(rawIss, o.Issuer) {
+		return true
+	}
+	for _, want := range o.Issuers {
+		if want != "" && jsonStringEquals(rawIss, want) {
+			return true
+		}
+	}
+	return false
+}
+
+// expectedIssuers materializes the configured issuer set for error details. | expectedIssuers
+// 为错误详情生成配置的签发方集合。
+func expectedIssuers(o ParseOptions) []string {
+	out := make([]string, 0, len(o.Issuers)+1)
+	if o.Issuer != "" {
+		out = append(out, o.Issuer)
+	}
+	for _, want := range o.Issuers {
+		if want != "" {
+			out = append(out, want)
+		}
+	}
+	return out
+}
+
+// audienceRequired reports whether the options demand a particular audience. | audienceRequired
+// 报告选项是否要求特定受众。
+//
+// Empty entries of Audiences impose no requirement, so an all-empty slice behaves like a nil one. |
+// Audiences 中的空条目不构成要求，因此全空切片与 nil 行为一致。
+func audienceRequired(o ParseOptions) bool {
+	if o.Audience != "" {
+		return true
+	}
+	for _, want := range o.Audiences {
+		if want != "" {
+			return true
+		}
+	}
+	return false
+}
+
+// audienceAllowed reports whether the raw aud value contains Audience or one Audiences entry. |
+// audienceAllowed 报告原始 aud 取值是否包含 Audience 或 Audiences 中的某个条目。
+func audienceAllowed(rawAud []byte, o ParseOptions) bool {
+	if o.Audience != "" && rawAudienceContains(rawAud, o.Audience) {
+		return true
+	}
+	for _, want := range o.Audiences {
+		if want != "" && rawAudienceContains(rawAud, want) {
+			return true
+		}
+	}
+	return false
+}
+
+// expectedAudiences materializes the configured audience set for error details. | expectedAudiences
+// 为错误详情生成配置的受众集合。
+func expectedAudiences(o ParseOptions) []string {
+	out := make([]string, 0, len(o.Audiences)+1)
+	if o.Audience != "" {
+		out = append(out, o.Audience)
+	}
+	for _, want := range o.Audiences {
+		if want != "" {
+			out = append(out, want)
+		}
+	}
+	return out
 }

@@ -184,6 +184,18 @@ type ProviderConfig struct {
 	LogoutReplay LogoutReplayStore
 	// FrontchannelLogout enables front-channel logout. | FrontchannelLogout 启用前端通道登出。
 	FrontchannelLogout bool
+	// FrontchannelLogoutClientID is the OAuth client_id this deployment uses when acting as an RP
+	// that receives front-channel logout requests. The receiver rejects a request carrying a
+	// client_id or aud that does not identify this value; without it the receiver fails closed.
+	// OIDC Front-Channel Logout 1.0 does not define a client parameter, so a request without one is
+	// accepted once iss matches, because the registered frontchannel_logout_uri already binds the
+	// request to this client. Mapping sid or sub to a local session remains the caller's
+	// responsibility. | FrontchannelLogoutClientID 是部署作为接收前端登出请求的 RP 时使用的
+	// OAuth client_id。接收端拒绝 client_id 或 aud 未标识该值的请求；未设置时接收端按失败关闭
+	// 处理。OIDC 前端登出 1.0 未定义客户端参数，因此 iss 匹配后不带该参数的请求会被接受，因为
+	// 已注册的 frontchannel_logout_uri 已把请求绑定到此客户端。sid 或 sub 到本地会话的映射仍由
+	// 调用方负责。
+	FrontchannelLogoutClientID string
 	// BackchannelLogout enables back-channel logout. | BackchannelLogout 启用后端通道登出。
 	BackchannelLogout bool
 	// BackchannelLogoutClientID is the OAuth client_id this deployment uses when acting as an RP
@@ -193,6 +205,29 @@ type ProviderConfig struct {
 	// 令牌的 RP 时使用的 OAuth client_id。接收端校验 aud 包含该值，并在需要时校验 azp 等于该值；
 	// 未设置时接收端按失败关闭处理。仅发送登出令牌的 OP 可留空。
 	BackchannelLogoutClientID string
+	// BackchannelLogoutIssuer is the issuer expected in received back-channel logout tokens. An
+	// empty value uses ProviderConfig.Issuer, the same-origin default. Set it, together with one
+	// of the key options below, when this deployment receives logout tokens from a third-party OP.
+	// | BackchannelLogoutIssuer 是接收的后端登出令牌中期望的签发方。空值使用
+	// ProviderConfig.Issuer，即同源默认值。当部署从第三方 OP 接收登出令牌时，把它与下方密钥选项中
+	// 的一项一起设置。
+	BackchannelLogoutIssuer string
+	// BackchannelLogoutKeySet contains the static verification keys for BackchannelLogoutIssuer.
+	// It is mutually exclusive with BackchannelLogoutJWKSURI and BackchannelLogoutKeyResolver.
+	// | BackchannelLogoutKeySet 保存 BackchannelLogoutIssuer 的静态校验密钥。它与
+	// BackchannelLogoutJWKSURI 和 BackchannelLogoutKeyResolver 互斥。
+	BackchannelLogoutKeySet *jose.KeySet
+	// BackchannelLogoutJWKSURI is the JWKS endpoint of BackchannelLogoutIssuer. It is fetched
+	// through the configured HTTPClient and cached by a jose.Fetcher. It is mutually exclusive with
+	// BackchannelLogoutKeySet and BackchannelLogoutKeyResolver. | BackchannelLogoutJWKSURI 是
+	// BackchannelLogoutIssuer 的 JWKS 端点。它经配置的 HTTPClient 获取并由 jose.Fetcher 缓存。它
+	// 与 BackchannelLogoutKeySet 和 BackchannelLogoutKeyResolver 互斥。
+	BackchannelLogoutJWKSURI string
+	// BackchannelLogoutKeyResolver selects verification keys for BackchannelLogoutIssuer. It is
+	// mutually exclusive with BackchannelLogoutKeySet and BackchannelLogoutJWKSURI. | BackchannelLogoutKeyResolver
+	// 为 BackchannelLogoutIssuer 选择校验密钥。它与 BackchannelLogoutKeySet 和
+	// BackchannelLogoutJWKSURI 互斥。
+	BackchannelLogoutKeyResolver jose.KeyResolver
 	// SessionManagement enables the check_session_iframe endpoint. | SessionManagement 启用 check_session_iframe 端点。
 	SessionManagement bool
 	// SubjectType is "public" (default) or "pairwise". | SubjectType 取值为 "public"（默认）或 "pairwise"。
@@ -222,6 +257,12 @@ type Provider struct {
 	pathPrefix string
 	httpClient *http.Client
 	now        func() time.Time
+	// backchannelIssuer is the accepted iss of received logout tokens and backchannelResolver
+	// selects their verification keys. They default to the provider issuer and key set.
+	// | backchannelIssuer 是接收登出令牌时接受的 iss，backchannelResolver 选择其校验密钥。两者
+	// 默认使用提供方签发方与密钥集。
+	backchannelIssuer   string
+	backchannelResolver jose.KeyResolver
 	// issuerOrigin is the scheme and authority of Issuer, used so Endpoint does not repeat an
 	// issuer path that already became the mount prefix. | issuerOrigin 是 Issuer 的协议与主机部分，
 	// 使 Endpoint 不会重复已成为挂载前缀的 issuer 路径。
@@ -242,6 +283,9 @@ func NewProvider(config ProviderConfig) (*Provider, error) {
 	}
 	config.Issuer = issuer
 	config.BackchannelLogoutClientID = strings.TrimSpace(config.BackchannelLogoutClientID)
+	config.FrontchannelLogoutClientID = strings.TrimSpace(config.FrontchannelLogoutClientID)
+	config.BackchannelLogoutIssuer = strings.TrimSpace(config.BackchannelLogoutIssuer)
+	config.BackchannelLogoutJWKSURI = strings.TrimSpace(config.BackchannelLogoutJWKSURI)
 	keys := config.Keys
 	if keys == nil {
 		keys = &jose.KeySet{}
@@ -338,6 +382,12 @@ func NewProvider(config ProviderConfig) (*Provider, error) {
 	if provider.now == nil {
 		provider.now = time.Now
 	}
+	backchannelIssuer, backchannelResolver, err := backchannelLogoutVerifier(config, httpClient, provider.now, keys)
+	if err != nil {
+		return nil, err
+	}
+	provider.backchannelIssuer = backchannelIssuer
+	provider.backchannelResolver = backchannelResolver
 	provider.oauth.SetTokenEnricher(provider)
 	provider.oauth.SetAuthorizationEnricher(provider)
 	provider.oauth.SetAuthorizationResponseSigner(provider)
@@ -346,6 +396,61 @@ func NewProvider(config ProviderConfig) (*Provider, error) {
 		provider.oauth.SetRegistrationEndpoint(provider.Endpoint(provider.config.RegistrationPath))
 	}
 	return provider, nil
+}
+
+// backchannelLogoutVerifier selects the accepted issuer and verification key resolver for
+// received back-channel logout tokens. Same-origin deployments use the provider issuer and key
+// set; third-party OPs must configure an explicit issuer plus exactly one key source. |
+// backchannelLogoutVerifier 为接收的后端登出令牌选择接受的签发方与校验密钥解析器。同源部署使用
+// 提供方签发方与密钥集；第三方 OP 必须配置显式签发方以及恰好一种密钥来源。
+func backchannelLogoutVerifier(config ProviderConfig, client *http.Client, now func() time.Time, own *jose.KeySet) (string, jose.KeyResolver, error) {
+	sources := 0
+	for _, configured := range []bool{
+		config.BackchannelLogoutKeyResolver != nil,
+		config.BackchannelLogoutKeySet != nil,
+		config.BackchannelLogoutJWKSURI != "",
+	} {
+		if configured {
+			sources++
+		}
+	}
+	if sources > 1 {
+		return "", nil, errs.Detail(ErrInvalidConfig, "backchannel logout key options are mutually exclusive | 后端登出密钥选项互斥")
+	}
+	issuer := config.BackchannelLogoutIssuer
+	if sources > 0 && issuer == "" {
+		return "", nil, errs.Detail(ErrInvalidConfig, "backchannel logout key options require an explicit issuer | 后端登出密钥选项需要显式签发方")
+	}
+	if issuer == "" {
+		issuer = config.Issuer
+	}
+	if issuer != config.Issuer {
+		parsed, err := url.Parse(issuer)
+		if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+			return "", nil, errs.Detail(ErrInvalidConfig, "backchannel logout issuer must be an absolute URL | 后端登出签发方必须是绝对 URL")
+		}
+	}
+	var resolver jose.KeyResolver
+	switch {
+	case config.BackchannelLogoutKeyResolver != nil:
+		resolver = config.BackchannelLogoutKeyResolver
+	case config.BackchannelLogoutKeySet != nil:
+		resolver = config.BackchannelLogoutKeySet.Resolver()
+	case config.BackchannelLogoutJWKSURI != "":
+		fetcher, err := jose.NewFetcher(config.BackchannelLogoutJWKSURI, jose.FetcherOptions{
+			Client: client,
+			Now:    now,
+		})
+		if err != nil {
+			return "", nil, errs.Wrap(err, ErrInvalidConfig)
+		}
+		resolver = fetcher.Resolver()
+	case issuer == config.Issuer:
+		resolver = own.Resolver()
+	default:
+		return "", nil, errs.Detail(ErrInvalidConfig, "external backchannel logout issuer needs a key set, JWKS URI or key resolver | 外部后端登出签发方需要密钥集、JWKS URI 或密钥解析器")
+	}
+	return issuer, resolver, nil
 }
 
 // setPath fills an empty path and ensures a leading slash. | setPath 填充空路径并保证前导斜杠。

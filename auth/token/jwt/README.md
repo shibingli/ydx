@@ -21,7 +21,9 @@
 - `Middleware`（YD 路由）与 `HTTPMiddleware`（原生 `net/http`）。
 - `FromContext` / `FromRequest`：读取已验证令牌。
 - `KeyFunc`：按 JOSE 头部选择密钥（支持 `kid` 轮换）。
-- `ParseOptions`：`Issuer`、`Audience`、`ValidAlgs`、`Leeway`、`RequireExp`、`Now`。
+- `ParseOptions`：`Issuer`/`Issuers`、`Audience`/`Audiences`、`ValidAlgs`、`Leeway`、
+  `RequireExp`、`ValidateIssuedAt`/`RequireIssuedAt`、`RequireLowS`、`Now`。
+- `SignOptions.LowS`：把 ECDSA 签名规范化为 low-S；对应验签要求为 `ParseOptions.RequireLowS`。
 - `Token.Claims`：`Subject`、`Issuer`、`Audience`、`ExpiresAt`、`NotBefore`、`IssuedAt`、
   `ID`、`Get`、`GetInt64`、`GetBool`、`GetFloat64`、`GetJSON`、`Has`、`Keys`、`Raw`。
 

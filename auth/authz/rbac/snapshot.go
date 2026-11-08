@@ -2,6 +2,7 @@ package rbac
 
 import (
 	"context"
+	"errors"
 
 	"github.com/shibingli/ydx/errs"
 	"github.com/shibingli/ydx/json"
@@ -56,10 +57,15 @@ func (e *Engine) Snapshot(ctx context.Context) (Snapshot, error) {
 // The snapshot is validated in a temporary in-memory store before the active store is touched, so an
 // invalid snapshot leaves the engine unchanged. A version other than SnapshotVersion is rejected
 // with ErrUnsupportedVersion. The Reset and reload run under the engine's exclusive state lock, so
-// concurrent Engine methods never observe the empty or partially loaded state. | 快照先在临时内存
+// concurrent Engine methods never observe the empty or partially loaded state. Before touching the
+// store, LoadSnapshot captures the previous state; if Reset or the reload fails, it attempts to
+// restore that state. A failed restore returns an error that joins the load and restore failures and
+// matches ErrSnapshotRestore; a successful restore returns the original load error. | 快照先在临时内存
 // 存储中校验，再触碰活动存储，因此非法快照不会改变引擎。版本不等于 SnapshotVersion 时以
 // ErrUnsupportedVersion 拒绝。Reset 与重新加载在引擎排他状态锁内执行，因此并发 Engine 方法绝不会
-// 观察到空状态或部分加载状态。
+// 观察到空状态或部分加载状态。触碰存储前，LoadSnapshot 会捕获先前状态；若 Reset 或重新加载失败，
+// 它会尝试恢复该状态。恢复失败返回合并装载与恢复失败的错误并匹配 ErrSnapshotRestore；恢复成功则
+// 返回原始装载错误。
 func (e *Engine) LoadSnapshot(ctx context.Context, snapshot Snapshot) error {
 	ctx = normalizeContext(ctx)
 	if err := checkContext(ctx); err != nil {
@@ -75,10 +81,55 @@ func (e *Engine) LoadSnapshot(ctx context.Context, snapshot Snapshot) error {
 	}
 	e.stateMu.Lock()
 	defer e.stateMu.Unlock()
-	if err := e.store.Reset(ctx); err != nil {
+	previous, err := captureSnapshot(ctx, e.store)
+	if err != nil {
 		return err
 	}
-	return loadInto(ctx, e.store, snapshot)
+	if err := e.store.Reset(ctx); err != nil {
+		return e.restoreAfterFailure(ctx, previous, err)
+	}
+	if err := loadInto(ctx, e.store, snapshot); err != nil {
+		return e.restoreAfterFailure(ctx, previous, err)
+	}
+	return nil
+}
+
+// captureSnapshot reads the complete current state while the caller holds the engine state lock. |
+// captureSnapshot 在调用方持有引擎状态锁时读取完整的当前状态。
+func captureSnapshot(ctx context.Context, store Store) (Snapshot, error) {
+	roles, err := store.ListRoles(ctx)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	assignments, err := store.ListAssignments(ctx)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	policies, err := store.ListPolicies(ctx)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	return Snapshot{
+		Version:     SnapshotVersion,
+		Roles:       roles,
+		Assignments: assignments,
+		Policies:    policies,
+	}, nil
+}
+
+// restoreAfterFailure resets the store and reloads previous. If either step fails it returns an
+// error joining the load and restore failures and matching ErrSnapshotRestore. | restoreAfterFailure
+// 重置存储并重新加载 previous。任一步骤失败时返回合并装载与恢复失败并匹配 ErrSnapshotRestore 的错误。
+func (e *Engine) restoreAfterFailure(ctx context.Context, previous Snapshot, loadErr error) error {
+	restoreErr := e.store.Reset(ctx)
+	if restoreErr == nil {
+		restoreErr = loadInto(ctx, e.store, previous)
+	}
+	if restoreErr == nil {
+		return loadErr
+	}
+	return errs.WrapDetail(errors.Join(loadErr, restoreErr), ErrSnapshotRestore,
+		"snapshot load failed and the previous state could not be restored | 快照装载失败且无法恢复先前状态")
 }
 
 // loadInto writes a snapshot into a store. | loadInto 把快照写入存储。

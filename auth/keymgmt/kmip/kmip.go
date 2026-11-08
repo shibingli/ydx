@@ -40,13 +40,17 @@ type ProtocolVersion struct {
 
 // The KMIP protocol versions supported by this implementation. | 本实现支持的 KMIP 协议版本。
 var (
-	// ProtocolVersion10 is KMIP 1.0; it is accepted on the wire for compatibility checks only. | ProtocolVersion10 是 KMIP 1.0；仅为兼容性检查而在线路上接受。
+	// ProtocolVersion10 is KMIP 1.0. It is declared for reference and rejected on the wire. |
+	// ProtocolVersion10 是 KMIP 1.0；仅作参考声明，在线路上会被拒绝。
 	ProtocolVersion10 = ProtocolVersion{Major: 1, Minor: 0}
-	// ProtocolVersion11 is KMIP 1.1. | ProtocolVersion11 是 KMIP 1.1。
+	// ProtocolVersion11 is KMIP 1.1. It is declared for reference and rejected on the wire. |
+	// ProtocolVersion11 是 KMIP 1.1；仅作参考声明，在线路上会被拒绝。
 	ProtocolVersion11 = ProtocolVersion{Major: 1, Minor: 1}
-	// ProtocolVersion12 is KMIP 1.2. | ProtocolVersion12 是 KMIP 1.2。
+	// ProtocolVersion12 is KMIP 1.2. It is declared for reference and rejected on the wire. |
+	// ProtocolVersion12 是 KMIP 1.2；仅作参考声明，在线路上会被拒绝。
 	ProtocolVersion12 = ProtocolVersion{Major: 1, Minor: 2}
-	// ProtocolVersion13 is KMIP 1.3. | ProtocolVersion13 是 KMIP 1.3。
+	// ProtocolVersion13 is KMIP 1.3. It is declared for reference and rejected on the wire. |
+	// ProtocolVersion13 是 KMIP 1.3；仅作参考声明，在线路上会被拒绝。
 	ProtocolVersion13 = ProtocolVersion{Major: 1, Minor: 3}
 	// ProtocolVersion14 is KMIP 1.4, the default version used by the client and server. | ProtocolVersion14 是 KMIP 1.4，也是客户端与服务器默认使用的版本。
 	ProtocolVersion14 = ProtocolVersion{Major: 1, Minor: 4}
@@ -85,13 +89,16 @@ func (v ProtocolVersion) Valid() bool {
 
 // Supported reports whether this package accepts the version on the wire. | Supported 报告本包是否在线路上接受该版本。
 //
-// KMIP 1.0 through 1.4 use the original Template-Attribute payload structures. KMIP 2.0 uses the Attributes
-// payload structures, including the Attributes, Common Attributes, Private Key Attributes, Public Key Attributes and
-// Attribute Reference tags, selected from the request header version. | KMIP 1.0 至 1.4 使用原始
-// Template-Attribute 负载结构。KMIP 2.0 使用 Attributes 负载结构，包括 Attributes、Common Attributes、
-// Private Key Attributes、Public Key Attributes 与 Attribute Reference 标签，并按请求头版本选择。
+// Only KMIP 1.4 and 2.0 are accepted. Versions 1.0 through 1.3 are declared for reference but rejected with
+// ErrUnsupported because this implementation does not carry their older payload variants. KMIP 1.4 uses the
+// Template-Attribute payload structures; KMIP 2.0 uses the Attributes payload structures, including the Attributes,
+// Common Attributes, Private Key Attributes, Public Key Attributes and Attribute Reference tags, selected from the
+// request header version. | 仅接受 KMIP 1.4 与 2.0。1.0 至 1.3 仅作参考声明，因本实现不携带其更旧的负载变体而返回
+// ErrUnsupported。KMIP 1.4 使用 Template-Attribute 负载结构；KMIP 2.0 使用 Attributes 负载结构，包括
+// Attributes、Common Attributes、Private Key Attributes、Public Key Attributes 与 Attribute Reference 标签，
+// 并按请求头版本选择。
 func (v ProtocolVersion) Supported() bool {
-	return v.Major == MajorVersion1 && v.Minor >= 0 && v.Minor <= 4 || v.Major == MajorVersion2 && v.Minor == 0
+	return v == ProtocolVersion14 || v == ProtocolVersion20
 }
 
 // SupportedProtocolVersions returns the protocol versions advertised by DiscoverVersions. | SupportedProtocolVersions

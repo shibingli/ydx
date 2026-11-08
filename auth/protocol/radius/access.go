@@ -16,38 +16,33 @@ import (
 // Attributes 携带附加属性，例如 Proxy-State 或厂商属性。由 Method 生成的凭据属性会从
 // Attributes 中过滤，以避免发送冲突值。
 type AccessRequest struct {
+	// MSCHAPv2 carries MS-CHAPv2 credentials when Method is AuthMSCHAPv2. | MSCHAPv2 在 Method 为
+	// AuthMSCHAPv2 时携带 MS-CHAPv2 凭据。
+	MSCHAPv2 *MSCHAPv2Credentials
 	// UserName is the login name (User-Name). | UserName 是登录名（User-Name）。
 	UserName string
 	// Password is the plaintext password for PAP, or the CHAP secret. It is never logged. | Password
 	// 是 PAP 的明文口令，或 CHAP 密钥。它绝不会被记录到日志。
 	Password string
-	// Method selects the authentication mechanism. | Method 选择认证机制。
-	Method AuthMethod
+	// NASIdentifier overrides the client NAS-Identifier. | NASIdentifier 覆盖客户端的 NAS-Identifier。
+	NASIdentifier string
+	// CallingStationID is the Calling-Station-Id value. | CallingStationID 是 Calling-Station-Id 值。
+	CallingStationID string
+	// CalledStationID is the Called-Station-Id value. | CalledStationID 是 Called-Station-Id 值。
+	CalledStationID string
 	// CHAPChallenge is an explicit CHAP-Challenge; the Request Authenticator is used when empty. |
 	// CHAPChallenge 是显式 CHAP 挑战；为空时使用 Request Authenticator。
 	CHAPChallenge []byte
-	// CHAPIdentifier is the CHAP identifier; the packet Identifier is used when zero. | CHAPIdentifier
-	// 是 CHAP 标识；为零时使用报文 Identifier。
-	CHAPIdentifier uint8
-	// MSCHAPv2 carries MS-CHAPv2 credentials when Method is AuthMSCHAPv2. | MSCHAPv2 在 Method 为
-	// AuthMSCHAPv2 时携带 MS-CHAPv2 凭据。
-	MSCHAPv2 *MSCHAPv2Credentials
 	// EAPMessages carries one or more EAP packets when Method is AuthEAP. | EAPMessages 在 Method
 	// 为 AuthEAP 时携带一个或多个 EAP 报文。
 	EAPMessages [][]byte
-	// IncludeMessageAuthenticator adds and signs a Message-Authenticator. It is always added when
-	// an EAP-Message is present, and whenever the request carries one the response must carry a
-	// valid Message-Authenticator (RFC 3579 section 3.2). | IncludeMessageAuthenticator 添加并
-	// 签名 Message-Authenticator。存在 EAP-Message 时始终添加，且只要请求携带它，响应就必须
-	// 携带合法的 Message-Authenticator（RFC 3579 第 3.2 节）。
-	IncludeMessageAuthenticator bool
 	// State echoes Access-Challenge state from a previous response. | State 回显先前响应的
 	// Access-Challenge 状态。
 	State []byte
 	// NASIPAddress overrides the client NAS-IP-Address. | NASIPAddress 覆盖客户端的 NAS-IP-Address。
 	NASIPAddress net.IP
-	// NASIdentifier overrides the client NAS-Identifier. | NASIdentifier 覆盖客户端的 NAS-Identifier。
-	NASIdentifier string
+	// Attributes carries additional attributes. | Attributes 携带附加属性。
+	Attributes Attributes
 	// NASPort is the NAS-Port value; zero omits it. | NASPort 是 NAS-Port 值；零值省略该属性。
 	NASPort uint32
 	// NASPortType is the NAS-Port-Type value; zero omits it. Add AttrNASPortType explicitly to send
@@ -59,12 +54,17 @@ type AccessRequest struct {
 	// FramedProtocol is the Framed-Protocol value; zero omits it. | FramedProtocol 是
 	// Framed-Protocol 值；零值省略该属性。
 	FramedProtocol FramedProtocol
-	// CallingStationID is the Calling-Station-Id value. | CallingStationID 是 Calling-Station-Id 值。
-	CallingStationID string
-	// CalledStationID is the Called-Station-Id value. | CalledStationID 是 Called-Station-Id 值。
-	CalledStationID string
-	// Attributes carries additional attributes. | Attributes 携带附加属性。
-	Attributes Attributes
+	// Method selects the authentication mechanism. | Method 选择认证机制。
+	Method AuthMethod
+	// CHAPIdentifier is the CHAP identifier; the packet Identifier is used when zero. | CHAPIdentifier
+	// 是 CHAP 标识；为零时使用报文 Identifier。
+	CHAPIdentifier uint8
+	// IncludeMessageAuthenticator adds and signs a Message-Authenticator. It is always added when
+	// an EAP-Message is present, and whenever the request carries one the response must carry a
+	// valid Message-Authenticator (RFC 3579 section 3.2). | IncludeMessageAuthenticator 添加并
+	// 签名 Message-Authenticator。存在 EAP-Message 时始终添加，且只要请求携带它，响应就必须
+	// 携带合法的 Message-Authenticator（RFC 3579 第 3.2 节）。
+	IncludeMessageAuthenticator bool
 }
 
 // MSCHAPv2Credentials holds MS-CHAPv2 authentication material. | MSCHAPv2Credentials 保存
@@ -81,41 +81,33 @@ type MSCHAPv2Credentials struct {
 	// PeerChallenge is the 16-octet peer challenge; a random value is generated when empty. |
 	// PeerChallenge 是 16 字节对端挑战；为空时生成随机值。
 	PeerChallenge []byte
-	// Ident is the MS-CHAPv2 identifier; the packet Identifier is used when zero. | Ident 是
-	// MS-CHAPv2 标识；为零时使用报文 Identifier。
-	Ident uint8
 	// Response is a precomputed 50-octet MS-CHAP2-Response value. Challenge is still sent as
 	// MS-CHAP-Challenge, while Password and PeerChallenge are not used. | Response 是预计算的
 	// 50 字节 MS-CHAP2-Response 值。仍会将 Challenge 作为 MS-CHAP-Challenge 发送，但不使用
 	// Password 与 PeerChallenge。
 	Response []byte
+	// Ident is the MS-CHAPv2 identifier; the packet Identifier is used when zero. | Ident 是
+	// MS-CHAPv2 标识；为零时使用报文 Identifier。
+	Ident uint8
 }
 
 // AccessResponse is the decoded answer to an Access-Request. | AccessResponse 是 Access-Request
 // 的解码应答。
 type AccessResponse struct {
-	// Code is the response code. | Code 是响应码。
-	Code Code
-	// Identifier is the response packet identifier. | Identifier 是响应报文标识符。
-	Identifier uint8
-	// Authenticator is the verified Response Authenticator. | Authenticator 是已校验的 Response Authenticator。
-	Authenticator [16]byte
-	// Attributes holds every response attribute in wire order. | Attributes 按线序保存全部响应属性。
-	Attributes Attributes
 	// ReplyMessage is the first Reply-Message. | ReplyMessage 是首个 Reply-Message。
 	ReplyMessage string
+	// FilterID is the Filter-Id value. | FilterID 是 Filter-Id 值。
+	FilterID string
+	// MSCHAPv2Error is the MS-CHAP-Error vendor value. | MSCHAPv2Error 是 MS-CHAP-Error 厂商值。
+	MSCHAPv2Error string
+	// Attributes holds every response attribute in wire order. | Attributes 按线序保存全部响应属性。
+	Attributes Attributes
 	// ReplyMessages holds every Reply-Message. | ReplyMessages 保存全部 Reply-Message。
 	ReplyMessages []string
 	// State is the first State value. | State 是首个 State 值。
 	State []byte
 	// Class is the first Class value. | Class 是首个 Class 值。
 	Class []byte
-	// SessionTimeout is the Session-Timeout value in seconds. | SessionTimeout 是 Session-Timeout 秒数。
-	SessionTimeout uint32
-	// IdleTimeout is the Idle-Timeout value in seconds. | IdleTimeout 是 Idle-Timeout 秒数。
-	IdleTimeout uint32
-	// FilterID is the Filter-Id value. | FilterID 是 Filter-Id 值。
-	FilterID string
 	// FramedIPAddress is the Framed-IP-Address value. | FramedIPAddress 是 Framed-IP-Address 值。
 	FramedIPAddress net.IP
 	// TunnelTypes holds every Tunnel-Type value. | TunnelTypes 保存全部 Tunnel-Type 值。
@@ -134,8 +126,16 @@ type AccessResponse struct {
 	// MSCHAPv2Success is the MS-CHAP2-Success vendor value. | MSCHAPv2Success 是 MS-CHAP2-Success
 	// 厂商值。
 	MSCHAPv2Success []byte
-	// MSCHAPv2Error is the MS-CHAP-Error vendor value. | MSCHAPv2Error 是 MS-CHAP-Error 厂商值。
-	MSCHAPv2Error string
+	// SessionTimeout is the Session-Timeout value in seconds. | SessionTimeout 是 Session-Timeout 秒数。
+	SessionTimeout uint32
+	// IdleTimeout is the Idle-Timeout value in seconds. | IdleTimeout 是 Idle-Timeout 秒数。
+	IdleTimeout uint32
+	// Authenticator is the verified Response Authenticator. | Authenticator 是已校验的 Response Authenticator。
+	Authenticator [16]byte
+	// Code is the response code. | Code 是响应码。
+	Code Code
+	// Identifier is the response packet identifier. | Identifier 是响应报文标识符。
+	Identifier uint8
 }
 
 // Accepted reports whether the response is Access-Accept. | Accepted 报告响应是否为 Access-Accept。
@@ -158,19 +158,22 @@ func (r *AccessResponse) Challenged() bool {
 //
 // PAP, CHAP, MS-CHAPv2 and EAP are supported. Every transmission attempt uses a fresh Identifier
 // and Request Authenticator; timeouts are retried with exponential backoff until Retries is
-// exhausted or the context ends. UDP responses whose Response Authenticator does not match are
-// silently discarded and the attempt keeps waiting for a valid response, as RFC 2865 sections 4.2
-// and 4.4 require; stream transports fail the attempt so the connection can be closed. Malformed
-// responses and credential failures are not retried. | 支持 PAP、CHAP、MS-CHAPv2 与 EAP。每次传输
-// 尝试使用新的 Identifier 与 Request Authenticator；超时按指数退避重试，直到 Retries 用尽或上下文
-// 结束。UDP 响应中 Response Authenticator 不匹配者按 RFC 2865 第 4.2 与 4.4 节要求被静默丢弃，
-// 本次尝试继续等待合法响应；流传输则让本次尝试失败以便关闭连接。畸形响应与凭据失败不重试。
+// exhausted or the context ends. UDP responses that are malformed, carry another identifier, or
+// fail Response Authenticator or required Message-Authenticator verification are silently discarded
+// and the attempt keeps waiting for a valid response, as RFC 2865 sections 3, 4.2 and 4.4 require;
+// stream transports fail the attempt so the connection can be closed. Retransmissions only happen
+// after a timeout; an Access-Reject is returned to the caller as a normal response. | 支持 PAP、CHAP、
+// MS-CHAPv2 与 EAP。每次传输尝试使用新的 Identifier 与 Request Authenticator；超时按指数退避重试，
+// 直到 Retries 用尽或上下文结束。UDP 响应中结构畸形、标识符不同或未通过 Response Authenticator
+// 或必需 Message-Authenticator 校验者，按 RFC 2865 第 3、4.2 与 4.4 节要求被静默丢弃，本次尝试
+// 继续等待合法响应；流传输则让本次尝试失败以便关闭连接。只有超时才会重传；Access-Reject 作为正常
+// 响应返回给调用方。
 func (c *Client) AccessRequest(ctx context.Context, request *AccessRequest) (*AccessResponse, error) {
 	prepared, err := prepareAccessRequest(request)
 	if err != nil {
 		return nil, err
 	}
-	packet, raw, requestAuthenticator, err := c.exchange(ctx, CodeAccessRequest, func(int) ([]byte, [16]byte, error) {
+	packet, raw, requestAuthenticator, err := c.exchange(ctx, CodeAccessRequest, accessIncludesMessageAuthenticator(prepared), func(int) ([]byte, [16]byte, error) {
 		return c.buildAccessRequest(prepared)
 	})
 	if err != nil {

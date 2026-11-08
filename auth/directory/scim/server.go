@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"mime"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -23,6 +24,31 @@ type Authorizer func(ctx context.Context, r *http.Request, action, resource stri
 // it clears it before persistence and calls this hook with the stored user. | PasswordSetter 预配
 // 只写的 SCIM 口令。服务端绝不存储明文；它在持久化前清空口令，并用已存储用户调用该钩子。
 type PasswordSetter func(ctx context.Context, user *User, password string) error
+
+// PasswordPrechecker validates a password before the server commits a profile write. A precheck
+// failure rejects the request with a client error before any store mutation, so no compensation is
+// needed. It is optional; when absent only the post-commit PasswordSetter runs. | PasswordPrechecker
+// 在服务端提交资料写入前校验口令。预检失败会在任何存储变更前以客户端错误拒绝请求，因此无需补偿。
+// 它可选；缺失时只运行提交后的 PasswordSetter。
+type PasswordPrechecker interface {
+	// PreparePassword validates password for user. user carries the identifier of an existing
+	// resource on replace and patch, and no identifier on create. | PreparePassword 为 user 校验
+	// password。替换与补丁时 user 带有既有资源标识，创建时没有标识。
+	PreparePassword(ctx context.Context, user *User, password string) error
+}
+
+// PasswordValidator adapts an ordinary function to PasswordPrechecker. | PasswordValidator 把普通
+// 函数适配为 PasswordPrechecker。
+type PasswordValidator func(ctx context.Context, user *User, password string) error
+
+// PreparePassword calls v(ctx, user, password). A nil validator accepts every password. |
+// PreparePassword 调用 v(ctx, user, password)。nil 校验器接受所有口令。
+func (v PasswordValidator) PreparePassword(ctx context.Context, user *User, password string) error {
+	if v == nil {
+		return nil
+	}
+	return v(ctx, user, password)
+}
 
 // Authorization actions passed to Authorizer. | 传给 Authorizer 的授权动作。
 const (
@@ -55,6 +81,17 @@ type Options struct {
 	// PasswordSetter provisions passwords. Without it a request carrying password is rejected. |
 	// PasswordSetter 预配口令。缺失时携带 password 的请求会被拒绝。
 	PasswordSetter PasswordSetter
+	// PasswordPrecheck validates passwords before a profile write is committed. Without it the
+	// server calls PasswordSetter only after the store mutation and compensates a rejection by
+	// restoring the prior profile. | PasswordPrecheck 在资料写入提交前校验口令。缺失时服务端仅在
+	// 存储变更后调用 PasswordSetter，并通过恢复先前资料来补偿拒绝。
+	PasswordPrecheck PasswordPrechecker
+	// AllowAnyContentType accepts any request Content-Type on SCIM write requests. The default
+	// rejects POST, PUT and PATCH bodies whose media type is neither application/scim+json nor
+	// application/json with HTTP 415 as required by RFC 7644 section 3.1. | AllowAnyContentType
+	// 在 SCIM 写请求上接受任意 Content-Type。默认按 RFC 7644 第 3.1 节，对媒体类型既非
+	// application/scim+json 也非 application/json 的 POST、PUT 与 PATCH 请求体返回 HTTP 415。
+	AllowAnyContentType bool
 	// Clock supplies timestamps for discovery metadata. nil uses time.Now. | Clock 为发现元数据
 	// 提供时间戳。nil 使用 time.Now。
 	Clock func() time.Time
@@ -99,6 +136,12 @@ type Server struct {
 	authorizer Authorizer
 	// passwordSetter provisions write-only passwords. | passwordSetter 预配只写口令。
 	passwordSetter PasswordSetter
+	// passwordPrecheck validates passwords before a profile write commits. | passwordPrecheck 在
+	// 资料写入提交前校验口令。
+	passwordPrecheck PasswordPrechecker
+	// allowAnyContentType accepts any write request media type. | allowAnyContentType 接受任意写
+	// 请求媒体类型。
+	allowAnyContentType bool
 	// clock supplies timestamps. | clock 提供时间戳。
 	clock func() time.Time
 	// baseURL is the optional configured public base URL. | baseURL 是可选配置的公开基础 URL。
@@ -160,17 +203,19 @@ func New(options Options) (*Server, error) {
 		clock = func() time.Time { return time.Now().UTC() }
 	}
 	return &Server{
-		store:              store,
-		authorizer:         options.Authorizer,
-		baseURL:            strings.TrimRight(strings.TrimSpace(options.BaseURL), "/"),
-		documentationURI:   options.DocumentationURI,
-		maxResults:         maxResults,
-		bulkMaxOperations:  bulkMaxOperations,
-		bulkMaxPayloadSize: bulkMaxPayloadSize,
-		bulkAtomic:         options.BulkAtomic,
-		bulkMaxUndoBytes:   bulkMaxUndoBytes,
-		passwordSetter:     options.PasswordSetter,
-		clock:              clock,
+		store:               store,
+		authorizer:          options.Authorizer,
+		baseURL:             strings.TrimRight(strings.TrimSpace(options.BaseURL), "/"),
+		documentationURI:    options.DocumentationURI,
+		maxResults:          maxResults,
+		bulkMaxOperations:   bulkMaxOperations,
+		bulkMaxPayloadSize:  bulkMaxPayloadSize,
+		bulkAtomic:          options.BulkAtomic,
+		bulkMaxUndoBytes:    bulkMaxUndoBytes,
+		passwordSetter:      options.PasswordSetter,
+		passwordPrecheck:    options.PasswordPrecheck,
+		allowAnyContentType: options.AllowAnyContentType,
+		clock:               clock,
 	}, nil
 }
 
@@ -886,17 +931,37 @@ func cleanAttributeList(list []string) []string {
 	return out
 }
 
-// setPassword provisions a password through the configured hook. | setPassword 通过已配置钩子预配
-// 口令。
-func (s *Server) setPassword(ctx context.Context, user *User, password string) error {
-	if password == "" {
-		return nil
+// acceptedWriteMediaType reports whether mediaType is one of the RFC 7644 JSON media types. |
+// acceptedWriteMediaType 报告 mediaType 是否为 RFC 7644 的 JSON 媒体类型之一。
+func acceptedWriteMediaType(mediaType string) bool {
+	switch strings.ToLower(strings.TrimSpace(mediaType)) {
+	case ContentType, ContentTypeJSON:
+		return true
+	default:
+		return false
 	}
-	if s.passwordSetter == nil {
-		return errs.Detail(ErrNotConfigured, "password provisioning requires PasswordSetter | 口令预配需要 PasswordSetter")
+}
+
+// requireWriteContentType enforces the RFC 7644 write media types. When the request carries a
+// missing, malformed or unsupported Content-Type it writes a 415 Error response and returns false.
+// Callers must only use it for POST, PUT and PATCH routes; GET and HEAD never check a request
+// media type. | requireWriteContentType 强制 RFC 7644 的写媒体类型。请求的 Content-Type 缺失、
+// 格式错误或不受支持时，它写出 415 Error 响应并返回 false。调用方只能把它用于 POST、PUT 与 PATCH
+// 路由；GET 与 HEAD 从不检查请求媒体类型。
+func (s *Server) requireWriteContentType(w http.ResponseWriter, r *http.Request) bool {
+	if s == nil || s.allowAnyContentType {
+		return true
 	}
-	if err := s.passwordSetter(ctx, user, password); err != nil {
-		return errs.WrapDetail(err, ErrInvalidValue, "password rejected | 口令被拒绝")
+	header := ""
+	if r != nil {
+		header = strings.TrimSpace(r.Header.Get("Content-Type"))
 	}
-	return nil
+	if header != "" {
+		if mediaType, _, err := mime.ParseMediaType(header); err == nil && acceptedWriteMediaType(mediaType) {
+			return true
+		}
+	}
+	writeStatusError(w, http.StatusUnsupportedMediaType, "",
+		"scim: unsupported media type; use "+ContentType+" or "+ContentTypeJSON+" | scim：不支持的媒体类型；请使用 "+ContentType+" 或 "+ContentTypeJSON)
+	return false
 }

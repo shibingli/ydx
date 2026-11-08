@@ -9,19 +9,19 @@ import (
 
 // AttributeDefinition describes one dictionary attribute. | AttributeDefinition 描述一个字典属性。
 type AttributeDefinition struct {
-	// Name is the dictionary name, for example "User-Name". | Name 是字典名称，例如 "User-Name"。
-	Name string
-	// Type is the standard attribute type, or AttrVendorSpecific for vendor attributes. | Type
-	// 是标准属性类型；厂商属性为 AttrVendorSpecific。
-	Type AttributeType
-	// VendorID is the vendor identifier for vendor attributes and zero otherwise. | VendorID
-	// 是厂商属性的厂商标识，其它情况为零。
-	VendorID uint32
-	// VendorType is the vendor sub-attribute type for vendor attributes. | VendorType 是厂商子属性类型。
-	VendorType uint8
 	// Values maps enumerated numeric values to names. Callers must treat the returned map as
 	// read-only. | Values 将枚举数值映射到名称。调用方必须将返回的映射视为只读。
 	Values map[uint32]string
+	// Name is the dictionary name, for example "User-Name". | Name 是字典名称，例如 "User-Name"。
+	Name string
+	// VendorID is the vendor identifier for vendor attributes and zero otherwise. | VendorID
+	// 是厂商属性的厂商标识，其它情况为零。
+	VendorID uint32
+	// Type is the standard attribute type, or AttrVendorSpecific for vendor attributes. | Type
+	// 是标准属性类型；厂商属性为 AttrVendorSpecific。
+	Type AttributeType
+	// VendorType is the vendor sub-attribute type for vendor attributes. | VendorType 是厂商子属性类型。
+	VendorType uint8
 }
 
 // valueKey identifies an enumerated value namespace. | valueKey 标识一个枚举值命名空间。
@@ -44,12 +44,12 @@ type vendorKey struct {
 // dictionary unless ClientConfig.Dictionary supplies another one. | Dictionary 可安全地并发查询与
 // 注册。除非 ClientConfig.Dictionary 提供其它字典，NewClient 使用一份新的内置字典。
 type Dictionary struct {
-	mu       sync.RWMutex
 	byName   map[string]AttributeDefinition
 	byType   map[AttributeType]AttributeDefinition
 	byVendor map[vendorKey]AttributeDefinition
 	values   map[valueKey]map[uint32]string
 	numbers  map[valueKey]map[string]uint32
+	mu       sync.RWMutex
 }
 
 // NewDictionary returns an empty dictionary. | NewDictionary 返回空字典。

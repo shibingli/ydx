@@ -49,6 +49,10 @@ var (
 	// ErrInvalidLogoutRequest reports a malformed, oversized or unauthenticated SAML logout request. |
 	// ErrInvalidLogoutRequest 表示格式错误、超大或未经认证的 SAML 登出请求。
 	ErrInvalidLogoutRequest = errs.New("cas: invalid logout request | cas：登出请求非法")
+	// ErrInvalidLogoutSignature reports a missing, unverifiable or invalid XML signature on a SAML
+	// LogoutRequest. | ErrInvalidLogoutSignature 表示 SAML LogoutRequest 缺少、无法校验或包含无效的
+	// XML 签名。
+	ErrInvalidLogoutSignature = errs.New("cas: invalid logout request signature | cas：登出请求签名无效")
 	// ErrLogoutDelivery reports a failed back-channel logout delivery. | ErrLogoutDelivery 表示后端登出投递失败。
 	ErrLogoutDelivery = errs.New("cas: logout delivery failed | cas：登出投递失败")
 	// ErrSessionNotFound reports an unknown service session. | ErrSessionNotFound 表示服务会话不存在。

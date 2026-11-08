@@ -34,6 +34,17 @@ type ServiceProviderConfig struct {
 	IDPMetadata *EntityDescriptor
 	// Store correlates requests and rejects replay. | Store 关联请求并拒绝重放。
 	Store Store
+	// AssertionReplayStore enforces Conditions/OneTimeUse assertions. When nil, Store is used when it
+	// implements AssertionReplayStore; otherwise OneTimeUse assertions are rejected unless
+	// AllowOneTimeUseWithoutReplayStore is set. | AssertionReplayStore 强制 Conditions/OneTimeUse
+	// 断言。为空时若 Store 实现 AssertionReplayStore 则使用它；否则拒绝 OneTimeUse 断言，除非设置
+	// AllowOneTimeUseWithoutReplayStore。
+	AssertionReplayStore AssertionReplayStore
+	// AllowOneTimeUseWithoutReplayStore accepts OneTimeUse assertions without replay detection when
+	// neither AssertionReplayStore nor Store enforces single use. The default false fails closed. |
+	// AllowOneTimeUseWithoutReplayStore 在 AssertionReplayStore 与 Store 均无法强制一次性使用时
+	// 接受 OneTimeUse 断言且不检测重放。默认 false 失败关闭。
+	AllowOneTimeUseWithoutReplayStore bool
 	// SignatureVerifier verifies response and assertion signatures. | SignatureVerifier 校验响应与断言签名。
 	SignatureVerifier SignatureVerifier
 	// Decryptor decrypts EncryptedAssertion elements. | Decryptor 解密 EncryptedAssertion 元素。
@@ -81,6 +92,19 @@ type ServiceProviderConfig struct {
 	// does not follow redirects and honors ArtifactResolutionTimeout. | ArtifactHTTPClient 替换用于
 	// 工件解析的 HTTP 客户端。零值客户端不跟随重定向并遵循 ArtifactResolutionTimeout。
 	ArtifactHTTPClient *http.Client
+	// ArtifactSOAPVersion selects the SOAP envelope version of outgoing ArtifactResolve messages;
+	// the zero value is SOAPVersion11. | ArtifactSOAPVersion 选择外发 ArtifactResolve 消息的 SOAP
+	// 信封版本；零值是 SOAPVersion11。
+	ArtifactSOAPVersion SOAPVersion
+	// ArtifactResolutionMaxEndpoints bounds the failover candidates tried for one artifact; zero
+	// means DefaultArtifactResolutionMaxEndpoints and values above MaxArtifactResolutionEndpoints
+	// are rejected. | ArtifactResolutionMaxEndpoints 限制单个工件的故障转移候选端点；零值表示
+	// DefaultArtifactResolutionMaxEndpoints，大于 MaxArtifactResolutionEndpoints 的值会被拒绝。
+	ArtifactResolutionMaxEndpoints int
+	// ArtifactResolutionTotalTimeout bounds all failover attempts together; zero means three times
+	// ArtifactResolutionTimeout. | ArtifactResolutionTotalTimeout 约束全部故障转移尝试的总时长；
+	// 零值表示 ArtifactResolutionTimeout 的三倍。
+	ArtifactResolutionTotalTimeout time.Duration
 	// ArtifactSourceID pins the accepted 20-byte artifact source identifier; nil accepts the source
 	// resolved by the configured IdP. | ArtifactSourceID 固定接受的 20 字节工件源标识；为空时接受
 	// 已配置 IdP 解析的源。
@@ -141,6 +165,24 @@ func NewServiceProvider(config ServiceProviderConfig) (*ServiceProvider, error) 
 	}
 	if config.ArtifactResolutionTimeout <= 0 {
 		config.ArtifactResolutionTimeout = 10 * time.Second
+	}
+	if config.ArtifactSOAPVersion == "" {
+		config.ArtifactSOAPVersion = SOAPVersion11
+	}
+	if config.ArtifactSOAPVersion != SOAPVersion11 && config.ArtifactSOAPVersion != SOAPVersion12 {
+		return nil, errs.Detail(ErrInvalidConfig, "unsupported artifact SOAP version %[1]q | 不支持的工件 SOAP 版本 %[1]q", config.ArtifactSOAPVersion)
+	}
+	if config.ArtifactResolutionMaxEndpoints < 0 {
+		return nil, errs.Detail(ErrInvalidConfig, "artifact resolution max endpoints is negative | 工件解析最大端点为负")
+	}
+	if config.ArtifactResolutionMaxEndpoints == 0 {
+		config.ArtifactResolutionMaxEndpoints = DefaultArtifactResolutionMaxEndpoints
+	}
+	if config.ArtifactResolutionMaxEndpoints > MaxArtifactResolutionEndpoints {
+		return nil, errs.Detail(ErrInvalidConfig, "artifact resolution max endpoints %d exceeds %d | 工件解析最大端点 %d 超过 %d", config.ArtifactResolutionMaxEndpoints, MaxArtifactResolutionEndpoints, config.ArtifactResolutionMaxEndpoints, MaxArtifactResolutionEndpoints)
+	}
+	if config.ArtifactResolutionTotalTimeout <= 0 {
+		config.ArtifactResolutionTotalTimeout = 3 * config.ArtifactResolutionTimeout
 	}
 	if len(config.ArtifactSourceID) > 0 && len(config.ArtifactSourceID) != ArtifactSourceIDSize {
 		return nil, errs.Detail(ErrInvalidConfig, "artifact source ID must be %d bytes | 工件源标识必须为 %d 字节", ArtifactSourceIDSize, ArtifactSourceIDSize)
@@ -282,20 +324,22 @@ func (sp *ServiceProvider) validateResponse(ctx context.Context, raw []byte) (*V
 		allowedFormats = []string{sp.config.NameIDFormat}
 	}
 	return ValidateResponse(ctx, raw, ResponseValidationOptions{
-		SPEntityID:                 sp.config.EntityID,
-		ACSURL:                     sp.config.ACSURL,
-		IDPEntityID:                sp.config.IDPMetadata.EntityID,
-		Store:                      sp.store,
-		SignatureVerifier:          sp.config.SignatureVerifier,
-		Decryptor:                  sp.config.Decryptor,
-		RequireSignedResponse:      sp.config.RequireSignedResponse,
-		RequireSignedAssertion:     sp.config.RequireSignedAssertion,
-		RequireInResponseTo:        !sp.config.AllowIDPInitiated,
-		RequireSubjectConfirmation: sp.config.RequireSubjectConfirmation,
-		ClockSkew:                  sp.config.ClockSkew,
-		MaxIssueAge:                sp.config.MaxIssueAge,
-		AllowedNameIDFormats:       allowedFormats,
-		Now:                        sp.now,
+		SPEntityID:                        sp.config.EntityID,
+		ACSURL:                            sp.config.ACSURL,
+		IDPEntityID:                       sp.config.IDPMetadata.EntityID,
+		Store:                             sp.store,
+		AssertionReplayStore:              sp.config.AssertionReplayStore,
+		AllowOneTimeUseWithoutReplayStore: sp.config.AllowOneTimeUseWithoutReplayStore,
+		SignatureVerifier:                 sp.config.SignatureVerifier,
+		Decryptor:                         sp.config.Decryptor,
+		RequireSignedResponse:             sp.config.RequireSignedResponse,
+		RequireSignedAssertion:            sp.config.RequireSignedAssertion,
+		RequireInResponseTo:               !sp.config.AllowIDPInitiated,
+		RequireSubjectConfirmation:        sp.config.RequireSubjectConfirmation,
+		ClockSkew:                         sp.config.ClockSkew,
+		MaxIssueAge:                       sp.config.MaxIssueAge,
+		AllowedNameIDFormats:              allowedFormats,
+		Now:                               sp.now,
 	})
 }
 

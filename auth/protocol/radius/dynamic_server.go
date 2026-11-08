@@ -27,32 +27,32 @@ const DefaultDynamicServerAddress = ":3799"
 // Authenticator，并在存在时校验 Message-Authenticator。Attributes 按线序保留全部属性，包括
 // Proxy-State 与厂商属性。
 type DynamicAuthorizationPacket struct {
+	// EventTimestamp is Event-Timestamp; it is only meaningful when HasEventTimestamp is true. |
+	// EventTimestamp 是 Event-Timestamp；仅在 HasEventTimestamp 为 true 时有意义。
+	EventTimestamp time.Time
+	// RemoteAddr is the source address of the datagram. | RemoteAddr 是数据报的源地址。
+	RemoteAddr net.Addr
+	// SessionID is Acct-Session-Id, empty when absent. | SessionID 是 Acct-Session-Id，缺失时为空。
+	SessionID string
+	// UserName is User-Name, empty when absent. | UserName 是 User-Name，缺失时为空。
+	UserName string
+	// NASIdentifier is NAS-Identifier, empty when absent. | NASIdentifier 是 NAS-Identifier，缺失时为空。
+	NASIdentifier string
+	// Attributes holds every request attribute in wire order. | Attributes 按线序保存全部请求属性。
+	Attributes Attributes
+	// NASIPAddress is NAS-IP-Address, nil when absent. | NASIPAddress 是 NAS-IP-Address，缺失时为 nil。
+	NASIPAddress net.IP
+	// NASPort is NAS-Port, zero when absent. | NASPort 是 NAS-Port，缺失时为零。
+	NASPort uint32
+	// Authenticator is the verified Request Authenticator. | Authenticator 是已校验的 Request
+	// Authenticator。
+	Authenticator [16]byte
 	// Code is CodeCoARequest or CodeDisconnectRequest. | Code 是 CodeCoARequest 或
 	// CodeDisconnectRequest。
 	Code Code
 	// Identifier is the request identifier, reused by the ACK or NAK. | Identifier 是请求标识符，由
 	// ACK 或 NAK 复用。
 	Identifier uint8
-	// Authenticator is the verified Request Authenticator. | Authenticator 是已校验的 Request
-	// Authenticator。
-	Authenticator [16]byte
-	// RemoteAddr is the source address of the datagram. | RemoteAddr 是数据报的源地址。
-	RemoteAddr net.Addr
-	// Attributes holds every request attribute in wire order. | Attributes 按线序保存全部请求属性。
-	Attributes Attributes
-	// SessionID is Acct-Session-Id, empty when absent. | SessionID 是 Acct-Session-Id，缺失时为空。
-	SessionID string
-	// UserName is User-Name, empty when absent. | UserName 是 User-Name，缺失时为空。
-	UserName string
-	// NASIPAddress is NAS-IP-Address, nil when absent. | NASIPAddress 是 NAS-IP-Address，缺失时为 nil。
-	NASIPAddress net.IP
-	// NASIdentifier is NAS-Identifier, empty when absent. | NASIdentifier 是 NAS-Identifier，缺失时为空。
-	NASIdentifier string
-	// NASPort is NAS-Port, zero when absent. | NASPort 是 NAS-Port，缺失时为零。
-	NASPort uint32
-	// EventTimestamp is Event-Timestamp; it is only meaningful when HasEventTimestamp is true. |
-	// EventTimestamp 是 Event-Timestamp；仅在 HasEventTimestamp 为 true 时有意义。
-	EventTimestamp time.Time
 	// HasEventTimestamp reports whether Event-Timestamp was present. | HasEventTimestamp 报告是否携带
 	// Event-Timestamp。
 	HasEventTimestamp bool
@@ -76,17 +76,17 @@ type DynamicAuthorizationPacket struct {
 // 组合会被替换为携带 ErrorCauseResourcesUnavailable 的 NAK。Attributes 中的 Error-Cause、
 // Reply-Message 与 Message-Authenticator 会被忽略：前两者应使用类型化字段，后者由服务器自行签名。
 type DynamicAuthorizationResult struct {
-	// Accept acknowledges the request with an ACK. | Accept 以 ACK 确认请求。
-	Accept bool
-	// ErrorCause is the optional Error-Cause value; zero omits the attribute. | ErrorCause 是可选
-	// Error-Cause 值；零值省略该属性。
-	ErrorCause ErrorCause
 	// ReplyMessage is the optional Reply-Message text; empty omits the attribute. | ReplyMessage 是
 	// 可选 Reply-Message 文本；空值省略该属性。
 	ReplyMessage string
 	// Attributes carries additional response attributes in wire order. | Attributes 按线序携带附加
 	// 响应属性。
 	Attributes Attributes
+	// ErrorCause is the optional Error-Cause value; zero omits the attribute. | ErrorCause 是可选
+	// Error-Cause 值；零值省略该属性。
+	ErrorCause ErrorCause
+	// Accept acknowledges the request with an ACK. | Accept 以 ACK 确认请求。
+	Accept bool
 }
 
 // DynamicRequestHandler decides the ACK or NAK for an authenticated CoA-Request or
@@ -123,6 +123,17 @@ func (f DynamicRequestHandlerFunc) HandleDynamicAuthorization(ctx context.Contex
 
 // DynamicServerConfig configures a DynamicServer. | DynamicServerConfig 配置 DynamicServer。
 type DynamicServerConfig struct {
+	// Handler is required and decides every authenticated request. | Handler 必填，为每个已认证
+	// 请求作出决定。
+	Handler DynamicRequestHandler
+	// DuplicateCache optionally supplies an external duplicate cache, for example one shared by
+	// several servers or seeded with a test clock. Nil creates an owned cache. | DuplicateCache 可选
+	// 提供外部重复缓存，例如由多个服务器共享或注入测试时钟。nil 创建自有缓存。
+	DuplicateCache *DynamicDuplicateCache
+	// Logger receives dropped-packet and handler diagnostics; nil selects log.Default(). It never
+	// receives the shared secret or request contents. | Logger 接收丢包与处理器诊断；nil 选择
+	// log.Default()。它绝不会收到共享密钥或请求内容。
+	Logger *log.Logger
 	// Network is the UDP network: "udp" (the default), "udp4" or "udp6". | Network 是 UDP 网络：
 	// "udp"（默认）、"udp4" 或 "udp6"。
 	Network string
@@ -134,9 +145,6 @@ type DynamicServerConfig struct {
 	// Secret 是用于认证请求与签名响应的共享密钥。服务器会复制它并在 Close 时清零副本；调用方仍需
 	// 自行清零自己的切片。
 	Secret []byte
-	// Handler is required and decides every authenticated request. | Handler 必填，为每个已认证
-	// 请求作出决定。
-	Handler DynamicRequestHandler
 	// Timeout bounds one handler invocation and the following response write; zero selects
 	// DefaultTimeout. It does not bound the lifetime of Serve. | Timeout 约束一次处理器调用与随后的
 	// 响应写入；零值选择 DefaultTimeout。它不约束 Serve 的生命周期。
@@ -146,11 +154,6 @@ type DynamicServerConfig struct {
 	// MaxPacketSize 是接受的最大数据报；零值选择 MaxPacketLength。低于 HeaderLength 或高于
 	// MaxPacketLength 的值会被拒绝。更大的数据报会被丢弃。
 	MaxPacketSize int
-	// RequireMessageAuthenticator drops requests that do not carry a Message-Authenticator. Invalid
-	// values are always dropped, as RFC 5176 section 3.4 requires, whether or not this is set. |
-	// RequireMessageAuthenticator 丢弃不携带 Message-Authenticator 的请求。无论是否设置该字段，
-	// 非法值始终按 RFC 5176 第 3.4 节要求丢弃。
-	RequireMessageAuthenticator bool
 	// DuplicateTTL is the duplicate-detection window; zero selects DefaultDynamicDuplicateTTL and
 	// negative values are rejected. It is ignored when DuplicateCache is set. | DuplicateTTL 是重复
 	// 检测窗口；零值选择 DefaultDynamicDuplicateTTL，负值会被拒绝。设置 DuplicateCache 时忽略该
@@ -161,14 +164,11 @@ type DynamicServerConfig struct {
 	// DuplicateCache is set. | DuplicateCapacity 是缓存响应的最大条数；零值选择
 	// DefaultDynamicDuplicateCapacity，负值会被拒绝。设置 DuplicateCache 时忽略该字段。
 	DuplicateCapacity int
-	// DuplicateCache optionally supplies an external duplicate cache, for example one shared by
-	// several servers or seeded with a test clock. Nil creates an owned cache. | DuplicateCache 可选
-	// 提供外部重复缓存，例如由多个服务器共享或注入测试时钟。nil 创建自有缓存。
-	DuplicateCache *DynamicDuplicateCache
-	// Logger receives dropped-packet and handler diagnostics; nil selects log.Default(). It never
-	// receives the shared secret or request contents. | Logger 接收丢包与处理器诊断；nil 选择
-	// log.Default()。它绝不会收到共享密钥或请求内容。
-	Logger *log.Logger
+	// RequireMessageAuthenticator drops requests that do not carry a Message-Authenticator. Invalid
+	// values are always dropped, as RFC 5176 section 3.4 requires, whether or not this is set. |
+	// RequireMessageAuthenticator 丢弃不携带 Message-Authenticator 的请求。无论是否设置该字段，
+	// 非法值始终按 RFC 5176 第 3.4 节要求丢弃。
+	RequireMessageAuthenticator bool
 }
 
 // DynamicServer is an RFC 5176 NAS-side dynamic authorization responder over UDP. | DynamicServer
@@ -188,13 +188,14 @@ type DynamicServerConfig struct {
 type DynamicServer struct {
 	cfg     DynamicServerConfig
 	handler DynamicRequestHandler
+	conn    net.PacketConn
+	addr    net.Addr
 	cache   *DynamicDuplicateCache
 	logger  *log.Logger
 
+	secret []byte
+
 	mu      sync.RWMutex
-	secret  []byte
-	conn    net.PacketConn
-	addr    net.Addr
 	closed  bool
 	serving bool
 }

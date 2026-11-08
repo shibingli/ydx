@@ -1,8 +1,11 @@
 // Package jose implements the JSON Object Signing and Encryption toolkit used by the OAuth 2.0
-// and OpenID Connect servers: JWK and JWKS handling, compact JWS, compact JWE and the HTTP
-// helpers needed to publish and consume a key set. | Package jose 实现 OAuth 2.0 与
-// OpenID Connect 服务端使用的 JSON 对象签名与加密工具集：JWK 与 JWKS 处理、紧凑 JWS、
-// 紧凑 JWE，以及发布与读取密钥集所需的 HTTP 辅助能力。
+// and OpenID Connect servers: JWK and JWKS handling, compact and JSON-serialized JWS, compact
+// JWE and the HTTP helpers needed to publish and consume a key set. JWS supports the compact,
+// flattened JSON and general JSON serializations, including detached payloads (RFC 7515
+// Appendix F); JWE remains compact-only. | Package jose 实现 OAuth 2.0 与 OpenID Connect 服务端
+// 使用的 JSON 对象签名与加密工具集：JWK 与 JWKS 处理、紧凑与 JSON 序列化的 JWS、紧凑 JWE，以及
+// 发布与读取密钥集所需的 HTTP 辅助能力。JWS 支持紧凑、扁平 JSON 与通用 JSON 序列化，包括分离
+// 载荷（RFC 7515 附录 F）；JWE 仍仅支持紧凑形式。
 //
 // The package keeps the wire formats independent from ydx/router so that oidc, oauth2 and
 // external resource servers can share one implementation. Handlers are plain http.Handler
@@ -61,7 +64,8 @@ var (
 	ErrKeyNotFound = errs.New("jose: key not found | jose：密钥不存在")
 	// ErrDuplicateKey reports a key set with two keys carrying the same non-empty kid. | ErrDuplicateKey 表示密钥集中存在两个 kid 相同且非空的密钥。
 	ErrDuplicateKey = errs.New("jose: duplicate key identifier | jose：密钥标识重复")
-	// ErrMalformed reports a token that is not a well-formed compact JWS or JWE. | ErrMalformed 表示令牌不是结构良好的紧凑 JWS 或 JWE。
+	// ErrMalformed reports a token that is not a well-formed compact JWS, compact JWE or JWS JSON
+	// serialization. | ErrMalformed 表示令牌不是结构良好的紧凑 JWS、紧凑 JWE 或 JWS JSON 序列化。
 	ErrMalformed = errs.New("jose: malformed token | jose：令牌格式非法")
 	// ErrSignatureInvalid reports a signature that did not verify. | ErrSignatureInvalid 表示签名校验未通过。
 	ErrSignatureInvalid = errs.New("jose: invalid signature | jose：签名校验失败")
@@ -91,8 +95,8 @@ var (
 	ErrClaimsInvalid = errs.New("jose: invalid claims | jose：声明无效")
 	// ErrDecompressionLimit reports a DEF-compressed JWE whose plaintext exceeded the limit. | ErrDecompressionLimit 表示 DEF 压缩 JWE 的解压后明文超过上限。
 	ErrDecompressionLimit = errs.New("jose: decompressed size exceeds limit | jose：解压后大小超过上限")
-	// ErrTokenTooLarge reports a compact JWS or JWE whose input length exceeds the configured
-	// limit. | ErrTokenTooLarge 表示紧凑 JWS 或 JWE 的输入长度超过配置上限。
+	// ErrTokenTooLarge reports a JWS or JWE whose input length exceeds the configured limit. |
+	// ErrTokenTooLarge 表示 JWS 或 JWE 的输入长度超过配置上限。
 	ErrTokenTooLarge = errs.New("jose: token exceeds size limit | jose：令牌超过大小上限")
 )
 

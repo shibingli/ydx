@@ -174,6 +174,27 @@ func verifyMessageAuthenticatorRaw(raw, secret []byte, requestAuthenticator [16]
 	return true, constantTimeEqual(received[:], expected[:]), nil
 }
 
+// verifyRequiredResponseMessageAuthenticator enforces the RFC 3579 section 3.2 and RFC 5176
+// section 3.4 rule that a response must carry a valid Message-Authenticator when the request carried
+// one. A missing or mismatching value returns an error wrapping ErrMessageAuthenticator, which UDP
+// read paths silently discard while stream transports fail the attempt and close the connection. |
+// verifyRequiredResponseMessageAuthenticator 强制执行 RFC 3579 第 3.2 节与 RFC 5176 第 3.4 节的
+// 规则：请求携带 Message-Authenticator 时，响应必须携带合法值。缺失或不匹配会返回包装
+// ErrMessageAuthenticator 的错误；UDP 读取路径会静默丢弃该候选，流传输则让本次尝试失败并关闭连接。
+func verifyRequiredResponseMessageAuthenticator(raw, secret []byte, requestAuthenticator [16]byte) error {
+	present, valid, err := verifyMessageAuthenticatorRaw(raw, secret, requestAuthenticator)
+	if err != nil {
+		return errs.Wrap(err, ErrInvalidResponse)
+	}
+	if !present {
+		return errs.Detail(ErrMessageAuthenticator, "response lacks the required Message-Authenticator")
+	}
+	if !valid {
+		return errs.Detail(ErrMessageAuthenticator, "response Message-Authenticator mismatch")
+	}
+	return nil
+}
+
 // computeMessageAuthenticator returns HMAC-MD5 over raw with the Request Authenticator in the
 // header and every Message-Authenticator value zeroed. | computeMessageAuthenticator 返回 raw 的
 // HMAC-MD5：头部使用 Request Authenticator，所有 Message-Authenticator 值置零。

@@ -264,6 +264,39 @@ func TestValidatorHOTP(t *testing.T) {
 	}
 }
 
+// TestValidatorHOTPRejectsCounterRollback checks that a code matching below the supplied counter is
+// rejected without being recorded. | TestValidatorHOTPRejectsCounterRollback 检查命中低于所给计数器的
+// 口令被拒绝且不会被记录。
+func TestValidatorHOTPRejectsCounterRollback(t *testing.T) {
+	t.Parallel()
+	secret := testSecret("12345678901234567890")
+	cfg := Config{Skew: 1}
+	oldCode, err := HOTP(secret, 4, cfg)
+	if err != nil {
+		t.Fatalf("HOTP old: %v", err)
+	}
+	currentCode, err := HOTP(secret, 5, cfg)
+	if err != nil {
+		t.Fatalf("HOTP current: %v", err)
+	}
+	ctx := context.Background()
+	validator := NewValidator(cfg, WithReplayGuard(NewMemoryReplayGuard()), WithReplayKey("credential-rollback"))
+	matched, ok, err := validator.ValidateHOTP(ctx, secret, oldCode, 5)
+	if err != nil || ok || matched != 4 {
+		t.Fatalf("rollback ValidateHOTP = (%d, %v, %v), want (4, false, nil) | 回退口令未被拒绝", matched, ok, err)
+	}
+	// The rejected code must not occupy the replay entry for its counter. | 被拒绝的口令不得占用其计数器的重放记录。
+	matched, ok, err = validator.ValidateHOTP(ctx, secret, currentCode, 5)
+	if err != nil || !ok || matched != 5 {
+		t.Fatalf("current ValidateHOTP = (%d, %v, %v), want (5, true, nil) | 当前口令校验失败", matched, ok, err)
+	}
+	unguarded := NewValidator(cfg)
+	matched, ok, err = unguarded.ValidateHOTP(ctx, secret, oldCode, 5)
+	if err != nil || ok || matched != 4 {
+		t.Fatalf("unguarded rollback ValidateHOTP = (%d, %v, %v), want (4, false, nil) | 无重放保护时回退口令未被拒绝", matched, ok, err)
+	}
+}
+
 // TestNilValidator checks nil receiver handling. | TestNilValidator 检查 nil 接收者处理。
 func TestNilValidator(t *testing.T) {
 	t.Parallel()

@@ -1,17 +1,23 @@
-// Package radius implements a pure-Go RADIUS client for authentication, accounting and RFC 5176
-// dynamic authorization. | Package radius 实现纯 Go 的 RADIUS 认证、计费与 RFC 5176 动态授权客户端。
+// Package radius implements pure-Go RADIUS client and server components for authentication,
+// accounting and RFC 5176 dynamic authorization. | Package radius 实现纯 Go 的 RADIUS 认证、计费与
+// RFC 5176 动态授权客户端与服务端组件。
 //
 // The package implements the RFC 2865 Access-Request, Access-Accept, Access-Reject and
 // Access-Challenge exchange with PAP, CHAP and MS-CHAPv2 credentials; RFC 2866 accounting;
 // RFC 2869/RFC 3579 EAP-Message passthrough with Message-Authenticator; RFC 5176 CoA-Request and
 // Disconnect-Request with ACK/NAK, Error-Cause and Event-Timestamp; and RFC 6613/RFC 6614 RADIUS
-// over TCP and TLS. Packets are encoded and decoded with strict length validation, unknown
-// attributes are preserved byte for byte, and every authenticator comparison is constant time. |
-// 本包实现 RFC 2865 的 Access-Request、Access-Accept、Access-Reject 与 Access-Challenge 交互，
-// 支持 PAP、CHAP 与 MS-CHAPv2 凭据；RFC 2866 计费；RFC 2869/RFC 3579 的 EAP-Message 透传与
-// Message-Authenticator；RFC 5176 的 CoA-Request 与 Disconnect-Request 及其 ACK/NAK、
-// Error-Cause 与 Event-Timestamp；以及 RFC 6613/RFC 6614 的 RADIUS over TCP 与 TLS。报文编解码
-// 执行严格的长度校验，未知属性按字节原样保留，所有认证符比较均为常量时间。
+// over TCP and TLS. AccessServer and AccountingServer are reusable responders over UDP, TCP or TLS:
+// they resolve per-client shared secrets, verify Request Authenticators and Message-Authenticators,
+// invoke a pluggable authenticator or accounting handler, and return signed responses. Packets are
+// encoded and decoded with strict length validation, unknown attributes are preserved byte for
+// byte, and every authenticator comparison is constant time. | 本包实现 RFC 2865 的 Access-Request、
+// Access-Accept、Access-Reject 与 Access-Challenge 交互，支持 PAP、CHAP 与 MS-CHAPv2 凭据；
+// RFC 2866 计费；RFC 2869/RFC 3579 的 EAP-Message 透传与 Message-Authenticator；RFC 5176 的
+// CoA-Request 与 Disconnect-Request 及其 ACK/NAK、Error-Cause 与 Event-Timestamp；以及
+// RFC 6613/RFC 6614 的 RADIUS over TCP 与 TLS。AccessServer 与 AccountingServer 是基于 UDP、
+// TCP 或 TLS 的可复用响应器：解析每客户端共享密钥、校验 Request Authenticator 与
+// Message-Authenticator、调用可插拔的认证器或计费处理器，并返回已签名的响应。报文编解码执行严格
+// 的长度校验，未知属性按字节原样保留，所有认证符比较均为常量时间。
 //
 // # Usage | 用法
 //
@@ -43,6 +49,27 @@
 //	    SessionID:  "session-1",
 //	    UserName:   "alice",
 //	})
+//
+// Access and accounting responders use a pluggable authenticator or handler: | 访问与计费响应器使用
+// 可插拔的认证器或处理器：
+//
+//	server, err := radius.NewAccessServer(radius.AccessServerConfig{
+//	    Address: "0.0.0.0:1812",
+//	    Secret:  []byte("shared-secret"),
+//	    Authenticator: radius.AccessAuthenticatorFunc(func(ctx context.Context, request *radius.AccessServerRequest) (*radius.AccessServerResult, error) {
+//	        if request.VerifyPAP([]byte("correct horse battery staple")) {
+//	            return &radius.AccessServerResult{Accept: true}, nil
+//	        }
+//	        return &radius.AccessServerResult{ReplyMessage: "access denied"}, nil
+//	    }),
+//	})
+//	if err != nil {
+//	    return err
+//	}
+//	defer server.Close()
+//	if err := server.ListenAndServe(ctx); err != nil {
+//	    return err
+//	}
 //
 // RFC 5176 dynamic authorization uses the same client and shared secret: | RFC 5176 动态授权使用
 // 同一客户端与共享密钥：
@@ -93,12 +120,21 @@
 // Remaining boundaries: the package does not implement a RADIUS relay or proxy. It never forwards
 // Access-Request, Accounting-Request, CoA-Request or Disconnect-Request packets and never adds or
 // removes Proxy-State for forwarding. A DynamicServer echoes request Proxy-State unchanged as a NAS
-// must, but proxy routing and request forwarding are out of scope. The package also does not provide
-// an Access or Accounting server, and dynamic authorization is UDP-only. | 剩余边界：本包不实现
-// RADIUS 中继或代理。它从不转发 Access-Request、Accounting-Request、CoA-Request 或
+// must, but proxy routing and request forwarding are out of scope. It also does not implement a full
+// EAP state machine: AccessServer forwards EAP-Message attributes to the authenticator and requires
+// a Message-Authenticator on EAP requests, but it never generates Access-Challenge or maintains EAP
+// state. AccountingServer follows RFC 2866 and does not validate Message-Authenticator (RFC 2869
+// defines no Accounting-Request calculation) or suppress duplicate records. AccessServer and
+// AccountingServer keep only in-memory transport state; user lookup, credential verification and
+// accounting persistence belong to the callbacks. Dynamic authorization is UDP-only. | 剩余边界：
+// 本包不实现 RADIUS 中继或代理。它从不转发 Access-Request、Accounting-Request、CoA-Request 或
 // Disconnect-Request，也从不为转发添加或移除 Proxy-State。DynamicServer 会按 NAS 要求原样回显
-// 请求的 Proxy-State，但代理路由与请求转发不在范围内。本包也不提供 Access 或 Accounting 服务器，
-// 且动态授权仅支持 UDP。
+// 请求的 Proxy-State，但代理路由与请求转发不在范围内。本包也不实现完整的 EAP 状态机：
+// AccessServer 将 EAP-Message 属性转交给认证器，并要求 EAP 请求携带 Message-Authenticator，但
+// 从不生成 Access-Challenge，也不维护 EAP 状态。AccountingServer 遵循 RFC 2866，不校验
+// Message-Authenticator（RFC 2869 未定义 Accounting-Request 的计算方式），也不抑制重复记录。
+// AccessServer 与 AccountingServer 仅保存在内存中的传输状态；用户查找、凭据校验与计费持久化
+// 由回调负责。动态授权仅支持 UDP。
 package radius
 
 import (
@@ -235,9 +271,9 @@ var (
 	ErrNetwork = errs.New("radius: network failure | radius：网络故障")
 	// ErrClosed reports use of a client after Close. | ErrClosed 表示在 Close 之后使用客户端。
 	ErrClosed = errs.New("radius: client closed | radius：客户端已关闭")
-	// ErrServerClosed reports use of a DynamicServer after Close. | ErrServerClosed 表示在 Close
-	// 之后使用 DynamicServer。
-	ErrServerClosed = errs.New("radius: dynamic authorization server closed | radius：动态授权服务器已关闭")
+	// ErrServerClosed reports use of an AccessServer, AccountingServer or DynamicServer after Close.
+	// | ErrServerClosed 表示在 Close 之后使用 AccessServer、AccountingServer 或 DynamicServer。
+	ErrServerClosed = errs.New("radius: server closed | radius：服务器已关闭")
 	// ErrDuplicateAttribute reports a dictionary registration conflict. | ErrDuplicateAttribute 表示字典注册冲突。
 	ErrDuplicateAttribute = errs.New("radius: duplicate attribute registration | radius：属性注册重复")
 	// ErrInternal reports an unexpected internal failure such as a random source error. | ErrInternal 表示随机源错误等内部故障。
@@ -246,6 +282,13 @@ var (
 
 // ClientConfig configures a Client. | ClientConfig 配置 Client。
 type ClientConfig struct {
+	// Dictionary resolves attribute names and enumerated values; nil selects a fresh built-in
+	// dictionary. | Dictionary 解析属性名与枚举值；nil 选择一份新的内置字典。
+	Dictionary *Dictionary
+	// TLSConfig configures RADIUS over TLS. When nil, the system roots are used, the server name
+	// is derived from Address and TLS 1.2 is the minimum version. | TLSConfig 配置 RADIUS over
+	// TLS。为 nil 时使用系统根证书，服务器名取自 Address，最低版本为 TLS 1.2。
+	TLSConfig *tls.Config
 	// Network selects the transport: "udp" (the default), "udp4", "udp6", "tcp", "tcp4",
 	// "tcp6", "tls", "tls4" or "tls6". TCP and TLS follow RFC 6613 and RFC 6614. | Network
 	// 选择传输："udp"（默认）、"udp4"、"udp6"、"tcp"、"tcp4"、"tcp6"、"tls"、"tls4" 或 "tls6"。
@@ -257,11 +300,18 @@ type ClientConfig struct {
 	// 请求使用 1812、计费请求使用 1813、RFC 5176 CoA 与断开请求使用 3799；TCP 与 TLS 默认使用
 	// 2083。
 	Address string
+	// NASIdentifier is the default NAS-Identifier attribute value. | NASIdentifier 是默认的 NAS-Identifier 属性值。
+	NASIdentifier string
 	// Secret is the shared secret used to authenticate and encrypt packets. The client copies it
 	// and zeroes its copy in Close; the caller remains responsible for its own slice. | Secret
 	// 是用于认证与加密报文的共享密钥。客户端会复制它并在 Close 时清零副本；调用方仍需自行清零
 	// 自己的切片。
 	Secret []byte
+	// NASIPAddress is the default NAS-IP-Address attribute value and must be IPv4. | NASIPAddress
+	// 是默认的 NAS-IP-Address 属性值，必须是 IPv4 地址。
+	NASIPAddress net.IP
+	// SourceIP binds outgoing sockets to a local address. | SourceIP 将出站套接字绑定到本地地址。
+	SourceIP net.IP
 	// Timeout is the base timeout of one transmission attempt; zero selects DefaultTimeout. Each
 	// retransmission doubles the wait, up to eight times the base. | Timeout 是单次传输尝试的基础
 	// 超时；零值选择 DefaultTimeout。每次重传将等待时间翻倍，最多为基础值的八倍。
@@ -275,20 +325,6 @@ type ClientConfig struct {
 	// 断开重传字节完全相同，其 UDP 各次尝试复用同一个本地套接字，因此源端口不变，符合 RFC 5176
 	// 第 3.6 节要求，DynamicServer 的重复缓存可识别这些重传。
 	Retries int
-	// NASIdentifier is the default NAS-Identifier attribute value. | NASIdentifier 是默认的 NAS-Identifier 属性值。
-	NASIdentifier string
-	// NASIPAddress is the default NAS-IP-Address attribute value and must be IPv4. | NASIPAddress
-	// 是默认的 NAS-IP-Address 属性值，必须是 IPv4 地址。
-	NASIPAddress net.IP
-	// SourceIP binds outgoing sockets to a local address. | SourceIP 将出站套接字绑定到本地地址。
-	SourceIP net.IP
-	// Dictionary resolves attribute names and enumerated values; nil selects a fresh built-in
-	// dictionary. | Dictionary 解析属性名与枚举值；nil 选择一份新的内置字典。
-	Dictionary *Dictionary
-	// TLSConfig configures RADIUS over TLS. When nil, the system roots are used, the server name
-	// is derived from Address and TLS 1.2 is the minimum version. | TLSConfig 配置 RADIUS over
-	// TLS。为 nil 时使用系统根证书，服务器名取自 Address，最低版本为 TLS 1.2。
-	TLSConfig *tls.Config
 }
 
 // Client is a concurrency-safe RADIUS client. | Client 是并发安全的 RADIUS 客户端。
@@ -299,10 +335,10 @@ type ClientConfig struct {
 // 独立的传输连接，因此并发调用之间不会串扰响应。Close 会清零共享密钥副本并拒绝后续请求。
 type Client struct {
 	cfg        ClientConfig
-	secret     []byte
 	dictionary *Dictionary
-	nextID     atomic.Uint32
+	secret     []byte
 	mu         sync.RWMutex
+	nextID     atomic.Uint32
 	closed     bool
 }
 

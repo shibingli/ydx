@@ -153,10 +153,19 @@ func decodeSMSHTTPResponse(ctx context.Context, resp *http.Response, body []byte
 	}
 	var payload smsHTTPResponse
 	if err := json.Unmarshal(body, &payload); err != nil {
-		return "", errs.WrapDetail(err, ErrProviderResponse, "decode response | 解码响应")
+		// The decoder error may quote bytes from the provider body; replace it with a fixed message
+		// so response content cannot reach logs or caller errors. | 解码错误可能引用响应体字节；
+		// 用固定消息替换，避免响应内容进入日志或调用方错误。
+		return "", errs.Detail(ErrProviderResponse, "decode response | 解码响应")
 	}
 	if payload.RequestID != "" {
+		if err := checkProviderField("requestId", payload.RequestID, maxProviderRequestIDLength); err != nil {
+			return "", err
+		}
 		return payload.RequestID, nil
+	}
+	if err := checkProviderField("messageId", payload.MessageID, maxProviderRequestIDLength); err != nil {
+		return "", err
 	}
 	return payload.MessageID, nil
 }

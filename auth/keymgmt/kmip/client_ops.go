@@ -78,6 +78,20 @@ func (c *Client) Get(ctx context.Context, request GetRequest) (GetResponse, erro
 	return call(c, ctx, OpGet, request, decodeForVersion(c.cfg.ProtocolVersion, DecodeGetResponseForVersion))
 }
 
+// Export sends a KMIP 1.4 Export request. | Export 发送 KMIP 1.4 Export 请求。
+//
+// Export was removed in KMIP 2.0. A client configured with a 2.x version rejects the call locally with
+// ErrUnsupported; use Get instead. | KMIP 2.0 已移除 Export。配置为 2.x 版本的客户端会在本地以
+// ErrUnsupported 拒绝该调用；请改用 Get。
+func (c *Client) Export(ctx context.Context, request ExportRequest) (ExportResponse, error) {
+	if usesKMIP20Payloads(c.cfg.ProtocolVersion) {
+		return ExportResponse{}, errs.Detail(ErrUnsupported,
+			"Export was removed in KMIP 2.0; protocol version %s must use Get | KMIP 2.0 已移除 Export；协议版本 %s 必须使用 Get",
+			c.cfg.ProtocolVersion, c.cfg.ProtocolVersion)
+	}
+	return call(c, ctx, OpExport, request, DecodeExportResponse)
+}
+
 // GetAttributes sends a Get Attributes request. | GetAttributes 发送 Get Attributes 请求。
 func (c *Client) GetAttributes(ctx context.Context, request GetAttributesRequest) (GetAttributesResponse, error) {
 	return call(c, ctx, OpGetAttributes, request, decodeForVersion(c.cfg.ProtocolVersion, DecodeGetAttributesResponseForVersion))

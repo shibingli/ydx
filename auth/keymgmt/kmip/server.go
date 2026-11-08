@@ -307,7 +307,7 @@ func (s *Server) Close() error {
 // 可能改变持久化状态。
 func mutatingOperation(op Operation) bool {
 	switch op {
-	case OpGet, OpGetAttributes, OpGetAttributeList, OpLocate, OpQuery, OpDiscoverVersions, OpCheck:
+	case OpGet, OpGetAttributes, OpGetAttributeList, OpLocate, OpQuery, OpDiscoverVersions, OpCheck, OpExport:
 		return false
 	default:
 		return true
@@ -328,9 +328,6 @@ func (s *Server) handleMessage(conn net.Conn, request RequestMessage) ResponseMe
 		ServerCorrelationValue: request.Header.ServerCorrelationValue,
 	}}
 	unsupportedVersion := !request.Header.ProtocolVersion.Supported()
-	if unsupportedVersion && !request.Header.ProtocolVersion.Valid() {
-		unsupportedVersion = true
-	}
 	if len(request.BatchItems) == 0 {
 		response.Header.BatchCount = 0
 		return response
@@ -350,7 +347,9 @@ func (s *Server) handleMessage(conn net.Conn, request RequestMessage) ResponseMe
 	for i := range request.BatchItems {
 		item := request.BatchItems[i]
 		if unsupportedVersion {
-			err := errs.Detail(ErrInvalidRequest, "unsupported protocol version %s | 不支持的协议版本 %s", request.Header.ProtocolVersion, request.Header.ProtocolVersion)
+			err := errs.Detail(ErrUnsupported,
+				"protocol version %s is not supported; use KMIP 1.4 or 2.0 | 协议版本 %s 不受支持；请使用 KMIP 1.4 或 2.0",
+				request.Header.ProtocolVersion, request.Header.ProtocolVersion)
 			response.BatchItems = append(response.BatchItems, failureItem(item, err))
 			if stopOnError {
 				break
@@ -520,6 +519,16 @@ func (s *Server) dispatchForVersion(item RequestBatchItem, version ProtocolVersi
 			return Item{}, err
 		}
 		return s.handleGetAttributeListForVersion(request, version)
+	case OpExport:
+		if usesKMIP20Payloads(version) {
+			return Item{}, errs.Detail(ErrUnsupported,
+				"Export was removed in KMIP 2.0; use Get | KMIP 2.0 已移除 Export；请使用 Get")
+		}
+		request, err := DecodeExportRequest(payload)
+		if err != nil {
+			return Item{}, err
+		}
+		return s.handleExportForVersion(request, version)
 	case OpActivate:
 		request, err := DecodeActivateRequest(payload)
 		if err != nil {
@@ -842,7 +851,7 @@ func (s *Server) warn(message string, fields ...log.Field) {
 func SupportedOperations() []Operation {
 	return []Operation{
 		OpCreate, OpCreateKeyPair, OpRegister, OpGet, OpGetAttributes, OpGetAttributeList,
-		OpActivate, OpRevoke, OpDestroy, OpLocate, OpDeriveKey,
+		OpActivate, OpRevoke, OpDestroy, OpExport, OpLocate, OpDeriveKey,
 		OpEncrypt, OpDecrypt, OpSign, OpSignatureVerify, OpMAC, OpMACVerify,
 		OpWrapKey, OpUnwrapKey, OpQuery, OpDiscoverVersions, OpCheck,
 	}

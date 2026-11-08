@@ -162,7 +162,19 @@ func decodeRealNameHTTPResponse(ctx context.Context, resp *http.Response, body [
 	}
 	var payload realNameHTTPResponse
 	if err := json.Unmarshal(body, &payload); err != nil {
-		return nil, errs.WrapDetail(err, ErrProviderResponse, "decode response | 解码响应")
+		// The decoder error may quote bytes from the provider body; replace it with a fixed message
+		// so PII or response content cannot reach logs or caller errors. | 解码错误可能引用响应体
+		// 字节；用固定消息替换，避免个人信息或响应内容进入日志或调用方错误。
+		return nil, errs.Detail(ErrProviderResponse, "decode response | 解码响应")
+	}
+	if err := checkProviderField("requestId", payload.RequestID, maxProviderRequestIDLength); err != nil {
+		return nil, err
+	}
+	if err := checkProviderField("message", payload.Message, maxProviderMessageLength); err != nil {
+		return nil, err
+	}
+	if err := checkProviderField("provider", payload.Provider, maxProviderNameLength); err != nil {
+		return nil, err
 	}
 	return &RealNameResult{
 		Verified:  payload.Verified,

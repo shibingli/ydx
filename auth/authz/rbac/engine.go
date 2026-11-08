@@ -78,6 +78,13 @@ func New(opts ...Option) *Engine {
 }
 
 // Store returns the backing store. | Store 返回底层存储。
+//
+// The returned store bypasses the engine's state lock. Reading or mutating it directly can observe
+// a LoadSnapshot in progress, race with Engine methods, and skip snapshot validation; callers that
+// need snapshot consistency must use Engine methods. The Engine itself never calls Store methods
+// without holding stateMu. | 返回的存储绕过引擎状态锁。直接读取或修改它可能观察到 LoadSnapshot 的中间
+// 状态、与 Engine 方法竞态，并跳过快照校验；需要快照一致性的调用方必须使用 Engine 方法。Engine 自身
+// 只在持有 stateMu 时调用 Store 方法。
 func (e *Engine) Store() Store {
 	return e.store
 }

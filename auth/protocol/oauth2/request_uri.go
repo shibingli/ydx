@@ -18,6 +18,11 @@ import (
 // requestObjectCacheCapacity 限定按引用请求对象的缓存条目数。
 const requestObjectCacheCapacity = 1024
 
+// requestURISingleUseCapacity bounds the number of remembered single-use request_uri values so a
+// stream of unique URIs cannot grow the map without limit. | requestURISingleUseCapacity 限定记住的
+// 一次性 request_uri 值数量，避免唯一 URI 流无限增长该映射。
+const requestURISingleUseCapacity = 4096
+
 // cachedRequestObject is one fetched request object with its cache deadline. | cachedRequestObject
 // 是带缓存期限的已抓取请求对象。
 type cachedRequestObject struct {
@@ -271,12 +276,31 @@ func (c *requestURICache) beginUse(requestURI string) bool {
 	if _, exists := c.used[requestURI]; exists {
 		return false
 	}
+	if len(c.used) >= requestURISingleUseCapacity {
+		c.evictEarliestUse()
+	}
 	ttl := c.config.CacheTTL
 	if ttl <= 0 {
 		ttl = 5 * time.Minute
 	}
 	c.used[requestURI] = now.Add(ttl)
 	return true
+}
+
+// evictEarliestUse removes the single-use record with the earliest expiry; the caller holds the
+// mutex. | evictEarliestUse 移除最早到期的一次性记录；调用方持有互斥锁。
+func (c *requestURICache) evictEarliestUse() {
+	var oldestKey string
+	var oldest time.Time
+	for key, expiry := range c.used {
+		if oldestKey == "" || expiry.Before(oldest) {
+			oldestKey = key
+			oldest = expiry
+		}
+	}
+	if oldestKey != "" {
+		delete(c.used, oldestKey)
+	}
 }
 
 // clientAllowsRequestURI reports whether requestURI is registered for client. | clientAllowsRequestURI

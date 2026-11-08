@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 
 	"github.com/shibingli/ydx/errs"
 )
@@ -167,12 +168,21 @@ func basicCredentials(r *http.Request) (string, string, bool) {
 	return username, password, true
 }
 
-// verifyTLSClient checks the RFC 8705 certificate binding. | verifyTLSClient 校验 RFC 8705 证书绑定。
+// verifyTLSClient checks the RFC 8705 certificate binding. A client registered for mTLS must have
+// at least one registered binding; otherwise any certificate trusted by the TLS listener would
+// authenticate as it, so an unbound client fails closed. Self-signed certificates are additionally
+// checked for their validity period because the TLS stack does not verify a self-signed chain. |
+// verifyTLSClient 校验 RFC 8705 证书绑定。注册为 mTLS 的客户端必须至少有一个已注册绑定；否则
+// TLS 监听器信任的任何证书都能以该客户端身份认证，因此未绑定客户端按失败关闭处理。自签名证书
+// 还会校验有效期，因为 TLS 栈不会校验自签名链。
 func verifyTLSClient(r *http.Request, client *Client, method string) error {
 	if r == nil || r.TLS == nil || len(r.TLS.PeerCertificates) == 0 {
 		return errs.Detail(ErrInvalidClient, "client certificate is missing | 缺少客户端证书")
 	}
 	cert := r.TLS.PeerCertificates[0]
+	if len(client.TLSClientAuthSubjectDN) == 0 && len(client.TLSClientAuthSANs) == 0 {
+		return errs.Detail(ErrInvalidClient, "client has no certificate binding | 客户端没有证书绑定")
+	}
 	if len(client.TLSClientAuthSubjectDN) > 0 && cert.Subject.String() != client.TLSClientAuthSubjectDN {
 		return errs.Detail(ErrInvalidClient, "client certificate subject does not match | 客户端证书主体不匹配")
 	}
@@ -202,6 +212,10 @@ func verifyTLSClient(r *http.Request, client *Client, method string) error {
 		}
 	}
 	if method == SelfSignedTLSClientAuth {
+		now := time.Now()
+		if now.Before(cert.NotBefore) || now.After(cert.NotAfter) {
+			return errs.Detail(ErrInvalidClient, "self-signed client certificate is not valid at the current time | 自签名客户端证书当前无效")
+		}
 		if err := cert.CheckSignatureFrom(cert); err != nil {
 			return errs.Wrap(err, ErrInvalidClient)
 		}

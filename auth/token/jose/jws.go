@@ -5,9 +5,11 @@ import (
 	"crypto"
 	"crypto/ecdsa"
 	"crypto/ed25519"
+	"crypto/elliptic"
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/rsa"
+	"math/big"
 	"sort"
 	"strings"
 	"time"
@@ -51,6 +53,26 @@ type Verified struct {
 // IsJSON reports whether the payload is a well-formed JSON object. | IsJSON 报告载荷是否为结构
 // 良好的 JSON 对象。
 func (v *Verified) IsJSON() bool { return v != nil && v.Claims != nil }
+
+// Serialization selects the JWS serialization used by Sign and Verify. | Serialization 选择 Sign
+// 与 Verify 使用的 JWS 序列化形式。
+type Serialization string
+
+// The supported JWS serializations. | 受支持的 JWS 序列化形式。
+const (
+	// SerializationCompact is the RFC 7515 §7.1 compact serialization and the zero value. Sign
+	// emits the compact form; Verify with this zero value accepts a compact token and also
+	// auto-detects a JSON serialization, because a compact token can never start with '{'. |
+	// SerializationCompact 是 RFC 7515 §7.1 的紧凑序列化，也是零值。Sign 输出紧凑形式；Verify
+	// 使用该零值时接受紧凑 token，并自动识别 JSON 序列化，因为紧凑 token 绝不会以 '{' 开头。
+	SerializationCompact Serialization = ""
+	// SerializationFlattened is the RFC 7515 §7.2.2 flattened JSON serialization. | SerializationFlattened
+	// 是 RFC 7515 §7.2.2 的扁平 JSON 序列化。
+	SerializationFlattened Serialization = "flattened"
+	// SerializationGeneral is the RFC 7515 §7.2.1 general JSON serialization. | SerializationGeneral
+	// 是 RFC 7515 §7.2.1 的通用 JSON 序列化。
+	SerializationGeneral Serialization = "general"
+)
 
 // KeyResolver resolves the verification key for a JOSE header. | KeyResolver 为 JOSE 头部解析校验密钥。
 type KeyResolver interface {
@@ -108,9 +130,24 @@ type SignOptions struct {
 	Crit []string
 	// Extra holds additional header parameters; reserved names are refused. | Extra 保存额外头部参数；保留名会被拒绝。
 	Extra map[string]any
+	// Serialization selects the output form: compact (the default), flattened JSON or general JSON. | Serialization
+	// 选择输出形式：紧凑（默认）、扁平 JSON 或通用 JSON。
+	Serialization Serialization
+	// Detached omits the payload from the serialization for RFC 7515 Appendix F detached content.
+	// The signature still covers the payload, and the caller must present it to VerifyDetached.
+	// Only b64=true is supported, so a b64=false header is still refused. | Detached 按 RFC 7515 附录 F
+	// 从序列化中移除载荷。签名仍覆盖载荷，调用方必须把它交给 VerifyDetached。仅支持 b64=true，
+	// b64=false 头部仍会被拒绝。
+	Detached bool
+	// LowS normalizes ES256, ES384 and ES512 signatures to the canonical low-S form. It has no
+	// effect on other algorithms. | LowS 把 ES256、ES384 与 ES512 签名规范化为规范的 low-S 形式。
+	// 其它算法不受影响。
+	LowS bool
 }
 
-// Sign builds a compact JWS over payload with key. | Sign 使用 key 对 payload 生成紧凑 JWS。
+// Sign builds a JWS over payload with key, using the serialization selected by
+// SignOptions.Serialization (compact by default). | Sign 使用 key 对 payload 生成 JWS，序列化形式由
+// SignOptions.Serialization 选择（默认为紧凑）。
 //
 // The payload may be arbitrary bytes; a JSON object is signed through the ydx/auth/token/jwt fast path
 // when the header is a plain JWT header, and every other payload is signed directly by the crypto
@@ -160,6 +197,16 @@ func Sign(payload []byte, key *Key, opts SignOptions) (string, error) {
 	if len(header.Crit) > 0 {
 		return "", errs.Detail(ErrUnsupportedCrit, "crit=%[1]v | crit=%[1]v", header.Crit)
 	}
+	switch opts.Serialization {
+	case SerializationCompact:
+		if opts.Detached {
+			return signDetachedCompact(payload, key, header, opts.LowS)
+		}
+	case SerializationFlattened, SerializationGeneral:
+		return signJSON(payload, key, header, opts)
+	default:
+		return "", errs.Detail(ErrInvalidConfig, "unknown serialization %[1]q | 未知序列化 %[1]q", string(opts.Serialization))
+	}
 	// A plain JWT JSON payload goes through the existing ydx/auth/token/jwt signer, which is the same
 	// implementation the rest of ydx uses; every other case is signed here so arbitrary bytes
 	// remain possible. | 普通 JWT JSON 载荷走现有 ydx/auth/token/jwt 签名器，即 ydx 其余部分使用的
@@ -169,14 +216,14 @@ func Sign(payload []byte, key *Key, opts SignOptions) (string, error) {
 		if err != nil {
 			return "", err
 		}
-		return ydjwt.SignJSON(payload, jkey, ydjwt.Alg(alg), ydjwt.SignOptions{Kid: kid})
+		return ydjwt.SignJSON(payload, jkey, ydjwt.Alg(alg), ydjwt.SignOptions{Kid: kid, LowS: opts.LowS})
 	}
-	return signDirect(payload, key, header)
+	return signDirect(payload, key, header, opts.LowS)
 }
 
 // signDirect builds a compact JWS without the JWT-specific JSON requirement. | signDirect 构建不
 // 受 JWT JSON 要求限制的紧凑 JWS。
-func signDirect(payload []byte, key *Key, header JWSHeader) (string, error) {
+func signDirect(payload []byte, key *Key, header JWSHeader, lowS bool) (string, error) {
 	headerBytes, err := encodeJWSHeader(header)
 	if err != nil {
 		return "", err
@@ -185,13 +232,35 @@ func signDirect(payload []byte, key *Key, header JWSHeader) (string, error) {
 	input = appendSegment(input, headerBytes)
 	input = append(input, '.')
 	input = appendSegment(input, payload)
-	sig, err := signJWS(header.Alg, key, input)
+	sig, err := signJWSWithLowS(header.Alg, key, input, lowS)
 	if err != nil {
 		return "", err
 	}
 	input = append(input, '.')
 	input = appendSegment(input, sig)
 	return string(input), nil
+}
+
+// signDetachedCompact builds a compact JWS with the payload segment omitted (RFC 7515 Appendix F). |
+// signDetachedCompact 构建省略载荷段的紧凑 JWS（RFC 7515 附录 F）。
+func signDetachedCompact(payload []byte, key *Key, header JWSHeader, lowS bool) (string, error) {
+	headerBytes, err := encodeJWSHeader(header)
+	if err != nil {
+		return "", err
+	}
+	input := make([]byte, 0, len(headerBytes)+len(payload)+len(payload)/3+len(headerBytes)/3+2)
+	input = appendSegment(input, headerBytes)
+	input = append(input, '.')
+	input = appendSegment(input, payload)
+	sig, err := signJWSWithLowS(header.Alg, key, input, lowS)
+	if err != nil {
+		return "", err
+	}
+	out := make([]byte, 0, len(headerBytes)+len(sig)*2+2)
+	out = appendSegment(out, headerBytes)
+	out = append(out, '.', '.')
+	out = appendSegment(out, sig)
+	return string(out), nil
 }
 
 // VerifyOptions configures Verify. | VerifyOptions 配置 Verify。
@@ -203,13 +272,14 @@ type VerifyOptions struct {
 	ValidAlgs []string
 	// Typ, when non-empty, must match the typ header case-insensitively. | Typ 非空时必须与 typ 头部大小写不敏感地匹配。
 	Typ string
-	// Leeway is the clock tolerance applied to exp and nbf by ValidateClaims. | Leeway 是 ValidateClaims 对 exp 与 nbf 施加的时钟容差。
+	// Leeway is the clock tolerance applied to exp, nbf and iat by ValidateClaims. | Leeway 是
+	// ValidateClaims 对 exp、nbf 与 iat 施加的时钟容差。
 	Leeway time.Duration
 	// Now overrides the clock used by ValidateClaims. | Now 替换 ValidateClaims 使用的时钟。
 	Now func() time.Time
-	// ValidateClaims enables ydx/auth/token/jwt registered-claim validation, including exp, nbf, iss
-	// and aud. Without it, a valid signature is the only requirement. | ValidateClaims 启用
-	// ydx/auth/token/jwt 登记声明校验，包括 exp、nbf、iss 与 aud。未启用时唯一要求是签名有效。
+	// ValidateClaims enables ydx/auth/token/jwt registered-claim validation, including exp, nbf, iat,
+	// iss and aud. Without it, a valid signature is the only requirement. | ValidateClaims 启用
+	// ydx/auth/token/jwt 登记声明校验，包括 exp、nbf、iat、iss 与 aud。未启用时唯一要求是签名有效。
 	ValidateClaims bool
 	// RequireExp rejects a token without exp when ValidateClaims is set. | RequireExp 在启用
 	// ValidateClaims 时拒绝缺少 exp 的令牌。
@@ -217,9 +287,33 @@ type VerifyOptions struct {
 	// Issuer, when non-empty and ValidateClaims is set, must equal the iss claim. | Issuer 非空且
 	// 启用 ValidateClaims 时必须等于 iss 声明。
 	Issuer string
+	// Issuers, when non-empty and ValidateClaims is set, must contain the iss claim; the token
+	// passes when iss equals any non-empty entry. It is combined with Issuer. | Issuers 非空且启用
+	// ValidateClaims 时必须包含 iss 声明；iss 等于任意非空条目即通过。它与 Issuer 合并。
+	Issuers []string
 	// Audience, when non-empty and ValidateClaims is set, must be contained in aud. | Audience
 	// 非空且启用 ValidateClaims 时必须包含于 aud。
 	Audience string
+	// Audiences, when non-empty and ValidateClaims is set, requires at least one non-empty entry
+	// to be contained in the token aud. It is combined with Audience. | Audiences 非空且启用
+	// ValidateClaims 时，要求其中至少一个非空条目包含于 token 的 aud。它与 Audience 合并。
+	Audiences []string
+	// ValidateIssuedAt, when ValidateClaims is set, rejects an iat later than Now plus Leeway. |
+	// ValidateIssuedAt 在启用 ValidateClaims 时拒绝晚于 Now 加 Leeway 的 iat。
+	ValidateIssuedAt bool
+	// RequireIssuedAt, when ValidateClaims is set, requires a valid iat and implies
+	// ValidateIssuedAt. | RequireIssuedAt 在启用 ValidateClaims 时要求合法的 iat，并隐含
+	// ValidateIssuedAt。
+	RequireIssuedAt bool
+	// RequireLowS rejects non-canonical high-S ECDSA signatures on ES256, ES384 and ES512. |
+	// RequireLowS 拒绝 ES256、ES384 与 ES512 的非规范高 S ECDSA 签名。
+	RequireLowS bool
+	// Serialization selects the accepted input form. The zero value accepts a compact token and
+	// also auto-detects a JSON serialization from its leading '{'; setting SerializationFlattened
+	// or SerializationGeneral pins that JSON form and rejects the other. | Serialization 选择接受
+	// 的输入形式。零值接受紧凑 token，并根据开头的 '{' 自动识别 JSON 序列化；设置
+	// SerializationFlattened 或 SerializationGeneral 会固定该 JSON 形式并拒绝另一种。
+	Serialization Serialization
 	// MaxTokenSize caps the token length in bytes before any decoding; zero or a negative value
 	// uses DefaultMaxTokenSize. Raise it when payloads legitimately exceed the default, and keep
 	// the HTTP layer's request body limit in sync. | MaxTokenSize 在解码前限制 token 字节长度；
@@ -230,31 +324,98 @@ type VerifyOptions struct {
 
 // Verify verifies a compact JWS using resolver and the background context. | Verify 使用 resolver
 // 与后台上下文校验紧凑 JWS。
+//
+// Compact is the default input form. A value whose first non-space byte is '{' is treated as a JWS
+// JSON serialization (flattened or general), so existing compact tokens are unaffected. Set
+// VerifyOptions.Serialization to pin a form explicitly. | 默认输入形式为紧凑。首个非空白字节为 '{'
+// 的取值按 JWS JSON 序列化（扁平或通用）处理，因此既有紧凑 token 不受影响。可用
+// VerifyOptions.Serialization 显式固定形式。
 func Verify(token string, resolver KeyResolver, opts VerifyOptions) (*Verified, error) {
 	return VerifyContext(context.Background(), token, resolver, opts)
 }
 
-// VerifyContext verifies a compact JWS using resolver and ctx. | VerifyContext 使用 resolver 与
-// ctx 校验紧凑 JWS。
+// VerifyDetached verifies a JWS whose payload was detached per RFC 7515 Appendix F. | VerifyDetached
+// 校验按 RFC 7515 附录 F 分离载荷的 JWS。
+//
+// The token may be a compact "header..signature" value or a flattened/general JSON document without
+// a payload member, and must not carry a payload itself. payload supplies the signed bytes; b64=true
+// is the only supported mode, so payload is always covered by the signature. | token 可以是
+// "header..signature" 紧凑值，或缺少 payload 成员的扁平/通用 JSON 文档，且自身不得携带载荷。
+// payload 提供被签名的字节；仅支持 b64=true，因此 payload 始终被签名覆盖。
+func VerifyDetached(token string, payload []byte, resolver KeyResolver, opts VerifyOptions) (*Verified, error) {
+	return VerifyDetachedContext(context.Background(), token, payload, resolver, opts)
+}
+
+// VerifyDetachedContext verifies a detached-payload JWS using ctx. | VerifyDetachedContext 使用
+// ctx 校验分离载荷的 JWS。
+func VerifyDetachedContext(ctx context.Context, token string, payload []byte, resolver KeyResolver, opts VerifyOptions) (*Verified, error) {
+	return verifyContext(ctx, token, payload, resolver, opts, true)
+}
+
+// VerifyContext verifies a JWS using resolver and ctx. | VerifyContext 使用 resolver 与 ctx 校验 JWS。
 //
 // The input length is checked before any decoding: the limit is VerifyOptions.MaxTokenSize, or
 // DefaultMaxTokenSize when it is zero or negative, and an over-limit token is rejected with
 // ErrTokenTooLarge. The header is then decoded and its alg is checked against the allow list and key
 // family before the signature is validated; only then is the payload exposed. Critical extensions,
-// duplicate header members, alg=none and algorithm confusion are rejected. When ValidateClaims is
-// set, a JSON-object payload is additionally validated by ydx/auth/token/jwt, whose sentinels remain
-// visible through errors.Is. | 任何解码之前先检查输入长度：上限为 VerifyOptions.MaxTokenSize，
-// 零值或负值时使用 DefaultMaxTokenSize，超限返回 ErrTokenTooLarge。随后解码头部，并在校验签名
-// 之前检查 alg 是否在白名单内且与密钥族匹配；之后才暴露载荷。关键扩展、重复头部成员、alg=none
-// 与算法混淆都会被拒绝。启用 ValidateClaims 时，JSON 对象载荷还会经 ydx/auth/token/jwt 校验，
-// 其哨兵仍可通过 errors.Is 观察到。
+// duplicate header members, alg=none and algorithm confusion are rejected. A general JSON
+// serialization succeeds when any one of its signatures verifies; the first failure is returned when
+// none does. When ValidateClaims is set, a JSON-object payload is additionally validated by
+// ydx/auth/token/jwt, whose sentinels remain visible through errors.Is. | 任何解码之前先检查输入长度：
+// 上限为 VerifyOptions.MaxTokenSize，零值或负值时使用 DefaultMaxTokenSize，超限返回 ErrTokenTooLarge。
+// 随后解码头部，并在校验签名之前检查 alg 是否在白名单内且与密钥族匹配；之后才暴露载荷。关键扩展、
+// 重复头部成员、alg=none 与算法混淆都会被拒绝。通用 JSON 序列化在任意一个签名通过时即成功；全部失败时
+// 返回第一个错误。启用 ValidateClaims 时，JSON 对象载荷还会经 ydx/auth/token/jwt 校验，其哨兵仍可通过
+// errors.Is 观察到。
 func VerifyContext(ctx context.Context, token string, resolver KeyResolver, opts VerifyOptions) (*Verified, error) {
+	return verifyContext(ctx, token, nil, resolver, opts, false)
+}
+
+// verifyContext dispatches the compact and JSON serializations. | verifyContext 分派紧凑与 JSON 序列化。
+func verifyContext(ctx context.Context, token string, detachedPayload []byte, resolver KeyResolver, opts VerifyOptions, detached bool) (*Verified, error) {
 	if resolver == nil {
 		return nil, errs.Detail(ErrInvalidConfig, "nil key resolver | 密钥解析器为 nil")
 	}
 	if err := checkTokenSize(token, opts.MaxTokenSize); err != nil {
 		return nil, err
 	}
+	jsonForm, err := detectJSONSerialization(token, opts.Serialization)
+	if err != nil {
+		return nil, err
+	}
+	if jsonForm {
+		return verifyJSONContext(ctx, token, detachedPayload, resolver, opts, detached)
+	}
+	return verifyCompactContext(ctx, token, detachedPayload, resolver, opts, detached)
+}
+
+// detectJSONSerialization reports whether token must be parsed as a JWS JSON serialization. |
+// detectJSONSerialization 报告 token 是否必须按 JWS JSON 序列化解析。
+//
+// The zero option auto-detects: compact segments are base64url and therefore never start with '{',
+// while a JSON serialization always does after optional whitespace. | 零值选项自动识别：紧凑段是
+// base64url，绝不会以 '{' 开头，而 JSON 序列化在可选空白之后总是以 '{' 开头。
+func detectJSONSerialization(token string, sel Serialization) (bool, error) {
+	switch sel {
+	case SerializationFlattened, SerializationGeneral:
+		return true, nil
+	case SerializationCompact:
+		i := 0
+		for i < len(token) {
+			switch token[i] {
+			case ' ', '\t', '\r', '\n':
+				i++
+				continue
+			}
+			break
+		}
+		return i < len(token) && token[i] == '{', nil
+	}
+	return false, errs.Detail(ErrInvalidConfig, "unknown serialization %[1]q | 未知序列化 %[1]q", string(sel))
+}
+
+// verifyCompactContext verifies a compact JWS. | verifyCompactContext 校验紧凑 JWS。
+func verifyCompactContext(ctx context.Context, token string, detachedPayload []byte, resolver KeyResolver, opts VerifyOptions, detached bool) (*Verified, error) {
 	first := strings.IndexByte(token, '.')
 	if first <= 0 {
 		return nil, errs.Detail(ErrMalformed, "missing header or payload separator | 缺少头部或载荷分隔符")
@@ -267,60 +428,57 @@ func VerifyContext(ctx context.Context, token string, resolver KeyResolver, opts
 	if strings.IndexByte(rest[second+1:], '.') >= 0 {
 		return nil, errs.Detail(ErrMalformed, "too many segments | 段数过多")
 	}
-	sigSeg := rest[second+1:]
-	payloadSeg := rest[:second]
-	if sigSeg == "" {
-		return nil, errs.Detail(ErrMalformed, "empty signature segment | 签名段为空")
+	payloadSeg, sigSeg := rest[:second], rest[second+1:]
+	if detached && payloadSeg != "" {
+		return nil, errs.Detail(ErrMalformed, "detached token carries a payload segment | 分离载荷 token 带有载荷段")
 	}
+	return verifyVerified(ctx, token[:first], nil, payloadSeg, sigSeg, detachedPayload, resolver, opts, detached)
+}
 
-	raw, err := DecodeSegment(token[:first])
+// verifyJSONContext verifies a flattened or general JSON serialization. | verifyJSONContext 校验
+// 扁平或通用 JSON 序列化。
+func verifyJSONContext(ctx context.Context, token string, detachedPayload []byte, resolver KeyResolver, opts VerifyOptions, detached bool) (*Verified, error) {
+	doc, err := parseJWSJSON(token)
 	if err != nil {
 		return nil, err
 	}
-	header, rawHeader, err := parseJWSHeader(raw)
-	if err != nil {
-		return nil, err
+	if opts.Serialization == SerializationFlattened && doc.general {
+		return nil, errs.Detail(ErrMalformed, "general JSON serialization is not allowed | 不允许通用 JSON 序列化")
 	}
-	if header.Alg == "none" || !supportedJWSAlg(header.Alg) {
-		return nil, errs.Detail(ErrAlgNotAllowed, "alg=%[1]q | 算法=%[1]q", header.Alg)
+	if opts.Serialization == SerializationGeneral && !doc.general {
+		return nil, errs.Detail(ErrMalformed, "flattened JSON serialization is not allowed | 不允许扁平 JSON 序列化")
 	}
-	if !algAllowed(opts.ValidAlgs, header.Alg) {
-		return nil, errs.Detail(ErrAlgNotAllowed, "alg=%[1]q is outside the allow list | alg=%[1]q 不在白名单内", header.Alg)
+	if detached {
+		if doc.hasPayload {
+			return nil, errs.Detail(ErrMalformed, "detached verification requires a token without payload | 分离载荷校验要求 token 不含 payload")
+		}
+	} else if !doc.hasPayload {
+		return nil, errs.Detail(ErrMalformed, "token has no payload; use VerifyDetached | token 缺少 payload，请使用 VerifyDetached")
 	}
-	if opts.Typ != "" && !strings.EqualFold(header.Typ, opts.Typ) {
-		return nil, errs.Detail(ErrInvalidHeader, "typ=%[1]q, want %[2]q | typ=%[1]q，期望 %[2]q", header.Typ, opts.Typ)
+	var firstErr error
+	for _, cand := range doc.signatures {
+		verified, err := verifyVerified(ctx, cand.protected, cand.header, doc.payload, cand.signature, detachedPayload, resolver, opts, detached)
+		if err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		return verified, nil
 	}
+	if firstErr != nil {
+		return nil, firstErr
+	}
+	return nil, errs.Detail(ErrMalformed, "no signature to verify | 没有可校验的签名")
+}
 
-	key, err := resolver.ResolveKey(ctx, rawHeader)
+// verifyVerified verifies one signature and optionally validates its claims. | verifyVerified
+// 校验单个签名，并可选地校验其声明。
+func verifyVerified(ctx context.Context, protectedSeg string, unprotected Header, payloadSeg, sigSeg string, detachedPayload []byte, resolver KeyResolver, opts VerifyOptions, detached bool) (*Verified, error) {
+	header, rawHeader, key, payload, sig, err := verifyJWSSignature(ctx, protectedSeg, unprotected, payloadSeg, sigSeg, detachedPayload, resolver, opts, detached)
 	if err != nil {
 		return nil, err
 	}
-	if key == nil {
-		return nil, errs.Detail(ErrKeyNotFound, "resolver returned nil key | 解析器返回 nil 密钥")
-	}
-	if key.Alg != "" && key.Alg != header.Alg {
-		return nil, errs.Detail(ErrAlgNotAllowed, "key alg=%[1]q does not allow %[2]q | 密钥 alg=%[1]q 不允许 %[2]q", key.Alg, header.Alg)
-	}
-	if err := checkKeyAlg(key, header.Alg); err != nil {
-		return nil, err
-	}
-	if err := checkKeyUse(key, "verify"); err != nil {
-		return nil, err
-	}
-
-	sig, err := DecodeSegment(sigSeg)
-	if err != nil {
-		return nil, err
-	}
-	payload, err := DecodeSegment(payloadSeg)
-	if err != nil {
-		return nil, err
-	}
-	input := []byte(token[:first+1+second])
-	if err := verifyJWS(header.Alg, key, input, sig); err != nil {
-		return nil, err
-	}
-
 	verified := &Verified{
 		Header:    header,
 		RawHeader: rawHeader,
@@ -334,11 +492,111 @@ func VerifyContext(ctx context.Context, token string, resolver KeyResolver, opts
 		if verified.Claims == nil {
 			return nil, errs.Detail(ErrClaimsInvalid, "payload is not a JSON object | 载荷不是 JSON 对象")
 		}
-		if err := validateClaims(token, key, header.Alg, opts); err != nil {
+		checkPayloadSeg := payloadSeg
+		if detached {
+			checkPayloadSeg = EncodeSegment(payload)
+		}
+		compact := protectedSeg + "." + checkPayloadSeg + "." + sigSeg
+		if err := validateClaims(compact, key, header.Alg, opts); err != nil {
 			return nil, err
 		}
 	}
 	return verified, nil
+}
+
+// verifyJWSSignature verifies a single JWS signature. | verifyJWSSignature 校验单个 JWS 签名。
+//
+// protectedSeg is the base64url protected header, unprotected is an optional decoded unprotected
+// header, and payloadSeg is the exact payload segment from the serialization. When detached is set,
+// payloadSeg is ignored and detachedPayload supplies the signed bytes. | protectedSeg 是 base64url
+// 受保护头部，unprotected 是可选的已解码非保护头部，payloadSeg 是序列化中原样的载荷段。detached
+// 为真时忽略 payloadSeg，由 detachedPayload 提供被签名的字节。
+func verifyJWSSignature(ctx context.Context, protectedSeg string, unprotected Header, payloadSeg, sigSeg string, detachedPayload []byte, resolver KeyResolver, opts VerifyOptions, detached bool) (JWSHeader, Header, *Key, []byte, []byte, error) {
+	fail := func(err error) (JWSHeader, Header, *Key, []byte, []byte, error) {
+		return JWSHeader{}, nil, nil, nil, nil, err
+	}
+	if sigSeg == "" {
+		return fail(errs.Detail(ErrMalformed, "empty signature segment | 签名段为空"))
+	}
+	if protectedSeg == "" {
+		return fail(errs.Detail(ErrInvalidHeader, "missing protected header | 缺少受保护头部"))
+	}
+	raw, err := DecodeSegment(protectedSeg)
+	if err != nil {
+		return fail(err)
+	}
+	header, rawHeader, err := parseJWSHeader(raw)
+	if err != nil {
+		return fail(err)
+	}
+	if unprotected != nil {
+		for name := range unprotected {
+			if _, dup := rawHeader[name]; dup {
+				return fail(errs.Detail(ErrInvalidHeader, "duplicate %[1]s header | %[1]s 头部重复", name))
+			}
+			switch name {
+			case "crit":
+				return fail(errs.Detail(ErrUnsupportedCrit, "crit extension is not supported | 不支持 crit 扩展"))
+			case "b64":
+				return fail(errs.Detail(ErrInvalidHeader, "b64 extension is not supported | 不支持 b64 扩展"))
+			}
+		}
+		for name, v := range unprotected {
+			rawHeader[name] = v
+		}
+	}
+	if header.Alg == "none" || !supportedJWSAlg(header.Alg) {
+		return fail(errs.Detail(ErrAlgNotAllowed, "alg=%[1]q | 算法=%[1]q", header.Alg))
+	}
+	if !algAllowed(opts.ValidAlgs, header.Alg) {
+		return fail(errs.Detail(ErrAlgNotAllowed, "alg=%[1]q is outside the allow list | alg=%[1]q 不在白名单内", header.Alg))
+	}
+	if opts.Typ != "" && !strings.EqualFold(header.Typ, opts.Typ) {
+		return fail(errs.Detail(ErrInvalidHeader, "typ=%[1]q, want %[2]q | typ=%[1]q，期望 %[2]q", header.Typ, opts.Typ))
+	}
+
+	key, err := resolver.ResolveKey(ctx, rawHeader)
+	if err != nil {
+		return fail(err)
+	}
+	if key == nil {
+		return fail(errs.Detail(ErrKeyNotFound, "resolver returned nil key | 解析器返回 nil 密钥"))
+	}
+	if key.Alg != "" && key.Alg != header.Alg {
+		return fail(errs.Detail(ErrAlgNotAllowed, "key alg=%[1]q does not allow %[2]q | 密钥 alg=%[1]q 不允许 %[2]q", key.Alg, header.Alg))
+	}
+	if err := checkKeyAlg(key, header.Alg); err != nil {
+		return fail(err)
+	}
+	if err := checkKeyUse(key, "verify"); err != nil {
+		return fail(err)
+	}
+
+	sig, err := DecodeSegment(sigSeg)
+	if err != nil {
+		return fail(err)
+	}
+	var payload []byte
+	if detached {
+		payload = detachedPayload
+	} else {
+		payload, err = DecodeSegment(payloadSeg)
+		if err != nil {
+			return fail(err)
+		}
+	}
+	input := make([]byte, 0, len(protectedSeg)+1+len(payloadSeg))
+	input = append(input, protectedSeg...)
+	input = append(input, '.')
+	if detached {
+		input = appendSegment(input, payload)
+	} else {
+		input = append(input, payloadSeg...)
+	}
+	if err := verifyJWSWithLowS(header.Alg, key, input, sig, opts.RequireLowS); err != nil {
+		return fail(err)
+	}
+	return header, rawHeader, key, payload, sig, nil
 }
 
 // validateClaims runs ydx/auth/token/jwt registered-claim validation on a token whose signature has
@@ -350,12 +608,17 @@ func validateClaims(token string, key *Key, alg string, opts VerifyOptions) erro
 	}
 	keyFn := func(ydjwt.Header) (any, error) { return pub, nil }
 	_, err = ydjwt.Parse(token, keyFn, ydjwt.ParseOptions{
-		ValidAlgs:  []ydjwt.Alg{ydjwt.Alg(alg)},
-		Leeway:     opts.Leeway,
-		Now:        opts.Now,
-		RequireExp: opts.RequireExp,
-		Issuer:     opts.Issuer,
-		Audience:   opts.Audience,
+		ValidAlgs:        []ydjwt.Alg{ydjwt.Alg(alg)},
+		Leeway:           opts.Leeway,
+		Now:              opts.Now,
+		RequireExp:       opts.RequireExp,
+		Issuer:           opts.Issuer,
+		Issuers:          opts.Issuers,
+		Audience:         opts.Audience,
+		Audiences:        opts.Audiences,
+		ValidateIssuedAt: opts.ValidateIssuedAt,
+		RequireIssuedAt:  opts.RequireIssuedAt,
+		RequireLowS:      opts.RequireLowS,
 	})
 	if err != nil {
 		return errs.Wrap(err, ErrClaimsInvalid)
@@ -547,6 +810,12 @@ func digest(h crypto.Hash, data []byte) []byte {
 
 // signJWS signs input with key for alg. | signJWS 使用 key 按 alg 对 input 签名。
 func signJWS(alg string, key *Key, input []byte) ([]byte, error) {
+	return signJWSWithLowS(alg, key, input, false)
+}
+
+// signJWSWithLowS signs input for alg and optionally normalizes an ECDSA signature to low-S. |
+// signJWSWithLowS 按 alg 对 input 签名，并可选地把 ECDSA 签名规范化为 low-S。
+func signJWSWithLowS(alg string, key *Key, input []byte, lowS bool) ([]byte, error) {
 	switch alg {
 	case "EdDSA":
 		raw, err := key.PrivateKey()
@@ -616,6 +885,9 @@ func signJWS(alg string, key *Key, input []byte) ([]byte, error) {
 		if err != nil {
 			return nil, errs.WrapDetail(err, ErrSignatureInvalid, "ECDSA signing | ECDSA 签名")
 		}
+		if lowS {
+			s = toLowS(priv.Curve, s)
+		}
 		width := curveWidth(alg)
 		out := make([]byte, 2*width)
 		r.FillBytes(out[:width])
@@ -627,6 +899,12 @@ func signJWS(alg string, key *Key, input []byte) ([]byte, error) {
 
 // verifyJWS checks the signature of input. | verifyJWS 校验 input 的签名。
 func verifyJWS(alg string, key *Key, input, sig []byte) error {
+	return verifyJWSWithLowS(alg, key, input, sig, false)
+}
+
+// verifyJWSWithLowS checks the signature of input and optionally requires a canonical low-S ECDSA
+// signature. | verifyJWSWithLowS 校验 input 的签名，并可选地要求规范的 low-S ECDSA 签名。
+func verifyJWSWithLowS(alg string, key *Key, input, sig []byte, requireLowS bool) error {
 	fail := func() error {
 		return errs.Detail(ErrSignatureInvalid, "alg=%[1]q | 算法=%[1]q", alg)
 	}
@@ -704,6 +982,9 @@ func verifyJWS(alg string, key *Key, input, sig []byte) error {
 		if len(sig) != 2*width {
 			return fail()
 		}
+		if requireLowS && !isLowS(ecPub.Curve, sig[width:]) {
+			return fail()
+		}
 		// JWS carries the fixed-width r||s form while the standard library verifies DER, so the
 		// signature is converted on the stack instead of through math/big. | JWS 使用定宽 r||s 形式，
 		// 而标准库校验 DER，因此在栈上完成转换而不再经过 math/big。
@@ -713,6 +994,29 @@ func verifyJWS(alg string, key *Key, input, sig []byte) error {
 		return nil
 	}
 	return errs.Detail(ErrAlgNotAllowed, "alg=%[1]q | 算法=%[1]q", alg)
+}
+
+// toLowS returns the canonical low-S form of an ECDSA signature scalar, replacing s with N-s when s
+// lies in the upper half of the group order. | toLowS 返回 ECDSA 签名标量的规范 low-S 形式；s 位于
+// 群阶上半区时用 N-s 替换。
+func toLowS(curve elliptic.Curve, s *big.Int) *big.Int {
+	n := curve.Params().N
+	half := new(big.Int).Rsh(n, 1)
+	if s.Cmp(half) > 0 {
+		return new(big.Int).Sub(n, s)
+	}
+	return s
+}
+
+// isLowS reports whether the big-endian scalar s is in the canonical low-S range 1 <= s <= N/2. |
+// isLowS 报告大端标量 s 是否位于规范 low-S 范围 1 <= s <= N/2 内。
+func isLowS(curve elliptic.Curve, s []byte) bool {
+	v := new(big.Int).SetBytes(s)
+	if v.Sign() <= 0 {
+		return false
+	}
+	half := new(big.Int).Rsh(curve.Params().N, 1)
+	return v.Cmp(half) <= 0
 }
 
 // curveWidth returns the byte width of one ECDSA signature half. | curveWidth 返回 ECDSA 签名半值

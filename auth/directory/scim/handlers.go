@@ -29,6 +29,9 @@ func (s *Server) handleSearchUsers(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
+	if !s.requireWriteContentType(w, r) {
+		return
+	}
 	var request SearchRequest
 	if err := decodeBody(r, &request); err != nil {
 		writeError(w, err)
@@ -114,6 +117,9 @@ func (s *Server) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
+	if !s.requireWriteContentType(w, r) {
+		return
+	}
 	var user User
 	if err := decodeBody(r, &user); err != nil {
 		writeError(w, err)
@@ -150,6 +156,9 @@ func (s *Server) createUser(ctx context.Context, user *User, password string, un
 	incoming.Meta = nil
 	incoming.Groups = nil
 	incoming.Password = ""
+	if err := s.precheckPassword(ctx, incoming, password); err != nil {
+		return nil, err
+	}
 	created, err := s.store.CreateUser(ctx, incoming)
 	if err != nil {
 		return nil, err
@@ -176,6 +185,9 @@ func (s *Server) createUser(ctx context.Context, user *User, password string, un
 func (s *Server) handleReplaceUser(w http.ResponseWriter, r *http.Request, id string) {
 	if err := s.authorize(r, ActionUpdate, ResourceTypeNameUser); err != nil {
 		writeError(w, err)
+		return
+	}
+	if !s.requireWriteContentType(w, r) {
 		return
 	}
 	existing, err := s.store.GetUser(r.Context(), id)
@@ -207,10 +219,13 @@ func (s *Server) handleReplaceUser(w http.ResponseWriter, r *http.Request, id st
 }
 
 // replaceUser replaces an existing user, preserving read-only membership and provisioning the
-// password. The undo handle marks the recorded compensation applied as soon as the store commits,
-// so a later password rejection still triggers a rollback in atomic bulk mode. | replaceUser 替换
-// 已有用户，保留只读成员关系并预配口令。存储提交后 undo 句柄立即把已记录的补偿标记为已应用，因此
-// 后续口令拒绝在原子批量模式下仍会触发回滚。
+// password. The password precheck runs before the store commits. Without an atomic undo handle a
+// rejected post-commit password restores the prior profile with a conditional write and keeps a
+// concurrently changed profile. The undo handle marks the recorded compensation applied as soon as
+// the store commits, so a later password rejection still triggers a rollback in atomic bulk mode. |
+// replaceUser 替换已有用户，保留只读成员关系并预配口令。口令预检在存储提交前运行。没有原子撤销
+// 句柄时，提交后遭拒的口令会用条件写入恢复先前资料，并保留被并发修改的资料。存储提交后 undo 句柄
+// 立即把已记录的补偿标记为已应用，因此后续口令拒绝在原子批量模式下仍会触发回滚。
 func (s *Server) replaceUser(ctx context.Context, existing, incoming *User, password string, undo *bulkUndoHandle) (*User, error) {
 	if existing == nil || incoming == nil {
 		return nil, errs.Detail(ErrInvalidValue, "nil User | User 为空")
@@ -223,12 +238,18 @@ func (s *Server) replaceUser(ctx context.Context, existing, incoming *User, pass
 	replacement.Meta = nil
 	replacement.Groups = existing.Clone().Groups
 	replacement.Password = ""
+	if err := s.precheckPassword(ctx, replacement, password); err != nil {
+		return nil, err
+	}
 	stored, err := s.store.ReplaceUser(ctx, replacement)
 	if err != nil {
 		return nil, err
 	}
 	undo.markApplied(userVersion(stored))
 	if err := s.setPassword(ctx, stored, password); err != nil {
+		if undo == nil {
+			return nil, s.compensatePasswordFailure(ctx, existing, stored, err)
+		}
 		return nil, err
 	}
 	return stored, nil
@@ -238,6 +259,9 @@ func (s *Server) replaceUser(ctx context.Context, existing, incoming *User, pass
 func (s *Server) handlePatchUser(w http.ResponseWriter, r *http.Request, id string) {
 	if err := s.authorize(r, ActionUpdate, ResourceTypeNameUser); err != nil {
 		writeError(w, err)
+		return
+	}
+	if !s.requireWriteContentType(w, r) {
 		return
 	}
 	existing, err := s.store.GetUser(r.Context(), id)
@@ -270,19 +294,10 @@ func (s *Server) handlePatchUser(w http.ResponseWriter, r *http.Request, id stri
 	}
 	password := patched.Password
 	patched.Password = ""
-	patched.Groups = existing.Clone().Groups
 	patched.ID = existing.ID
 	patched.Meta = nil
-	if password != "" && s.passwordSetter == nil {
-		writeError(w, errs.Detail(ErrNotConfigured, "password provisioning requires PasswordSetter | 口令预配需要 PasswordSetter"))
-		return
-	}
-	stored, err := s.store.ReplaceUser(r.Context(), patched)
+	stored, err := s.replaceUser(r.Context(), existing, patched, password, nil)
 	if err != nil {
-		writeError(w, err)
-		return
-	}
-	if err := s.setPassword(r.Context(), stored, password); err != nil {
 		writeError(w, err)
 		return
 	}
@@ -329,6 +344,9 @@ func (s *Server) handleListGroups(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleSearchGroups(w http.ResponseWriter, r *http.Request) {
 	if err := s.authorize(r, ActionRead, ResourceTypeNameGroup); err != nil {
 		writeError(w, err)
+		return
+	}
+	if !s.requireWriteContentType(w, r) {
 		return
 	}
 	var request SearchRequest
@@ -410,6 +428,9 @@ func (s *Server) handleCreateGroup(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
+	if !s.requireWriteContentType(w, r) {
+		return
+	}
 	var group Group
 	if err := decodeBody(r, &group); err != nil {
 		writeError(w, err)
@@ -434,6 +455,9 @@ func (s *Server) handleCreateGroup(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleReplaceGroup(w http.ResponseWriter, r *http.Request, id string) {
 	if err := s.authorize(r, ActionUpdate, ResourceTypeNameGroup); err != nil {
 		writeError(w, err)
+		return
+	}
+	if !s.requireWriteContentType(w, r) {
 		return
 	}
 	existing, err := s.store.GetGroup(r.Context(), id)
@@ -469,6 +493,9 @@ func (s *Server) handleReplaceGroup(w http.ResponseWriter, r *http.Request, id s
 func (s *Server) handlePatchGroup(w http.ResponseWriter, r *http.Request, id string) {
 	if err := s.authorize(r, ActionUpdate, ResourceTypeNameGroup); err != nil {
 		writeError(w, err)
+		return
+	}
+	if !s.requireWriteContentType(w, r) {
 		return
 	}
 	existing, err := s.store.GetGroup(r.Context(), id)
@@ -566,6 +593,9 @@ func (s *Server) handleReplaceMe(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
+	if !s.requireWriteContentType(w, r) {
+		return
+	}
 	existing, err := s.meUser(r)
 	if err != nil {
 		writeError(w, err)
@@ -597,6 +627,9 @@ func (s *Server) handleReplaceMe(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handlePatchMe(w http.ResponseWriter, r *http.Request) {
 	if err := s.authorize(r, ActionUpdate, ResourceTypeNameUser); err != nil {
 		writeError(w, err)
+		return
+	}
+	if !s.requireWriteContentType(w, r) {
 		return
 	}
 	existing, err := s.meUser(r)
@@ -631,17 +664,8 @@ func (s *Server) handlePatchMe(w http.ResponseWriter, r *http.Request) {
 	patched.Password = ""
 	patched.ID = existing.ID
 	patched.Meta = nil
-	patched.Groups = existing.Clone().Groups
-	if password != "" && s.passwordSetter == nil {
-		writeError(w, errs.Detail(ErrNotConfigured, "password provisioning requires PasswordSetter | 口令预配需要 PasswordSetter"))
-		return
-	}
-	stored, err := s.store.ReplaceUser(r.Context(), patched)
+	stored, err := s.replaceUser(r.Context(), existing, patched, password, nil)
 	if err != nil {
-		writeError(w, err)
-		return
-	}
-	if err := s.setPassword(r.Context(), stored, password); err != nil {
 		writeError(w, err)
 		return
 	}

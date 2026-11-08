@@ -169,14 +169,14 @@ const (
 // Vendor-Specific（类型 26）属性，VendorID 与 VendorType 标识子属性，Value 保存子属性值。
 // Value 归属性所有；调用方可读取，但在共享属性时不应修改。
 type Attribute struct {
-	// Type is the attribute type number. | Type 是属性类型号。
-	Type AttributeType
 	// Value is the attribute value; for vendor attributes it is the sub-attribute value. | Value
 	// 是属性值；对厂商属性则是子属性值。
 	Value []byte
 	// VendorID is the vendor identifier for a Vendor-Specific sub-attribute. | VendorID 是
 	// Vendor-Specific 子属性的厂商标识。
 	VendorID uint32
+	// Type is the attribute type number. | Type 是属性类型号。
+	Type AttributeType
 	// VendorType is the vendor sub-attribute type. | VendorType 是厂商子属性类型。
 	VendorType uint8
 	// raw marks an unparsed Vendor-Specific payload preserved verbatim in Value. | raw 标记

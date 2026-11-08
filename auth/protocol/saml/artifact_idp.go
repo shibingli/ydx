@@ -12,94 +12,97 @@ import (
 	"github.com/shibingli/ydx/xml"
 )
 
-// HandleArtifactResolution serves the SOAP Artifact Resolution Service. It accepts a SOAP 1.1
-// ArtifactResolve, optionally verifies its XML signature, resolves an artifact issued by this IdP
-// exactly once and returns a SOAP ArtifactResponse carrying the original protocol Response. | HandleArtifactResolution
-// 提供 SOAP 工件解析服务。它接受 SOAP 1.1 ArtifactResolve，按配置校验其 XML 签名，对本 IdP 签发的
-// 工件只解析一次，并返回携带原始协议 Response 的 SOAP ArtifactResponse。
+// HandleArtifactResolution serves the SOAP Artifact Resolution Service. It accepts a SOAP 1.1 or
+// SOAP 1.2 ArtifactResolve, optionally verifies its XML signature, resolves an artifact issued by
+// this IdP exactly once and returns an ArtifactResponse in the request envelope version carrying
+// the original protocol Response. | HandleArtifactResolution 提供 SOAP 工件解析服务。它接受 SOAP 1.1
+// 或 SOAP 1.2 ArtifactResolve，按配置校验其 XML 签名，对本 IdP 签发的工件只解析一次，并以请求的信封
+// 版本返回携带原始协议 Response 的 ArtifactResponse。
 func (idp *IdentityProvider) HandleArtifactResolution(w http.ResponseWriter, r *http.Request) {
+	version := soapRequestVersion(r)
 	if r.Method != http.MethodPost {
 		w.Header().Set("Allow", http.MethodPost)
-		writeSOAPFault(w, http.StatusMethodNotAllowed, "soap:Client", "method not allowed")
+		writeSOAPFaultVersion(w, version, http.StatusMethodNotAllowed, "soap:Client", "method not allowed")
 		return
 	}
 	if err := checkSOAPAction(r, SOAPActionArtifactResolve); err != nil {
-		writeSOAPFault(w, http.StatusBadRequest, "soap:Client", "invalid SOAPAction")
+		writeSOAPFaultVersion(w, version, http.StatusBadRequest, "soap:Client", "invalid SOAPAction")
 		return
 	}
 	body, err := readSOAPBody(r)
 	if err != nil {
-		writeSOAPError(w, err)
+		writeSOAPError(w, version, err)
 		return
 	}
 	envelope, err := parseSOAPEnvelope(body)
 	if err != nil {
-		writeSOAPError(w, err)
+		writeSOAPError(w, version, err)
 		return
 	}
+	version = envelope.version
 	payload, err := envelope.payload()
 	if err != nil {
-		writeSOAPError(w, err)
+		writeSOAPError(w, version, err)
 		return
 	}
 	if payload.Name.Local != "ArtifactResolve" || payload.Name.Space != NamespaceProtocol {
-		writeSOAPFault(w, http.StatusBadRequest, "soap:Client", "unexpected SOAP payload")
+		writeSOAPFaultVersion(w, version, http.StatusBadRequest, "soap:Client", "unexpected SOAP payload")
 		return
 	}
 	request, err := parseArtifactResolveNode(payload)
 	if err != nil {
-		writeSOAPError(w, err)
+		writeSOAPError(w, version, err)
 		return
 	}
 	now := Now(idp.now)
 	if err := idp.validateArtifactResolve(r.Context(), body, payload, request, now); err != nil {
-		writeSOAPError(w, err)
+		writeSOAPError(w, version, err)
 		return
 	}
 	store, err := artifactStoreOf(idp.store)
 	if err != nil {
-		writeSOAPFault(w, http.StatusInternalServerError, "soap:Server", "artifact store unavailable")
+		writeSOAPFaultVersion(w, version, http.StatusInternalServerError, "soap:Server", "artifact store unavailable")
 		return
 	}
 	artifact, err := DecodeArtifact(request.Artifact)
 	if err != nil {
-		idp.writeArtifactStatus(w, request, now, ErrArtifactInvalid)
+		idp.writeArtifactStatus(w, request, now, version, ErrArtifactInvalid)
 		return
 	}
 	if artifact.EndpointIndex != 0 || !artifact.SameSource(Artifact{SourceID: idp.artifactSourceID}) {
-		idp.writeArtifactStatus(w, request, now, ErrArtifactInvalid)
+		idp.writeArtifactStatus(w, request, now, version, ErrArtifactInvalid)
 		return
 	}
 	record, err := store.TakeArtifact(r.Context(), *artifact, now)
 	if err != nil {
 		switch {
 		case errors.Is(err, ErrArtifactInvalid), errors.Is(err, ErrResponseExpired), errors.Is(err, ErrReplay):
-			idp.writeArtifactStatus(w, request, now, err)
+			idp.writeArtifactStatus(w, request, now, version, err)
 		default:
-			writeSOAPFault(w, http.StatusInternalServerError, "soap:Server", "artifact resolution failed")
+			writeSOAPFaultVersion(w, version, http.StatusInternalServerError, "soap:Server", "artifact resolution failed")
 		}
 		return
 	}
 	if record.Artifact.EndpointIndex != artifact.EndpointIndex || record.Artifact.Type != artifact.Type ||
 		!record.Artifact.sameMessage(*artifact) {
-		idp.writeArtifactStatus(w, request, now, ErrArtifactInvalid)
+		idp.writeArtifactStatus(w, request, now, version, ErrArtifactInvalid)
 		return
 	}
 	if record.SPEntityID != "" && record.SPEntityID != request.Issuer.Value {
-		idp.writeArtifactStatus(w, request, now, ErrArtifactInvalid)
+		idp.writeArtifactStatus(w, request, now, version, ErrArtifactInvalid)
 		return
 	}
 	if record.IDPEntityID != "" && record.IDPEntityID != idp.config.EntityID {
-		idp.writeArtifactStatus(w, request, now, ErrArtifactInvalid)
+		idp.writeArtifactStatus(w, request, now, version, ErrArtifactInvalid)
 		return
 	}
 	document := idp.buildArtifactResponse(request.ID, time.Time{}, statusFor(StatusSuccess), record.Message)
 	document, err = idp.signArtifactResponse(document)
 	if err != nil {
-		writeSOAPFault(w, http.StatusInternalServerError, "soap:Server", "artifact response signing failed")
+		writeSOAPFaultVersion(w, version, http.StatusInternalServerError, "soap:Server", "artifact response signing failed")
 		return
 	}
-	writeSOAPPayload(w, document)
+	writeSOAPPayloadVersion(w, version, document)
 }
 
 // validateArtifactResolve validates the protocol attributes and optional signature of an
@@ -210,9 +213,10 @@ func (idp *IdentityProvider) signArtifactResponse(document []byte) ([]byte, erro
 	return signed, nil
 }
 
-// writeArtifactStatus writes an ArtifactResponse that carries a requester error status. | writeArtifactStatus
-// 写入携带请求方错误状态的 ArtifactResponse。
-func (idp *IdentityProvider) writeArtifactStatus(w http.ResponseWriter, request *ArtifactResolve, now time.Time, cause error) {
+// writeArtifactStatus writes an ArtifactResponse in the request envelope version that carries a
+// requester error status. | writeArtifactStatus 以请求的信封版本写入携带请求方错误状态的
+// ArtifactResponse。
+func (idp *IdentityProvider) writeArtifactStatus(w http.ResponseWriter, request *ArtifactResolve, now time.Time, version SOAPVersion, cause error) {
 	status := &Status{
 		StatusCode:    &StatusCode{Value: StatusRequester},
 		StatusMessage: &StatusMessage{Value: artifactStatusMessage(cause)},
@@ -220,10 +224,10 @@ func (idp *IdentityProvider) writeArtifactStatus(w http.ResponseWriter, request 
 	document := idp.buildArtifactResponse(request.ID, now, status, nil)
 	document, err := idp.signArtifactResponse(document)
 	if err != nil {
-		writeSOAPFault(w, http.StatusInternalServerError, "soap:Server", "artifact response signing failed")
+		writeSOAPFaultVersion(w, version, http.StatusInternalServerError, "soap:Server", "artifact response signing failed")
 		return
 	}
-	writeSOAPPayload(w, document)
+	writeSOAPPayloadVersion(w, version, document)
 }
 
 // artifactStatusMessage maps an artifact error to a non-sensitive status message. | artifactStatusMessage
@@ -296,17 +300,18 @@ func verifyEmbeddedSignature(ctx context.Context, verifier SignatureVerifier, me
 	return errs.Wrap(lastErr, ErrInvalidSignature)
 }
 
-// writeSOAPError writes a SOAP fault for a request error. Body-size violations use status 413 and
-// everything else status 400. | writeSOAPError 为请求错误写入 SOAP 异常。正文超限使用 413，其余使用 400。
-func writeSOAPError(w http.ResponseWriter, err error) {
+// writeSOAPError writes a SOAP fault in version for a request error. Body-size violations use status
+// 413 and everything else status 400. | writeSOAPError 以 version 版本为请求错误写入 SOAP 异常。正文
+// 超限使用 413，其余使用 400。
+func writeSOAPError(w http.ResponseWriter, version SOAPVersion, err error) {
 	var fault *SOAPFault
 	if errors.As(err, &fault) {
-		writeSOAPFault(w, http.StatusBadRequest, "soap:Client", fault.Error())
+		writeSOAPFaultVersion(w, version, http.StatusBadRequest, "soap:Client", fault.Error())
 		return
 	}
 	if errors.Is(err, ErrLimit) {
-		writeSOAPFault(w, http.StatusRequestEntityTooLarge, "soap:Client", "message too large")
+		writeSOAPFaultVersion(w, version, http.StatusRequestEntityTooLarge, "soap:Client", "message too large")
 		return
 	}
-	writeSOAPFault(w, http.StatusBadRequest, "soap:Client", "invalid SOAP request")
+	writeSOAPFaultVersion(w, version, http.StatusBadRequest, "soap:Client", "invalid SOAP request")
 }

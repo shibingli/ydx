@@ -19,6 +19,10 @@ import (
 // 或由 UserName 配合取自 NASIPAddress、NASIdentifier 或客户端默认值的 NAS 标识。Attributes 携带
 // CoA-Request 的授权变更，或 Disconnect-Request 的附加会话标识。
 type DynamicAuthorizationRequest struct {
+	// EventTimestamp is Event-Timestamp; the current time is used when zero. RFC 5176 section 3.6
+	// recommends including it and keeping it unchanged on retransmission. | EventTimestamp 是
+	// Event-Timestamp；为零时使用当前时间。RFC 5176 第 3.6 节建议携带该属性，并在重传时保持不变。
+	EventTimestamp time.Time
 	// SessionID is Acct-Session-Id. Required unless UserName identifies the session. | SessionID
 	// 是 Acct-Session-Id。除非由 UserName 标识会话，否则必填。
 	SessionID string
@@ -26,22 +30,11 @@ type DynamicAuthorizationRequest struct {
 	// the corresponding client default. | UserName 是 User-Name。仅携带 User-Name 的请求还需要
 	// NASIPAddress、NASIdentifier 或相应的客户端默认值。
 	UserName string
+	// NASIdentifier overrides the client NAS-Identifier. | NASIdentifier 覆盖客户端 NAS-Identifier。
+	NASIdentifier string
 	// NASIPAddress overrides the client NAS-IP-Address and must be IPv4. | NASIPAddress 覆盖客户端
 	// NAS-IP-Address，必须是 IPv4。
 	NASIPAddress net.IP
-	// NASIdentifier overrides the client NAS-Identifier. | NASIdentifier 覆盖客户端 NAS-Identifier。
-	NASIdentifier string
-	// NASPort is the NAS-Port value; zero omits it. | NASPort 是 NAS-Port 值；零值省略该属性。
-	NASPort uint32
-	// EventTimestamp is Event-Timestamp; the current time is used when zero. RFC 5176 section 3.6
-	// recommends including it and keeping it unchanged on retransmission. | EventTimestamp 是
-	// Event-Timestamp；为零时使用当前时间。RFC 5176 第 3.6 节建议携带该属性，并在重传时保持不变。
-	EventTimestamp time.Time
-	// IncludeMessageAuthenticator adds and signs a Message-Authenticator. When set, the ACK or NAK
-	// must also carry a valid Message-Authenticator (RFC 5176 section 3.4). | IncludeMessageAuthenticator
-	// 添加并签名 Message-Authenticator。设置后，ACK 或 NAK 也必须携带合法的 Message-Authenticator
-	// （RFC 5176 第 3.4 节）。
-	IncludeMessageAuthenticator bool
 	// Attributes carries additional attributes. Client-managed attributes (User-Name,
 	// Acct-Session-Id, NAS-IP-Address, NAS-Identifier, NAS-Port, Event-Timestamp and
 	// Message-Authenticator) are supplied through the fields above and ignored here; Error-Cause is
@@ -50,6 +43,13 @@ type DynamicAuthorizationRequest struct {
 	// Event-Timestamp 与 Message-Authenticator）由上述字段提供并在此忽略；Error-Cause 会被拒绝，
 	// 因为它只允许出现在 ACK 与 NAK 响应中。
 	Attributes Attributes
+	// NASPort is the NAS-Port value; zero omits it. | NASPort 是 NAS-Port 值；零值省略该属性。
+	NASPort uint32
+	// IncludeMessageAuthenticator adds and signs a Message-Authenticator. When set, the ACK or NAK
+	// must also carry a valid Message-Authenticator (RFC 5176 section 3.4). | IncludeMessageAuthenticator
+	// 添加并签名 Message-Authenticator。设置后，ACK 或 NAK 也必须携带合法的 Message-Authenticator
+	// （RFC 5176 第 3.4 节）。
+	IncludeMessageAuthenticator bool
 }
 
 // CoARequest is the Change-of-Authorization Request (RFC 5176 code 43) accepted by Client.SendCoA.
@@ -65,23 +65,23 @@ type DisconnectRequest = DynamicAuthorizationRequest
 // Disconnect-Request. | DynamicAuthorizationResponse 是应答 CoA-Request 或 Disconnect-Request 的
 // 已解码 ACK 或 NAK。
 type DynamicAuthorizationResponse struct {
-	// Code is CodeCoAACK, CodeCoANAK, CodeDisconnectACK or CodeDisconnectNAK. | Code 是
-	// CodeCoAACK、CodeCoANAK、CodeDisconnectACK 或 CodeDisconnectNAK。
-	Code Code
-	// Identifier is the response packet identifier. | Identifier 是响应报文标识符。
-	Identifier uint8
-	// Authenticator is the verified Response Authenticator. | Authenticator 是已校验的 Response Authenticator。
-	Authenticator [16]byte
+	// ReplyMessage is the first Reply-Message. | ReplyMessage 是首个 Reply-Message。
+	ReplyMessage string
 	// Attributes holds every response attribute in wire order. | Attributes 按线序保存全部响应属性。
 	Attributes Attributes
 	// ErrorCause is the decoded Error-Cause value; it is zero when HasErrorCause is false. |
 	// ErrorCause 是已解码的 Error-Cause 值；HasErrorCause 为 false 时为零。
 	ErrorCause ErrorCause
+	// Authenticator is the verified Response Authenticator. | Authenticator 是已校验的 Response Authenticator。
+	Authenticator [16]byte
+	// Code is CodeCoAACK, CodeCoANAK, CodeDisconnectACK or CodeDisconnectNAK. | Code 是
+	// CodeCoAACK、CodeCoANAK、CodeDisconnectACK 或 CodeDisconnectNAK。
+	Code Code
+	// Identifier is the response packet identifier. | Identifier 是响应报文标识符。
+	Identifier uint8
 	// HasErrorCause reports whether the response carried Error-Cause. | HasErrorCause 报告响应是否
 	// 携带 Error-Cause。
 	HasErrorCause bool
-	// ReplyMessage is the first Reply-Message. | ReplyMessage 是首个 Reply-Message。
-	ReplyMessage string
 }
 
 // CoAResponse is the ACK or NAK answering a CoA-Request. | CoAResponse 是应答 CoA-Request 的 ACK 或 NAK。
@@ -111,16 +111,17 @@ func (r *DynamicAuthorizationResponse) Rejected() bool {
 // ends. Every retransmission resends byte-identical content, including the Identifier, Request
 // Authenticator and Event-Timestamp, so the NAS can detect duplicates as RFC 5176 section 3.6
 // recommends; each SendCoA call uses a fresh Identifier. A CoA-NAK returns a non-nil response and
-// an error wrapping ErrCoANAK that reports Error-Cause. UDP responses whose Response Authenticator
-// does not match are silently discarded and the attempt keeps waiting for a valid ACK or NAK;
-// stream transports fail the attempt so the connection can be closed. Malformed responses,
-// Message-Authenticator failures and unexpected response codes are not retried. | Request
-// Authenticator 使用 RFC 5176 第 2.3 节要求的 RFC 2866 算法。超时按指数退避重传，直到 Retries
-// 用尽或上下文结束。每次重传发送完全相同的字节，包括 Identifier、Request Authenticator 与
-// Event-Timestamp，以便 NAS 按 RFC 5176 第 3.6 节建议进行重复检测；每次 SendCoA 调用使用新的
-// Identifier。CoA-NAK 会返回非空响应与包装 ErrCoANAK 并报告 Error-Cause 的错误。UDP 响应中
-// Response Authenticator 不匹配者被静默丢弃，本次尝试继续等待合法 ACK 或 NAK；流传输则让本次
-// 尝试失败以便关闭连接。畸形响应、Message-Authenticator 失败以及意外响应类型不会重试。
+// an error wrapping ErrCoANAK that reports Error-Cause. UDP responses that are malformed or fail
+// Response Authenticator or Message-Authenticator verification are silently discarded and the
+// attempt keeps waiting for a valid ACK or NAK; stream transports fail the attempt so the
+// connection can be closed. A response with an unexpected code fails the attempt after validation.
+// Retransmissions only happen after a timeout. | Request Authenticator 使用 RFC 5176 第 2.3 节要求
+// 的 RFC 2866 算法。超时按指数退避重传，直到 Retries 用尽或上下文结束。每次重传发送完全相同的
+// 字节，包括 Identifier、Request Authenticator 与 Event-Timestamp，以便 NAS 按 RFC 5176 第 3.6
+// 节建议进行重复检测；每次 SendCoA 调用使用新的 Identifier。CoA-NAK 会返回非空响应与包装
+// ErrCoANAK 并报告 Error-Cause 的错误。UDP 响应中结构畸形或未通过 Response Authenticator 与
+// Message-Authenticator 校验者被静默丢弃，本次尝试继续等待合法 ACK 或 NAK；流传输则让本次尝试
+// 失败以便关闭连接。响应类型意外者会在校验后让本次尝试失败。只有超时才会重传。
 func (c *Client) SendCoA(ctx context.Context, request *CoARequest) (*CoAResponse, error) {
 	return c.sendDynamicAuthorization(ctx, CodeCoARequest, request, ErrCoANAK)
 }
@@ -151,7 +152,7 @@ func (c *Client) sendDynamicAuthorization(ctx context.Context, requestCode Code,
 	// server can detect duplicates; the Request Authenticator therefore also stays unchanged. |
 	// RFC 5176 第 3.6 节：重传保持 Identifier 与 Event-Timestamp，便于服务器检测重复，因此
 	// Request Authenticator 也保持不变。
-	packet, received, verifiedAuthenticator, err := c.exchange(ctx, requestCode, func(int) ([]byte, [16]byte, error) {
+	packet, received, verifiedAuthenticator, err := c.exchange(ctx, requestCode, prepared.IncludeMessageAuthenticator, func(int) ([]byte, [16]byte, error) {
 		return raw, requestAuthenticator, nil
 	})
 	if err != nil {

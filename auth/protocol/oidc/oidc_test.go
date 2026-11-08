@@ -25,8 +25,10 @@ type oidcFixture struct {
 	client   *oauth2.Client
 }
 
-// newOIDCFixture starts an OP and returns the fixture. | newOIDCFixture 启动 OP 并返回夹具。
-func newOIDCFixture(t *testing.T, registration bool) *oidcFixture {
+// newOIDCFixture starts an OP and returns the fixture. Optional configure functions adjust the
+// provider configuration before construction. | newOIDCFixture 启动 OP 并返回夹具。可选的 configure
+// 函数在构造前调整提供方配置。
+func newOIDCFixture(t *testing.T, registration bool, configure ...func(*ProviderConfig)) *oidcFixture {
 	t.Helper()
 	var handler = http.NotFoundHandler()
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -79,16 +81,23 @@ func newOIDCFixture(t *testing.T, registration bool) *oidcFixture {
 	if err != nil {
 		t.Fatalf("oauth server: %v", err)
 	}
-	provider, err := NewProvider(ProviderConfig{
-		OAuth:                     oauthServer,
-		Keys:                      keys,
-		SigningKey:                signingKey,
-		SigningAlg:                "RS256",
-		EnableRegistration:        registration,
-		EnableLogout:              true,
-		SessionManagement:         true,
-		BackchannelLogoutClientID: "web",
-	})
+	providerConfig := ProviderConfig{
+		OAuth:                      oauthServer,
+		Keys:                       keys,
+		SigningKey:                 signingKey,
+		SigningAlg:                 "RS256",
+		EnableRegistration:         registration,
+		EnableLogout:               true,
+		SessionManagement:          true,
+		BackchannelLogoutClientID:  "web",
+		FrontchannelLogoutClientID: "web",
+	}
+	for _, apply := range configure {
+		if apply != nil {
+			apply(&providerConfig)
+		}
+	}
+	provider, err := NewProvider(providerConfig)
 	if err != nil {
 		t.Fatalf("provider: %v", err)
 	}

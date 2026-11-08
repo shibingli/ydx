@@ -198,9 +198,12 @@ func (v *Validator) ValidateTOTP(ctx context.Context, secret, code string) (int6
 
 // ValidateHOTP validates code against secret in the counter window starting at counter. On
 // success it returns the matched counter and records it in the replay guard when one is
-// configured; a reused counter yields (counter, false, ErrReplay). | ValidateHOTP 从 counter 起
-// 的计数器窗口内用 secret 校验 code。成功时返回命中的计数器，并在配置了重放保护时记录该计数器；
-// 重复使用的计数器返回 (counter, false, ErrReplay)。
+// configured; a reused counter yields (counter, false, ErrReplay). A match below counter is
+// rejected as (matched, false, nil): such a code was already consumed, and accepting it would
+// rewind the counter the caller persists. | ValidateHOTP 从 counter 起的计数器窗口内用 secret
+// 校验 code。成功时返回命中的计数器，并在配置了重放保护时记录该计数器；重复使用的计数器返回
+// (counter, false, ErrReplay)。命中低于 counter 的值会作为 (matched, false, nil) 拒绝：该口令已被
+// 消费，接受它会回退调用方持久化的计数器。
 func (v *Validator) ValidateHOTP(ctx context.Context, secret, code string, counter uint64) (uint64, bool, error) {
 	if v == nil {
 		return 0, false, errs.Detail(ErrInvalidConfig, "nil validator | 校验器为空")
@@ -208,6 +211,9 @@ func (v *Validator) ValidateHOTP(ctx context.Context, secret, code string, count
 	matched, ok, err := ValidateHOTP(secret, code, counter, v.cfg)
 	if err != nil || !ok {
 		return matched, ok, err
+	}
+	if matched < counter {
+		return matched, false, nil
 	}
 	if v.guard != nil {
 		if matched > uint64(maxInt64) {
