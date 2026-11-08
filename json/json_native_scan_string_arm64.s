@@ -10,14 +10,14 @@ TEXT ·scanStringBodyNEON(SB), NOSPLIT, $0-40
 	MOVD data_base+0(FP), R0
 	MOVD data_len+8(FP), R1
 	MOVD start+24(FP), R2
+	SUB R2, R1, R1
 	VMOVI $0x22, V1.B16
 	VMOVI $0x5c, V2.B16
 	VMOVI $0x20, V3.B16
 	VMOVI $0x7f, V4.B16
 
 loop:
-	SUB $16, R1, R5
-	CMP $0, R5
+	CMP $16, R1
 	BLT done
 	ADD R0, R2, R6
 	VLD1 (R6), [V0.B16]
@@ -33,6 +33,7 @@ loop:
 	AND $0xFF, R7
 	CBNZ R7, done
 	ADD $16, R2, R2
+	SUB $16, R1, R1
 	B loop
 
 done:

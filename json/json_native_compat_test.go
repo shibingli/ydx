@@ -623,6 +623,7 @@ func FuzzNativeMarshalRoundTrip(f *testing.F) {
 		`{}`, `[]`, `null`, `true`, `"x"`, `0`, `-1.5e10`,
 		`{"a":[1,{"b":null}],"c":"中文😀"}`,
 		`{"a":1,"a":2}`, `"😀"`, `{"x":"a\xffb"}`,
+		`-1.09`, `251093574830129.28`,
 	}
 	for _, s := range seeds {
 		f.Add([]byte(s))

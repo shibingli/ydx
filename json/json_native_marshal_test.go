@@ -3,8 +3,10 @@
 package json
 
 import (
+	"bytes"
 	stdjson "encoding/json"
 	"math"
+	"math/rand"
 	"reflect"
 	"testing"
 	"time"
@@ -161,6 +163,102 @@ func TestMarshalFloatFastPaths(t *testing.T) {
 		if string(got) != string(want) {
 			t.Fatalf("float32 %v mismatch: got %s, want %s", f, got, want)
 		}
+	}
+}
+
+// TestMarshalFloatDifferential compares float64 marshaling with encoding/json across random bit
+// patterns and short-decimal grids. It pins both the round-trip guarantee and the shortest-form
+// requirement of the short-float fast path, including magnitudes where the binary ulp is coarser
+// than one decimal digit. | TestMarshalFloatDifferential 在随机位模式与短小数网格上对比 float64
+// 编码与 encoding/json。它固定短浮点快速路径的反解析保证与最短形式要求，并覆盖二进制 ulp 比一个
+// 十进制位更粗的数量级。
+func TestMarshalFloatDifferential(t *testing.T) {
+	check := func(f float64) {
+		t.Helper()
+		got, err := Marshal(f)
+		if err != nil {
+			t.Fatalf("Marshal(%v) failed | Marshal(%v) 失败: %v", f, f, err)
+		}
+		want, err := stdjson.Marshal(f)
+		if err != nil {
+			t.Fatalf("encoding/json Marshal(%v) failed | encoding/json Marshal(%v) 失败: %v", f, f, err)
+		}
+		if string(got) != string(want) {
+			t.Fatalf("float64 %v (bits %#x) mismatch: got %s, want %s",
+				f, math.Float64bits(f), got, want)
+		}
+	}
+	// Exact bit patterns that the previous fast path rendered with too few digits or with a
+	// non-shortest fractional tail. | 旧快速路径曾以过少位数或非最短小数尾部输出的精确位模式。
+	for _, bits := range []uint64{
+		0x42ec8bc8eaa90629, // 2.5109357483012928e14
+		0xc2af4c1ac0ab373e, // -1.7205863404955621e13
+		0xc26cf2cc19de15c2, // -9.946603722086799e11
+		0x42dda3f96b5f6899, // 1.3036040575325039e14
+		0x42c7d8a2c147cb79, // 5.2438421901206945e13
+		0xc2ff3c853476771f, // -5.4951669290788994e14
+	} {
+		check(math.Float64frombits(bits))
+	}
+	for _, f := range []float64{1.09, -1.09, 0.29, -0.29, 1.234567, 123456789.5} {
+		check(f)
+	}
+	r := rand.New(rand.NewSource(0x5eed))
+	for i := 0; i < 20000; i++ {
+		f := math.Float64frombits(r.Uint64())
+		if math.IsNaN(f) || math.IsInf(f, 0) {
+			continue
+		}
+		check(f)
+	}
+	for p := 1; p <= 6; p++ {
+		scale := math.Pow(10, float64(p))
+		for i := 0; i < 5000; i++ {
+			f := float64(r.Int63n(1<<50)) / scale
+			check(f)
+			check(-f)
+		}
+	}
+}
+
+// FuzzMarshalFloatBits drives arbitrary float64 and float32 bit patterns through the native
+// formatter and requires byte equality with encoding/json. It complements
+// TestMarshalFloatDifferential with coverage-guided inputs for the short-float fast path. |
+// FuzzMarshalFloatBits 把任意 float64 与 float32 位模式送入原生格式化器，并要求与 encoding/json
+// 字节一致。它用覆盖引导的输入补充 TestMarshalFloatDifferential 对短浮点快速路径的检查。
+func FuzzMarshalFloatBits(f *testing.F) {
+	f.Add(uint64(0), uint32(0))
+	f.Add(math.Float64bits(1.09), math.Float32bits(1.09))
+	f.Add(math.Float64bits(-1.09), math.Float32bits(-1.09))
+	f.Add(math.Float64bits(251093574830129.28), math.Float32bits(123456.79))
+	f.Add(math.Float64bits(123456789.5), math.Float32bits(math.SmallestNonzeroFloat32))
+	f.Add(uint64(0x8000000000000000), uint32(0x80000000))
+	f.Fuzz(func(t *testing.T, b64 uint64, b32 uint32) {
+		f64 := math.Float64frombits(b64)
+		if !math.IsNaN(f64) && !math.IsInf(f64, 0) {
+			checkFloatMarshal(t, f64)
+		}
+		f32 := math.Float32frombits(b32)
+		if !math.IsNaN(float64(f32)) && !math.IsInf(float64(f32), 0) {
+			checkFloatMarshal(t, f32)
+		}
+	})
+}
+
+// checkFloatMarshal requires Marshal and encoding/json to agree byte for byte on one float. |
+// checkFloatMarshal 要求 Marshal 与 encoding/json 对单个浮点的输出逐字节一致。
+func checkFloatMarshal(t *testing.T, v any) {
+	t.Helper()
+	got, err := Marshal(v)
+	if err != nil {
+		t.Fatalf("Marshal(%v) failed | Marshal(%v) 失败: %v", v, v, err)
+	}
+	want, err := stdjson.Marshal(v)
+	if err != nil {
+		t.Fatalf("encoding/json Marshal(%v) failed | encoding/json Marshal(%v) 失败: %v", v, v, err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatalf("Marshal(%v) = %s, want %s | 浮点编码不一致", v, got, want)
 	}
 }
 

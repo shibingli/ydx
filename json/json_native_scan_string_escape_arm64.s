@@ -20,8 +20,7 @@ TEXT ·stringNeedsEscapeNEON(SB), NOSPLIT, $0-40
 	CBNZ R8, html
 
 loop:
-	SUB $16, R1, R10
-	CMP $0, R10
+	CMP $16, R1
 	BLT clean
 	ADD R0, R9, R11
 	VLD1 (R11), [V0.B16]
@@ -37,11 +36,11 @@ loop:
 	AND $0xFF, R12
 	CBNZ R12, found
 	ADD $16, R9, R9
+	SUB $16, R1, R1
 	B loop
 
 html:
-	SUB $16, R1, R10
-	CMP $0, R10
+	CMP $16, R1
 	BLT clean
 	ADD R0, R9, R11
 	VLD1 (R11), [V0.B16]
@@ -63,6 +62,7 @@ html:
 	AND $0xFF, R12
 	CBNZ R12, found
 	ADD $16, R9, R9
+	SUB $16, R1, R1
 	B html
 
 found:

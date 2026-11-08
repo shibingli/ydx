@@ -407,22 +407,6 @@ func appendFloat(buf []byte, f float64, bits int) ([]byte, error) {
 		return appendIntFast(buf, int64(f)), nil
 	}
 	if bits == 64 {
-		if g := f * 10; g == math.Trunc(g) && math.Abs(g) < 1<<53 {
-			neg := math.Signbit(f)
-			n := int64(g)
-			if neg {
-				n = -n
-			}
-			ip, frac := n/10, n%10
-			if neg {
-				buf = append(buf, '-')
-			}
-			buf = appendIntFast(buf, ip)
-			if frac != 0 {
-				buf = append(buf, '.', byte('0'+frac))
-			}
-			return buf, nil
-		}
 		if out, ok := appendShortFloat(buf, f); ok {
 			return out, nil
 		}
@@ -441,10 +425,19 @@ func appendFloat(buf []byte, f float64, bits int) ([]byte, error) {
 	return buf, nil
 }
 
-// appendShortFloat formats a float64 with one to six decimal places when the scaled value is an
-// exact integer within the 53-bit range; otherwise it reports !ok and the caller falls back to
-// strconv. | appendShortFloat 在缩放值位于 53 位整数范围内且为整数时，用 1-6 位小数格式化
-// float64；否则返回 !ok，由调用方回退到 strconv。
+// shortFloatGrid holds 10^-q for q = 0..6, the decimal spacing that a q-digit fractional
+// candidate must beat with the binary ulp to be the unique nearest decimal. |
+// shortFloatGrid 保存 q = 0..6 时的 10^-q，即 q 位小数候选值必须用二进制 ulp 战胜的十进制间距，
+// 才能成为唯一最近的十进制值。
+var shortFloatGrid = [7]float64{1, 1e-1, 1e-2, 1e-3, 1e-4, 1e-5, 1e-6}
+
+// appendShortFloat formats a float64 with one to six decimal places when the decimal value both
+// rounds back to f and is the nearest decimal with that many fractional digits; otherwise it
+// reports !ok and the caller falls back to strconv. Trailing fractional zeros are trimmed so the
+// result is the same shortest form encoding/json produces. |
+// appendShortFloat 在十进制值既能反解析回 f、又是该小数位数下最接近的十进制值时，用 1-6 位小数
+// 格式化 float64；否则返回 !ok，由调用方回退到 strconv。小数尾零会被去掉，使结果与 encoding/json
+// 生成的最短形式一致。
 func appendShortFloat(buf []byte, f float64) ([]byte, bool) {
 	abs := math.Abs(f)
 	if abs < 1e-6 || abs >= 1e15 {
@@ -465,17 +458,40 @@ func appendShortFloat(buf []byte, f float64) ([]byte, bool) {
 		if float64(n) != g {
 			continue
 		}
+		// An integral product is not enough at large magnitudes, where the binary grid can be
+		// coarser than one decimal digit. Require that the decimal value itself rounds back to f.
+		// | 积为整数在大数量级并不充分：二进制网格可能比一个十进制位还粗。此处要求十进制值本身
+		// 能反解析回 f。
+		if float64(n)/scale != f {
+			continue
+		}
 		ip := n / int64(scale)
 		frac := n % int64(scale)
+		if frac == 0 {
+			return buf, false
+		}
+		div := int64(scale) / 10
+		for frac%10 == 0 {
+			frac /= 10
+			div /= 10
+		}
+		// The trimmed candidate has q fractional digits. It is the nearest q-digit decimal only
+		// when the binary ulp is finer than the 10^-q grid; otherwise a neighbouring decimal can
+		// round back to f too and encoding/json may choose it instead. |
+		// 去尾零后的候选值有 q 位小数。仅当二进制 ulp 细于 10^-q 网格时它才是最近的 q 位小数；
+		// 否则相邻十进制也可能反解析回 f，encoding/json 可能改选相邻值。
+		q := 0
+		for d := div; d > 0; d /= 10 {
+			q++
+		}
+		if math.Float64frombits(math.Float64bits(f)+1)-f >= shortFloatGrid[q] {
+			continue
+		}
 		if neg {
 			buf = append(buf, '-')
 		}
 		buf = appendIntFast(buf, ip)
-		if frac == 0 {
-			return buf, true
-		}
 		buf = append(buf, '.')
-		div := int64(scale) / 10
 		for ; div > 0; div /= 10 {
 			buf = append(buf, byte('0'+frac/div%10))
 		}

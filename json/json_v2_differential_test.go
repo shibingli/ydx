@@ -92,6 +92,7 @@ func TestV2DifferentialMarshal(t *testing.T) {
 		[]any{int64(1), "two", true, nil},
 		"plain", "<&>", "  ", "é😀",
 		[]int(nil), map[string]int(nil), []byte(nil), [3]byte{}, time.Duration(1500 * time.Millisecond),
+		[]float64{1.09, -1.09, math.Float64frombits(0x42ec8bc8eaa90629), 123456789.5, math.Copysign(0, -1), math.MaxFloat64},
 		math.Inf(1), math.NaN(),
 		string([]byte{'a', 0xff, 'b'}),
 		jsontext.Value(`{ "a" : "A", "n" : 1.00, "i" : 1e2 }`),
