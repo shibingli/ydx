@@ -194,7 +194,7 @@ _ = http.ListenAndServe(":8080", handler)
 handler := cors.Middleware(cors.CORSOptions{})(mux)
 ```
 
-`jwt` 使用 `HTTPMiddleware` / `FromRequest`，`sse` 使用 `HTTPHandler`，`websocket` 使用 `HtmxHTTPHandler`。
+`auth/token/jwt` 使用 `HTTPMiddleware` / `FromRequest`，`sse` 使用 `HTTPHandler`，`websocket` 使用 `HtmxHTTPHandler`。
 
 `openapi` 的前端资源与 Go 代码完全隔离：页面模板在 `openapi/pages/page/index.html`，样式表、
 图标 sprite 与查看器脚本在 `openapi/pages/assets/`，全部经 `go:embed` 随模块发布

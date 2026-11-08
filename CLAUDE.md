@@ -43,8 +43,8 @@ ydx 是 yd 全栈框架的可复用组件仓库；组件源码以本仓库为唯
   `ydx/router` 为原生入口（`HandleRaw` 或 `router.HandlerFunc`），同时保持 `http.Handler`
   兼容；不得反向依赖 `yd`。原根目录 `jwt` 模块的实现已迁入 `auth/token/jwt`。`auth/token/jwt`
   的互操作测试可使用 `github.com/golang-jwt/jwt/v5` 作为仅测试对照，不得进入非测试代码；
-  `auth` 依赖 `ydx/json` v0.1.17（修复原生解码器字符串 arena 越界 panic），发布 `auth` 前必须
-  先发布 `json/v0.1.17`。
+  `auth` 依赖已发布的 `ydx/json` v0.1.17（修复原生解码器字符串 arena 越界 panic 与
+  fast-struct 解码计划缓存污染），`auth v0.1.0` 与 `json/v0.1.17` 均已打标签。
 - `waf`（根目录）是唯一的 WAF 实现：自研 SecLang 引擎，原生支持 `router` 与 `net/http`，
   带热更新、钩子、原生/WASM 插件与报警；热路径使用必需字面量/字节集/最小长度预过滤与
   独立规则并发纯求值，动作仍按源码顺序提交。原 `middleware/waf`（Coraza 封装的 v1）已移除；
@@ -147,7 +147,7 @@ ydx 是 yd 全栈框架的可复用组件仓库；组件源码以本仓库为唯
 
 - YD 路由：`router.Middleware`、`router.HandlerFunc`、`router.Adapt`。
 - 原生 `net/http`：`router.Adapt(next, mw...)`；各插件提供
-  `Middleware(...) func(http.Handler) http.Handler`；`jwt` 提供
+  `Middleware(...) func(http.Handler) http.Handler`；`auth/token/jwt` 提供
   `HTTPMiddleware` / `FromRequest`，`sse` 提供 `HTTPHandler`，
   `websocket` 提供 `HtmxHTTPHandler`，`waf` 提供 `HTTPMiddleware`。
 - 原生适配器只新增入口，不得改变 YD 入口的每请求路径。
