@@ -457,6 +457,14 @@ func TestEntityExpansionLimits(t *testing.T) {
 // 都执行 MaxTokenSize 上限。
 func TestTokenSizeLimit(t *testing.T) {
 	long := strings.Repeat("x", 100)
+	var manyAttr strings.Builder
+	manyAttr.WriteString("<a")
+	for i := 0; i < 12; i++ {
+		manyAttr.WriteString(` b`)
+		manyAttr.WriteByte(byte('a' + i))
+		manyAttr.WriteString(`="v"`)
+	}
+	manyAttr.WriteString("/>")
 	cases := []string{
 		"<a>" + long + "</a>",
 		long,
@@ -466,6 +474,7 @@ func TestTokenSizeLimit(t *testing.T) {
 		"<!" + long + ">",
 		`<a b="` + long + `"/>`,
 		"<" + long + "/>",
+		manyAttr.String(),
 	}
 	for _, doc := range cases {
 		for _, reader := range []bool{false, true} {

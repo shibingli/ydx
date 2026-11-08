@@ -275,6 +275,7 @@ func (l *lexer) startTag(ev *event) error {
 		return l.syntax("expected element name after <")
 	}
 	l.attrBuf = l.attrBuf[:0]
+	total := len(name.Space) + len(name.Local)
 	empty := false
 	for {
 		if err := l.skipSpace(); err != nil {
@@ -340,6 +341,13 @@ func (l *lexer) startTag(ev *event) error {
 			}
 		}
 		l.attrBuf = append(l.attrBuf, Attr{Name: an, Value: l.str(value)})
+		// Bound the whole element, not each attribute separately, so many small attributes
+		// cannot exceed MaxTokenSize piecewise. | 按整个元素限界而非逐属性限界，避免大量小属性
+		// 分段绕过 MaxTokenSize。
+		total += len(an.Space) + len(an.Local) + len(value)
+		if err := l.checkSize(total); err != nil {
+			return err
+		}
 	}
 	if empty {
 		l.pendingEnd = name

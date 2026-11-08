@@ -105,17 +105,19 @@ func (s *stdSource) checkTokenLimit(t stdxml.Token) error {
 	limitErr := errs.Detail(ErrLimit, "token exceeds MaxTokenSize | token 超过 MaxTokenSize")
 	switch t := t.(type) {
 	case stdxml.StartElement:
-		if tooBig(len(t.Name.Space)) || tooBig(len(t.Name.Local)) {
-			return limitErr
-		}
+		// Sum every component so a token with many small attributes cannot exceed the bound
+		// piecewise. The native backend bounds the whole raw element the same way. | 合计所有
+		// 组成部分，避免大量小属性按单个字段绕过上限；原生后端同样按整个元素限界。
+		total := len(t.Name.Space) + len(t.Name.Local)
 		for i := range t.Attr {
 			a := &t.Attr[i]
-			if tooBig(len(a.Name.Space)) || tooBig(len(a.Name.Local)) || tooBig(len(a.Value)) {
-				return limitErr
-			}
+			total += len(a.Name.Space) + len(a.Name.Local) + len(a.Value)
+		}
+		if tooBig(total) {
+			return limitErr
 		}
 	case stdxml.EndElement:
-		if tooBig(len(t.Name.Space)) || tooBig(len(t.Name.Local)) {
+		if tooBig(len(t.Name.Space) + len(t.Name.Local)) {
 			return limitErr
 		}
 	case stdxml.CharData:
@@ -127,7 +129,7 @@ func (s *stdSource) checkTokenLimit(t stdxml.Token) error {
 			return limitErr
 		}
 	case stdxml.ProcInst:
-		if tooBig(len(t.Target)) || tooBig(len(t.Inst)) {
+		if tooBig(len(t.Target) + len(t.Inst)) {
 			return limitErr
 		}
 	case stdxml.Directive:
