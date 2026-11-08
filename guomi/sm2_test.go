@@ -521,3 +521,40 @@ func TestSM2DecryptRejectsInvalidInput(t *testing.T) {
 		t.Fatalf("Decrypt(篡改 ASN.1 密文) 的错误 = %v, want ErrDecrypt", err)
 	}
 }
+
+// TestSM2NonceDiversity verifies that fresh nonces always produce a ciphertext consistent with
+// C1 and the private key. It guards the gmsm PKE helper defect where an aliased ScalarMult
+// receiver/input produced an inconsistent shared point for roughly one percent of nonces; this
+// package now performs the SM2 encryption and decryption curve operations itself. |
+// TestSM2NonceDiversity 验证新随机数下的密文始终与 C1 和私钥一致。它守护 gmsm PKE 辅助函数的
+// 缺陷：同一对象同时作为 ScalarMult 的接收者与输入，约百分之一的随机数会得到不一致的共享点；
+// 本包现自行执行 SM2 加解密的曲线运算。
+func TestSM2NonceDiversity(t *testing.T) {
+	priv, pub := mustKey(t)
+	msg := make([]byte, 1)
+	for i := 0; i < 2000; i++ {
+		msg[0] = byte(i)
+		raw, err := EncryptRaw(pub, msg)
+		if err != nil {
+			t.Fatalf("EncryptRaw at %d: %v", i, err)
+		}
+		got, err := DecryptRaw(priv, raw)
+		if err != nil {
+			t.Fatalf("DecryptRaw at %d: %v", i, err)
+		}
+		if !bytes.Equal(got, msg) {
+			t.Fatalf("DecryptRaw at %d returned %x, want %x", i, got, msg)
+		}
+		der, err := Encrypt(pub, msg)
+		if err != nil {
+			t.Fatalf("Encrypt at %d: %v", i, err)
+		}
+		got, err = Decrypt(priv, der)
+		if err != nil {
+			t.Fatalf("Decrypt at %d: %v", i, err)
+		}
+		if !bytes.Equal(got, msg) {
+			t.Fatalf("Decrypt at %d returned %x, want %x", i, got, msg)
+		}
+	}
+}

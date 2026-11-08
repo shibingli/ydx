@@ -146,28 +146,90 @@ func EncryptRaw(pub *PublicKey, data []byte) ([]byte, error) {
 		return nil, err
 	}
 	if len(data) == 0 {
-		// The upstream primitive rejects an empty message, while the raw layout is
-		// well defined for it: C1 || SM3(x2 || y2) with no C2. | 上游原语拒绝空消息，
-		// 但原始布局对空串仍有明确定义：C1 || SM3(x2 || y2)，不含 C2。
+		// The raw layout is well defined for the empty message: C1 || SM3(x2 || y2)
+		// with no C2. | 原始布局对空消息有明确定义：C1 || SM3(x2 || y2)，不含 C2。
 		return encryptRawEmpty(p)
 	}
-
-	// The upstream plain encoder emits the uncompressed point marker 0x04 in front
-	// of C1; the raw layout shared with JavaScript starts at X1, so drop that byte.
-	// | 上游明文编码器会在 C1 前输出未压缩点标识 0x04；与 JS 共享的原始布局从 X1 开始，
-	// 因此去掉该字节。
-	ct, err := esm2.Encrypt(rand.Reader, p, data, plainC1C3C2Encrypter)
-	if err != nil {
-		return nil, errs.Wrap(err, ErrEncrypt)
-	}
-	if len(ct) != 1+2*SM2CoordinateSize+SM3Size+len(data) || ct[0] != 0x04 {
-		return nil, errs.Detail(ErrEncrypt, "unexpected ciphertext layout (%[1]d bytes, marker 0x%[2]02x) | 密文布局异常（%[1]d 字节，标识 0x%[2]02x）", len(ct), firstByte(ct))
-	}
-	return ct[1:], nil
+	return encryptRawNonEmpty(p, data)
 }
 
-// plainC1C3C2Encrypter is the immutable option set for the raw C1C3C2 layout. | plainC1C3C2Encrypter 是原始 C1C3C2 布局的不可变选项。
-var plainC1C3C2Encrypter = esm2.NewPlainEncrypterOpts(esm2.MarshalUncompressed, esm2.C1C3C2)
+// maxSM2EncryptAttempts bounds retries when KDF returns an all-zero stream. |
+// maxSM2EncryptAttempts 限制密钥流全为零时的重试次数。
+const maxSM2EncryptAttempts = 100
+
+// encryptRawNonEmpty implements GB/T 32918.4 encryption directly on the curve and
+// SM3 primitives. It deliberately does not use gmsm's PKE helper: that helper
+// calls ScalarMult with aliased receiver and input points, which produces a shared
+// point inconsistent with C1 for a small fraction of random nonces. |
+// encryptRawNonEmpty 直接在曲线与 SM3 原语上实现 GB/T 32918.4 加密。它刻意不使用 gmsm 的
+// PKE 辅助函数：该函数以同一对象同时作为 ScalarMult 的接收者与输入，少量随机数下会得到与
+// C1 不一致的共享点。
+func encryptRawNonEmpty(p *ecdsa.PublicKey, data []byte) ([]byte, error) {
+	curve := p.Curve
+	k, err := randScalar(curve.Params().N)
+	if err != nil {
+		return nil, err
+	}
+	for attempt := 0; attempt < maxSM2EncryptAttempts; attempt++ {
+		x1, y1 := curve.ScalarBaseMult(pad32(k))
+		x2, y2 := curve.ScalarMult(p.X, p.Y, pad32(k))
+		z := append(pad32(x2), pad32(y2)...)
+		t := sm3KDF(z, len(data))
+		if allZero(t) {
+			// GB/T 32918.4 requires a fresh k when the key stream is all zero.
+			// | 密钥流全为零时按 GB/T 32918.4 重新选取 k。
+			k, err = randScalar(curve.Params().N)
+			if err != nil {
+				return nil, err
+			}
+			continue
+		}
+		out := make([]byte, 0, 2*SM2CoordinateSize+SM3Size+len(data))
+		out = append(out, pad32(x1)...)
+		out = append(out, pad32(y1)...)
+		out = append(out, sm3C3(pad32(x2), data, pad32(y2))...)
+		for i := range data {
+			out = append(out, data[i]^t[i])
+		}
+		return out, nil
+	}
+	return nil, errs.Detail(ErrEncrypt, "could not derive a non-zero key stream | 无法派生非零密钥流")
+}
+
+// sm3KDF derives n bytes of key stream per GB/T 32918.4 5.4.3. | sm3KDF 按 GB/T 32918.4
+// 5.4.3 派生 n 字节密钥流。
+func sm3KDF(z []byte, n int) []byte {
+	out := make([]byte, n)
+	if n == 0 {
+		return out
+	}
+	h := New()
+	var counter [4]byte
+	var digest [SM3Size]byte
+	offset := 0
+	for ctr := uint32(1); offset < n; ctr++ {
+		counter[0] = byte(ctr >> 24)
+		counter[1] = byte(ctr >> 16)
+		counter[2] = byte(ctr >> 8)
+		counter[3] = byte(ctr)
+		h.Reset()
+		_, _ = h.Write(z)
+		_, _ = h.Write(counter[:])
+		sum := h.Sum(digest[:0])
+		offset += copy(out[offset:], sum)
+	}
+	return out
+}
+
+// allZero reports whether every byte of b is zero without branching on its value. |
+// allZero 以无数据分支的方式报告 b 是否全为零。
+func allZero(b []byte) bool {
+	var acc byte
+	for _, v := range b {
+		acc |= v
+	}
+	return subtle.ConstantTimeByteEq(acc, 0) == 1
+}
 
 // encryptRawEmpty builds the empty-plaintext raw ciphertext: X1 || Y1 || C3, where C3 = SM3(x2 || y2). | encryptRawEmpty 构造空明文的原始密文：X1 || Y1 || C3，其中 C3 = SM3(x2 || y2)。
 func encryptRawEmpty(p *ecdsa.PublicKey) ([]byte, error) {
@@ -176,8 +238,8 @@ func encryptRawEmpty(p *ecdsa.PublicKey) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	x1, y1 := curve.ScalarBaseMult(k.Bytes())
-	x2, y2 := curve.ScalarMult(p.X, p.Y, k.Bytes())
+	x1, y1 := curve.ScalarBaseMult(pad32(k))
+	x2, y2 := curve.ScalarMult(p.X, p.Y, pad32(k))
 	out := make([]byte, 0, 2*SM2CoordinateSize+SM3Size)
 	out = append(out, pad32(x1)...)
 	out = append(out, pad32(y1)...)
@@ -242,15 +304,12 @@ func DecryptRaw(priv *PrivateKey, ciphertext []byte) ([]byte, error) {
 		return nil, errs.Detail(ErrInvalidCiphertext, "length %[1]d is below the minimum %[2]d | 长度 %[1]d 小于最小长度 %[2]d", len(ciphertext), minLen)
 	}
 
-	// C1 must be a point on the curve. Checking it here keeps off-curve ciphertext
-	// in ErrInvalidCiphertext, while the upstream primitive reports every content
-	// failure with one deliberately vague error. | C1 必须是曲线上的点。在此先行校验，
-	// 使「点不在曲线上」归入 ErrInvalidCiphertext，而上游原语对内容失败一律只报同一个模糊错误。
-	prefixed := make([]byte, 1+len(ciphertext))
-	prefixed[0] = 0x04
-	copy(prefixed[1:], ciphertext)
-	if _, err := esm2.ParseUncompressedPublicKey(prefixed[:1+2*SM2CoordinateSize]); err != nil {
-		return nil, errs.WrapDetail(err, ErrInvalidCiphertext, "C1 is not on the SM2 curve | C1 不在 SM2 曲线上")
+	// C1 must be a point on the curve. | C1 必须是曲线上的点。
+	x1 := new(big.Int).SetBytes(ciphertext[:SM2CoordinateSize])
+	y1 := new(big.Int).SetBytes(ciphertext[SM2CoordinateSize : 2*SM2CoordinateSize])
+	curve := k.Curve
+	if !curve.IsOnCurve(x1, y1) {
+		return nil, errs.Detail(ErrInvalidCiphertext, "C1 is not on the SM2 curve | C1 不在 SM2 曲线上")
 	}
 
 	c3 := ciphertext[2*SM2CoordinateSize : minLen]
@@ -259,22 +318,27 @@ func DecryptRaw(priv *PrivateKey, ciphertext []byte) ([]byte, error) {
 		return decryptRawEmpty(k, ciphertext[:2*SM2CoordinateSize], c3)
 	}
 
-	plaintext, err := k.Decrypt(rand.Reader, prefixed, plainC1C3C2Decrypter)
-	if err != nil {
-		return nil, errs.WrapDetail(err, ErrDecrypt, "C3 verification failed | C3 校验失败")
+	x2, y2 := curve.ScalarMult(x1, y1, pad32(k.D))
+	t := sm3KDF(append(pad32(x2), pad32(y2)...), len(c2))
+	if allZero(t) {
+		return nil, errs.Detail(ErrDecrypt, "key stream is all zero | 密钥流全为零")
 	}
-	return plaintext, nil
+	plain := make([]byte, len(c2))
+	for i := range c2 {
+		plain[i] = c2[i] ^ t[i]
+	}
+	if subtle.ConstantTimeCompare(sm3C3(pad32(x2), plain, pad32(y2)), c3) != 1 {
+		return nil, errs.Detail(ErrDecrypt, "C3 verification failed | C3 校验失败")
+	}
+	return plain, nil
 }
-
-// plainC1C3C2Decrypter is the immutable option set for the raw C1C3C2 layout. | plainC1C3C2Decrypter 是原始 C1C3C2 布局的不可变选项。
-var plainC1C3C2Decrypter = esm2.NewPlainDecrypterOpts(esm2.C1C3C2)
 
 // decryptRawEmpty verifies and returns the empty plaintext carried by a raw ciphertext whose C2 is absent. | decryptRawEmpty 校验并返回 C2 缺失的原始密文所承载的空明文。
 func decryptRawEmpty(k *esm2.PrivateKey, c1, c3 []byte) ([]byte, error) {
 	curve := k.Curve
 	x1 := new(big.Int).SetBytes(c1[:SM2CoordinateSize])
 	y1 := new(big.Int).SetBytes(c1[SM2CoordinateSize:])
-	x2, y2 := curve.ScalarMult(x1, y1, k.D.Bytes())
+	x2, y2 := curve.ScalarMult(x1, y1, pad32(k.D))
 	if subtle.ConstantTimeCompare(sm3C3(pad32(x2), nil, pad32(y2)), c3) != 1 {
 		return nil, errs.Detail(ErrDecrypt, "C3 verification failed | C3 校验失败")
 	}
