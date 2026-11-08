@@ -35,9 +35,22 @@ func TestWALDropsCoveredMarkerRecords(t *testing.T) {
 			t.Fatalf("compact snapshot %d: %v", idx, err)
 		}
 	}
-	files, err := filepath.Glob(filepath.Join(dir, "wal", "*.wal"))
-	if err != nil {
-		t.Fatal(err)
+	// Truncate retires sealed segments by queuing them to the cleaner goroutine,
+	// which unlinks them asynchronously. Wait for the cleaner to drain before
+	// counting files so a slow runner cannot observe already-retired segments. |
+	// Truncate 把封段交给 cleaner 协程异步删除；计数前等待其排空，避免慢速运行器
+	// 观察到已退休但尚未 unlink 的分段。
+	deadline := time.Now().Add(5 * time.Second)
+	var files []string
+	for {
+		files, err = filepath.Glob(filepath.Join(dir, "wal", "*.wal"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(files) <= 2 || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 	if len(files) > 2 {
 		t.Fatalf("wal segments = %d, want at most 2", len(files))
