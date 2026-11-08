@@ -15,6 +15,8 @@ github.com/shibingli/ydx/errs v0.1.4 h1:/hexB5eDFA/wWhRof5yxWEVeVlHn1P7IZmys9U4h
 github.com/shibingli/ydx/errs v0.1.4/go.mod h1:N6GNQq5eustT11WTdXOip9bXcIwrFd4c9UWG0gIDuwU=
 github.com/shibingli/ydx/pool v0.1.1 h1:LeKNnEbtGbh5ZjgR1aY0NHyI6nTmp2vaEjuJT/nGxaQ=
 github.com/shibingli/ydx/pool v0.1.1/go.mod h1:AHjsazUTggEYIC4Z0DV3QO0Cw9MfZjWJqEkvlpaCa28=
+github.com/shibingli/ydx/pool v0.1.2 h1:QAoDg5zgOU0NZH5GU9MtzwwyFmfsuLU0hFRM9591ADY=
+github.com/shibingli/ydx/pool v0.1.2/go.mod h1:AHjsazUTggEYIC4Z0DV3QO0Cw9MfZjWJqEkvlpaCa28=
 github.com/sourcegraph/conc v0.3.0 h1:OQTbbt6P72L20UqAkXXuLOj79LfEanQ+YQFNpLA9ySo=
 github.com/sourcegraph/conc v0.3.0/go.mod h1:Sdozi7LEKbFPqYX2/J+iBAM6HpqSLTASQIKqDmF7Mt0=
 github.com/stretchr/objx v0.1.0/go.mod h1:HFkY916IF+rwdDfMAkV7OtwuqBVzrE8GR6GFx+wExME=

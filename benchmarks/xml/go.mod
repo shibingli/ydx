@@ -7,7 +7,7 @@ require (
 	github.com/antchfx/xpath v1.3.3
 	github.com/beevik/etree v1.5.1
 	github.com/clbanning/mxj/v2 v2.7.0
-	github.com/shibingli/ydx/xml v0.1.1
+	github.com/shibingli/ydx/xml v0.1.2
 )
 
 require (

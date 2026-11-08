@@ -341,7 +341,7 @@ YD_BENCH_ONLY=cloudwego/base64x GOWORK=off go test -run '^$' \
   基准模块把 loader 固定为 v0.5.2，这是包含 cloudwego 的必要条件。
 - cloudwego 的 JIT 在 amd64 上按 CPU 特性选择内核；已在 Zen 5（AVX-512）与
   i9-10980HK（AVX2）两台主机上分别测量，两台主机的数字不可跨机比较。
-- `benchmarks/base64/go.mod` 固定 `github.com/shibingli/ydx/base64 v0.1.12`。
+- `benchmarks/base64/go.mod` 固定 `github.com/shibingli/ydx/base64 v0.1.14`。
 - cloudwego/base64x 没有 append API，因此 `AppendEncodeDecode` 仍只覆盖 ydx。
 - 字符串/并行场景在同进程运行全部实现，可能受运行顺序影响；framework 场景使用
   `YD_BENCH_ONLY` 独立进程，跨实现比较优先使用该表。

@@ -360,7 +360,8 @@ GOWORK=off go vet ./...
 GOWORK=off CGO_ENABLED=1 CC=clang go test ./... -race
 ```
 
-`auth v0.1.0` 依赖的 `ydx/json v0.1.17` 已随本仓标签发布，可直接使用默认 `GOPROXY` 构建；
-开发期联调尚未发布的兄弟模块时，才需要在仓库外临时 `go.work` 或文件代理。
+`auth v0.1.4` 依赖的 `ydx/base64 v0.1.14`、`ydx/json v0.1.18` 与 `ydx/xml v0.1.2` 已随本仓
+标签发布，可直接使用默认 `GOPROXY` 构建；开发期联调尚未发布的兄弟模块时，才需要在仓库外临时
+`go.work` 或文件代理。
 
 外部协议一致性测试使用 RFC/W3C/OpenID 官方测试向量与本地 mock 服务器；不访问真实第三方网络。

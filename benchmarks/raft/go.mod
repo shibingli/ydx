@@ -50,15 +50,15 @@ require (
 	github.com/pkg/errors v0.9.1 // indirect
 	github.com/rogpeppe/go-internal v1.8.1 // indirect
 	github.com/sean-/seed v0.0.0-20170313163322-e2103e2c3529 // indirect
-	github.com/shibingli/ydx/base64 v0.1.13 // indirect
+	github.com/shibingli/ydx/base64 v0.1.14 // indirect
 	github.com/shibingli/ydx/buffpool v0.1.5 // indirect
 	github.com/shibingli/ydx/errs v0.1.4 // indirect
 	github.com/shibingli/ydx/guomi v0.1.2 // indirect
-	github.com/shibingli/ydx/json v0.1.16 // indirect
+	github.com/shibingli/ydx/json v0.1.18 // indirect
 	github.com/shibingli/ydx/log v0.1.11 // indirect
 	github.com/shibingli/ydx/rdma v0.1.5 // indirect
 	github.com/shibingli/ydx/sysinfo v0.1.4 // indirect
-	github.com/shibingli/ydx/wal v0.3.0 // indirect
+	github.com/shibingli/ydx/wal v0.3.2 // indirect
 	github.com/valyala/fastrand v1.1.0 // indirect
 	github.com/valyala/histogram v1.2.0 // indirect
 	golang.org/x/crypto v0.58.0 // indirect

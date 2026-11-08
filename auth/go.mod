@@ -4,13 +4,13 @@ go 1.27.3
 
 require (
 	github.com/golang-jwt/jwt/v5 v5.3.1
-	github.com/shibingli/ydx/base64 v0.1.13
+	github.com/shibingli/ydx/base64 v0.1.14
 	github.com/shibingli/ydx/errs v0.1.4
 	github.com/shibingli/ydx/guomi v0.1.2
-	github.com/shibingli/ydx/json v0.1.17
+	github.com/shibingli/ydx/json v0.1.18
 	github.com/shibingli/ydx/log v0.1.12
 	github.com/shibingli/ydx/router v0.1.14
-	github.com/shibingli/ydx/xml v0.1.1
+	github.com/shibingli/ydx/xml v0.1.2
 	golang.org/x/crypto v0.58.0
 	golang.org/x/sys v0.49.0
 )

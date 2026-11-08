@@ -15,9 +15,9 @@ require (
 	github.com/gobwas/pool v0.2.1 // indirect
 	github.com/klauspost/compress v1.20.3 // indirect
 	github.com/shibingli/ydx/afs v0.1.6 // indirect
-	github.com/shibingli/ydx/base64 v0.1.13 // indirect
+	github.com/shibingli/ydx/base64 v0.1.14 // indirect
 	github.com/shibingli/ydx/errs v0.1.4 // indirect
-	github.com/shibingli/ydx/json v0.1.16 // indirect
+	github.com/shibingli/ydx/json v0.1.18 // indirect
 	github.com/shibingli/ydx/log v0.1.11 // indirect
 	github.com/shibingli/ydx/protocol v0.1.5 // indirect
 	github.com/shibingli/ydx/regexpx v0.1.13 // indirect

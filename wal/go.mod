@@ -11,7 +11,7 @@ require (
 
 require (
 	github.com/emmansun/gmsm v0.45.1 // indirect
-	github.com/shibingli/ydx/base64 v0.1.13 // indirect
+	github.com/shibingli/ydx/base64 v0.1.14 // indirect
 	github.com/shibingli/ydx/sysinfo v0.1.4 // indirect
 	golang.org/x/crypto v0.58.0 // indirect
 )

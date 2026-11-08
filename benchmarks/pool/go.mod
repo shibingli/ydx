@@ -6,7 +6,7 @@ require (
 	github.com/alitto/pond/v2 v2.7.3
 	github.com/gammazero/workerpool v1.3.0
 	github.com/panjf2000/ants/v2 v2.12.1
-	github.com/shibingli/ydx/pool v0.1.1
+	github.com/shibingli/ydx/pool v0.1.2
 	github.com/sourcegraph/conc v0.3.0
 )
 

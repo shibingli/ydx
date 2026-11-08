@@ -4,13 +4,13 @@ go 1.27.3
 
 require (
 	github.com/rosedblabs/wal v1.3.8
-	github.com/shibingli/ydx/wal v0.2.0
+	github.com/shibingli/ydx/wal v0.3.2
 	github.com/tidwall/wal v1.2.1
 )
 
 require (
 	github.com/emmansun/gmsm v0.45.1 // indirect
-	github.com/shibingli/ydx/base64 v0.1.13 // indirect
+	github.com/shibingli/ydx/base64 v0.1.14 // indirect
 	github.com/shibingli/ydx/buffpool v0.1.5 // indirect
 	github.com/shibingli/ydx/errs v0.1.4 // indirect
 	github.com/shibingli/ydx/guomi v0.1.2 // indirect

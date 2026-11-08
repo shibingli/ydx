@@ -43,14 +43,14 @@ require (
 	github.com/quic-go/qpack v0.6.0 // indirect
 	github.com/quic-go/quic-go v0.64.1 // indirect
 	github.com/shibingli/ydx/afs v0.1.6 // indirect
-	github.com/shibingli/ydx/base64 v0.1.13 // indirect
+	github.com/shibingli/ydx/base64 v0.1.14 // indirect
 	github.com/shibingli/ydx/errs v0.1.4 // indirect
-	github.com/shibingli/ydx/json v0.1.16 // indirect
+	github.com/shibingli/ydx/json v0.1.18 // indirect
 	github.com/shibingli/ydx/log v0.1.11 // indirect
 	github.com/shibingli/ydx/protocol v0.1.5 // indirect
 	github.com/shibingli/ydx/regexpx v0.1.13 // indirect
 	github.com/shibingli/ydx/sysinfo v0.1.4 // indirect
-	github.com/shibingli/ydx/xml v0.1.1 // indirect
+	github.com/shibingli/ydx/xml v0.1.2 // indirect
 	github.com/spf13/afero v1.15.0 // indirect
 	github.com/tinylib/msgp v1.6.5 // indirect
 	github.com/twitchyliquid64/golang-asm v0.15.1 // indirect

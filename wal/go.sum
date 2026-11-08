@@ -4,6 +4,8 @@ github.com/shibingli/ydx/base64 v0.1.12 h1:xUjtX6yZ/UMDb5DBwvE1a70FVZnX9gQVBgdlE
 github.com/shibingli/ydx/base64 v0.1.12/go.mod h1:PaROcW7ashuUWtpu30D3TfA28lDCBop8D39ZrHuK/eE=
 github.com/shibingli/ydx/base64 v0.1.13 h1:S6yBxXASJsPoABqHrz9fkgj7deJYdVYws4Fen83dcEU=
 github.com/shibingli/ydx/base64 v0.1.13/go.mod h1:PaROcW7ashuUWtpu30D3TfA28lDCBop8D39ZrHuK/eE=
+github.com/shibingli/ydx/base64 v0.1.14 h1:uDqr0ZW5kkmuHDjV74UrCtFm5NNC/7ZJLtzGCO5r0IM=
+github.com/shibingli/ydx/base64 v0.1.14/go.mod h1:PaROcW7ashuUWtpu30D3TfA28lDCBop8D39ZrHuK/eE=
 github.com/shibingli/ydx/buffpool v0.1.5 h1:aKmsDwLkYoZKRPi1ZkuyvPFrsfdFaK7I1cd5nvGXBLs=
 github.com/shibingli/ydx/buffpool v0.1.5/go.mod h1:1PYC8bCUvgsvXzeFHDVo2wqy62bNYps+c1yZGCK4o/Y=
 github.com/shibingli/ydx/errs v0.1.4 h1:/hexB5eDFA/wWhRof5yxWEVeVlHn1P7IZmys9U4h1iA=

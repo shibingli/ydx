@@ -12,7 +12,7 @@ XML 库做兼容性与性能对比：
 
 ## 发布门禁与运行方式
 
-本模块依赖 `github.com/shibingli/ydx/xml v0.1.1`，标签已发布，`go.mod`/`go.sum` 已锁定，
+本模块依赖 `github.com/shibingli/ydx/xml v0.1.2`，标签已发布，`go.mod`/`go.sum` 已锁定，
 `GOWORK=off` 可直接运行。需要联调尚未发布的上游改动时，请在**仓库之外**创建临时
 `go.work`，同时纳入 `xml` 与 `benchmarks/xml` 后运行（不得提交 `replace` 或 `go.work`）：
 

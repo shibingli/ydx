@@ -6,6 +6,8 @@ github.com/shibingli/ydx/afs v0.1.6 h1:SCOdkG0X5xCHkaNUW3XjVyOTJXqSi5QOx+Jqbcqj3
 github.com/shibingli/ydx/afs v0.1.6/go.mod h1:SAC2x4VE/zrJMUDfJm2371Zgx4VLi3lch3DPWk/ZVL0=
 github.com/shibingli/ydx/base64 v0.1.13 h1:S6yBxXASJsPoABqHrz9fkgj7deJYdVYws4Fen83dcEU=
 github.com/shibingli/ydx/base64 v0.1.13/go.mod h1:PaROcW7ashuUWtpu30D3TfA28lDCBop8D39ZrHuK/eE=
+github.com/shibingli/ydx/base64 v0.1.14 h1:uDqr0ZW5kkmuHDjV74UrCtFm5NNC/7ZJLtzGCO5r0IM=
+github.com/shibingli/ydx/base64 v0.1.14/go.mod h1:PaROcW7ashuUWtpu30D3TfA28lDCBop8D39ZrHuK/eE=
 github.com/shibingli/ydx/buffpool v0.1.5 h1:aKmsDwLkYoZKRPi1ZkuyvPFrsfdFaK7I1cd5nvGXBLs=
 github.com/shibingli/ydx/buffpool v0.1.5/go.mod h1:1PYC8bCUvgsvXzeFHDVo2wqy62bNYps+c1yZGCK4o/Y=
 github.com/shibingli/ydx/errs v0.1.4 h1:/hexB5eDFA/wWhRof5yxWEVeVlHn1P7IZmys9U4h1iA=
@@ -14,6 +16,8 @@ github.com/shibingli/ydx/json v0.1.15 h1:nz0SlV2HS46uFhn6YtbYs0yT8wiqir9uqPXlHp5
 github.com/shibingli/ydx/json v0.1.15/go.mod h1:eI3oXq++MIcRQOhyJBz/IEEhl9FZoKN80EKM+Jzyj6Q=
 github.com/shibingli/ydx/json v0.1.16 h1:R4pF2vNcHRa32KdJzAv8I0xQeU7NM/0eVdE7Uaxjmz4=
 github.com/shibingli/ydx/json v0.1.16/go.mod h1:eI3oXq++MIcRQOhyJBz/IEEhl9FZoKN80EKM+Jzyj6Q=
+github.com/shibingli/ydx/json v0.1.18 h1:QzYpUgLf8hPgfEZ4IsnIpJqXoY0sXHSV6HuB7pHB29w=
+github.com/shibingli/ydx/json v0.1.18/go.mod h1:eI3oXq++MIcRQOhyJBz/IEEhl9FZoKN80EKM+Jzyj6Q=
 github.com/shibingli/ydx/log v0.1.11 h1:6b8LbcyuIuLAJNLj3GdfKA8hDH8I/PM5+T0/g9MIU60=
 github.com/shibingli/ydx/log v0.1.11/go.mod h1:5/gnsfDGe6vjDyOKXBUC+w5pwsrye0KcM+e9P2c76ac=
 github.com/shibingli/ydx/middleware/reqlog v0.1.12 h1:P8yruT+dGgN0uG9fohxLv0CwU3BLTqgf9e97nOyIJGk=
