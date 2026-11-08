@@ -314,7 +314,7 @@ func (r *pathRunner) walk(children []*Node, ctxBits uint64, counters []int32, de
 		if e.Kind != ElementNode {
 			continue
 		}
-		matched := uint64(0)
+		terminal := false
 		childCtx := uint64(0)
 		for b := ctxBits; b != 0; b &= b - 1 {
 			i := bits.TrailingZeros64(b)
@@ -338,10 +338,16 @@ func (r *pathRunner) walk(children []*Node, ctxBits uint64, counters []int32, de
 					}
 				}
 			}
-			matched |= uint64(1) << uint(i+1)
+			// The terminal step has no successor bit; keeping it separate lets all 64
+			// step bits be used by the uint64 candidate mask. | 终结步骤没有后继位；单独记录
+			// 终结标记，使 uint64 候选位图可以完整使用 64 个步骤位。
+			if i+1 < len(r.p.steps) {
+				childCtx |= uint64(1) << uint(i+1)
+			} else {
+				terminal = true
+			}
 		}
-		childCtx |= matched & ((uint64(1) << uint(len(r.p.steps))) - 1)
-		if matched&(uint64(1)<<uint(len(r.p.steps))) != 0 {
+		if terminal {
 			r.emit(e)
 			if r.stop {
 				return true

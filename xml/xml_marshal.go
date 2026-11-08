@@ -212,9 +212,12 @@ func (p *printer) marshalValue(val reflect.Value, finfo *fieldInfo, startTemplat
 }
 
 func (p *printer) marshalAttr(start *StartElement, name Name, val reflect.Value) error {
-	// As in marshalValue, only named package types can implement the attribute interfaces. |
-	// 与 marshalValue 相同，只有包内具名类型可以实现属性接口。
-	if val.Type().PkgPath() != "" {
+	// As in marshalValue, only named package types can implement the attribute interfaces.
+	// Pointer and interface values are probed before dereferencing, mirroring encoding/xml, so
+	// fields such as *time.Time or any holding a TextMarshaler keep working. | 与 marshalValue
+	// 相同，只有包内具名类型可以实现属性接口；指针与接口值在解引用前探测，与 encoding/xml
+	// 一致，因此 *time.Time 或保存 TextMarshaler 的 any 字段仍能正常编组。
+	if typ := val.Type(); typ.PkgPath() != "" || typ.Kind() == reflect.Pointer || typ.Kind() == reflect.Interface {
 		if val.CanInterface() {
 			if marshaler, ok := reflect.TypeAssert[MarshalerAttr](val); ok {
 				attr, err := marshaler.MarshalXMLAttr(name)

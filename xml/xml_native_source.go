@@ -25,6 +25,7 @@ type source struct {
 	capture []byte
 
 	limits Limits
+	dec    *Decoder
 	pos    int
 	end    int
 
@@ -53,6 +54,7 @@ func newSource(limits Limits) *source {
 
 func newByteSource(d *Decoder, data []byte) (*source, error) {
 	s := newSource(d.limits())
+	s.dec = d
 	s.data = data
 	s.end = len(data)
 	s.eof = true
@@ -64,6 +66,7 @@ func newByteSource(d *Decoder, data []byte) (*source, error) {
 
 func newReaderSource(d *Decoder, r io.Reader) (*source, error) {
 	s := newSource(d.limits())
+	s.dec = d
 	s.data = make([]byte, initialBufferSize)
 	s.r = r
 	s.owned = true
@@ -74,6 +77,18 @@ func newReaderSource(d *Decoder, r io.Reader) (*source, error) {
 		return nil, err
 	}
 	return s, nil
+}
+
+// syncLimits refreshes limits that were set on Decoder after source construction. |
+// syncLimits 刷新在 source 构造后设置到 Decoder 上的上限。
+func (s *source) syncLimits() {
+	if s.dec == nil {
+		return
+	}
+	limits := s.dec.limits()
+	s.limits = limits
+	s.captureLimit = limits.MaxTokenSize
+	s.maxBuffer = limits.MaxTokenSize + 64
 }
 
 // detectBOM handles UTF-16 BOMs by transcoding the stream to UTF-8. A UTF-8 BOM is deliberately
@@ -139,6 +154,9 @@ func (s *source) ensure(n int) error {
 			}
 			if newLen < n {
 				newLen = n
+			}
+			if s.dec != nil {
+				s.maxBuffer = s.dec.limits().MaxTokenSize + 64
 			}
 			if newLen > s.maxBuffer {
 				return errs.Detail(ErrLimit, "token exceeds MaxTokenSize | token 超过 MaxTokenSize")
@@ -461,9 +479,12 @@ func (n *nativeSource) handleXMLDecl(pi ProcInst) error {
 	return errs.Detail(ErrUnsupported, "encoding %q requires CharsetReader | 编码 %q 需要 CharsetReader", enc, enc)
 }
 
-func (n *nativeSource) offset() int64             { return n.s.offset() }
-func (n *nativeSource) pos() (line, column int)   { return n.s.posLine() }
-func (n *nativeSource) beginCapture() captureMark { return n.s.beginCapture() }
+func (n *nativeSource) offset() int64           { return n.s.offset() }
+func (n *nativeSource) pos() (line, column int) { return n.s.posLine() }
+func (n *nativeSource) beginCapture() captureMark {
+	n.s.syncLimits()
+	return n.s.beginCapture()
+}
 func (n *nativeSource) endCapture(m captureMark, e int64) []byte {
 	return n.s.endCapture(m, e)
 }

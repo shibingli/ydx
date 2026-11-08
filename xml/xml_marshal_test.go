@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 )
 
 type mItem struct {
@@ -116,6 +117,49 @@ func TestMarshalMatchesStdlib(t *testing.T) {
 	checkMarshal(t, []byte("bytes"))
 	checkMarshal(t, []string{"x", "y"})
 	checkMarshal[any](t, nil)
+}
+
+type marshalTextAttr struct{}
+
+func (marshalTextAttr) MarshalText() ([]byte, error) { return []byte("tm-value"), nil }
+
+type marshalIfaceAttr struct{}
+
+func (marshalIfaceAttr) MarshalXMLAttr(name Name) (Attr, error) {
+	return Attr{Name: name, Value: "ma-value"}, nil
+}
+
+// TestMarshalAttrInterfaceProbing verifies attribute encoding probes pointers, interfaces,
+// encoding.TextMarshaler and MarshalerAttr exactly like encoding/xml. |
+// TestMarshalAttrInterfaceProbing 验证属性编码对指针、接口、encoding.TextMarshaler 与
+// MarshalerAttr 的探测与 encoding/xml 完全一致。
+func TestMarshalAttrInterfaceProbing(t *testing.T) {
+	tm := marshalTextAttr{}
+	now := time.Date(2026, 11, 8, 1, 2, 3, 0, time.UTC)
+	type attrData struct {
+		P *time.Time       `xml:"p,attr"`
+		A any              `xml:"a,attr"`
+		B any              `xml:"b,attr"`
+		C []any            `xml:"c,attr"`
+		E *marshalTextAttr `xml:"e,attr"`
+		F any              `xml:"f,attr"`
+	}
+	v := attrData{P: &now, A: tm, B: &tm, C: []any{tm, &tm}, E: &tm, F: &marshalTextAttr{}}
+	want, wantErr := stdxml.Marshal(v)
+	got, gotErr := Marshal(v)
+	if (wantErr != nil) != (gotErr != nil) {
+		t.Fatalf("attribute interface probing differs: std=%v ours=%v", wantErr, gotErr)
+	}
+	if string(want) != string(got) {
+		t.Errorf("attribute interface output differs:\nstd  %s\nours %s", want, got)
+	}
+	type withMA struct {
+		D marshalIfaceAttr `xml:"d,attr"`
+	}
+	out, err := Marshal(withMA{})
+	if err != nil || !bytes.Contains(out, []byte(`d="ma-value"`)) {
+		t.Errorf("MarshalerAttr probing failed: %s %v", out, err)
+	}
 }
 
 func TestMarshalErrors(t *testing.T) {

@@ -7,6 +7,9 @@ import (
 	"fmt"
 	"io"
 	"math/rand"
+	"os"
+	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -137,6 +140,64 @@ func TestValidReaderAndParseUTF16(t *testing.T) {
 	}
 	if !Valid(buf) {
 		t.Fatal("Valid rejected UTF-16 document")
+	}
+}
+
+// TestDOMCharsetReaderDisablesRawViews verifies raw byte views are withheld after a CharsetReader
+// conversion, because doc.src is no longer UTF-8. | TestDOMCharsetReaderDisablesRawViews 验证
+// CharsetReader 转换后不再提供原始字节视图，因为 doc.src 已不是 UTF-8。
+func TestDOMCharsetReaderDisablesRawViews(t *testing.T) {
+	doc := append([]byte(`<?xml version="1.0" encoding="x-latin1"?><a>x`), 0xE9)
+	doc = append(doc, []byte(`<b>y</b></a>`)...)
+	cr := func(charset string, input io.Reader) (io.Reader, error) {
+		b, err := io.ReadAll(input)
+		if err != nil {
+			return nil, err
+		}
+		b = bytes.ReplaceAll(b, []byte{0xE9}, []byte{0xC3, 0xA9})
+		return bytes.NewReader(b), nil
+	}
+	d, err := ParseWithOptions(doc, ParseOptions{CharsetReader: cr})
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if got := d.Root.Text(); got != "xé" {
+		t.Fatalf("root text = %q, want %q", got, "xé")
+	}
+	if got := d.Root.InnerXML(); got != nil {
+		t.Fatalf("inner raw view = %q, want nil after charset conversion", got)
+	}
+	if got := d.Root.OuterXML(); got != nil {
+		t.Fatalf("outer raw view = %q, want nil after charset conversion", got)
+	}
+	if b := d.Root.FirstChild("b"); b == nil || b.Text() != "y" {
+		t.Fatalf("child b = %#v", b)
+	}
+}
+
+// TestDOMUTF16RawViews verifies UTF-16 input exposes transcoded UTF-8 raw views. |
+// TestDOMUTF16RawViews 验证 UTF-16 输入提供转码后的 UTF-8 原始视图。
+func TestDOMUTF16RawViews(t *testing.T) {
+	if Backend() != "yd-native" {
+		t.Skip("UTF-16 auto-detection is a native-backend extension | UTF-16 自动检测是原生后端扩展")
+	}
+	utf8Doc := `<a>x<b>y</b></a>`
+	buf := []byte{0xFF, 0xFE}
+	for _, r := range utf8Doc {
+		buf = append(buf, byte(r), byte(r>>8))
+	}
+	d, err := Parse(buf)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if got := string(d.Root.InnerXML()); got != "x<b>y</b>" {
+		t.Fatalf("inner = %q", got)
+	}
+	if got := string(d.Root.OuterXML()); got != utf8Doc {
+		t.Fatalf("outer = %q", got)
+	}
+	if got := d.Root.Text(); got != "x" {
+		t.Fatalf("text = %q", got)
 	}
 }
 
@@ -346,6 +407,94 @@ func TestHeaderAndEscapeAlias(t *testing.T) {
 	Escape(&b, []byte("<&>"))
 	if b.String() != "&lt;&amp;&gt;" {
 		t.Fatalf("Escape = %q", b.String())
+	}
+}
+
+// TestInnerXMLCaptureLimit verifies MaxTokenSize also bounds ,innerxml capture on both byte and
+// reader sources and both backends, even when every individual token stays below the limit. |
+// TestInnerXMLCaptureLimit 验证 MaxTokenSize 同时限制 ,innerxml 捕获，覆盖字节与读取器源以及两种
+// 后端，即使每个单独 token 都低于上限。
+func TestInnerXMLCaptureLimit(t *testing.T) {
+	const doc = `<a><b/><b/><b/></a>`
+	type root struct {
+		Inner string `xml:",innerxml"`
+	}
+	decode := func(t *testing.T, d *Decoder, limit int) (root, error) {
+		t.Helper()
+		d.Limits = Limits{MaxTokenSize: limit}
+		var v root
+		err := d.Decode(&v)
+		return v, err
+	}
+	t.Run("bytes-limit", func(t *testing.T) {
+		if _, err := decode(t, NewDecoderBytes([]byte(doc)), 8); !errors.Is(err, ErrLimit) {
+			t.Fatalf("Decode err = %v, want ErrLimit", err)
+		}
+	})
+	t.Run("reader-limit", func(t *testing.T) {
+		d := NewDecoder(&chunkReader{data: []byte(doc), n: 3})
+		if _, err := decode(t, d, 8); !errors.Is(err, ErrLimit) {
+			t.Fatalf("Decode err = %v, want ErrLimit", err)
+		}
+	})
+	t.Run("bytes-ok", func(t *testing.T) {
+		v, err := decode(t, NewDecoderBytes([]byte(doc)), 16)
+		if err != nil {
+			t.Fatalf("Decode: %v", err)
+		}
+		if v.Inner != `<b/><b/><b/>` {
+			t.Fatalf("Inner = %q", v.Inner)
+		}
+	})
+	t.Run("reader-ok", func(t *testing.T) {
+		v, err := decode(t, NewDecoder(&chunkReader{data: []byte(doc), n: 2}), 16)
+		if err != nil {
+			t.Fatalf("Decode: %v", err)
+		}
+		if v.Inner != `<b/><b/><b/>` {
+			t.Fatalf("Inner = %q", v.Inner)
+		}
+	})
+}
+
+// TestFileEntryPoints covers ParseFile, EachFile and Document.AppendValue, which the in-memory
+// tests do not exercise directly. | TestFileEntryPoints 覆盖 ParseFile、EachFile 与
+// Document.AppendValue，这些入口在内存测试中没有直接覆盖。
+func TestFileEntryPoints(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "doc.xml")
+	const doc = `<r><x>1</x><x>2</x></r>`
+	if err := os.WriteFile(path, []byte(doc), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	d, err := ParseFile(path)
+	if err != nil {
+		t.Fatalf("ParseFile: %v", err)
+	}
+	if got := d.Values(mustPath(t, "//x")); !reflect.DeepEqual(got, []string{"1", "2"}) {
+		t.Fatalf("ParseFile values = %#v", got)
+	}
+	var streamed []string
+	if err := EachFile(path, mustPath(t, "//x"), func(m *Match) error {
+		streamed = append(streamed, string(m.Text))
+		return nil
+	}); err != nil {
+		t.Fatalf("EachFile: %v", err)
+	}
+	if !reflect.DeepEqual(streamed, []string{"1", "2"}) {
+		t.Fatalf("EachFile values = %#v", streamed)
+	}
+	if out, ok := d.AppendValue([]byte("v="), mustPath(t, "//x[2]")); !ok || string(out) != "v=2" {
+		t.Fatalf("AppendValue = %q, %v", out, ok)
+	}
+	if _, ok := d.AppendValue(nil, mustPath(t, "//missing")); ok {
+		t.Fatal("AppendValue matched a missing path")
+	}
+	missing := filepath.Join(t.TempDir(), "missing.xml")
+	if _, err := ParseFile(missing); !errors.Is(err, ErrSyntax) {
+		t.Fatalf("ParseFile missing file err = %v, want ErrSyntax", err)
+	}
+	if err := EachFile(missing, mustPath(t, "//x"), func(*Match) error { return nil }); !errors.Is(err, ErrSyntax) {
+		t.Fatalf("EachFile missing file err = %v, want ErrSyntax", err)
 	}
 }
 

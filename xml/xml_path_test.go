@@ -1,6 +1,7 @@
 package xml
 
 import (
+	"errors"
 	"reflect"
 	"strings"
 	"sync"
@@ -174,6 +175,29 @@ func TestPathNamespaceClark(t *testing.T) {
 	}
 }
 
+func TestPathMaximumSteps(t *testing.T) {
+	expr := strings.Repeat("a/", 63) + "a"
+	p, err := Compile(expr)
+	if err != nil {
+		t.Fatalf("Compile(64 steps): %v", err)
+	}
+	doc := strings.Repeat("<a>", 64) + strings.Repeat("</a>", 64)
+	s := NewSelectorBytes([]byte(doc), p)
+	n := 0
+	for s.Next() {
+		n++
+	}
+	if err := s.Err(); err != nil {
+		t.Fatalf("selector: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("64-step path matched %d times, want 1", n)
+	}
+	if _, err := Compile(expr + "/a"); !errors.Is(err, ErrPathSyntax) {
+		t.Fatalf("65-step Compile err = %v, want ErrPathSyntax", err)
+	}
+}
+
 func TestPathCompileErrors(t *testing.T) {
 	bad := []string{"", "   ", "/", "//", "a.", "a..b", "a[", "a[]", "a[x]", "a[@]", "a[@x=", "//text()", "@id", "a[1", "a[0][1]", "a b", "a/text()x"}
 	for _, expr := range bad {
@@ -240,11 +264,20 @@ func TestParseOptions(t *testing.T) {
 
 func TestParseLimits(t *testing.T) {
 	doc := `<a><b><c/></b></a>`
-	if _, err := ParseWithOptions([]byte(doc), ParseOptions{Limits: Limits{MaxDepth: 2}}); err == nil {
-		t.Fatal("expected depth limit error")
+	if _, err := ParseWithOptions([]byte(doc), ParseOptions{Limits: Limits{MaxDepth: 2}}); !errors.Is(err, ErrLimit) {
+		t.Fatalf("depth limit err = %v, want ErrLimit", err)
 	}
-	if _, err := ParseWithOptions([]byte(doc), ParseOptions{Limits: Limits{MaxNodes: 2}}); err == nil {
-		t.Fatal("expected node limit error")
+	if _, err := ParseWithOptions([]byte(doc), ParseOptions{Limits: Limits{MaxNodes: 2}}); !errors.Is(err, ErrLimit) {
+		t.Fatalf("node limit err = %v, want ErrLimit", err)
+	}
+	d := NewDecoderBytes([]byte(doc))
+	d.Limits = Limits{MaxDepth: 1}
+	var err error
+	for err == nil {
+		_, err = d.Token()
+	}
+	if !errors.Is(err, ErrLimit) {
+		t.Fatalf("stream depth err = %v, want ErrLimit", err)
 	}
 }
 

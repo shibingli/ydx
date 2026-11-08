@@ -2,6 +2,7 @@ package xml
 
 import (
 	"bytes"
+	"errors"
 	"reflect"
 	"strings"
 	"testing"
@@ -115,6 +116,57 @@ func TestSelectorLimits(t *testing.T) {
 	}
 	if s.Err() == nil {
 		t.Fatal("expected text size limit error")
+	}
+	s = NewSelectorBytesWithOptions([]byte(`<a><b/></a>`), mustPath(t, "//b"), SelectorOptions{Limits: Limits{MaxDepth: 1}})
+	for s.Next() {
+	}
+	if !errors.Is(s.Err(), ErrLimit) {
+		t.Fatalf("depth limit err = %v, want ErrLimit", s.Err())
+	}
+}
+
+// TestSelectorLimitsNestedMatches verifies MaxMatches also stops matches nested inside an already
+// matched element. | TestSelectorLimitsNestedMatches 验证 MaxMatches 也会阻止已匹配元素内部嵌套的
+// 匹配。
+func TestSelectorLimitsNestedMatches(t *testing.T) {
+	p := mustPath(t, "//b")
+	s := NewSelectorBytesWithOptions([]byte(`<b><b><b></b></b></b>`), p, SelectorOptions{Limits: Limits{MaxMatches: 2}})
+	n := 0
+	for s.Next() {
+		n++
+	}
+	if n != 2 {
+		t.Fatalf("matches = %d, want 2", n)
+	}
+	if !errors.Is(s.Err(), ErrLimit) {
+		t.Fatalf("err = %v, want ErrLimit", s.Err())
+	}
+}
+
+// TestSelectorLenientMismatchedClose verifies lenient streaming still reports a match when an
+// end tag closes several open elements. | TestSelectorLenientMismatchedClose 验证宽松流式解析在
+// 结束标签关闭多层元素时仍能报告匹配。
+func TestSelectorLenientMismatchedClose(t *testing.T) {
+	docs := []struct {
+		doc  string
+		expr string
+	}{
+		{`<a><b>1</a>`, "//b"},
+		{`<a xmlns:p="urn:p"><p:b>1</p:b></a>`, "//{urn:p}b"},
+	}
+	for _, c := range docs {
+		s := NewSelectorBytesWithOptions([]byte(c.doc), mustPath(t, c.expr), SelectorOptions{Lenient: true})
+		var got []string
+		for s.Next() {
+			got = append(got, string(s.Match().Text))
+		}
+		if err := s.Err(); err != nil {
+			t.Errorf("doc %q: %v", c.doc, err)
+			continue
+		}
+		if !reflect.DeepEqual(got, []string{"1"}) {
+			t.Errorf("doc %q: matches %#v", c.doc, got)
+		}
 	}
 }
 

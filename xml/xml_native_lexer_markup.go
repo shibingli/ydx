@@ -75,6 +75,7 @@ func (l *lexer) comment(ev *event) error {
 			if err := s.advance(3); err != nil {
 				return err
 			}
+			buf = nonNilBytes(buf)
 			l.textBuf = buf
 			ev.kind = evComment
 			ev.data = buf
@@ -133,6 +134,7 @@ func (l *lexer) cdata(ev *event) error {
 				if err := s.advance(3); err != nil {
 					return err
 				}
+				buf = nonNilBytes(buf)
 				l.textBuf = buf
 				if msg := validateXMLText(buf); msg != "" {
 					return l.syntax(msg)
@@ -201,6 +203,7 @@ func (l *lexer) procInst(ev *event) error {
 			if err := s.advance(2); err != nil {
 				return err
 			}
+			buf = nonNilBytes(buf)
 			l.textBuf = buf
 			ev.kind = evProcInst
 			ev.target = target
@@ -219,10 +222,23 @@ func (l *lexer) directive(ev *event) error {
 	buf := l.textBuf[:0]
 	var quote byte
 	depth := 0
+	first := true
 	for {
 		b, err := l.mustReadByte()
 		if err != nil {
 			return err
+		}
+		// encoding/xml always keeps the first byte after "<!" as directive content, even when it
+		// is '>', and does not run quote/depth processing on it; "<!>" is therefore an unexpected
+		// EOF instead of an empty directive. | encoding/xml 始终把 "<!" 后的第一个字节作为指令
+		// 内容，即使它是 '>'，且不对其执行引号/深度处理；因此 "<!>" 报意外 EOF 而非空指令。
+		if first {
+			first = false
+			buf = append(buf, b)
+			if err := l.checkSize(len(buf)); err != nil {
+				return err
+			}
+			continue
 		}
 		if quote == 0 && b == '>' && depth == 0 {
 			break
@@ -245,6 +261,9 @@ func (l *lexer) directive(ev *event) error {
 					return err
 				}
 				buf = append(buf, ' ')
+				if err := l.checkSize(len(buf)); err != nil {
+					return err
+				}
 				continue
 			}
 			depth++
@@ -306,6 +325,11 @@ func (l *lexer) readNameBytes() ([]byte, bool, error) {
 			return nil, false, nil
 		}
 		name := avail[:i]
+		// Enforce the name bound for zero-copy byte sources as well. | 对零拷贝字节源同样执行
+		// 名称上限。
+		if len(name) > l.tokenLimit() {
+			return nil, false, errs.Detail(ErrLimit, "name exceeds MaxTokenSize | 名称超过 MaxTokenSize")
+		}
 		if err := s.advance(i); err != nil {
 			return nil, false, err
 		}
@@ -370,6 +394,9 @@ func (l *lexer) attrValue() ([]byte, error) {
 				break
 			}
 			buf = append(buf, c)
+			if err := l.checkSize(len(buf)); err != nil {
+				return nil, err
+			}
 			if err := s.advance(1); err != nil {
 				return nil, err
 			}
@@ -390,6 +417,9 @@ func (l *lexer) attrValue() ([]byte, error) {
 	avail := s.available()
 	if !s.owned && avail[idx] == q {
 		val := avail[:idx]
+		if err := l.checkSize(len(val)); err != nil {
+			return nil, err
+		}
 		if err := s.advance(idx + 1); err != nil {
 			return nil, err
 		}

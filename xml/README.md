@@ -350,4 +350,7 @@ http.HandleFunc("/orders", func(w http.ResponseWriter, r *http.Request) {
   属性检查、DOM/路径/Selector、`Limits` 与 `Prewarm`。
 - `xml_std` 后端不支持 DTD 实体与 UTF-16 自动检测（由标准库行为决定），其余 API 与
   原生后端一致。
+- 宽松模式下，若一个不匹配的结束标签关闭了声明命名空间的元素，原生后端会回退该命名空间
+  绑定并接受文档；`encoding/xml` 会保留绑定并报 `unexpected end element`。这是有意的良性
+  差异，宽松解析以能继续读取为准。
 - 实体替换文本按字符数据处理，不重新解析其中的标记（不执行实体中的元素/属性）。

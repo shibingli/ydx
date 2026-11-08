@@ -4,6 +4,7 @@ package xml
 
 import (
 	"bytes"
+	"fmt"
 	"strconv"
 	"strings"
 	"unicode"
@@ -28,7 +29,7 @@ func validateXMLText(b []byte) string {
 		c := b[i]
 		if c < utf8.RuneSelf {
 			if c != 0x09 && c != 0x0A && c != 0x0D && c < 0x20 {
-				return "illegal character code " + strconv.QuoteRune(rune(c))
+				return fmt.Sprintf("illegal character code %U", rune(c))
 			}
 			i++
 			continue
@@ -38,7 +39,7 @@ func validateXMLText(b []byte) string {
 			return "invalid UTF-8"
 		}
 		if !isInCharacterRange(r) {
-			return "illegal character code " + strconv.QuoteRune(r)
+			return fmt.Sprintf("illegal character code %U", r)
 		}
 		i += size
 	}
@@ -82,6 +83,12 @@ func (l *lexer) decodeEntity(dst []byte) ([]byte, error) {
 	raw := make([]byte, 0, 16)
 	consume := func(n int) error {
 		raw = append(raw, s.available()[:n]...)
+		// Bound the raw reference before scanning further, so a byte source cannot force an
+		// unbounded copy while the token size check is still pending. | 在继续扫描前限制原始引用
+		// 长度，避免字节源在 token 大小检查前被迫进行无界复制。
+		if err := l.checkSize(len(raw)); err != nil {
+			return err
+		}
 		return s.advance(n)
 	}
 	if err := consume(1); err != nil { // &
@@ -194,12 +201,18 @@ func isBaseDigit(c byte, base int) bool {
 }
 
 // entityFallback returns the raw entity text in non-strict mode and a syntax error in strict
-// mode. | entityFallback 在非严格模式下返回原始实体文本，在严格模式下返回语法错误。
+// mode. The strict error identifies a missing terminating semicolon, matching encoding/xml. |
+// entityFallback 在非严格模式下返回原始实体文本，在严格模式下返回语法错误；严格错误标识缺失的
+// 结束分号，与 encoding/xml 一致。
 func (l *lexer) entityFallback(dst, raw []byte) ([]byte, error) {
 	if !l.d.Strict {
 		return append(dst, raw...), nil
 	}
-	return dst, l.syntax("invalid character entity " + string(raw))
+	ent := string(raw)
+	if len(raw) == 0 || raw[len(raw)-1] != ';' {
+		ent += " (no semicolon)"
+	}
+	return dst, l.syntax("invalid character entity " + ent)
 }
 
 // appendDTDEntity expands a DTD entity value recursively with depth and size budgets. | appendDTDEntity

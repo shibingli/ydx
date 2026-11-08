@@ -106,8 +106,12 @@ func ParseWithOptions(data []byte, opts ParseOptions) (*Document, error) {
 				if isAllXMLSpace(data) {
 					continue
 				}
-				if !seenRoot && isUTF8BOM(data) {
-					continue
+				// Accept a UTF-8 BOM at offset zero, possibly followed by prolog whitespace in
+				// the same token. | 接受偏移零处的 UTF-8 BOM；同一 token 中其后的序言空白也允许。
+				if !seenRoot && d.tokenStartOffset() == 0 {
+					if rest, ok := trimUTF8BOM(data); ok && isAllXMLSpace(rest) {
+						continue
+					}
 				}
 				return nil, errs.Detail(ErrSyntax, "character data outside root element | 根元素外存在字符数据")
 			}
@@ -153,6 +157,12 @@ func ParseWithOptions(data []byte, opts ParseOptions) (*Document, error) {
 	}
 	if !seenRoot {
 		return nil, errs.Detail(ErrSyntax, "no root element | 缺少根元素")
+	}
+	// A CharsetReader replaces the decoded stream, so node offsets no longer index doc.src.
+	// Disable raw views instead of returning bytes from the wrong stream. | CharsetReader 会替换
+	// 解码后的字节流，节点偏移不再对应 doc.src；此时禁用原始视图，避免返回错误字节流的切片。
+	if _, ok := d.src.bytes(); !ok {
+		doc.rawOK = false
 	}
 	return doc, nil
 }

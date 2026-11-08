@@ -1,6 +1,7 @@
 package xml
 
 import (
+	"bytes"
 	"io"
 
 	"github.com/shibingli/ydx/errs"
@@ -90,11 +91,11 @@ func (e EndElement) Copy() Token {
 // 是字符数据，字符引用与实体引用已完成解码。
 type CharData []byte
 
-// Copy returns a deep copy of the token. | Copy 返回 token 的深拷贝。
+// Copy returns a deep copy of the token. A nil slice stays nil and an empty non-nil slice stays
+// empty but non-nil, matching encoding/xml. | Copy 返回 token 的深拷贝；nil 切片保持 nil，空的
+// 非 nil 切片保持空但非 nil，与 encoding/xml 一致。
 func (c CharData) Copy() Token {
-	data := make([]byte, len(c))
-	copy(data, c)
-	return CharData(data)
+	return CharData(bytes.Clone(c))
 }
 
 // String returns the character data as a string. | String 以字符串形式返回字符数据。
@@ -104,11 +105,11 @@ func (c CharData) String() string { return string(c) }
 // 不包含外层的 <!-- 与 -->。
 type Comment []byte
 
-// Copy returns a deep copy of the token. | Copy 返回 token 的深拷贝。
+// Copy returns a deep copy of the token. A nil slice stays nil and an empty non-nil slice stays
+// empty but non-nil, matching encoding/xml. | Copy 返回 token 的深拷贝；nil 切片保持 nil，空的
+// 非 nil 切片保持空但非 nil，与 encoding/xml 一致。
 func (c Comment) Copy() Token {
-	data := make([]byte, len(c))
-	copy(data, c)
-	return Comment(data)
+	return Comment(bytes.Clone(c))
 }
 
 // String returns the comment as a string. | String 以字符串形式返回注释内容。
@@ -120,11 +121,11 @@ type ProcInst struct {
 	Inst   []byte
 }
 
-// Copy returns a deep copy of the token. | Copy 返回 token 的深拷贝。
+// Copy returns a deep copy of the token. A nil Inst stays nil and an empty non-nil Inst stays
+// empty but non-nil, matching encoding/xml. | Copy 返回 token 的深拷贝；nil 的 Inst 保持 nil，空的
+// 非 nil Inst 保持空但非 nil，与 encoding/xml 一致。
 func (p ProcInst) Copy() Token {
-	inst := make([]byte, len(p.Inst))
-	copy(inst, p.Inst)
-	p.Inst = inst
+	p.Inst = bytes.Clone(p.Inst)
 	return p
 }
 
@@ -132,11 +133,11 @@ func (p ProcInst) Copy() Token {
 // <!DOCTYPE ...>。
 type Directive []byte
 
-// Copy returns a deep copy of the token. | Copy 返回 token 的深拷贝。
+// Copy returns a deep copy of the token. A nil slice stays nil and an empty non-nil slice stays
+// empty but non-nil, matching encoding/xml. | Copy 返回 token 的深拷贝；nil 切片保持 nil，空的
+// 非 nil 切片保持空但非 nil，与 encoding/xml 一致。
 func (d Directive) Copy() Token {
-	data := make([]byte, len(d))
-	copy(data, d)
-	return Directive(data)
+	return Directive(bytes.Clone(d))
 }
 
 // Token is one of StartElement, EndElement, CharData, Comment, ProcInst or Directive. |
@@ -188,13 +189,14 @@ type Limits struct {
 	// 上限，0 表示不限制。
 	MaxNodes int
 
-	// MaxEntityExpansion is the maximum number of bytes produced by custom or DTD entity
-	// expansion per parse; 0 means 8 MiB. | MaxEntityExpansion 是单次解析中自定义或 DTD 实体
-	// 展开产生的最大字节数，0 表示 8 MiB。
+	// MaxEntityExpansion is the maximum number of bytes produced by DTD entity expansion per
+	// parse; 0 means 8 MiB. Custom Decoder.Entity replacements are trusted configuration and are
+	// bounded by MaxTokenSize instead. | MaxEntityExpansion 是单次解析中 DTD 实体展开产生的最
+	// 大字节数，0 表示 8 MiB；自定义 Decoder.Entity 替换值属于可信配置，改由 MaxTokenSize 约束。
 	MaxEntityExpansion int64
 
-	// MaxEntityDepth is the maximum recursive entity expansion depth; 0 means 16. |
-	// MaxEntityDepth 是实体递归展开的最大深度，0 表示 16。
+	// MaxEntityDepth is the maximum recursive DTD entity expansion depth; 0 means 16. |
+	// MaxEntityDepth 是 DTD 实体递归展开的最大深度，0 表示 16。
 	MaxEntityDepth int
 
 	// MaxTextSize is the maximum text captured for one Selector match; 0 means 8 MiB. |

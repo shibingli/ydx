@@ -218,9 +218,9 @@ func (s *Selector) startElement(ev *event) {
 	}
 	depth := len(s.stack)
 	parent := &s.stack[len(s.stack)-1]
-	matched, childCtx := s.transition(parent.childCtx, parent.counters, ev.name, ev.attrs)
+	terminal, childCtx := s.transition(parent.childCtx, parent.counters, ev.name, ev.attrs)
 	s.stack = append(s.stack, selFrame{childCtx: childCtx, counters: s.countersAt(depth)})
-	if matched&(uint64(1)<<uint(len(s.p.steps))) == 0 {
+	if !terminal {
 		return
 	}
 	if s.limit.MaxMatches > 0 && s.count >= s.limit.MaxMatches {
@@ -252,7 +252,7 @@ func (s *Selector) startElement(ev *event) {
 	}
 }
 
-func (s *Selector) transition(ctx uint64, counters []int32, name Name, attrs []Attr) (matched, childCtx uint64) {
+func (s *Selector) transition(ctx uint64, counters []int32, name Name, attrs []Attr) (terminal bool, childCtx uint64) {
 	for b := ctx; b != 0; b &= b - 1 {
 		i := bits.TrailingZeros64(b)
 		st := &s.p.steps[i]
@@ -275,10 +275,16 @@ func (s *Selector) transition(ctx uint64, counters []int32, name Name, attrs []A
 				}
 			}
 		}
-		matched |= uint64(1) << uint(i+1)
+		// The terminal step has no successor bit; keeping it separate lets all 64 step
+		// bits be used by the uint64 candidate mask. | 终结步骤没有后继位；单独记录终结标记，
+		// 使 uint64 候选位图可以完整使用 64 个步骤位。
+		if i+1 < len(s.p.steps) {
+			childCtx |= uint64(1) << uint(i+1)
+		} else {
+			terminal = true
+		}
 	}
-	childCtx |= matched & ((uint64(1) << uint(len(s.p.steps))) - 1)
-	return matched, childCtx
+	return terminal, childCtx
 }
 
 func (s *Selector) endElement() {
@@ -296,6 +302,14 @@ func (s *Selector) endElement() {
 	s.caps = s.caps[:len(s.caps)-1]
 	if s.err != nil {
 		s.releaseText(cap.text)
+		return
+	}
+	// Element matches finish at their end tag, so nested matches can bypass the start-time
+	// check; enforce MaxMatches again before emitting. | 元素匹配在结束标签处完成，嵌套匹配可能
+	// 绕过起始处的检查；发出前再次强制执行 MaxMatches。
+	if s.limit.MaxMatches > 0 && s.count >= s.limit.MaxMatches {
+		s.releaseText(cap.text)
+		s.fail(errs.Detail(ErrLimit, "match count exceeds MaxMatches | 匹配数超过 MaxMatches"))
 		return
 	}
 	end := s.d.InputOffset()
@@ -374,7 +388,7 @@ func EachBytes(data []byte, p *Path, fn func(*Match) error) error {
 func EachFile(path string, p *Path, fn func(*Match) error) error {
 	f, err := os.Open(path)
 	if err != nil {
-		return errs.WrapDetail(err, ErrUnsupported, "opening XML file | 打开 XML 文件")
+		return errs.WrapDetail(err, ErrSyntax, "opening XML file | 打开 XML 文件")
 	}
 	defer f.Close()
 	return Each(f, p, fn)

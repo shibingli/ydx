@@ -48,6 +48,10 @@ func TestLenientMatchesStdlib(t *testing.T) {
 		`<a b="x&nbsp;y"/>`,
 		`<br><br/>`,
 		`<a>text &amp; more</a>`,
+		`<a><b></a>`,
+		`<a><b></a></b>`,
+		`<a xmlns:p="urn:p"><b></p:b></a>`,
+		`<a></b><c/>`,
 	}
 	for _, doc := range docs {
 		sd := stdxml.NewDecoder(strings.NewReader(doc))
@@ -141,14 +145,107 @@ func TestEncodingErrors(t *testing.T) {
 	cases := []string{
 		`<?xml version="1.1"?><a/>`,
 		`<?xml version="1.0" encoding="x-unknown"?><a/>`,
+		`<?xml version="1.0" encoding="ISO-8859-1"?><a/>`,
 	}
 	for _, doc := range cases {
-		if _, err := collect(t, NewDecoderBytes([]byte(doc))); err == nil {
+		_, err := collect(t, NewDecoderBytes([]byte(doc)))
+		if err == nil {
 			t.Errorf("doc %q: expected error", doc)
+			continue
+		}
+		if !errors.Is(err, ErrUnsupported) {
+			t.Errorf("doc %q: err = %v, want ErrUnsupported", doc, err)
 		}
 	}
 	if _, err := collect(t, NewDecoderBytes([]byte{0xFF, 0xFE, 0x3C, 0x00, 0x61, 0x00})); err == nil {
 		t.Fatal("expected truncated UTF-16 error")
+	}
+	if Backend() == "yd-native" {
+		utf32 := [][]byte{
+			{0x00, 0x00, 0xFE, 0xFF, 0x00, 0x00, 0x00, 0x3C},
+			{0xFF, 0xFE, 0x00, 0x00, 0x3C, 0x00, 0x00, 0x00},
+		}
+		for _, doc := range utf32 {
+			if _, err := collect(t, NewDecoderBytes(doc)); !errors.Is(err, ErrUnsupported) {
+				t.Errorf("UTF-32 doc % X: err = %v, want ErrUnsupported", doc, err)
+			}
+		}
+	}
+}
+
+// TestBOMTokenMatchesStdlib verifies the UTF-8 BOM is preserved as character data exactly like
+// encoding/xml, including when it precedes whitespace and the root element. | TestBOMTokenMatchesStdlib
+// 验证 UTF-8 BOM 与 encoding/xml 一致地作为字符数据保留，包括位于空白与根元素之前的情况。
+func TestBOMTokenMatchesStdlib(t *testing.T) {
+	docs := [][]byte{
+		append([]byte{0xEF, 0xBB, 0xBF}, []byte("<a/>")...),
+		append([]byte{0xEF, 0xBB, 0xBF}, []byte("  <a/>")...),
+		append([]byte{0xEF, 0xBB, 0xBF}, []byte("\n\t<a>t</a>")...),
+		{0xEF, 0xBB, 0xBF},
+	}
+	for _, doc := range docs {
+		want, wantErr := collectStd(t, stdxml.NewDecoder(bytes.NewReader(doc)))
+		got, gotErr := collect(t, NewDecoderBytes(doc))
+		if (wantErr != nil) != (gotErr != nil) {
+			t.Errorf("doc %q: std err=%v, ours err=%v", doc, wantErr, gotErr)
+			continue
+		}
+		if !reflect.DeepEqual(want, got) {
+			t.Errorf("doc %q:\nstd  %v\nours %v", doc, want, got)
+		}
+	}
+}
+
+// TestBOMValidity verifies a leading UTF-8 BOM is accepted before a root element and rejected on
+// its own. | TestBOMValidity 验证根元素前的 UTF-8 BOM 被接受，而仅有 BOM 时被拒绝。
+func TestBOMValidity(t *testing.T) {
+	for _, doc := range [][]byte{
+		append([]byte{0xEF, 0xBB, 0xBF}, []byte("<a/>")...),
+		append([]byte{0xEF, 0xBB, 0xBF}, []byte("  <a/>")...),
+	} {
+		if !Valid(doc) {
+			t.Errorf("Valid(%q) = false", doc)
+		}
+	}
+	if Valid([]byte{0xEF, 0xBB, 0xBF}) {
+		t.Fatal("Valid accepted a document with no root element")
+	}
+	if _, err := Parse([]byte{0xEF, 0xBB, 0xBF}); !errors.Is(err, ErrSyntax) {
+		t.Fatalf("Parse err = %v, want ErrSyntax", err)
+	}
+}
+
+// TestLenientNamespaceUnwindAfterMismatch locks in a deliberate divergence from encoding/xml: when
+// a lenient mismatched end tag closes an element that declared a namespace, encoding/xml leaves the
+// binding on its stack and then rejects the outer close tag, while we unwind the binding and accept
+// the document. | TestLenientNamespaceUnwindAfterMismatch 固化一处与 encoding/xml 的有意差异：
+// 宽松模式下不匹配的结束标签关闭了声明命名空间的元素时，encoding/xml 会把绑定留在栈上并拒绝外层
+// 结束标签，而我们会回退绑定并接受文档。
+func TestLenientNamespaceUnwindAfterMismatch(t *testing.T) {
+	docs := []struct {
+		doc  string
+		want []string
+	}{
+		{
+			doc:  `<a><b xmlns:p="u"></a>`,
+			want: []string{`S{"","a"}[]`, `S{"","b"}[{"xmlns","p"}="u";]`, `E{"","b"}`, `E{"","a"}`},
+		},
+		{
+			doc:  `<a><b xmlns="u"></a>`,
+			want: []string{`S{"","a"}[]`, `S{"u","b"}[{"","xmlns"}="u";]`, `E{"","b"}`, `E{"","a"}`},
+		},
+	}
+	for _, c := range docs {
+		od := NewDecoderBytes([]byte(c.doc))
+		od.Strict = false
+		got, err := collect(t, od)
+		if err != nil {
+			t.Errorf("doc %q: %v", c.doc, err)
+			continue
+		}
+		if !reflect.DeepEqual(got, c.want) {
+			t.Errorf("doc %q:\ngot  %v\nwant %v", c.doc, got, c.want)
+		}
 	}
 }
 

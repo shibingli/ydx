@@ -31,11 +31,12 @@
 //
 // Native extensions | 原生扩展：
 //
-//   - UTF-16 LE/BE BOM auto-detection and transcoding; UTF-8 BOM follows encoding/xml and is
-//     returned as character data by Token. | UTF-16 LE/BE BOM 自动检测与转码；UTF-8 BOM 遵循
-//     encoding/xml，Token 会把它作为字符数据返回；
-//   - internal-subset DTD general entities with expansion depth and byte budgets (no external
-//     entity loading); | 内部子集 DTD 通用实体，带展开深度与字节预算（不加载外部实体）；
+//   - UTF-16 LE/BE BOM auto-detection and transcoding (native backend only); UTF-8 BOM follows
+//     encoding/xml and is returned as character data by Token. | UTF-16 LE/BE BOM 自动检测与转码
+//     （仅原生后端）；UTF-8 BOM 遵循 encoding/xml，Token 会把它作为字符数据返回；
+//   - internal-subset DTD general entities with expansion depth and byte budgets (native backend
+//     only, no external entity loading); | 内部子集 DTD 通用实体，带展开深度与字节预算（仅原生
+//     后端，不加载外部实体）；
 //   - Limits bounding depth, token size, DOM nodes, entity expansion, selector text and match
 //     count; | Limits 限制深度、token 大小、DOM 节点、实体展开、Selector 文本与匹配数；
 //   - Valid, a stricter well-formedness check that also rejects duplicate attributes and text

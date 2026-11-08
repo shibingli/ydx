@@ -160,10 +160,15 @@ func (f *tokenFilter) handleEnd(raw *event, ev *event) error {
 		if f.d.Strict {
 			return f.syntax("element <" + top.name.Local + "> closed by </" + raw.name.Local + ">")
 		}
+		// Match encoding/xml: emit the raw name recorded on the stack for the element being
+		// popped (no namespace translation), then replay the mismatched end tag against the
+		// enclosing element on the next call. | 与 encoding/xml 一致：先为被弹出的元素发出栈上
+		// 记录的原始名称（不做命名空间翻译），再在下次调用时用错配的结束标签匹配外层元素。
 		f.popFrame()
-		name := top.name
-		f.translate(&name, true)
-		*ev = event{kind: evEnd, name: name}
+		f.pending = append(f.pending, event{})
+		copy(f.pending[1:], f.pending)
+		f.pending[0] = *raw
+		*ev = event{kind: evEnd, name: top.name}
 		return nil
 	}
 	if top.name.Space != raw.name.Space {

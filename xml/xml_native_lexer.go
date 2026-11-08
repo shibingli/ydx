@@ -51,6 +51,16 @@ func (l *lexer) checkSize(n int) error {
 	return nil
 }
 
+// nonNilBytes converts a nil scratch slice to a non-nil empty slice so empty public tokens match
+// encoding/xml's representation. | nonNilBytes 把 nil 的 scratch 切片转换为非 nil 空切片，使空的
+// 公开 token 与 encoding/xml 的表示一致。
+func nonNilBytes(b []byte) []byte {
+	if b == nil {
+		return []byte{}
+	}
+	return b
+}
+
 // intern returns a shared string for b. The transient lookup string aliases b, but inserted map
 // keys always own their bytes. | intern 返回 b 的共享字符串；用于查找的临时字符串引用 b，但插入
 // 映射的键始终拥有独立字节。
@@ -151,6 +161,12 @@ func (l *lexer) text(ev *event) error {
 	}
 	if idx < 0 && !s.owned {
 		data := s.data[s.pos:s.end]
+		// A byte source reaches this zero-copy path only when the rest of the input is plain
+		// text; enforce the same token bound as the scratch-buffer paths. | 字节源仅当剩余输入
+		// 全为纯文本时走此零拷贝路径；与 scratch 缓冲路径一样执行同一 token 上限。
+		if err := l.checkSize(len(data)); err != nil {
+			return err
+		}
 		if err := s.advance(len(data)); err != nil {
 			return err
 		}
@@ -240,6 +256,7 @@ func (l *lexer) text(ev *event) error {
 			return err
 		}
 	}
+	buf = nonNilBytes(buf)
 	l.textBuf = buf
 	if msg := validateXMLText(buf); msg != "" {
 		return l.syntax(msg)

@@ -11,8 +11,11 @@ package xml
 import (
 	"bytes"
 	stdxml "encoding/xml"
+	"errors"
 	"io"
 	"strings"
+
+	"github.com/shibingli/ydx/errs"
 )
 
 // Backend returns the name of the active XML backend; with the xml_std tag set it is always
@@ -50,7 +53,13 @@ func (s *stdSource) nextRaw() (Token, error) {
 	s.syncConfig()
 	t, err := s.dec.RawToken()
 	if err != nil {
+		return nil, stdError(err)
+	}
+	if err := s.checkTokenLimit(t); err != nil {
 		return nil, err
+	}
+	if s.capActive > 0 && s.dec.InputOffset()-s.capStart > int64(s.d.limits().MaxTokenSize) {
+		return nil, errs.Detail(ErrLimit, "inner XML capture exceeds MaxTokenSize | inner XML 捕获超过 MaxTokenSize")
 	}
 	out := convertStdToken(t)
 	if pi, ok := out.(ProcInst); ok && pi.Target == "xml" {
@@ -63,6 +72,70 @@ func (s *stdSource) nextRaw() (Token, error) {
 		s.tee.trim(s.dec.InputOffset())
 	}
 	return out, nil
+}
+
+// stdError normalizes encoding/xml errors to the public error contract: syntax errors become
+// package *SyntaxError values so classify adds ErrSyntax, and unsupported declarations add
+// ErrUnsupported like the native backend. Underlying reader errors pass through unchanged. |
+// stdError 把 encoding/xml 错误归一化为公开错误契约：语法错误转为包内 *SyntaxError，使 classify
+// 附加 ErrSyntax；不支持的声明附加 ErrUnsupported，与原生后端一致；底层读取器错误原样透传。
+func stdError(err error) error {
+	if err == nil || err == io.EOF {
+		return err
+	}
+	var se *stdxml.SyntaxError
+	if errors.As(err, &se) {
+		return &SyntaxError{Msg: se.Msg, Line: se.Line}
+	}
+	msg := err.Error()
+	if strings.HasPrefix(msg, "xml: unsupported version") ||
+		strings.HasPrefix(msg, "xml: encoding ") ||
+		strings.HasPrefix(msg, "xml: opening charset ") {
+		return errs.Wrap(err, ErrUnsupported)
+	}
+	return err
+}
+
+// checkTokenLimit enforces MaxTokenSize on raw tokens of the standard-library backend, which has
+// no built-in bound. | checkTokenLimit 在标准库后端为原始 token 强制执行 MaxTokenSize，标准库
+// 本身没有该上限。
+func (s *stdSource) checkTokenLimit(t stdxml.Token) error {
+	limit := s.d.limits().MaxTokenSize
+	tooBig := func(n int) bool { return n > limit }
+	limitErr := errs.Detail(ErrLimit, "token exceeds MaxTokenSize | token 超过 MaxTokenSize")
+	switch t := t.(type) {
+	case stdxml.StartElement:
+		if tooBig(len(t.Name.Space)) || tooBig(len(t.Name.Local)) {
+			return limitErr
+		}
+		for i := range t.Attr {
+			a := &t.Attr[i]
+			if tooBig(len(a.Name.Space)) || tooBig(len(a.Name.Local)) || tooBig(len(a.Value)) {
+				return limitErr
+			}
+		}
+	case stdxml.EndElement:
+		if tooBig(len(t.Name.Space)) || tooBig(len(t.Name.Local)) {
+			return limitErr
+		}
+	case stdxml.CharData:
+		if tooBig(len(t)) {
+			return limitErr
+		}
+	case stdxml.Comment:
+		if tooBig(len(t)) {
+			return limitErr
+		}
+	case stdxml.ProcInst:
+		if tooBig(len(t.Target)) || tooBig(len(t.Inst)) {
+			return limitErr
+		}
+	case stdxml.Directive:
+		if tooBig(len(t)) {
+			return limitErr
+		}
+	}
+	return nil
 }
 
 func (s *stdSource) nextRawEvent() (event, error) {
@@ -86,6 +159,9 @@ func (s *stdSource) offset() int64 { return s.dec.InputOffset() }
 func (s *stdSource) pos() (line, column int) { return s.dec.InputPos() }
 
 func (s *stdSource) beginCapture() captureMark {
+	if s.capActive == 0 {
+		s.capStart = s.dec.InputOffset()
+	}
 	m := captureMark{offset: s.dec.InputOffset(), active: s.capActive}
 	s.capActive++
 	return m
@@ -94,6 +170,9 @@ func (s *stdSource) beginCapture() captureMark {
 func (s *stdSource) endCapture(m captureMark, endOffset int64) []byte {
 	if s.capActive > 0 {
 		s.capActive--
+	}
+	if s.capActive == 0 {
+		s.capStart = 0
 	}
 	var src []byte
 	if s.tee != nil {
@@ -127,13 +206,15 @@ func convertStdToken(t stdxml.Token) Token {
 	case stdxml.EndElement:
 		return EndElement{Name: Name{Space: t.Name.Space, Local: t.Name.Local}}
 	case stdxml.CharData:
-		return CharData(append([]byte(nil), t...))
+		// bytes.Clone preserves the nil-versus-empty distinction of encoding/xml. |
+		// bytes.Clone 保留 encoding/xml 的 nil 与非 nil 空切片区别。
+		return CharData(bytes.Clone(t))
 	case stdxml.Comment:
-		return Comment(append([]byte(nil), t...))
+		return Comment(bytes.Clone(t))
 	case stdxml.ProcInst:
-		return ProcInst{Target: t.Target, Inst: append([]byte(nil), t.Inst...)}
+		return ProcInst{Target: t.Target, Inst: bytes.Clone(t.Inst)}
 	case stdxml.Directive:
-		return Directive(append([]byte(nil), t...))
+		return Directive(bytes.Clone(t))
 	}
 	return nil
 }

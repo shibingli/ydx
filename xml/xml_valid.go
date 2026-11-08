@@ -49,12 +49,18 @@ func Valid(data []byte) bool {
 			}
 		case evText:
 			if depth == 0 {
-				if isAllXMLSpace(ev.data) {
+				data := ev.data
+				if isAllXMLSpace(data) {
 					continue
 				}
-				if bomAllowed && isUTF8BOM(ev.data) {
-					bomAllowed = false
-					continue
+				// A UTF-8 BOM may precede the prolog, including whitespace that follows it in
+				// the same character-data token. | UTF-8 BOM 可以位于序言之前，其后同一字符数据
+				// token 中的空白同样合法。
+				if bomAllowed && d.tokenStartOffset() == 0 {
+					if rest, ok := trimUTF8BOM(data); ok && isAllXMLSpace(rest) {
+						bomAllowed = false
+						continue
+					}
 				}
 				return false
 			}
@@ -72,6 +78,11 @@ func isAllXMLSpace(b []byte) bool {
 	return true
 }
 
-func isUTF8BOM(b []byte) bool {
-	return len(b) == 3 && b[0] == 0xEF && b[1] == 0xBB && b[2] == 0xBF
+// trimUTF8BOM reports whether b starts with a UTF-8 byte order mark and returns the remainder. |
+// trimUTF8BOM 判断 b 是否以 UTF-8 字节顺序标记开头，并返回剩余字节。
+func trimUTF8BOM(b []byte) ([]byte, bool) {
+	if len(b) >= 3 && b[0] == 0xEF && b[1] == 0xBB && b[2] == 0xBF {
+		return b[3:], true
+	}
+	return b, false
 }
