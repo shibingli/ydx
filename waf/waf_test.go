@@ -272,6 +272,9 @@ func TestFailOpenServesWhileShuttingDown(t *testing.T) {
 	if response.Code != http.StatusOK || response.Body.String() != "business-body" {
 		t.Fatalf("response = %d %q", response.Code, response.Body.String())
 	}
+	if stats := instance.Stats(); stats.Bypassed != 1 || stats.Rejected != 0 {
+		t.Fatalf("stats = %+v, want one bypass and no rejection", stats)
+	}
 }
 
 func TestFailOpenOnRequestBodyReadError(t *testing.T) {

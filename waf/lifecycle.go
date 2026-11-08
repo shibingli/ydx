@@ -16,12 +16,13 @@ func (w *WAF) serve(rw http.ResponseWriter, r *http.Request, run func(http.Respo
 	start := time.Now()
 	e, ok := w.acquire()
 	if !ok {
-		w.counts.rejected.Add(1)
 		if w.failOpen.Load() {
+			w.counts.bypassed.Add(1)
 			w.logger.Warn("waf is shutting down, failing open | WAF 正在关闭，失败放行")
 			run(rw)
 			return true
 		}
+		w.counts.rejected.Add(1)
 		http.Error(rw, http.StatusText(http.StatusServiceUnavailable), http.StatusServiceUnavailable)
 		return false
 	}

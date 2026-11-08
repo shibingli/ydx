@@ -29,8 +29,9 @@ type Stats struct {
 	Detected int64
 	// Errors counts rule build, source, hook and plugin failures. | Errors 统计规则构建、来源、钩子与插件失败数。
 	Errors int64
-	// Bypassed counts excluded requests and requests handled while the engine was off.
-	// | Bypassed 统计被排除以及引擎关闭时放行的请求数。
+	// Bypassed counts excluded requests, requests handled while the engine was off, and
+	// fail-open requests served while shutting down. | Bypassed 统计被排除、引擎关闭时放行以及
+	// 关闭期间失败放行的请求数。
 	Bypassed int64
 	// Rejected counts requests refused because the instance was closed. | Rejected 统计因实例关闭被拒绝的请求数。
 	Rejected int64
