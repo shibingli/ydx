@@ -7,7 +7,7 @@ import (
 )
 
 // The v2 comparison entries are part of the default set now that go.mod requires ydx/json
-// v0.1.16. | 由于 go.mod 已要求 ydx/json v0.1.16，v2 对比条目属于默认集合。
+// v0.1.18. | 由于 go.mod 已要求 ydx/json v0.1.18，v2 对比条目属于默认集合。
 func init() {
 	extraMarshalers = append(extraMarshalers,
 		benchMarshaler{name: "jsonx-v2", fn: func(v any) ([]byte, error) { return jsonx.Marshal(v, jsonx.DefaultOptionsV2()) }},

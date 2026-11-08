@@ -174,10 +174,10 @@ func appendSegment(dst, src []byte) []byte {
 // unmarshal decodes JSON through ydx/json. | unmarshal 通过 ydx/json 解码 JSON。
 //
 // The copy that older code made for inputs whose last eight bytes contain a quote has been
-// removed: ydx/json v0.1.17 fixes the parseCleanString arena-offset bug that copy worked around,
-// and this module pins v0.1.17. | 旧代码会在最后八字节含双引号时复制输入并追加空格，这一复制已被
+// removed: ydx/json v0.1.17 fixed the parseCleanString arena-offset bug that copy worked around,
+// and this module pins v0.1.18. | 旧代码会在最后八字节含双引号时复制输入并追加空格，这一复制已被
 // 移除：ydx/json v0.1.17 修复了该复制所规避的 parseCleanString arena 偏移缺陷，本模块锁定
-// v0.1.17。
+// v0.1.18。
 func unmarshal(data []byte, v any) error {
 	return json.Unmarshal(data, v)
 }
