@@ -23,11 +23,12 @@ const spaceSpin = 32
 
 // Stats is a point-in-time snapshot of pool activity. | Stats 是协程池活动的瞬时快照。
 //
-// Queued and Running are approximate under concurrency; Submitted, Completed,
-// Failed and Panicked are exact after Wait returns. Submitted counts tasks, so a
-// batch of N contributes N. | 并发下 Queued 与 Running 是近似值；Wait 返回后
-// Submitted、Completed、Failed 与 Panicked 是精确值。Submitted 按任务计数，因此长度为
-// N 的批次贡献 N。
+// Queued and Running are approximate under concurrency; Submitted is exact after
+// Wait returns, and Completed, Failed and Panicked are exact after Wait returns
+// when metrics are enabled. Submitted counts tasks, so a batch of N contributes
+// N. | 并发下 Queued 与 Running 是近似值；Wait 返回后 Submitted 是精确值，启用指标时
+// Completed、Failed 与 Panicked 也是精确值。Submitted 按任务计数，因此长度为 N 的批次
+// 贡献 N。
 type Stats struct {
 	// Workers is the number of live worker goroutines. | Workers 是存活的 worker 协程数。
 	Workers int
@@ -35,7 +36,8 @@ type Stats struct {
 	TargetWorkers int
 	// Shards is the number of queue shards. | Shards 是队列分片数。
 	Shards int
-	// Capacity is the configured queue capacity across shards and fallback. | Capacity 是分片与 fallback 的配置容量总和。
+	// Capacity is the configured queue capacity across shards, fallback and the
+	// direct-handoff buffer. | Capacity 是分片、fallback 与直接握手缓冲区的配置容量总和。
 	Capacity int
 	// Queued is the approximate number of tasks waiting in queues. | Queued 是队列中等待任务的近似数量。
 	Queued int
@@ -163,11 +165,15 @@ type engine[J any] struct {
 	totalFailed    atomic.Uint64
 	totalPanicked  atomic.Uint64
 
-	rejected   atomic.Uint64
-	fallbackN  atomic.Uint64
-	handoffN   atomic.Uint64
+	rejected  atomic.Uint64
+	fallbackN atomic.Uint64
+	// handoffN and batchExtra are signed so a rejected submission can roll back
+	// the count it published before routing, keeping Submitted exact after Wait.
+	// | handoffN 与 batchExtra 使用有符号类型，使被拒绝的提交能回滚路由前发布的计数，
+	// 保证 Wait 之后 Submitted 精确。
+	handoffN   atomic.Int64
 	discardedN atomic.Uint64
-	batchExtra atomic.Uint64
+	batchExtra atomic.Int64
 }
 
 // nextPowerOfTwo returns the smallest power of two at least n, clamped to
@@ -261,6 +267,17 @@ func newEngine[J any](cfg engineConfig, run func(*workerState, J), discard func(
 // submit accepts j, blocking for room unless the engine is nonblocking. | submit 接受 j；
 // 除非引擎为非阻塞模式，否则在无空位时阻塞。
 func (e *engine[J]) submit(j J) error {
+	return e.submitExtra(j, 0)
+}
+
+// submitExtra accepts j and records extra companion tasks contributed by one
+// batched job. extra is published after pending is acquired and rolled back
+// before pending is released on rejection, so Submitted cannot lag Completed
+// after Wait returns even when a job finishes before submitExtra does. |
+// submitExtra 接受 j 并记录一个批量作业额外附带的任务数。extra 在取得 pending 之后发布，
+// 拒绝时在释放 pending 之前回滚；因此即使作业在 submitExtra 返回前完成，Wait 返回后
+// Submitted 也不会落后于 Completed。
+func (e *engine[J]) submitExtra(j J, extra uint64) error {
 	if e.closed.Load() {
 		e.rejected.Add(1)
 		return ErrPoolClosed
@@ -272,10 +289,11 @@ func (e *engine[J]) submit(j J) error {
 	// 检查之前发布。因此关闭要么观察到本次提交并等待其结束，要么本次检查观察到关闭并在
 	// 发布前中止；最后一个 worker 退出后不会再有作业滞留在队列中。
 	e.pending.Add(1)
+	if extra > 0 {
+		e.batchExtra.Add(int64(extra))
+	}
 	if e.closed.Load() {
-		e.rejected.Add(1)
-		e.pendingDone()
-		return ErrPoolClosed
+		return e.rejectSubmission(extra, ErrPoolClosed)
 	}
 	start := e.next.v.Add(1) & e.shardMask
 	// Direct handoff is used only when the whole pool is idle: it transfers the
@@ -283,20 +301,19 @@ func (e *engine[J]) submit(j J) error {
 	// the sharded rings. | 直接握手仅在整个池空闲时使用：一次 channel 操作同时传递作业并
 	// 唤醒 worker。饱和路径仍走分片环。
 	if n := e.workerN.Load(); n > 0 && e.sleepers.Load() >= n {
+		e.handoffN.Add(1)
 		select {
 		case e.handoff <- j:
-			e.handoffN.Add(1)
 			return nil
 		default:
+			e.handoffN.Add(-1)
 		}
 	}
 	if e.trySubmitAt(j, start) {
 		return nil
 	}
 	if e.cfg.nonblocking {
-		e.rejected.Add(1)
-		e.pendingDone()
-		return ErrQueueFull
+		return e.rejectSubmission(extra, ErrQueueFull)
 	}
 	for i := 0; i < spaceSpin; i++ {
 		if e.trySubmit(j) {
@@ -304,18 +321,14 @@ func (e *engine[J]) submit(j J) error {
 		}
 		if i&15 == 0 {
 			if e.closed.Load() {
-				e.rejected.Add(1)
-				e.pendingDone()
-				return ErrPoolClosed
+				return e.rejectSubmission(extra, ErrPoolClosed)
 			}
 			runtime.Gosched()
 		}
 	}
 	for {
 		if e.closed.Load() {
-			e.rejected.Add(1)
-			e.pendingDone()
-			return ErrPoolClosed
+			return e.rejectSubmission(extra, ErrPoolClosed)
 		}
 		e.spaceWaiters.Add(1)
 		if e.trySubmit(j) {
@@ -326,9 +339,7 @@ func (e *engine[J]) submit(j J) error {
 		if e.closed.Load() {
 			e.spaceMu.Unlock()
 			e.spaceWaiters.Add(-1)
-			e.rejected.Add(1)
-			e.pendingDone()
-			return ErrPoolClosed
+			return e.rejectSubmission(extra, ErrPoolClosed)
 		}
 		if e.trySubmit(j) {
 			e.spaceMu.Unlock()
@@ -339,6 +350,19 @@ func (e *engine[J]) submit(j J) error {
 		e.spaceMu.Unlock()
 		e.spaceWaiters.Add(-1)
 	}
+}
+
+// rejectSubmission withdraws a submission that could not be accepted. The
+// batch extra is rolled back before pending is released, so Stats remains exact
+// after Wait. | rejectSubmission 撤回无法接受的提交。批量附加计数在释放 pending 之前
+// 回滚，使 Stats 在 Wait 之后仍然精确。
+func (e *engine[J]) rejectSubmission(extra uint64, err error) error {
+	if extra > 0 {
+		e.batchExtra.Add(-int64(extra))
+	}
+	e.rejected.Add(1)
+	e.pendingDone()
+	return err
 }
 
 // sealSubmissions closes the seal channel exactly once. Once pending is zero
@@ -396,14 +420,6 @@ func (e *engine[J]) trySubmitAt(j J, start uint64) bool {
 		return true
 	}
 	return false
-}
-
-// addBatchExtra records the extra tasks contributed by a batched job. | addBatchExtra
-// 记录批量作业额外贡献的任务数。
-func (e *engine[J]) addBatchExtra(n int) {
-	if n > 0 {
-		e.batchExtra.Add(uint64(n))
-	}
 }
 
 // wakeSleeper signals one parked worker when there is one. | wakeSleeper 在存在休眠 worker
@@ -517,7 +533,13 @@ func (e *engine[J]) stats() Stats {
 		submitted += r.tailPos()
 		queued += r.len()
 	}
-	submitted += e.fallback.tailPos() + e.handoffN.Load() + e.batchExtra.Load()
+	submitted += e.fallback.tailPos()
+	if n := e.handoffN.Load(); n > 0 {
+		submitted += uint64(n)
+	}
+	if n := e.batchExtra.Load(); n > 0 {
+		submitted += uint64(n)
+	}
 	queued += e.fallback.len() + len(e.handoff)
 
 	return Stats{

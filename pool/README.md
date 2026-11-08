@@ -1,8 +1,8 @@
 # ydx/pool — 超低延迟分片协程池
 
 `github.com/shibingli/ydx/pool` 是面向**纳秒级任务粒度、超低延迟、高并发**场景的 Go 协程池。
-它用分片无锁 MPMC 环替代全局任务通道，worker 优先消费 home 分片、空闲时工作窃取、最后才
-自旋/休眠；fire-and-forget 提交在预热后 **0 B/op、0 allocs/op**。
+它用分片无锁 MPMC 环替代全局任务通道，worker 优先消费 home 分片与 fallback，准备休眠前
+窃取其它分片，全部队列为空时休眠；fire-and-forget 提交在预热后 **0 B/op、0 allocs/op**。
 
 ## 特性
 
@@ -15,7 +15,7 @@
 - **高性能**：分片 MPMC 环、工作窃取、缓存行填充、受限自旋、无锁唤醒通道、
   批量完成计数；高并发下 `RunParallel` 可达千万级 ops/s。
 - **可观测**：`Stats` 提供提交/完成/失败/panic/排队/运行/拒绝/fallback/丢弃，
-  热路径无锁读取。
+  统计读取不进入任务热路径。
 - **可调**：worker 数、分片数、队列容量、阻塞/非阻塞、自旋次数、动态 `Resize`。
 - **零第三方依赖**：仅依赖仓库内 `errs`；无 cgo、无 unsafe。
 
@@ -130,8 +130,8 @@ p.Wait()
 |---|---|---|
 | `WithWorkers(n)` | `GOMAXPROCS` | worker 数 |
 | `WithShards(n)` | 不小于 worker 数的下一个 2 的幂 | 队列分片数 |
-| `WithQueueSize(n)` | 每分片 256 槽 | 各分片合计队列容量 |
-| `WithFallbackQueueSize(n)` | 1024 | 共享溢出环容量 |
+| `WithQueueSize(n)` | 每分片 256 槽 | 请求的各分片合计容量，按分片向上取整到 2 的幂 |
+| `WithFallbackQueueSize(n)` | 1024 | 共享溢出环容量，向上取整到 2 的幂 |
 | `WithNonblocking()` | 关闭 | 队列满返回 `ErrQueueFull` 而非阻塞 |
 | `WithSpinCount(n)` | 32 | 空闲 worker 休眠前轮询次数 |
 | `WithPanicHandler(h)` | nil | panic 回调 |
@@ -162,16 +162,18 @@ panic 以 `*PanicError` 交付，可用 `errors.Is(err, pool.ErrTaskPanicked)` �
 - **环**：有界 MPMC，Vyukov 序列号算法；`head`/`tail`/slot 序列号按缓存行填充；
   出队即清零槽位，避免环持有闭包/context/结果。
 - **分片**：提交按轮询计数器选择分片；当前分片满时扫描其它分片，全部满才进入 fallback。
-- **worker**：home 分片 → fallback → 工作窃取 → 自旋 → 休眠；`SpinCount` 控制空闲
-  worker 休眠前的轮询次数（默认 32）。
+- **worker**：home 分片 → fallback → 受限自旋（期间不扫描其它分片）→ 准备休眠前完整
+  工作窃取 → 休眠；被令牌唤醒后立即做一次全分片扫描。`SpinCount` 控制空闲 worker 休眠
+  前的轮询次数（默认 32）。
 - **唤醒**：完全空闲时提交方通过直接握手通道把作业交给休眠 worker（一次 channel 操作
   同时完成传递与唤醒）；否则入环并向无锁唤醒通道非阻塞投递令牌，避免每任务
   `sync.Cond` 的互斥量交接。关闭时关闭 `stop` 通道广播唤醒。
 - **批量**：批次头通过 `sync.Pool` 复用，`GoBatch` 预热后 0 allocs/op；`CallBatchTo`
   复用调用方结果缓冲，去掉每批结果切片分配。
-- **统计**：提交数由环 `tail` 派生；完成/失败/panic 为 worker 独占原子计数；
-  共享 pending 计数按 64 个任务批量递减。`Wait` 返回后 `Submitted/Completed/Failed/Panicked`
-  精确，`Queued/Running` 为并发下的近似快照。
+- **统计**：提交数由各分片环 `tail`、fallback `tail`、直接握手计数与批量附加计数合成；
+  完成/失败/panic 为 worker 独占原子计数（`WithoutMetrics` 时关闭）；共享 pending 计数
+  按 64 个任务批量递减。`Wait` 返回后 `Submitted` 精确，启用指标时
+  `Completed/Failed/Panicked` 也精确，`Queued/Running` 为并发下的近似快照。
 
 ## 性能
 
@@ -222,8 +224,9 @@ panic 以 `*PanicError` 交付，可用 `errors.Is(err, pool.ErrTaskPanicked)` �
   执行，池不会强制终止。
 - **批量**：`CallBatch` 按输入顺序返回结果，遇到错误继续执行其余元素并返回首个错误；
   context 取消后停止剩余元素；若 context 在批次完成前到期，结果切片为 nil（worker 可能
-  仍在写入）。`CallBatchTo` 无 context、阻塞到批次结束，返回后可复用 dst。`SubmitBatch`
-  返回 `Future[[]R]`。`GoBatch` 取得 `args` 的所有权。
+  仍在写入并读取 `args`）。`CallBatchTo` 无 context、阻塞到批次结束，返回后可复用 dst。
+  `SubmitBatch` 返回 `Future[[]R]`。`GoBatch` 取得 `args` 的所有权。`CallBatch` 因
+  context 到期返回时，调用方须先 `Wait` 再复用 `args`。
 - **关闭**：`Close` 立即停止并丢弃排队任务（future 以 `ErrPoolClosed` 完成），
   等待运行中任务结束；`Shutdown(ctx)` 优雅排空。调用方应先停止提交再关闭；
   与关闭并发的提交可能被接受后丢弃。

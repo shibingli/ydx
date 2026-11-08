@@ -337,3 +337,248 @@ func TestEngineStress(t *testing.T) {
 		t.Fatalf("stats = %+v | 统计不符", st)
 	}
 }
+
+// TestEngineResizeUnderLoad submits continuously while the worker count
+// oscillates, so every shard must still be drained exactly once by stealing.
+// | TestEngineResizeUnderLoad 在 worker 数反复变化时持续提交，验证所有分片仍被窃取并
+// 恰好执行一次。
+func TestEngineResizeUnderLoad(t *testing.T) {
+	const total = 40000
+	cfg := testEngineConfig()
+	cfg.workers = 2
+	cfg.shards = 8
+	cfg.queueSize = 4096
+	cfg.fallbackSize = 4096
+	cfg.spinCount = 0
+	seen := make([]atomic.Bool, total)
+	var duplicate atomic.Bool
+	e := newEngine[int](cfg, func(w *workerState, v int) {
+		if seen[v].Swap(true) {
+			duplicate.Store(true)
+		}
+		w.count(1, 0, 0)
+	}, func(int) {})
+	defer e.close(false)
+
+	stop := make(chan struct{})
+	var resizeWG sync.WaitGroup
+	resizeWG.Add(1)
+	go func() {
+		defer resizeWG.Done()
+		n := 1
+		for {
+			select {
+			case <-stop:
+				if err := e.resize(8); err != nil {
+					t.Errorf("final grow: %v | 最终扩容失败", err)
+				}
+				return
+			default:
+			}
+			if err := e.resize(n); err != nil {
+				t.Errorf("resize %d: %v | 调整 worker 数失败", n, err)
+				return
+			}
+			if n == 1 {
+				n = 8
+			} else {
+				n = 1
+			}
+			runtime.Gosched()
+		}
+	}()
+
+	for i := 0; i < total; i++ {
+		if err := e.submit(i); err != nil {
+			t.Fatalf("submit %d: %v | 提交失败", i, err)
+		}
+	}
+	e.wait()
+	close(stop)
+	resizeWG.Wait()
+
+	if duplicate.Load() {
+		t.Fatal("task ran more than once | 任务重复执行")
+	}
+	for i := range seen {
+		if !seen[i].Load() {
+			t.Fatalf("task %d missing | 任务丢失", i)
+		}
+	}
+	st := e.stats()
+	if st.Submitted != total || st.Completed != total {
+		t.Fatalf("stats = %+v, want submitted/completed %d | 统计不符", st, total)
+	}
+}
+
+// TestEngineCloseHandoffRace repeatedly closes while submitters are active and
+// checks that every accepted job is either run or discarded and settles. |
+// TestEngineCloseHandoffRace 反复在提交进行时关闭，检查每个已接受作业要么执行要么丢弃
+// 且完成结算。
+func TestEngineCloseHandoffRace(t *testing.T) {
+	const rounds = 50
+	for round := 0; round < rounds; round++ {
+		cfg := testEngineConfig()
+		cfg.workers = 2
+		cfg.shards = 2
+		cfg.queueSize = 4
+		cfg.fallbackSize = 4
+		cfg.spinCount = 0
+		var ran, discarded atomic.Int64
+		e := newEngine[int](cfg, func(w *workerState, v int) {
+			ran.Add(1)
+			w.count(1, 0, 0)
+		}, func(int) { discarded.Add(1) })
+
+		var wg sync.WaitGroup
+		start := make(chan struct{})
+		for i := 0; i < 4; i++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				<-start
+				for j := 0; j < 20; j++ {
+					_ = e.submit(1)
+				}
+			}()
+		}
+		close(start)
+		runtime.Gosched()
+		done := make(chan struct{})
+		go func() {
+			e.close(false)
+			close(done)
+		}()
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			t.Fatalf("round %d: close hung | 关闭挂起", round)
+		}
+		wg.Wait()
+
+		st := e.stats()
+		if got := uint64(ran.Load() + discarded.Load()); got != st.Submitted {
+			t.Fatalf("round %d: ran+discarded = %d, submitted = %d | 统计不符", round, got, st.Submitted)
+		}
+		if st.Queued != 0 {
+			t.Fatalf("round %d: queued = %d after close | 关闭后队列非空", round, st.Queued)
+		}
+	}
+}
+
+// TestEngineStatsFallbackRejected verifies fallback and rejection counters, and
+// that a rejected submission rolls back its batch extra. | TestEngineStatsFallbackRejected
+// 验证 fallback 与拒绝计数，并确认被拒绝的提交会回滚批量附加计数。
+func TestEngineStatsFallbackRejected(t *testing.T) {
+	cfg := testEngineConfig()
+	cfg.workers = 1
+	cfg.shards = 1
+	cfg.queueSize = 2
+	cfg.fallbackSize = 4
+	cfg.spinCount = 0
+	cfg.nonblocking = true
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	releaseFn := func() { releaseOnce.Do(func() { close(release) }) }
+	var once sync.Once
+	e := newEngine[int](cfg, func(w *workerState, v int) {
+		once.Do(func() {
+			close(started)
+			<-release
+		})
+		w.count(1, 0, 0)
+	}, func(int) {})
+	t.Cleanup(func() {
+		releaseFn()
+		e.close(false)
+	})
+
+	if err := e.submit(0); err != nil {
+		t.Fatalf("submit blocker: %v | 提交阻塞任务失败", err)
+	}
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("blocker did not start | 阻塞任务未启动")
+	}
+	for i := 1; i <= 6; i++ {
+		if err := e.submit(i); err != nil {
+			t.Fatalf("submit %d: %v | 提交失败", i, err)
+		}
+	}
+	if err := e.submit(7); !errors.Is(err, ErrQueueFull) {
+		t.Fatalf("submit full = %v, want ErrQueueFull | 满队列错误不符", err)
+	}
+	if err := e.submitExtra(8, 5); !errors.Is(err, ErrQueueFull) {
+		t.Fatalf("submitExtra full = %v, want ErrQueueFull | 满队列错误不符", err)
+	}
+	st := e.stats()
+	if st.Submitted != 7 || st.Fallback != 4 || st.Rejected != 2 || st.Completed != 0 {
+		t.Fatalf("stats while blocked = %+v | 阻塞期间统计不符", st)
+	}
+
+	releaseFn()
+	e.wait()
+	if st := e.stats(); st.Completed != 7 || st.Submitted != 7 || st.Fallback != 4 {
+		t.Fatalf("final stats = %+v | 最终统计不符", st)
+	}
+
+	e.close(false)
+	before := e.stats().Submitted
+	if err := e.submitExtra(9, 3); !errors.Is(err, ErrPoolClosed) {
+		t.Fatalf("submitExtra closed = %v, want ErrPoolClosed | 关闭后错误不符", err)
+	}
+	if after := e.stats().Submitted; after != before {
+		t.Fatalf("rejected closed submission changed submitted: %d -> %d | 关闭后拒绝改变了统计", before, after)
+	}
+}
+
+// TestEngineStealOtherShard verifies that a worker whose home shard is empty can
+// dequeue from another shard. | TestEngineStealOtherShard 验证 home 分片为空的 worker
+// 可以从其它分片取走作业。
+func TestEngineStealOtherShard(t *testing.T) {
+	cfg := testEngineConfig()
+	cfg.workers = 1
+	cfg.shards = 4
+	cfg.spinCount = 0
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	releaseFn := func() { releaseOnce.Do(func() { close(release) }) }
+	e := newEngine[int](cfg, func(w *workerState, v int) {
+		if v == 0 {
+			close(started)
+			<-release
+		}
+		w.count(1, 0, 0)
+	}, func(int) {})
+	t.Cleanup(func() {
+		releaseFn()
+		e.close(false)
+	})
+
+	if err := e.submit(0); err != nil {
+		t.Fatalf("submit blocker: %v | 提交阻塞任务失败", err)
+	}
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("blocker did not start | 阻塞任务未启动")
+	}
+	// The worker's home shard (0) is empty while it runs the blocker; the remote
+	// job is in shard 2, so take cannot find it but steal can. | worker 正在执行阻塞
+	// 任务时 home 分片 0 为空；远端作业在分片 2，take 找不到而 steal 可以。
+	if !e.shards[2].tryEnqueue(42) {
+		t.Fatal("enqueue remote job failed | 远端任务入队失败")
+	}
+	if v, ok := e.take(0); ok {
+		t.Fatalf("take returned cross-shard job %d | take 返回了跨分片作业", v)
+	}
+	v, ok := e.steal(0)
+	if !ok || v != 42 {
+		t.Fatalf("steal = (%d, %v), want (42, true) | 工作窃取结果不符", v, ok)
+	}
+	releaseFn()
+	e.wait()
+}

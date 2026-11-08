@@ -3,6 +3,7 @@ package pool_test
 import (
 	"context"
 	"errors"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -268,5 +269,215 @@ func TestParamPoolSubmitBatch(t *testing.T) {
 	empty, err := p.SubmitBatch(ctx, nil).Wait(ctx)
 	if err != nil || empty != nil {
 		t.Fatalf("empty SubmitBatch = (%v, %v), want (nil, nil) | 空批次结果不符", empty, err)
+	}
+}
+
+// TestParamPoolBatchStats verifies that a batch contributes one Submitted and one
+// Completed per element. | TestParamPoolBatchStats 验证批次按元素计入 Submitted 与
+// Completed。
+func TestParamPoolBatchStats(t *testing.T) {
+	p := pool.NewParamPool[int, int](double, testOptions()...)
+	defer p.Close()
+
+	ctx := context.Background()
+	if _, err := p.SubmitBatch(ctx, []int{1, 2, 3, 4, 5}).Wait(ctx); err != nil {
+		t.Fatalf("SubmitBatch: %v | 批量提交失败", err)
+	}
+	st := p.Stats()
+	if st.Submitted != 5 || st.Completed != 5 {
+		t.Fatalf("after SubmitBatch stats = %+v | 批量提交统计不符", st)
+	}
+	if err := p.GoBatch([]int{6, 7, 8}); err != nil {
+		t.Fatalf("GoBatch: %v | 批量提交失败", err)
+	}
+	p.Wait()
+	st = p.Stats()
+	if st.Submitted != 8 || st.Completed != 8 {
+		t.Fatalf("after GoBatch stats = %+v | 批量提交统计不符", st)
+	}
+}
+
+// TestParamPoolStatsConcurrent verifies that Submitted never lags Completed while
+// batches are submitted and waited concurrently. | TestParamPoolStatsConcurrent
+// 验证并发批量提交与等待时 Submitted 不会落后于 Completed。
+func TestParamPoolStatsConcurrent(t *testing.T) {
+	p := pool.NewParamPool[int, int](double, append(testOptions(),
+		pool.WithWorkers(8),
+		pool.WithShards(8),
+		pool.WithQueueSize(1024),
+		pool.WithFallbackQueueSize(1024),
+		pool.WithSpinCount(0),
+	)...)
+	defer p.Close()
+
+	const (
+		submitters = 4
+		batches    = 2000
+		batchSize  = 4
+		waiters    = 4
+	)
+	total := uint64(submitters * batches * batchSize)
+	failures := make(chan error, waiters)
+	submitted := make(chan struct{})
+	var submitWG sync.WaitGroup
+	for s := 0; s < submitters; s++ {
+		submitWG.Add(1)
+		go func() {
+			defer submitWG.Done()
+			for i := 0; i < batches; i++ {
+				args := make([]int, batchSize)
+				for j := range args {
+					args[j] = j
+				}
+				if err := p.GoBatch(args); err != nil {
+					failures <- err
+					return
+				}
+			}
+		}()
+	}
+	go func() {
+		submitWG.Wait()
+		close(submitted)
+	}()
+
+	var waitWG sync.WaitGroup
+	for w := 0; w < waiters; w++ {
+		waitWG.Add(1)
+		go func() {
+			defer waitWG.Done()
+			for {
+				p.Wait()
+				st := p.Stats()
+				if st.Completed > st.Submitted {
+					failures <- errors.New("Completed exceeded Submitted | 完成数超过提交数")
+					return
+				}
+				select {
+				case <-submitted:
+					return
+				default:
+				}
+			}
+		}()
+	}
+	waitWG.Wait()
+	p.Wait()
+	select {
+	case err := <-failures:
+		t.Fatalf("concurrent stats: %v | 并发统计不一致", err)
+	default:
+	}
+	st := p.Stats()
+	if st.Submitted != total || st.Completed != total {
+		t.Fatalf("stats = %+v, want Submitted=Completed=%d | 批量统计不符", st, total)
+	}
+}
+
+// TestParamPoolBatchCloseSettlesFutures verifies that a queued batch discarded by
+// Close completes its Future with ErrPoolClosed. | TestParamPoolBatchCloseSettlesFutures
+// 验证被 Close 丢弃的排队批次以 ErrPoolClosed 完成 Future。
+func TestParamPoolBatchCloseSettlesFutures(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	releaseFn := func() { releaseOnce.Do(func() { close(release) }) }
+	handler := func(_ context.Context, n int) (int, error) {
+		if n == 0 {
+			close(started)
+			<-release
+		}
+		return n * 2, nil
+	}
+	p := pool.NewParamPool[int, int](handler, append(testOptions(),
+		pool.WithWorkers(1),
+		pool.WithShards(1),
+		pool.WithQueueSize(4),
+		pool.WithFallbackQueueSize(4),
+		pool.WithSpinCount(0),
+	)...)
+	t.Cleanup(func() {
+		releaseFn()
+		p.Close()
+	})
+
+	if err := p.Go(0); err != nil {
+		t.Fatalf("blocker: %v | 提交阻塞任务失败", err)
+	}
+	<-started
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	future := p.SubmitBatch(ctx, []int{1, 2, 3})
+
+	closed := make(chan struct{})
+	go func() {
+		p.Close()
+		close(closed)
+	}()
+	waitUntil(t, "pool closed", func() bool {
+		return errors.Is(p.Go(1), pool.ErrPoolClosed)
+	})
+	releaseFn()
+
+	got, err := future.Wait(ctx)
+	if !errors.Is(err, pool.ErrPoolClosed) {
+		t.Fatalf("Future error = %v, want ErrPoolClosed | 批量 Future 错误不符", err)
+	}
+	if got != nil {
+		t.Fatalf("Future results = %v, want nil | 丢弃批次不应返回结果", got)
+	}
+	select {
+	case <-closed:
+	case <-ctx.Done():
+		t.Fatal("Close did not return | Close 未返回")
+	}
+}
+
+// TestParamPoolGoZeroAllocations verifies the fixed-handler fast path allocation
+// claim. | TestParamPoolGoZeroAllocations 验证固定处理器快路径的零分配声明。
+func TestParamPoolGoZeroAllocations(t *testing.T) {
+	p := pool.NewParamPool[int, int](double, append(testOptions(),
+		pool.WithWorkers(2),
+		pool.WithShards(2),
+		pool.WithQueueSize(1024),
+		pool.WithFallbackQueueSize(1024),
+		pool.WithSpinCount(0),
+	)...)
+	defer p.Close()
+	if err := p.Go(1); err != nil {
+		t.Fatalf("warm-up go: %v | 预热提交失败", err)
+	}
+	p.Wait()
+	allocs := testing.AllocsPerRun(1000, func() {
+		_ = p.Go(1)
+		p.Wait()
+	})
+	if allocs != 0 {
+		t.Fatalf("ParamPool.Go allocs = %v, want 0 | ParamPool.Go 分配次数不符", allocs)
+	}
+}
+
+// TestParamPoolGoBatchZeroAllocations verifies the batch header recycling claim.
+// | TestParamPoolGoBatchZeroAllocations 验证批次头复用后的零分配声明。
+func TestParamPoolGoBatchZeroAllocations(t *testing.T) {
+	p := pool.NewParamPool[int, int](double, append(testOptions(),
+		pool.WithWorkers(2),
+		pool.WithShards(2),
+		pool.WithQueueSize(1024),
+		pool.WithFallbackQueueSize(1024),
+		pool.WithSpinCount(0),
+	)...)
+	defer p.Close()
+	args := []int{1, 2, 3}
+	if err := p.GoBatch(args); err != nil {
+		t.Fatalf("warm-up GoBatch: %v | 预热批量提交失败", err)
+	}
+	p.Wait()
+	allocs := testing.AllocsPerRun(1000, func() {
+		_ = p.GoBatch(args)
+		p.Wait()
+	})
+	if allocs != 0 {
+		t.Fatalf("GoBatch allocs = %v, want 0 | GoBatch 分配次数不符", allocs)
 	}
 }

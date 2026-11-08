@@ -4,13 +4,15 @@
 //
 // # Overview | 概览
 //
-// The pool owns a fixed set of worker goroutines and a set of bounded
-// lock-free MPMC rings. Submissions rotate across the rings; each worker
-// consumes its home ring first, steals from the other rings when idle, and only
-// then spins and parks. A shared fallback ring absorbs bursts when every shard
-// is full. | 协程池持有一组固定的 worker 协程与一组有界无锁 MPMC 环。提交按分片轮询
-// 入队；worker 优先消费自己的 home 环，空闲时从其它环窃取，最后才自旋并休眠。所有分片
-// 都满时，共享 fallback 环吸收突发流量。
+// The pool owns a set of worker goroutines and a set of bounded lock-free MPMC
+// rings. Submissions rotate across the rings; each worker checks its home ring
+// and the fallback ring, spins briefly without scanning other shards, steals
+// from the other rings before parking, and parks when all queues are empty. A
+// token wakeup immediately scans every shard. A shared fallback ring absorbs
+// bursts when every shard is full. | 协程池持有一组 worker 协程与一组有界无锁 MPMC
+// 环。提交按分片轮询入队；worker 检查自己的 home 环与 fallback 环，短暂自旋期间不扫描
+// 其它分片，准备休眠前从其它环窃取，全部队列为空时休眠。令牌唤醒后立即扫描所有分片。
+// 所有分片都满时，共享 fallback 环吸收突发流量。
 //
 // Fire-and-forget submission keeps the job inline in the ring slot and allocates
 // nothing per task. Panic recovery, context cancellation, graceful shutdown and
@@ -77,10 +79,11 @@
 //
 // A panicking task is recovered and reported as *PanicError, which unwraps to
 // ErrTaskPanicked and carries the stack and worker id. A configured
-// PanicHandler observes the same information; a panic in the handler is
-// swallowed. | 发生 panic 的任务会被恢复并报告为 *PanicError，它可 Unwrap 到
-// ErrTaskPanicked，并携带栈与 worker 编号。配置的 PanicHandler 会收到相同信息；处理器
-// 自身的 panic 会被吞掉。
+// PanicHandler receives the recovered value and stack (PanicInfo has no worker
+// id); a panic in the handler is swallowed. | 发生 panic 的任务会被恢复并报告为
+// *PanicError，它可 Unwrap 到 ErrTaskPanicked，并携带栈与 worker 编号。配置的
+// PanicHandler 会收到 panic 值与栈（PanicInfo 不含 worker 编号）；处理器自身的 panic
+// 会被吞掉。
 //
 // Submit and Call check ctx before execution. A task canceled while queued is
 // completed with the context error without running. | Submit 与 Call 在执行前检查
@@ -103,11 +106,12 @@
 //
 // WithWorkers sets the worker count (default runtime.GOMAXPROCS(0)). WithShards
 // sets the ring count (default the next power of two at or above the worker
-// count). WithQueueSize sets the total ring capacity (default 256 slots per
-// shard); WithFallbackQueueSize sets the shared overflow capacity (default
-// 1024). | WithWorkers 设置 worker 数（默认 runtime.GOMAXPROCS(0)）。WithShards 设置
-// 环数（默认不小于 worker 数的下一个 2 的幂）。WithQueueSize 设置环的总容量（默认每分片
-// 256 槽）；WithFallbackQueueSize 设置共享溢出容量（默认 1024）。
+// count). WithQueueSize sets the requested total ring capacity, rounded up per
+// shard (default 256 slots per shard); WithFallbackQueueSize sets the shared
+// overflow capacity, rounded up to a power of two (default 1024). | WithWorkers
+// 设置 worker 数（默认 runtime.GOMAXPROCS(0)）。WithShards 设置环数（默认不小于 worker
+// 数的下一个 2 的幂）。WithQueueSize 设置请求的环总容量，按分片向上取整（默认每分片
+// 256 槽）；WithFallbackQueueSize 设置共享溢出容量，向上取整为 2 的幂（默认 1024）。
 //
 // WithNonblocking rejects a full queue with ErrQueueFull instead of blocking.
 // WithSpinCount controls how long an idle worker polls before parking; 0

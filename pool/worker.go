@@ -332,11 +332,26 @@ func (e *engine[J]) shutdown(ctx context.Context) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	// Completion takes precedence when both done and ctx expiry are ready, so a
+	// shutdown that already drained never reports a deadline error. | 当排空与 ctx
+	// 到期同时就绪时优先报告完成，使已经排空的关闭不会误报超时。
+	select {
+	case <-e.done:
+		e.drainDiscard()
+		return nil
+	default:
+	}
 	select {
 	case <-e.done:
 		e.drainDiscard()
 		return nil
 	case <-ctx.Done():
+		select {
+		case <-e.done:
+			e.drainDiscard()
+			return nil
+		default:
+		}
 		return ctx.Err()
 	}
 }

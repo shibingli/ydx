@@ -396,3 +396,367 @@ func TestShutdownConcurrentSubmit(t *testing.T) {
 	default:
 	}
 }
+
+// TestNonblockingQueueFull verifies that a saturated nonblocking pool reports
+// ErrQueueFull through the public API. | TestNonblockingQueueFull 验证饱和的非阻塞池
+// 通过公开 API 返回 ErrQueueFull。
+func TestNonblockingQueueFull(t *testing.T) {
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	releaseFn := func() { releaseOnce.Do(func() { close(release) }) }
+	p := pool.New(append(testOptions(),
+		pool.WithWorkers(1),
+		pool.WithShards(1),
+		pool.WithQueueSize(2),
+		pool.WithFallbackQueueSize(2),
+		pool.WithSpinCount(0),
+		pool.WithNonblocking(),
+	)...)
+	t.Cleanup(func() {
+		releaseFn()
+		p.Close()
+	})
+
+	started := make(chan struct{})
+	if err := p.Go(func(context.Context) error {
+		close(started)
+		<-release
+		return nil
+	}); err != nil {
+		t.Fatalf("blocker: %v | 提交阻塞任务失败", err)
+	}
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("blocker did not start | 阻塞任务未启动")
+	}
+
+	accepted := 0
+	var full error
+	for i := 0; i < 100; i++ {
+		err := p.Go(func(context.Context) error { return nil })
+		if err == nil {
+			accepted++
+			continue
+		}
+		full = err
+		break
+	}
+	if accepted == 0 {
+		t.Fatal("no task was accepted | 没有任务被接受")
+	}
+	if !errors.Is(full, pool.ErrQueueFull) {
+		t.Fatalf("full error = %v, want ErrQueueFull | 错误不符", full)
+	}
+	releaseFn()
+	p.Wait()
+}
+
+// TestPanicHandlerPanicIsolated verifies that panics in the panic and error
+// handlers do not kill a worker or poison the pool. | TestPanicHandlerPanicIsolated
+// 验证 panic 处理器与错误处理器自身的 panic 不会杀死 worker 或污染协程池。
+func TestPanicHandlerPanicIsolated(t *testing.T) {
+	p := pool.New(append(testOptions(),
+		pool.WithPanicHandler(func(pool.PanicInfo) { panic("panic handler boom") }),
+		pool.WithErrorHandler(func(error) { panic("error handler boom") }),
+	)...)
+	defer p.Close()
+
+	for i := 0; i < 10; i++ {
+		iteration := i
+		task := p.Submit(context.Background(), func(context.Context) error {
+			if iteration%2 == 0 {
+				panic("task boom")
+			}
+			return errors.New("task error")
+		})
+		if err := task.Wait(context.Background()); err == nil {
+			t.Fatalf("iteration %d: expected error | 预期错误", iteration)
+		}
+	}
+	if err := p.Go(func(context.Context) error { return errors.New("go boom") }); err != nil {
+		t.Fatalf("go: %v | 提交失败", err)
+	}
+	p.Wait()
+	if err := p.Call(context.Background(), func(context.Context) error { return nil }); err != nil {
+		t.Fatalf("pool unusable after handler panics: %v | 处理器 panic 后池不可用", err)
+	}
+}
+
+// TestSubmitCanceledWhileQueued verifies that a task canceled before its turn
+// does not run and settles with the context error. | TestSubmitCanceledWhileQueued
+// 验证轮到自己之前被取消的任务不会执行，并以 context 错误结算。
+func TestSubmitCanceledWhileQueued(t *testing.T) {
+	p := pool.New(append(testOptions(),
+		pool.WithWorkers(1),
+		pool.WithShards(1),
+		pool.WithQueueSize(4),
+		pool.WithFallbackQueueSize(4),
+		pool.WithSpinCount(0),
+	)...)
+	defer p.Close()
+
+	started := make(chan struct{})
+	release := make(chan struct{})
+	if err := p.Go(func(context.Context) error {
+		close(started)
+		<-release
+		return nil
+	}); err != nil {
+		t.Fatalf("blocker: %v | 提交阻塞任务失败", err)
+	}
+	<-started
+
+	ctx, cancel := context.WithCancel(context.Background())
+	var ran atomic.Bool
+	task := p.Submit(ctx, func(context.Context) error {
+		ran.Store(true)
+		return nil
+	})
+	cancel()
+	close(release)
+	if err := task.Wait(context.Background()); !errors.Is(err, context.Canceled) {
+		t.Fatalf("task error = %v, want context.Canceled | 错误不符", err)
+	}
+	if ran.Load() {
+		t.Fatal("canceled queued task ran | 已取消的排队任务仍执行")
+	}
+	p.Wait()
+}
+
+// TestCallContextExpiry verifies that Call returns the context error while the
+// running task is allowed to finish. | TestCallContextExpiry 验证 Call 返回 context
+// 错误，同时允许运行中的任务结束。
+func TestCallContextExpiry(t *testing.T) {
+	p := pool.New(append(testOptions(), pool.WithWorkers(1), pool.WithShards(1))...)
+	defer p.Close()
+
+	started := make(chan struct{})
+	release := make(chan struct{})
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- p.Call(ctx, func(context.Context) error {
+			close(started)
+			<-release
+			return nil
+		})
+	}()
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("task did not start | 任务未启动")
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("Call error = %v, want context.Canceled | 错误不符", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Call did not return after cancellation | 取消后 Call 未返回")
+	}
+	close(release)
+	p.Wait()
+	if st := p.Stats(); st.Completed != 1 {
+		t.Fatalf("completed = %d, want 1 | 完成计数不符", st.Completed)
+	}
+}
+
+// TestBlockedSubmitterReleasedByShutdown verifies that Shutdown releases a
+// submitter blocked on a full queue with ErrPoolClosed. | TestBlockedSubmitterReleasedByShutdown
+// 验证 Shutdown 以 ErrPoolClosed 释放阻塞在满队列上的提交方。
+func TestBlockedSubmitterReleasedByShutdown(t *testing.T) {
+	p := pool.New(append(testOptions(),
+		pool.WithWorkers(1),
+		pool.WithShards(1),
+		pool.WithQueueSize(2),
+		pool.WithFallbackQueueSize(2),
+		pool.WithSpinCount(0),
+	)...)
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	releaseFn := func() { releaseOnce.Do(func() { close(release) }) }
+	t.Cleanup(func() {
+		releaseFn()
+		p.Close()
+	})
+	if err := p.Go(func(context.Context) error {
+		close(started)
+		<-release
+		return nil
+	}); err != nil {
+		t.Fatalf("blocker: %v | 提交阻塞任务失败", err)
+	}
+	<-started
+	for i := 0; i < 4; i++ {
+		if err := p.Go(func(context.Context) error { return nil }); err != nil {
+			t.Fatalf("fill %d: %v | 填充队列失败", i, err)
+		}
+	}
+	blocked := make(chan error, 1)
+	go func() {
+		blocked <- p.Go(func(context.Context) error { return nil })
+	}()
+	time.Sleep(10 * time.Millisecond)
+	shutdownDone := make(chan error, 1)
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		shutdownDone <- p.Shutdown(ctx)
+	}()
+	select {
+	case err := <-blocked:
+		if !errors.Is(err, pool.ErrPoolClosed) {
+			t.Fatalf("blocked submit error = %v, want ErrPoolClosed | 错误不符", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("blocked submitter not released by Shutdown | 提交方未被 Shutdown 释放")
+	}
+	releaseFn()
+	if err := <-shutdownDone; err != nil {
+		t.Fatalf("shutdown: %v | 关闭失败", err)
+	}
+}
+
+// TestConcurrentClose verifies that Close is idempotent and concurrent callers
+// all return. | TestConcurrentClose 验证 Close 幂等且并发调用全部返回。
+func TestConcurrentClose(t *testing.T) {
+	p := pool.New(testOptions()...)
+	var wg sync.WaitGroup
+	for i := 0; i < 64; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			p.Close()
+		}()
+	}
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("concurrent Close hung | 并发 Close 挂起")
+	}
+}
+
+// TestResizeAfterClose verifies that Resize rejects a closed pool. |
+// TestResizeAfterClose 验证 Resize 拒绝已关闭的池。
+func TestResizeAfterClose(t *testing.T) {
+	p := pool.New(testOptions()...)
+	p.Close()
+	if err := p.Resize(4); !errors.Is(err, pool.ErrPoolClosed) {
+		t.Fatalf("Resize error = %v, want ErrPoolClosed | 错误不符", err)
+	}
+}
+
+// TestWithoutMetrics verifies that completion counters are disabled while
+// Submitted remains available. | TestWithoutMetrics 验证完成计数被关闭而 Submitted
+// 仍可用。
+func TestWithoutMetrics(t *testing.T) {
+	p := pool.New(append(testOptions(), pool.WithoutMetrics())...)
+	defer p.Close()
+	for i := 0; i < 100; i++ {
+		if err := p.Go(func(context.Context) error { return nil }); err != nil {
+			t.Fatalf("go: %v | 提交失败", err)
+		}
+	}
+	p.Wait()
+	st := p.Stats()
+	if st.Submitted != 100 || st.Completed != 0 || st.Failed != 0 || st.Panicked != 0 {
+		t.Fatalf("stats = %+v | 统计不符", st)
+	}
+}
+
+// TestShutdownTimeoutDrainsInBackground verifies that a timed-out Shutdown
+// stops accepting work but keeps draining the queues. | TestShutdownTimeoutDrainsInBackground
+// 验证超时的 Shutdown 停止接受新任务但继续在后台排空队列。
+func TestShutdownTimeoutDrainsInBackground(t *testing.T) {
+	p := pool.New(append(testOptions(), pool.WithWorkers(1), pool.WithShards(1))...)
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	releaseFn := func() { releaseOnce.Do(func() { close(release) }) }
+	t.Cleanup(func() {
+		releaseFn()
+		p.Close()
+	})
+	var ran atomic.Int64
+	if err := p.Go(func(context.Context) error {
+		close(started)
+		<-release
+		ran.Add(1)
+		return nil
+	}); err != nil {
+		t.Fatalf("blocker: %v | 提交阻塞任务失败", err)
+	}
+	<-started
+	for i := 0; i < 19; i++ {
+		if err := p.Go(func(context.Context) error {
+			ran.Add(1)
+			return nil
+		}); err != nil {
+			t.Fatalf("go: %v | 提交失败", err)
+		}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Millisecond)
+	defer cancel()
+	if err := p.Shutdown(ctx); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Shutdown error = %v, want DeadlineExceeded | 错误不符", err)
+	}
+	if err := p.Go(func(context.Context) error { return nil }); !errors.Is(err, pool.ErrPoolClosed) {
+		t.Fatalf("post-shutdown Go = %v, want ErrPoolClosed | 错误不符", err)
+	}
+	releaseFn()
+	p.Wait()
+	if got := ran.Load(); got != 20 {
+		t.Fatalf("ran = %d, want 20 | 执行数量不符", got)
+	}
+}
+
+// TestShutdownPrefersCompletedDrain verifies that an already-drained shutdown
+// returns nil even when the context has expired. | TestShutdownPrefersCompletedDrain
+// 验证已排空的 Shutdown 即使 context 已到期也返回 nil。
+func TestShutdownPrefersCompletedDrain(t *testing.T) {
+	p := pool.New(testOptions()...)
+	p.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	for i := 0; i < 100; i++ {
+		if err := p.Shutdown(ctx); err != nil {
+			t.Fatalf("iteration %d: Shutdown = %v, want nil | 已排空仍返回错误", i, err)
+		}
+	}
+	if err := p.Shutdown(nil); err != nil {
+		t.Fatalf("Shutdown(nil) = %v, want nil | nil context 错误", err)
+	}
+}
+
+// TestGoZeroAllocations verifies the fire-and-forget fast path allocation claim.
+// | TestGoZeroAllocations 验证 fire-and-forget 快路径的零分配声明。
+func TestGoZeroAllocations(t *testing.T) {
+	p := pool.New(append(testOptions(),
+		pool.WithWorkers(2),
+		pool.WithShards(2),
+		pool.WithQueueSize(1024),
+		pool.WithFallbackQueueSize(1024),
+		pool.WithSpinCount(0),
+	)...)
+	defer p.Close()
+	fn := func(context.Context) error { return nil }
+	if err := p.Go(fn); err != nil {
+		t.Fatalf("warm-up go: %v | 预热提交失败", err)
+	}
+	p.Wait()
+	allocs := testing.AllocsPerRun(1000, func() {
+		_ = p.Go(fn)
+		p.Wait()
+	})
+	if allocs != 0 {
+		t.Fatalf("Go allocs = %v, want 0 | Go 分配次数不符", allocs)
+	}
+}

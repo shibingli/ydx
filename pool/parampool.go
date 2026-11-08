@@ -9,10 +9,10 @@ import (
 
 // batchJob is one batched submission. | batchJob 是一次批量提交。
 type batchJob[T, R any] struct {
-	args    []T
-	results []R
 	ctx     context.Context
 	fut     *completion[[]R]
+	args    []T
+	results []R
 }
 
 // jobParam is the internal task stored by ParamPool. | jobParam 是 ParamPool 存储的内部
@@ -32,12 +32,12 @@ type jobParam[T, R any] struct {
 // not be copied after first use. | 由于处理器在构造时固定，Go 与 Submit 把参数复制进环槽，
 // 而不是为每个任务分配闭包。ParamPool 首次使用后不得复制。
 type ParamPool[T, R any] struct {
+	batchPool    sync.Pool
 	eng          *engine[jobParam[T, R]]
 	handler      func(context.Context, T) (R, error)
 	panicHandler func(PanicInfo)
 	errorHandler func(error)
 	metrics      bool
-	batchPool    sync.Pool
 }
 
 // NewParamPool creates a ParamPool. A nil handler makes every task fail with
@@ -309,11 +309,10 @@ func (p *ParamPool[T, R]) GoBatch(args []T) error {
 	}
 	b := p.getBatch()
 	b.args = args
-	if err := p.eng.submit(jobParam[T, R]{batch: b}); err != nil {
+	if err := p.eng.submitExtra(jobParam[T, R]{batch: b}, uint64(len(args)-1)); err != nil {
 		p.putBatch(b)
 		return err
 	}
-	p.eng.addBatchExtra(len(args) - 1)
 	return nil
 }
 
@@ -332,11 +331,10 @@ func (p *ParamPool[T, R]) startBatch(ctx context.Context, dst []R, args []T) ([]
 	b.results = results
 	b.ctx = ctx
 	b.fut = c
-	if err := p.eng.submit(jobParam[T, R]{batch: b}); err != nil {
+	if err := p.eng.submitExtra(jobParam[T, R]{batch: b}, uint64(len(args)-1)); err != nil {
 		p.putBatch(b)
 		return results, nil, err
 	}
-	p.eng.addBatchExtra(len(args) - 1)
 	return results, c, nil
 }
 
@@ -346,9 +344,12 @@ func (p *ParamPool[T, R]) startBatch(ctx context.Context, dst []R, args []T) ([]
 // Every element runs in order; the first error is returned together with the
 // results produced so far. Context cancellation stops the remaining elements.
 // If the context expires before the batch finishes, the internal results slice
-// is not returned (nil) because a worker may still be writing it. | 每个元素按顺序执行；
-// 返回首个错误与已产生的结果。context 取消会停止剩余元素。若 context 在批次完成前到期，
-// 不返回内部结果切片（nil），因为 worker 可能仍在写入。
+// is not returned (nil) because a worker may still be writing it and reading
+// args. The caller must not modify or reuse args until the batch has stopped;
+// call Wait before reusing them. | 每个元素按顺序执行；返回首个错误与已产生的结果。
+// context 取消会停止剩余元素。若 context 在批次完成前到期，不返回内部结果切片（nil），
+// 因为 worker 可能仍在写入结果并读取 args。调用方在批次停止前不得修改或复用 args；
+// 复用前请先调用 Wait。
 func (p *ParamPool[T, R]) CallBatch(ctx context.Context, args []T) ([]R, error) {
 	if p.handler == nil {
 		return nil, ErrNilTask

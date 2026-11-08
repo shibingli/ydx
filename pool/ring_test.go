@@ -169,3 +169,84 @@ func TestRingConcurrent(t *testing.T) {
 		t.Fatalf("consumed = %d, want %d | 消费数量不符", got, total)
 	}
 }
+
+// TestRingConcurrentMinimumCapacity hammers a two-slot ring with many producers
+// and consumers so sequence-number reservation wraps while slots are reused. |
+// TestRingConcurrentMinimumCapacity 用多生产者/多消费者压测两槽环，覆盖槽位复用时序列号
+// 预占的回绕。
+func TestRingConcurrentMinimumCapacity(t *testing.T) {
+	const (
+		producers   = 8
+		consumers   = 8
+		perProducer = 10000
+	)
+	total := producers * perProducer
+	r := newRing[int](2)
+	seen := make([]atomic.Bool, total)
+	var consumed atomic.Int64
+
+	var prodWG sync.WaitGroup
+	for p := 0; p < producers; p++ {
+		prodWG.Add(1)
+		go func(base int) {
+			defer prodWG.Done()
+			for i := 0; i < perProducer; i++ {
+				v := base + i
+				for !r.tryEnqueue(v) {
+					runtime.Gosched()
+				}
+			}
+		}(p * perProducer)
+	}
+
+	stop := make(chan struct{})
+	var consWG sync.WaitGroup
+	record := func(v int) bool {
+		if v < 0 || v >= total {
+			t.Errorf("value %d out of range | 值越界", v)
+			return false
+		}
+		if seen[v].Swap(true) {
+			t.Errorf("duplicate value %d | 重复值", v)
+			return false
+		}
+		consumed.Add(1)
+		return true
+	}
+	for c := 0; c < consumers; c++ {
+		consWG.Add(1)
+		go func() {
+			defer consWG.Done()
+			for {
+				v, ok := r.tryDequeue()
+				if ok {
+					if !record(v) {
+						return
+					}
+					continue
+				}
+				select {
+				case <-stop:
+					for {
+						v, ok := r.tryDequeue()
+						if !ok {
+							return
+						}
+						if !record(v) {
+							return
+						}
+					}
+				default:
+					runtime.Gosched()
+				}
+			}
+		}()
+	}
+
+	prodWG.Wait()
+	close(stop)
+	consWG.Wait()
+	if got := consumed.Load(); got != int64(total) {
+		t.Fatalf("consumed = %d, want %d | 消费数量不符", got, total)
+	}
+}

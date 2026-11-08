@@ -31,6 +31,8 @@ type Option func(*options)
 // options is the user-facing configuration before normalization. | options 是归一化前的
 // 用户配置。
 type options struct {
+	panicHandler func(PanicInfo)
+	errorHandler func(error)
 	workers      int
 	shards       int
 	queueSize    int
@@ -38,8 +40,6 @@ type options struct {
 	spinCount    int
 	nonblocking  bool
 	metrics      bool
-	panicHandler func(PanicInfo)
-	errorHandler func(error)
 }
 
 // defaultOptions returns the default configuration. | defaultOptions 返回默认配置。
@@ -67,18 +67,20 @@ func WithShards(n int) Option {
 	return func(o *options) { o.shards = n }
 }
 
-// WithQueueSize sets the total queue capacity across shards. The per-shard
-// capacity is the total divided by the shard count, rounded up to a power of two
-// with a minimum of two. A non-positive value uses 256 slots per shard. |
-// WithQueueSize 设置各分片合计的队列容量。每分片容量为总量除以分片数，向上取整为 2 的
-// 幂且最小为 2。非正数使用每分片 256 个槽位。
+// WithQueueSize sets the requested total queue capacity across shards. The
+// per-shard capacity is the total divided by the shard count, rounded up to a
+// power of two with a minimum of two, so the effective capacity reported by
+// Stats may exceed n. A non-positive value uses 256 slots per shard. |
+// WithQueueSize 设置各分片合计的请求队列容量。每分片容量为总量除以分片数，向上取整为
+// 2 的幂且最小为 2，因此 Stats 报告的实际容量可能大于 n。非正数使用每分片 256 个槽位。
 func WithQueueSize(n int) Option {
 	return func(o *options) { o.queueSize = n }
 }
 
-// WithFallbackQueueSize sets the shared overflow ring capacity. A non-positive
-// value uses 1024 slots. | WithFallbackQueueSize 设置共享溢出环容量。非正数使用 1024
-// 个槽位。
+// WithFallbackQueueSize sets the shared overflow ring capacity, rounded up to a
+// power of two with a minimum of two. A non-positive value uses 1024 slots. |
+// WithFallbackQueueSize 设置共享溢出环容量，向上取整为 2 的幂且最小为 2。非正数使用
+// 1024 个槽位。
 func WithFallbackQueueSize(n int) Option {
 	return func(o *options) { o.fallbackSize = n }
 }

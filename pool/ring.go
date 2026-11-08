@@ -43,11 +43,11 @@ type paddedPos struct {
 // 消费者用 CAS 预占 head 位置后发布下一轮序列号。每个出队的值都会被清零，避免环长期
 // 持有任务闭包或 context。
 type ring[T any] struct {
-	mask uint64
 	seqs []paddedSeq
 	vals []T
 	head paddedPos
 	tail paddedPos
+	mask uint64
 }
 
 // newRing creates a ring whose capacity is the next power of two at least capacity,
