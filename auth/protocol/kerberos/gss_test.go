@@ -635,6 +635,7 @@ func TestGSSAcceptorAuthenticatorChecksum(t *testing.T) {
 		{"missing checksum", func(auth *Authenticator) { auth.Cksum = nil }, ErrGSSAPI},
 		{"wrong checksum type", func(auth *Authenticator) { auth.Cksum.CksumType = 1 }, ErrGSSAPI},
 		{"short checksum", func(auth *Authenticator) { auth.Cksum.Checksum = auth.Cksum.Checksum[:20] }, ErrGSSAPI},
+		{"wrong binding length", func(auth *Authenticator) { auth.Cksum.Checksum[0] = 0 }, ErrGSSAPI},
 		{"delegation", func(auth *Authenticator) { auth.Cksum.Checksum[20] |= 1 }, ErrGSSAPI},
 	}
 	for _, test := range tests {

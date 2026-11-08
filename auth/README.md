@@ -13,7 +13,7 @@ SCIM 2.0、WebAuthn、TOTP/HOTP、RBAC/ABAC、CAS、联邦登录与 RADIUS。所
 | 领域目录 | 用途 | 当前包 |
 |---|---|---|
 | `auth/token/` | 令牌格式与 JOSE | `jwt`、`jose` |
-| `auth/protocol/` | 认证/SSO 线协议 | `oauth2`、`oidc`、`saml`、`cas`、`wsfed`、`federation`、`radius` |
+| `auth/protocol/` | 认证/SSO 线协议 | `oauth2`、`oidc`、`saml`、`cas`、`wsfed`、`federation`、`radius`、`kerberos` |
 | `auth/directory/` | 目录服务、预配与 AD 认证 | `ldap`、`scim`、`ntlm` |
 | `auth/mfa/` | 多因素认证 | `otp`、`webauthn` |
 | `auth/authz/` | 授权模型 | `rbac` |
@@ -157,9 +157,12 @@ wsfedSTS.Register(r, "/wsfed")   // WS-Federation / ADFS
   LDAP 过滤器深度上限 64，分页搜索上限 10000 页（`ErrPagingLimit`）。
 - RADIUS 响应在请求带 Message-Authenticator 时必须带有效 MA；CoA/Disconnect 使用 3799 端口，
   按 RFC 5176 原样重传。NAS 侧 `DynamicServer` 校验 Request/Message-Authenticator、支持 ACK/NAK
-  与 Error-Cause，并用进程内重复请求缓存应答重传。未实现 Access/Accounting 服务端与中继/代理；
-  重复缓存单进程，跨实例需共享实现。OTP 重放键默认为密钥 SHA-256 指纹，共享密钥场景使用
-  `WithReplayKey`。
+  与 Error-Cause，并用进程内重复请求缓存应答重传。`AccessServer`/`AccountingServer` 支持
+  UDP/TCP/TLS，`Relay`/`ProxyServer` 转发 Access/Accounting 并做循环检测、上游故障转移与
+  PAP/MS-MPPE 重加密，EAP 服务端覆盖 EAP-MD5、EAP-MSCHAPv2、EAP-TLS、EAP-TTLS（PAP/MS-CHAPv2
+  内层）与 PEAPv0（EAP-MSCHAPv2 内层）。边界：中继不转发 CoA/Disconnect；动态授权仅 UDP；
+  EAP/MS-CHAPv2 挑战状态与计费重复缓存单进程，跨实例需粘性路由或共享前端。OTP 重放键默认为
+  密钥 SHA-256 指纹，共享密钥场景使用 `WithReplayKey`。
 - CAS 服务 URL 必须为绝对 http(s) 且无 userinfo；1.0 也执行 renew；`X-Forwarded-Proto` 仅接受
   http/https，边缘必须剥离客户端自带的该头。WebAuthn 默认严格签名计数器，可配置
   `CounterAllowBackupEligibleReset`（仅 BE=1 且 BS=1 时允许回退）或 `CounterAllowAny`；BE 标志
@@ -199,18 +202,23 @@ JWK/PKCS#8/PKIX 导出策略；OIDC 的 `SigningKey`、SAML 的 `XMLDSigSigner` 
 
 ## 已知边界
 
-- **Kerberos/GSSAPI** 未内置：纯 Go 下实现 Kerberos 与 GSSAPI 需要完整的票据/加密/ASN.1 栈；
-  AD 场景可使用 `auth/directory/ldap` 的 **NTLMv2（SASL GSS-SPNEGO/NTLM，支持
-  tls-server-end-point channel binding）**，或 LDAP/LDAPS/StartTLS + SASL PLAIN/EXTERNAL/SCRAM。
-  真正的 Kerberos SSO 仍需外部 GSSAPI 实现。
+- **Kerberos/GSSAPI** 由 `auth/protocol/kerberos` 内置实现：AS/TGS/AP 交换、MIT keytab、
+  AES128/256-CTS-HMAC-SHA1-96 与 RC4-HMAC、GSSAPI/SPNEGO 发起方与 Acceptor、RFC 4121
+  通道绑定与逐消息保护；LDAP 通过 `BindSASLGSSAPI` 使用同一实现。边界：仅支持上述三种
+  enctype，不实现 PKINIT、凭据委派（GSS 标志会被拒绝）与跨 realm referral 跟踪；LDAP SASL
+  GSSAPI 只协商 RFC 4752 无安全层，后续 LDAP 消息不做 GSS 封装。AD 的 NTLMv2
+  （SASL GSS-SPNEGO/NTLM）仍由 `auth/directory/ldap` 与 `auth/directory/ntlm` 提供。
 - **OIDC 请求对象（RFC 9101）与 JARM** 已实现；request/request_uri 缓存与登出重放存储为进程内
   实现，多实例需替换为共享实现；JARM 响应 TTL 固定 5 分钟；动态注册会拒绝 `alg=none` 与不安全
   request_uri，但不预先校验任意 `request_object_signing_alg`/`authorization_signed_response_alg`
   是否与提供方密钥能力匹配（在请求/签名时失败）。PAR、DPoP、mTLS、前后端登出、会话管理均已实现。
 - **SAML 的 XML 签名/加密** 由 `auth/crypto/xmlsig` 通过 `saml.XMLDSigSigner`/`saml.XMLDSigVerifier`
-  注入；未注入时只能用于测试或明确接受未签名断言的兼容场景。Artifact 绑定支持 SOAP 1.1 ARS、
-  302 `SAMLart` 交付、TTL 与单次使用；无 SOAP 1.2、ARS failover 或跨端点重试，多实例 IdP 需
-  配置共享的 20 字节 `ArtifactSourceID` 与共享 `ArtifactStore`。
+  注入；未注入时只能用于测试或明确接受未签名断言的兼容场景。Artifact 绑定支持 302 `SAMLart`
+  交付、TTL 与单次使用；SP 与 IdP 的 ARS 均支持 SOAP 1.1/1.2，SP 按元数据顺序做多端点
+  failover（默认 8、上限 16）并受单次与总超时约束，IdP 侧可用 `WantArtifactResolveSigned`
+  要求 ArtifactResolve 签名。`RequireSignedArtifactResponse` 默认关闭；未开启时
+  ArtifactResponse 本身可以不签名，但其中嵌入的 Response 仍走完整的 SAML 校验。多实例 IdP
+  需配置共享的 20 字节 `ArtifactSourceID` 与共享 `ArtifactStore`。
 - **KMS/KMIP** 默认提供内存存储；生产应替换为持久化 `Store`，KMIP 以 TLS/mTLS 为默认传输，
   客户端通过 `kmip.DialContext` + `kmip.Client` 串行调用类型化操作。KMIP 服务端按请求头选择
   1.4/2.0 负载，`Discover Versions` 通告 `[2.0, 1.4]`；2.0 已覆盖 Create、Create Key Pair、
@@ -219,15 +227,20 @@ JWK/PKCS#8/PKIX 导出策略；OIDC 的 `SigningKey`、SAML 的 `XMLDSigSigner` 
   Discover Versions 与 Check 的属性结构，无安全 2.0 表示的操作或标签返回 `ErrUnsupported`。
   JWK 以厂商扩展 `KeyFormatJWK = 0x80000001`（JSON 置于 Key Material）支持 oct/RSA/EC
   P-256/384/521/Ed25519/X25519，并与 Raw/Transparent/PKCS#1/PKCS#8/X.509/SEC1 双向转换；
-  SM2 无法表示为 JWK，仍需使用 Transparent/原始格式。`Export` 操作未实现，`Get` 即导出路径；
-  2.0 Get 不支持按属性名筛选（请用 Get Attributes），2.0 Get Attributes/Get Attribute List
-  拒绝厂商属性引用，2.0 Template 对象不支持；X25519 映射为 ECDH，私钥须以 PKCS#8 导入，
-  未提供 X25519 密钥对生成。`Destroy` 保留墓碑，后续 `Get` 返回 Illegal Operation 但不保留
-  密钥材料。Client 不自动重连，传输错误后需重新拨号；`AllowPlaintext` 仅用于测试；
-  Batch Undo 通过快照回滚，内存与复制成本随批大小增长。
-- **CAS** 已实现 3.0 JSON 视图与后端 SLO（SessionIndex 精确撤销、并行回传 `logoutRequest`）；
-  未实现前端浏览器 SLO 重定向，LogoutRequest 不做 XML 签名校验（依赖不可猜测的 SessionIndex
-  与网络边界），`NotOnOrAfter` 只为幂等性解析不强制；默认 SessionRegistry 仅单进程。
+  SM2 无法表示为 JWK，仍需使用 Transparent/原始格式。1.4 支持 `Export`（2.0 已移除该操作，
+  按规范返回 `ErrUnsupported`，请改用 `Get`）；2.0 Get 不支持按属性名筛选（请用
+  Get Attributes），2.0 Get Attributes/Get Attribute List 拒绝厂商属性引用，2.0 Template
+  对象不支持；X25519 映射为 ECDH，私钥须以 PKCS#8 导入，未提供 X25519 密钥对生成。
+  `Destroy` 保留墓碑，后续 `Get` 返回 Illegal Operation 但不保留密钥材料。Client 断线后
+  惰性重连，失败请求不重放，`Close` 后不再重连；`AllowPlaintext` 仅用于测试；Batch Undo
+  使用每批逆操作日志（记录受影响对象的完整先前状态，含已销毁材料），日志受
+  `MaxUndoLogBytes` 限制，超预算的变更在应用前以 `ErrUndoLogLimit` 失败，批处理按服务器
+  串行执行。
+- **CAS** 已实现 3.0 JSON 视图、后端 SLO（SessionIndex 精确撤销、并行回传 `logoutRequest`）
+  与前端浏览器 SLO（为每个已登记前端登出 URL 渲染隐藏框架页，默认最多 10 个服务）。入站
+  LogoutRequest 的 XML 签名由可选 `LogoutRequestSignatureVerifier` 校验，
+  `RequireSignedLogoutRequest` 打开时拒绝未签名请求；未配置校验器时不校验。`NotOnOrAfter`
+  只为幂等性解析不强制；默认 SessionRegistry 仅单进程。
 - 所有内存实现（`auth.NewMemoryStores`、`oauth2.NewMemoryStore`、`saml.NewMemoryStore`、
   `rbac.NewMemoryStore`、`scim.NewMemoryStore`、`cas.NewMemoryTicketStore`、`kms`/`kmip`
   内存存储、OTP 重放保护）仅适用于单进程；多实例请实现共享存储接口。
@@ -242,7 +255,8 @@ JWK/PKCS#8/PKIX 导出策略；OIDC 的 `SigningKey`、SAML 的 `XMLDSigSigner` 
   `Verify`/`Decrypt` 默认限制 1 MiB 输入，大载荷需调高 `MaxTokenSize`。
 - **OAuth2/OIDC**：`Server.Endpoint(p)` 与 `Provider.Endpoint(p)` 现接受未加前缀的路径并
   自动应用 PathPrefix，禁止 `Endpoint(Path(p))` 嵌套；`client_secret_jwt` 在注册与认证时
-  明确拒绝；Back-Channel Logout 接收端必须配置 `BackchannelLogoutClientID`，未配置时失败关闭。
+  明确拒绝（v0.1.3 起在部署方提供 `ClientSecretResolver` 后支持，见下）；Back-Channel Logout
+  接收端必须配置 `BackchannelLogoutClientID`，未配置时失败关闭。
 - **SAML/WS-Fed**：多个 AudienceRestriction 必须全部匹配；配置 `SPResolver` 时 ACS 以元数据
   为准，未注册的请求 URL 被拒绝；HTTP-Redirect SLO 以查询签名满足签名策略，POST 仍需 XML 签名。
 - **OTP/WebAuthn/RBAC**：HOTP 拒绝计数器回退并保持单调；CBOR binary16 不再静默舍入；Android Key
@@ -275,7 +289,8 @@ JWK/PKCS#8/PKIX 导出策略；OIDC 的 `SigningKey`、SAML 的 `XMLDSigSigner` 
   LogoutRequest 支持 XML 签名校验，`RequireSignedLogoutRequest` 打开时失败关闭。
 - **RADIUS**：UDP 上结构畸形、Identifier 不匹配、Response Authenticator/Message-Authenticator
   错误的报文全部静默丢弃并等待；流传输仍立即失败并关闭连接。新增 UDP/TCP/TLS `AccessServer`
-  与 `AccountingServer`（PAP/CHAP、MA、并发/尺寸/关闭控制）；relay 与完整 EAP 状态机仍不在范围。
+  与 `AccountingServer`（PAP/CHAP、MA、并发/尺寸/关闭控制）；relay 与完整 EAP 状态机仍不在
+  范围（v0.1.3 已补齐 relay/proxy 与 EAP 服务端，见下）。
 - **SCIM/LDAP**：写请求默认要求 `application/scim+json` 或 `application/json`（415，可用
   `AllowAnyContentType` 放宽）；新增口令预检与失败补偿（版本条件写）；LDAP 连接池可选空闲探测
   （默认关闭）；`RequireSASLPlainTLS` 可强制 SASL PLAIN 仅 TLS。
@@ -284,7 +299,8 @@ JWK/PKCS#8/PKIX 导出策略；OIDC 的 `SigningKey`、SAML 的 `XMLDSigSigner` 
 - **KMS/KMIP**：REST 新增 `AllowedOrigins`/`AllowedHosts`/`RequireSameOrigin`/
   `CookieAuth`/`CSRFCheck`；静态加密新写入使用版本化 `KMSM2`（随机盐、参数入包，旧 `KMSM1`
   仍可解）；`DeriveKey` 仅允许对称密钥；KMIP 实现 1.4 `Export`，协议版本仅接受 1.4/2.0，
-  客户端断线后惰性重连且不重放失败请求；Batch Undo 仍为完整快照（已在文档说明原因）。
+  客户端断线后惰性重连且不重放失败请求；Batch Undo 仍为完整快照（v0.1.3 改为逆操作日志，
+  见下）。
 - **核心 auth/CN**：`RotateAfter` 在两种 HTTP 入口自动轮换；`NewManagedMemoryStores` 提供
   周期清理；`RequireEmailVerification` 下联邦未验证邮箱新用户置为 `UserPending`；
   `PasswordPolicy` 支持逐字段默认；`Config.RequireMFAToken` 可关闭旧空 MFAToken 路径；

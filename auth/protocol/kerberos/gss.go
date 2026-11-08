@@ -108,7 +108,7 @@ func (g *GSSClient) InitialToken(ctx context.Context) ([]byte, error) {
 		flags |= gssContextMutual
 	}
 	checksum := make([]byte, 24)
-	binary.LittleEndian.PutUint32(checksum[:4], 16)
+	binary.LittleEndian.PutUint32(checksum[:4], gssChecksumBindingLength)
 	copy(checksum[4:20], g.channelBindings())
 	binary.LittleEndian.PutUint32(checksum[20:24], flags)
 	authenticator := Authenticator{

@@ -431,6 +431,12 @@ func (a *Acceptor) acceptAPReq(request APReq) (*acceptResult, error) {
 	}, nil
 }
 
+// gssChecksumBindingLength is the RFC 4121 Lgth value naming the 16-octet
+// channel-binding hash carried by a GSS authenticator checksum. |
+// gssChecksumBindingLength 是 RFC 4121 中命名 GSS 认证器校验和所携带 16 字节通道绑定哈希的
+// Lgth 值。
+const gssChecksumBindingLength = 16
+
 // validateAuthenticatorChecksum validates the RFC 4121 GSS checksum, channel
 // binding, and context flags of an authenticator. | validateAuthenticatorChecksum
 // 校验认证器的 RFC 4121 GSS 校验和、通道绑定与上下文标志。
@@ -446,6 +452,11 @@ func (a *Acceptor) validateAuthenticatorChecksum(authenticator Authenticator, re
 	if len(checksum.Checksum) != 24 {
 		return 0, errs.Detail(ErrGSSAPI, "GSS checksum is %d octets, want 24 | GSS 校验和为 %d 字节，期望 24",
 			len(checksum.Checksum), len(checksum.Checksum))
+	}
+	bindingLength := binary.LittleEndian.Uint32(checksum.Checksum[0:4])
+	if bindingLength != gssChecksumBindingLength {
+		return 0, errs.Detail(ErrGSSAPI, "GSS checksum binding length is %d, want %d | GSS 校验和绑定长度为 %d，期望 %d",
+			bindingLength, gssChecksumBindingLength, bindingLength, gssChecksumBindingLength)
 	}
 	contextFlags := binary.LittleEndian.Uint32(checksum.Checksum[20:24])
 	if contextFlags&gssContextDeleg != 0 {
