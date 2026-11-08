@@ -51,12 +51,6 @@ func (s NegState) String() string {
 // in the GSS-API InitialContextToken header. | SPNEGOToken 是解析后的 SPNEGO
 // NegTokenInit 或 NegTokenResp，可能带有 GSS-API InitialContextToken 外层包装。
 type SPNEGOToken struct {
-	// NegState is the negotiation state when HasNegState is true. | 当 HasNegState
-	// 为 true 时，NegState 是协商状态。
-	NegState NegState
-	// HasNegState reports whether a negState field was present. | HasNegState 报告是否存在
-	// negState 字段。
-	HasNegState bool
 	// SupportedMech is the DER OID value of the supportedMech field. | SupportedMech 是
 	// supportedMech 字段的 DER OID 值。
 	SupportedMech []byte
@@ -68,9 +62,23 @@ type SPNEGOToken struct {
 	MechToken []byte
 	// MechListMIC is the optional mechListMIC field. | MechListMIC 是可选 mechListMIC 字段。
 	MechListMIC []byte
-	// MechTypes lists the DER OID values advertised by a NegTokenInit. | MechTypes
-	// 列出 NegTokenInit 声明的 DER OID 值。
+	// MechTypes lists the DER OID values advertised by a NegTokenInit or by the
+	// MS-SPNG mechTypes extension of a NegTokenResp. | MechTypes 列出 NegTokenInit
+	// 或 NegTokenResp 的 MS-SPNG mechTypes 扩展所声明的 DER OID 值。
 	MechTypes [][]byte
+	// MechTypesDER is the canonical DER SEQUENCE OF OID over which mechListMIC is
+	// computed. | MechTypesDER 是计算 mechListMIC 所用的规范 DER SEQUENCE OF OID。
+	MechTypesDER []byte
+	// NegState is the negotiation state when HasNegState is true. | 当 HasNegState
+	// 为 true 时，NegState 是协商状态。
+	NegState NegState
+	// HasNegState reports whether a negState field was present. | HasNegState 报告是否存在
+	// negState 字段。
+	HasNegState bool
+	// HasMechListMIC reports whether a mechListMIC field was present, including
+	// an empty but present OCTET STRING. | HasMechListMIC 报告是否存在 mechListMIC
+	// 字段，包括存在但为空的 OCTET STRING。
+	HasMechListMIC bool
 }
 
 // Token returns ResponseToken when it is non-empty, otherwise MechToken. | Token
@@ -101,6 +109,102 @@ func (t *SPNEGOToken) SupportsNTLM() bool {
 	return false
 }
 
+// tokenMechTypes returns the DER OID values carried by a token, decoding
+// MechTypesDER when MechTypes is empty. | tokenMechTypes 返回令牌携带的 DER OID 值；
+// 当 MechTypes 为空时解码 MechTypesDER。
+func tokenMechTypes(token *SPNEGOToken) ([][]byte, error) {
+	if len(token.MechTypes) > 0 {
+		return token.MechTypes, nil
+	}
+	if len(token.MechTypesDER) == 0 {
+		return nil, errs.Detail(ErrSPNEGO, "token has no mechTypes | 令牌没有 mechTypes")
+	}
+	tag, value, rest, err := readDER(token.MechTypesDER)
+	if err != nil {
+		return nil, err
+	}
+	if tag != 0x30 || len(rest) != 0 {
+		return nil, errs.Detail(ErrSPNEGO, "mechTypes is not a single SEQUENCE | mechTypes 不是单个 SEQUENCE")
+	}
+	return parseMechTypes(value)
+}
+
+// EncodeSPNEGOToken encodes a SPNEGO token. When initChoice is true it emits a
+// NegTokenInit wrapped in a GSS-API InitialContextToken; otherwise it emits a
+// bare NegTokenResp. NegTokenInit requires MechTypes; NegTokenResp encodes
+// MechTypes as the MS-SPNG mechTypes [4] extension when present. NegState,
+// SupportedMech, MechToken or ResponseToken, and MechListMIC are emitted when
+// their fields are present. All DER lengths are canonical. | EncodeSPNEGOToken
+// 编码 SPNEGO 令牌。initChoice 为 true 时输出包装在 GSS-API InitialContextToken 中的
+// NegTokenInit；否则输出裸 NegTokenResp。NegTokenInit 必须提供 MechTypes；
+// NegTokenResp 在存在 MechTypes 时以 MS-SPNG 的 mechTypes [4] 扩展编码。NegState、
+// SupportedMech、MechToken 或 ResponseToken、MechListMIC 在字段存在时输出。所有 DER
+// 长度均为规范形式。
+func EncodeSPNEGOToken(token *SPNEGOToken, initChoice bool) ([]byte, error) {
+	if token == nil {
+		return nil, errs.Detail(ErrSPNEGO, "token is nil | 令牌为空")
+	}
+	if token.HasNegState && token.NegState > NegStateRequestMIC {
+		return nil, errs.Detail(ErrSPNEGO, "negState value %d is invalid | negState 值 %d 非法", token.NegState, token.NegState)
+	}
+	builder := &derBuilder{}
+	if initChoice {
+		mechanisms, err := tokenMechTypes(token)
+		if err != nil {
+			return nil, err
+		}
+		mechList, err := EncodeMechTypeList(mechanisms)
+		if err != nil {
+			return nil, err
+		}
+		fields := [][]byte{builder.seq(0xA0, mechList)}
+		if token.MechToken != nil {
+			fields = append(fields, builder.seq(0xA2, builder.tlv(0x04, token.MechToken)))
+		}
+		if token.HasMechListMIC || token.MechListMIC != nil {
+			fields = append(fields, builder.seq(0xA3, builder.tlv(0x04, token.MechListMIC)))
+		}
+		negTokenInit := builder.seq(0x30, fields...)
+		choice := builder.seq(0xA0, negTokenInit)
+		spnegoOID := builder.tlv(0x06, spnegoMechOID)
+		initial := builder.seq(0x60, spnegoOID, choice)
+		if builder.err != nil {
+			return nil, builder.err
+		}
+		return initial, nil
+	}
+	fields := make([][]byte, 0, 5)
+	if token.HasNegState {
+		fields = append(fields, builder.seq(0xA0, builder.tlv(0x0A, []byte{byte(token.NegState)})))
+	}
+	if len(token.SupportedMech) > 0 {
+		fields = append(fields, builder.seq(0xA1, builder.tlv(0x06, token.SupportedMech)))
+	}
+	if token.ResponseToken != nil {
+		fields = append(fields, builder.seq(0xA2, builder.tlv(0x04, token.ResponseToken)))
+	}
+	if token.HasMechListMIC || token.MechListMIC != nil {
+		fields = append(fields, builder.seq(0xA3, builder.tlv(0x04, token.MechListMIC)))
+	}
+	if len(token.MechTypes) > 0 || len(token.MechTypesDER) > 0 {
+		mechanisms, err := tokenMechTypes(token)
+		if err != nil {
+			return nil, err
+		}
+		mechList, err := EncodeMechTypeList(mechanisms)
+		if err != nil {
+			return nil, err
+		}
+		fields = append(fields, builder.seq(0xA4, mechList))
+	}
+	negotiation := builder.seq(0x30, fields...)
+	response := builder.seq(0xA1, negotiation)
+	if builder.err != nil {
+		return nil, builder.err
+	}
+	return response, nil
+}
+
 // EncodeSPNEGONegotiateInit wraps a Type 1 NEGOTIATE_MESSAGE in a GSS-API
 // InitialContextToken carrying a NegTokenInit that advertises only NTLMSSP. This
 // is the initial response Active Directory expects for SASL GSS-SPNEGO. |
@@ -108,20 +212,10 @@ func (t *SPNEGOToken) SupportsNTLM() bool {
 // GSS-API InitialContextToken，仅声明 NTLMSSP。这是 Active Directory 对 SASL
 // GSS-SPNEGO 期望的初始响应。
 func EncodeSPNEGONegotiateInit(mechToken []byte) ([]byte, error) {
-	builder := &derBuilder{}
-	ntlmOID := builder.tlv(0x06, ntlmMechOID)
-	mechList := builder.seq(0x30, ntlmOID)
-	mechTypes := builder.seq(0xA0, mechList)
-	octets := builder.tlv(0x04, mechToken)
-	mechTokenField := builder.seq(0xA2, octets)
-	negTokenInit := builder.seq(0x30, mechTypes, mechTokenField)
-	choice := builder.seq(0xA0, negTokenInit)
-	spnegoOID := builder.tlv(0x06, spnegoMechOID)
-	initial := builder.seq(0x60, spnegoOID, choice)
-	if builder.err != nil {
-		return nil, builder.err
-	}
-	return initial, nil
+	return EncodeSPNEGOToken(&SPNEGOToken{
+		MechTypes: [][]byte{ntlmMechOID},
+		MechToken: mechToken,
+	}, true)
 }
 
 // EncodeSPNEGOResponse wraps a Type 3 AUTHENTICATE_MESSAGE in a bare
@@ -130,15 +224,19 @@ func EncodeSPNEGONegotiateInit(mechToken []byte) ([]byte, error) {
 // AUTHENTICATE_MESSAGE 包装为裸 NegTokenResp。客户端省略 negState，因为 RFC 4178 将
 // accept-completed 保留给接受方。
 func EncodeSPNEGOResponse(mechToken []byte) ([]byte, error) {
-	builder := &derBuilder{}
-	octets := builder.tlv(0x04, mechToken)
-	responseToken := builder.seq(0xA2, octets)
-	negotiation := builder.seq(0x30, responseToken)
-	response := builder.seq(0xA1, negotiation)
-	if builder.err != nil {
-		return nil, builder.err
-	}
-	return response, nil
+	return EncodeSPNEGOToken(&SPNEGOToken{ResponseToken: mechToken}, false)
+}
+
+// EncodeSPNEGOResponseWithMIC wraps a Type 3 AUTHENTICATE_MESSAGE and an
+// optional mechListMIC in a bare NegTokenResp. A nil mechListMIC omits the field.
+// | EncodeSPNEGOResponseWithMIC 把 Type 3 AUTHENTICATE_MESSAGE 与可选 mechListMIC
+// 包装为裸 NegTokenResp。nil mechListMIC 省略该字段。
+func EncodeSPNEGOResponseWithMIC(mechToken, mechListMIC []byte) ([]byte, error) {
+	return EncodeSPNEGOToken(&SPNEGOToken{
+		ResponseToken:  mechToken,
+		MechListMIC:    mechListMIC,
+		HasMechListMIC: mechListMIC != nil,
+	}, false)
 }
 
 // ParseSPNEGOToken parses a SPNEGO token in any of the forms Active Directory
@@ -241,7 +339,7 @@ func parseNegToken(data []byte) (*SPNEGOToken, int, error) {
 func parseNegFields(content []byte, initChoice bool) (*SPNEGOToken, error) {
 	token := &SPNEGOToken{}
 	initSyntax := initChoice
-	seen := make(map[byte]struct{}, 4)
+	seen := make(map[byte]struct{}, 5)
 	for len(content) > 0 {
 		tag, value, rest, err := readDER(content)
 		if err != nil {
@@ -266,6 +364,7 @@ func parseNegFields(content []byte, initChoice bool) (*SPNEGOToken, error) {
 					return nil, err
 				}
 				token.MechTypes = mechanisms
+				token.MechTypesDER = append([]byte(nil), value...)
 				initSyntax = true
 			} else {
 				if innerTag != 0x0A {
@@ -318,7 +417,42 @@ func parseNegFields(content []byte, initChoice bool) (*SPNEGOToken, error) {
 			if innerTag != 0x04 {
 				return nil, errs.Detail(ErrSPNEGO, "mechListMIC is not an OCTET STRING | mechListMIC 不是 OCTET STRING")
 			}
+			if token.HasMechListMIC {
+				return nil, errs.Detail(ErrSPNEGO, "duplicate mechListMIC | 重复的 mechListMIC")
+			}
 			token.MechListMIC = append([]byte(nil), innerValue...)
+			token.HasMechListMIC = true
+		case 0xA4:
+			innerTag, innerValue, err := parseTaggedValue(value)
+			if err != nil {
+				return nil, err
+			}
+			if initSyntax {
+				// NegTokenInit2 carries mechListMIC in field [4]; field [3] is
+				// negHints and is not part of the NTLM exchange. | NegTokenInit2
+				// 在字段 [4] 中携带 mechListMIC；字段 [3] 是 negHints，不属于 NTLM
+				// 交换。
+				if innerTag != 0x04 {
+					return nil, errs.Detail(ErrSPNEGO, "mechListMIC is not an OCTET STRING | mechListMIC 不是 OCTET STRING")
+				}
+				if token.HasMechListMIC {
+					return nil, errs.Detail(ErrSPNEGO, "duplicate mechListMIC | 重复的 mechListMIC")
+				}
+				token.MechListMIC = append([]byte(nil), innerValue...)
+				token.HasMechListMIC = true
+			} else {
+				// The MS-SPNG negTokenResp extension advertises mechTypes in
+				// field [4]. | MS-SPNG negTokenResp 扩展在字段 [4] 中声明 mechTypes。
+				if innerTag != 0x30 {
+					return nil, errs.Detail(ErrSPNEGO, "mechTypes is not a SEQUENCE | mechTypes 不是 SEQUENCE")
+				}
+				mechanisms, err := parseMechTypes(innerValue)
+				if err != nil {
+					return nil, err
+				}
+				token.MechTypes = mechanisms
+				token.MechTypesDER = append([]byte(nil), value...)
+			}
 		default:
 			return nil, errs.Detail(ErrSPNEGO, "unexpected SPNEGO field 0x%02x | 意外的 SPNEGO 字段 0x%02x", tag, tag)
 		}

@@ -45,6 +45,13 @@ type ServiceProviderConfig struct {
 	// AllowOneTimeUseWithoutReplayStore 在 AssertionReplayStore 与 Store 均无法强制一次性使用时
 	// 接受 OneTimeUse 断言且不检测重放。默认 false 失败关闭。
 	AllowOneTimeUseWithoutReplayStore bool
+	// ReplayWindow controls replay-record retention. Zero values derive retention from the
+	// assertion's Conditions/NotOnOrAfter, SubjectConfirmationData/NotOnOrAfter and
+	// SessionNotOnOrAfter, falling back to DefaultReplayFallback when no upper bound is present. |
+	// ReplayWindow 控制重放记录保留时长。零值依据断言的 Conditions/NotOnOrAfter、
+	// SubjectConfirmationData/NotOnOrAfter 与 SessionNotOnOrAfter 计算保留时长；无上界时使用
+	// DefaultReplayFallback。
+	ReplayWindow ReplayWindow
 	// SignatureVerifier verifies response and assertion signatures. | SignatureVerifier 校验响应与断言签名。
 	SignatureVerifier SignatureVerifier
 	// Decryptor decrypts EncryptedAssertion elements. | Decryptor 解密 EncryptedAssertion 元素。
@@ -187,6 +194,11 @@ func NewServiceProvider(config ServiceProviderConfig) (*ServiceProvider, error) 
 	if len(config.ArtifactSourceID) > 0 && len(config.ArtifactSourceID) != ArtifactSourceIDSize {
 		return nil, errs.Detail(ErrInvalidConfig, "artifact source ID must be %d bytes | 工件源标识必须为 %d 字节", ArtifactSourceIDSize, ArtifactSourceIDSize)
 	}
+	replayWindow, err := config.ReplayWindow.Normalized()
+	if err != nil {
+		return nil, err
+	}
+	config.ReplayWindow = replayWindow
 	if config.ACSPath == "" {
 		config.ACSPath = "/saml/acs"
 	}
@@ -330,6 +342,7 @@ func (sp *ServiceProvider) validateResponse(ctx context.Context, raw []byte) (*V
 		Store:                             sp.store,
 		AssertionReplayStore:              sp.config.AssertionReplayStore,
 		AllowOneTimeUseWithoutReplayStore: sp.config.AllowOneTimeUseWithoutReplayStore,
+		ReplayWindow:                      sp.config.ReplayWindow,
 		SignatureVerifier:                 sp.config.SignatureVerifier,
 		Decryptor:                         sp.config.Decryptor,
 		RequireSignedResponse:             sp.config.RequireSignedResponse,

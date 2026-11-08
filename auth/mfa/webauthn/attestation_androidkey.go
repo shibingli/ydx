@@ -122,6 +122,14 @@ func (o *AttestationObject) verifyAndroidKey(ctx context.Context, result *Attest
 		if err != nil {
 			return errs.WrapDetail(err, ErrUntrustedAttestation, "custom android-key verifier rejected the attestation | 自定义 android-key 校验器拒绝了认证声明")
 		}
+		// A custom verifier adds checks; a non-zero policy still applies afterwards so configured
+		// policy cannot be silently disabled. | 自定义校验器只增加校验；非零策略随后仍会执行，因此已配置
+		// 策略不能被静默关闭。
+		if !opts.AndroidKeyPolicy.isZero() {
+			if err := verifyAndroidKeyExtensionWithPolicy(leaf, clientDataHash, expectedPackage, opts.AndroidKeyPolicy); err != nil {
+				return err
+			}
+		}
 		result.Type = AttestationTypeBasic
 		result.TrustPath = certs
 		result.TrustVerified = trustVerified

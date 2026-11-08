@@ -19,6 +19,22 @@
 // Message-Authenticator、调用可插拔的认证器或计费处理器，并返回已签名的响应。报文编解码执行严格
 // 的长度校验，未知属性按字节原样保留，所有认证符比较均为常量时间。
 //
+// On top of the client and responder primitives, the package provides an EAP server (EAP-MD5,
+// EAP-MSCHAPv2, EAP-TLS, EAP-TTLS with PAP or MS-CHAPv2 inner authentication, and PEAPv0 with
+// inner EAP-MSCHAPv2), a stateful MS-CHAPv2 responder, and a RADIUS relay and proxy. The EAP server
+// implements the continuation state machine, fragment reassembly, Access-Challenge generation and
+// Message-Authenticator handling and plugs into AccessServer as an AccessAuthenticator. Relay and
+// ProxyServer forward Access-Request and Accounting-Request packets with Proxy-State preservation,
+// loop detection, identifier and request-authenticator mapping, upstream failover and PAP/MS-MPPE
+// re-encryption. AccountingServer optionally requires and verifies Message-Authenticator and
+// suppresses duplicate records within a bounded window. | 在客户端与响应器原语之上，本包提供 EAP
+// 服务器（EAP-MD5、EAP-MSCHAPv2、EAP-TLS、内层 PAP 或 MS-CHAPv2 的 EAP-TTLS，以及内层
+// EAP-MSCHAPv2 的 PEAPv0）、有状态 MS-CHAPv2 响应器，以及 RADIUS 中继与代理。EAP 服务器实现续传
+// 状态机、分片重组、Access-Challenge 生成与 Message-Authenticator 处理，并作为 AccessAuthenticator
+// 接入 AccessServer。Relay 与 ProxyServer 转发 Access-Request 与 Accounting-Request，支持
+// Proxy-State 保留、循环检测、标识符与请求认证符映射、上游故障转移以及 PAP/MS-MPPE 重新加密。
+// AccountingServer 可选地要求并校验 Message-Authenticator，并在有界窗口内抑制重复记录。
+//
 // # Usage | 用法
 //
 //	client, err := radius.NewClient(radius.ClientConfig{
@@ -117,24 +133,23 @@
 //	    return err
 //	}
 //
-// Remaining boundaries: the package does not implement a RADIUS relay or proxy. It never forwards
-// Access-Request, Accounting-Request, CoA-Request or Disconnect-Request packets and never adds or
-// removes Proxy-State for forwarding. A DynamicServer echoes request Proxy-State unchanged as a NAS
-// must, but proxy routing and request forwarding are out of scope. It also does not implement a full
-// EAP state machine: AccessServer forwards EAP-Message attributes to the authenticator and requires
-// a Message-Authenticator on EAP requests, but it never generates Access-Challenge or maintains EAP
-// state. AccountingServer follows RFC 2866 and does not validate Message-Authenticator (RFC 2869
-// defines no Accounting-Request calculation) or suppress duplicate records. AccessServer and
-// AccountingServer keep only in-memory transport state; user lookup, credential verification and
-// accounting persistence belong to the callbacks. Dynamic authorization is UDP-only. | 剩余边界：
-// 本包不实现 RADIUS 中继或代理。它从不转发 Access-Request、Accounting-Request、CoA-Request 或
-// Disconnect-Request，也从不为转发添加或移除 Proxy-State。DynamicServer 会按 NAS 要求原样回显
-// 请求的 Proxy-State，但代理路由与请求转发不在范围内。本包也不实现完整的 EAP 状态机：
-// AccessServer 将 EAP-Message 属性转交给认证器，并要求 EAP 请求携带 Message-Authenticator，但
-// 从不生成 Access-Challenge，也不维护 EAP 状态。AccountingServer 遵循 RFC 2866，不校验
-// Message-Authenticator（RFC 2869 未定义 Accounting-Request 的计算方式），也不抑制重复记录。
-// AccessServer 与 AccountingServer 仅保存在内存中的传输状态；用户查找、凭据校验与计费持久化
-// 由回调负责。动态授权仅支持 UDP。
+// Remaining boundaries: relay and proxy forwarding covers Access-Request and Accounting-Request
+// only; CoA-Request and Disconnect-Request are sent by the client or answered by DynamicServer and
+// are never relayed. Relay supports UDP, TCP and TLS upstreams, while ProxyServer accepts UDP, TCP
+// and TLS downstream connections and handles both Access-Request and Accounting-Request on one
+// listener. EAP and MS-CHAPv2 challenge state
+// and the accounting duplicate cache live in process memory; deployments with multiple instances
+// need sticky routing or a shared front end. EAP-TLS, EAP-TTLS and PEAP terminate TLS inside the
+// EAP server and do not provide a generic TLS record layer for arbitrary upper protocols.
+// AccessServer and AccountingServer keep only in-memory transport state; user lookup, credential
+// verification and accounting persistence belong to the callbacks. Dynamic authorization is
+// UDP-only. | 剩余边界：中继与代理仅转发 Access-Request 与 Accounting-Request；CoA-Request 与
+// Disconnect-Request 由客户端发送或由 DynamicServer 应答，绝不中继。Relay 支持 UDP、TCP 与 TLS
+// 上游，ProxyServer 接受 UDP、TCP 与 TLS 下游连接，每个监听器处理一种请求码。EAP 与 MS-CHAPv2
+// 挑战状态以及计费重复缓存保存在进程内存中；多实例部署需要粘性路由或共享前端。EAP-TLS、
+// EAP-TTLS 与 PEAP 在 EAP 服务器内终结 TLS，不提供面向任意上层协议的通用 TLS 记录层。
+// AccessServer 与 AccountingServer 仅保存在内存中的传输状态；用户查找、凭据校验与计费持久化由
+// 回调负责。动态授权仅支持 UDP。
 package radius
 
 import (
@@ -278,6 +293,21 @@ var (
 	ErrDuplicateAttribute = errs.New("radius: duplicate attribute registration | radius：属性注册重复")
 	// ErrInternal reports an unexpected internal failure such as a random source error. | ErrInternal 表示随机源错误等内部故障。
 	ErrInternal = errs.New("radius: internal error | radius：内部错误")
+	// ErrEAPState reports an unknown, expired or already consumed EAP or MS-CHAPv2 session state. |
+	// ErrEAPState 表示未知、过期或已使用的 EAP 或 MS-CHAPv2 会话状态。
+	ErrEAPState = errs.New("radius: EAP state is unknown or expired | radius：EAP 状态未知或已过期")
+	// ErrEAPUnknownUser reports that an EAP password lookup found no user. | ErrEAPUnknownUser 表示
+	// EAP 口令查找未找到用户。
+	ErrEAPUnknownUser = errs.New("radius: EAP user is unknown | radius：EAP 用户未知")
+	// ErrEAPMethod reports an unsupported or unexpected EAP method for a session. | ErrEAPMethod 表示
+	// 会话收到不支持或不符合预期的 EAP 方法。
+	ErrEAPMethod = errs.New("radius: unsupported EAP method | radius：不支持的 EAP 方法")
+	// ErrRelayLoop reports that a relayed request's Proxy-State indicates a forwarding loop or too
+	// many hops. | ErrRelayLoop 表示中继请求的 Proxy-State 表明存在转发循环或跳数过多。
+	ErrRelayLoop = errs.New("radius: relay loop detected | radius：检测到中继循环")
+	// ErrNoUpstream reports that every configured relay upstream failed. | ErrNoUpstream 表示所有已
+	// 配置的中继上游均失败。
+	ErrNoUpstream = errs.New("radius: no relay upstream is available | radius：无可用中继上游")
 )
 
 // ClientConfig configures a Client. | ClientConfig 配置 Client。

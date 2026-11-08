@@ -29,7 +29,7 @@ func (s *Server) serviceProviderConfig(r *http.Request) *ServiceProviderConfig {
 			MaxPayloadSize: s.bulkMaxPayloadSize,
 		},
 		Filter:         FilterSupport{Supported: true, MaxResults: s.maxResults},
-		ChangePassword: FeatureSupport{Supported: s.passwordSetter != nil},
+		ChangePassword: FeatureSupport{Supported: s.passwordProvisioningConfigured()},
 		Sort:           FeatureSupport{Supported: true},
 		ETag:           FeatureSupport{Supported: true},
 		AuthenticationSchemes: []AuthenticationScheme{

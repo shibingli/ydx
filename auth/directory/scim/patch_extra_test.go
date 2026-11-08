@@ -22,7 +22,7 @@ func TestApplyGroupOperationPaths(t *testing.T) {
 	if err := applyGroupOperation(group, PatchOperation{Op: "invalid", Path: "displayName"}); err == nil || !errors.Is(err, ErrInvalidSyntax) {
 		t.Fatalf("invalid op error = %v", err)
 	}
-	if err := applyGroupOperation(group, PatchOperation{Op: "remove"}); err == nil || !errors.Is(err, ErrInvalidPath) {
+	if err := applyGroupOperation(group, PatchOperation{Op: "remove"}); err == nil || !errors.Is(err, ErrNoTarget) {
 		t.Fatalf("pathless remove error = %v", err)
 	}
 	if err := applyGroupOperation(group, PatchOperation{Op: "add"}); err == nil || !errors.Is(err, ErrInvalidValue) {
@@ -66,7 +66,7 @@ func TestApplyGroupPathAttributes(t *testing.T) {
 		{"schemas", "replace", []any{}, ErrMutability},
 		{GroupSchema, "remove", nil, ErrMutability},
 		{"displayName.sub", "replace", "x", ErrInvalidPath},
-		{"displayName", "remove", nil, ErrInvalidValue},
+		{"displayName", "remove", nil, ErrMutability},
 		{"unknown", "replace", "x", ErrInvalidPath},
 	}
 	for _, testCase := range cases {

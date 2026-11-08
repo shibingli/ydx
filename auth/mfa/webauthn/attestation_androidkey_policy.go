@@ -27,10 +27,11 @@ const (
 //
 // The declared keySize, ecCurve and digest values are also compared with the actual certificate
 // public key, so a KeyDescription cannot claim stronger properties than the key it certifies. A
-// custom AndroidKeyVerifier replaces the built-in KeyDescription checks and therefore owns this
-// policy as well. | 声明的 keySize、ecCurve 与 digest 值还会与实际证书公钥比较，因此 KeyDescription
-// 不能声称比其认证密钥更强的属性。自定义 AndroidKeyVerifier 会替换内置 KeyDescription 校验，因此
-// 也自行负责该策略。
+// custom AndroidKeyVerifier adds checks; a non-zero AndroidKeyPolicy is still enforced after it
+// returns, so a custom verifier cannot silently disable configured policy. | 声明的 keySize、ecCurve
+// 与 digest 值还会与实际证书公钥比较，因此 KeyDescription 不能声称比其认证密钥更强的属性。自定义
+// AndroidKeyVerifier 只增加校验；非零 AndroidKeyPolicy 会在其返回后继续执行，因此自定义校验器不能
+// 静默关闭已配置策略。
 type AndroidKeyPolicy struct {
 	// RequireVerifiedBoot requires a rootOfTrust field whose verifiedBootState is Verified (0). |
 	// RequireVerifiedBoot 要求存在 rootOfTrust 字段且 verifiedBootState 为 Verified（0）。
@@ -71,6 +72,18 @@ type AndroidKeyPolicy struct {
 	// required. | AllowAllApplications 允许 allApplications 授权。默认 false 保持基线拒绝行为。设为
 	// true 时，如果要求包名，包名绑定仍会被强制校验。
 	AllowAllApplications bool
+}
+
+// isZero reports whether no optional policy field is set. | isZero 报告是否未设置任何可选策略字段。
+func (p AndroidKeyPolicy) isZero() bool {
+	return !p.RequireVerifiedBoot &&
+		p.MinOSVersion == 0 &&
+		p.MinOSPatchLevel == 0 &&
+		p.MinKeySize == 0 &&
+		len(p.AllowedECCurves) == 0 &&
+		len(p.AllowedDigests) == 0 &&
+		len(p.AllowedApplicationDigests) == 0 &&
+		!p.AllowAllApplications
 }
 
 // validate reports whether the policy is well formed. | validate 报告策略是否格式合法。

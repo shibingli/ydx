@@ -67,6 +67,16 @@ type DPoPVerifierConfig struct {
 	Leeway time.Duration
 	// ValidAlgs restricts proof algorithms; nil allows asymmetric RFC 7518 algorithms. | ValidAlgs 限定证明算法；空值允许 RFC 7518 非对称算法。
 	ValidAlgs []string
+	// Nonces stores and validates server nonces. NewDPoPProofVerifier installs a memory store when
+	// RequireNonce is set and Nonces is nil. | Nonces 存储并校验服务器 nonce。RequireNonce 为真且
+	// Nonces 为空时，NewDPoPProofVerifier 会安装内存存储。
+	Nonces DPoPNonceStore
+	// RequireNonce rejects a proof whose nonce claim is missing, unknown or expired. | RequireNonce
+	// 拒绝 nonce 声明缺失、未知或已过期的证明。
+	RequireNonce bool
+	// NonceTTL is the lifetime of issued nonces; zero means five minutes. | NonceTTL 是已签发 nonce
+	// 的寿命；零值表示 5 分钟。
+	NonceTTL time.Duration
 }
 
 // DPoPProofVerifier verifies RFC 9449 DPoP proofs. | DPoPProofVerifier 校验 RFC 9449 DPoP 证明。
@@ -77,13 +87,26 @@ type DPoPProofVerifier struct {
 // NewDPoPProofVerifier returns a DPoP verifier. | NewDPoPProofVerifier 返回 DPoP 校验器。
 func NewDPoPProofVerifier(config DPoPVerifierConfig) *DPoPProofVerifier {
 	if config.Replay == nil {
-		config.Replay = NewMemoryDPoPReplayStore()
+		replay := NewMemoryDPoPReplayStore()
+		// Keep replay expiry on the verifier clock; otherwise a custom Now makes every entry look
+		// expired as soon as real time moves past it. | 让重放过期与校验器时钟一致；否则自定义 Now
+		// 会使条目在真实时间越过它后立即被视为过期。
+		if config.Now != nil {
+			replay.now = config.Now
+		}
+		config.Replay = replay
 	}
 	if config.ProofWindow <= 0 {
 		config.ProofWindow = 5 * time.Minute
 	}
 	if len(config.ValidAlgs) == 0 {
 		config.ValidAlgs = []string{"RS256", "RS384", "RS512", "PS256", "PS384", "PS512", "ES256", "ES384", "ES512", "EdDSA"}
+	}
+	if config.RequireNonce && config.Nonces == nil {
+		config.Nonces = NewMemoryDPoPNonceStore()
+	}
+	if config.NonceTTL <= 0 {
+		config.NonceTTL = defaultDPoPNonceTTL
 	}
 	return &DPoPProofVerifier{config: config}
 }
@@ -161,6 +184,33 @@ func (v *DPoPProofVerifier) VerifyProof(ctx context.Context, proof, method, targ
 			return "", errs.Detail(ErrInvalidDPoPProof, "ath mismatch | ath 不匹配")
 		}
 	}
+	// Nonce validation runs before the replay store is touched: a challenge must not consume the
+	// proof jti, otherwise the retry with a fresh nonce would be rejected as a replay. | nonce 校验
+	// 在访问重放存储之前进行：挑战不得消费证明 jti，否则携带新 nonce 的重试会被当作重放拒绝。
+	if v.config.RequireNonce {
+		if v.config.Nonces == nil {
+			return "", errs.Detail(ErrInvalidDPoPProof, "nonce store is not configured | 未配置 nonce 存储")
+		}
+		nonce, _ := claims["nonce"].(string)
+		valid := false
+		if nonce != "" {
+			accepted, err := v.config.Nonces.Accept(ctx, nonce, at)
+			if err != nil {
+				return "", errs.Wrap(err, ErrInvalidDPoPProof)
+			}
+			valid = accepted
+		}
+		if !valid {
+			fresh, err := v.config.Nonces.Issue(ctx, at, v.config.NonceTTL)
+			if err != nil {
+				return "", errs.Wrap(err, ErrDPoPNonceRequired)
+			}
+			return "", &DPoPNonceRequiredError{
+				Nonce:  fresh,
+				Detail: "nonce is missing, unknown or expired | nonce 缺失、未知或已过期",
+			}
+		}
+	}
 	// Keep the jti for at least one full window from now: a proof near the end of the accepted
 	// iat window must not age out of the replay cache while it is still acceptable. | 从当前
 	// 时间起至少保留一个完整窗口：接近 iat 接受窗口末尾的证明不能在仍可接受时被重放缓存淘汰。
@@ -180,6 +230,24 @@ func (v *DPoPProofVerifier) VerifyProof(ctx context.Context, proof, method, targ
 		return "", errs.Wrap(err, ErrInvalidDPoPProof)
 	}
 	return thumbprint, nil
+}
+
+// IssueDPoPNonce returns a fresh nonce when nonce mode is enabled. | IssueDPoPNonce 在启用 nonce
+// 模式时返回新 nonce。
+func (v *DPoPProofVerifier) IssueDPoPNonce(ctx context.Context, now time.Time) (string, error) {
+	if v == nil || !v.config.RequireNonce || v.config.Nonces == nil {
+		return "", nil
+	}
+	return v.config.Nonces.Issue(ctx, now, v.config.NonceTTL)
+}
+
+// PruneDPoPNonces removes expired nonces from the verifier's store. | PruneDPoPNonces 删除校验器
+// 存储中的过期 nonce。
+func (v *DPoPProofVerifier) PruneDPoPNonces(now time.Time) {
+	if v == nil || v.config.Nonces == nil {
+		return
+	}
+	v.config.Nonces.Prune(now)
 }
 
 // sameHTU compares two HTTP targets without query or fragment. | sameHTU 比较去掉查询与片段的两个 HTTP 目标。

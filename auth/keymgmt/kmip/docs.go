@@ -15,18 +15,24 @@
 // returns ErrUnsupported for 2.0, where Get replaces it. The JWK key format is supported for symmetric, RSA, EC,
 // Ed25519 and X25519 keys; SM2 keys cannot be represented as JWK and return ErrUnsupported. Destroy keeps a tombstone
 // whose key material has been erased, so a later Get reports Illegal Operation rather than Item Not Found. Batch Undo
-// takes a full snapshot of the store rather than an inverse-operation log: Destroy erases key material and several
-// operations create records, so only a snapshot can restore exact pre-batch content. The snapshot costs memory
-// proportional to the store for the duration of the batch. A Client reconnects lazily; see the Client section.
+// keeps a per-batch inverse-operation journal rather than a full-store snapshot: before each mutation the server
+// records the affected object's complete previous state (key material, attributes, lifecycle state, dates and any
+// destroyed tombstone), or the identifier of a newly created object. On failure the journal is replayed in reverse
+// order, deleting created objects and restoring updated or deleted ones. The journal is isolated to one request
+// message, batches are serialized per server, it is cleared after every batch, and MaxUndoLogBytes bounds its memory;
+// an over-budget mutation fails with ErrUndoLogLimit before it is applied. A Client reconnects lazily; see the Client
+// section.
 //
 // | 请求头选择负载结构：1.4 使用 Template-Attribute，2.0 使用 Attributes 与 Attribute Reference。仅接受 KMIP 1.4
 // 与 2.0；1.0 至 1.3 仅作参考声明，返回 ErrUnsupported。服务器按请求头版本分派，客户端按配置版本编解码。
 // Discover Versions 通告 2.0 与 1.4。没有 2.0 表示的操作或标签返回 ErrUnsupported，而不是生成非法负载。
 // Export 是仅限 1.4 的操作：对 1.4 请求提供服务，对 2.0 返回 ErrUnsupported，2.0 中由 Get 替代。JWK 密钥格式
 // 支持对称、RSA、EC、Ed25519 与 X25519 密钥；SM2 密钥无法表示为 JWK，返回 ErrUnsupported。Destroy 保留密钥
-// 材料已擦除的墓碑，因此之后的 Get 报告非法操作而不是对象不存在。批处理 Undo 采用完整存储快照而不是逆操作
-// 日志：Destroy 会擦除密钥材料，且多个操作会创建记录，只有快照才能恢复批处理前的精确内容。快照在批处理期间
-// 的内存开销与存储规模成正比。Client 采用惰性重连，见 Client 一节。
+// 材料已擦除的墓碑，因此之后的 Get 报告非法操作而不是对象不存在。批处理 Undo 使用每批逆操作日志而不是完整
+// 存储快照：每次变更前，服务器记录受影响对象的完整先前状态（密钥材料、属性、生命周期状态、日期与销毁墓碑），
+// 或记录新建对象的标识符。失败时按逆序重放日志，删除新建对象并恢复被更新或删除的对象。日志隔离在单个请求消息
+// 内，服务器串行执行批处理，每批结束后清空；MaxUndoLogBytes 限制其内存，超预算的变更在应用前以
+// ErrUndoLogLimit 失败。Client 采用惰性重连，见 Client 一节。
 //
 // # Wire format | 线格式
 //
@@ -49,8 +55,8 @@
 //
 // NewServer builds a Server backed by a Store; MemoryStore is the default. A production listener requires TLS,
 // optionally with client certificates, and can enforce authorization per batch item through an Authorizer. Batch
-// items always execute serially. The Stop, Undo and Continue error-continuation policies are supported; Undo restores
-// the store snapshot taken before the batch, marks prior items Operation Undone and drops their payloads. The server
+// items always execute serially. The Stop, Undo and Continue error-continuation policies are supported; Undo replays
+// the per-batch inverse-operation journal, marks prior items Operation Undone and drops their payloads. The server
 // implements Create, Create Key Pair, Register, Get, Get Attributes, Get Attribute List, Activate, Revoke,
 // Destroy, Export, Locate, Derive Key, Encrypt, Decrypt, Sign, Signature Verify, MAC, MAC Verify, Query, Discover
 // Versions and Check, plus the ydx Wrap Key and Unwrap Key extensions. Export is available for KMIP 1.4 and is

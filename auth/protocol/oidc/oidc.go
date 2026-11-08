@@ -68,6 +68,10 @@ const (
 	AuthMethodPost = "client_secret_post"
 	// AuthMethodPrivateKeyJWT is private_key_jwt. | AuthMethodPrivateKeyJWT 是 private_key_jwt。
 	AuthMethodPrivateKeyJWT = "private_key_jwt"
+	// AuthMethodClientSecretJWT is client_secret_jwt, accepted only when the OAuth server enables
+	// it with a secret resolver. | AuthMethodClientSecretJWT 是 client_secret_jwt，仅当 OAuth
+	// 服务器用密钥解析器启用它时才接受。
+	AuthMethodClientSecretJWT = "client_secret_jwt"
 	// AuthMethodNone is the public-client method. | AuthMethodNone 是公共客户端方法。
 	AuthMethodNone = "none"
 )

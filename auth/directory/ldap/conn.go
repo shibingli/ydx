@@ -17,6 +17,7 @@ import (
 type conn struct {
 	netConn  net.Conn
 	reader   *bufio.Reader
+	sasl     connSASLSession
 	secure   bool
 	tlsState tls.ConnectionState
 	maxSize  int
@@ -37,12 +38,40 @@ func newConn(netConn net.Conn, secure bool, state tls.ConnectionState, maxSize i
 	}
 }
 
-// close closes the transport. | close 关闭传输。
+// close closes the transport and wipes any connection-bound SASL session. It is
+// idempotent. | close 关闭传输并清零任何绑定到连接的 SASL 会话，可重复调用。
 func (c *conn) close() error {
-	if c == nil || c.netConn == nil {
+	if c == nil {
+		return nil
+	}
+	c.closeSASLSession()
+	if c.netConn == nil {
 		return nil
 	}
 	return c.netConn.Close()
+}
+
+// bindSASLSession replaces the SASL session whose keying material is bound to
+// this transport. Any previous session is closed first, so replacing a
+// connection or rebinding never leaves a stale NTLM session key in memory. |
+// bindSASLSession 替换密钥材料绑定到本传输的 SASL 会话。旧会话会先关闭，因此替换连接或
+// 重新绑定绝不会在内存中遗留旧的 NTLM 会话密钥。
+func (c *conn) bindSASLSession(session connSASLSession) {
+	if c == nil {
+		return
+	}
+	c.closeSASLSession()
+	c.sasl = session
+}
+
+// closeSASLSession closes and clears the bound SASL session. | closeSASLSession
+// 关闭并清除绑定的 SASL 会话。
+func (c *conn) closeSASLSession() {
+	if c == nil || c.sasl == nil {
+		return
+	}
+	_ = c.sasl.Close()
+	c.sasl = nil
 }
 
 // nextMessageID returns the next positive 31-bit message identifier. | nextMessageID
@@ -226,5 +255,11 @@ func upgradeTLS(ctx context.Context, current *conn, cfg normalizedConfig) (*conn
 	}
 	upgraded := newConn(tlsConn, true, tlsConn.ConnectionState(), current.maxSize)
 	upgraded.nextID = current.nextID
+	// The socket is the same, so a session bound to the old wrapper follows it.
+	// StartTLS normally precedes Bind, but transferring keeps the invariant
+	// unconditional. | 套接字未变，因此绑定到旧包装的会话随之迁移。StartTLS 通常
+	// 先于 Bind，但无条件迁移可保持该不变量。
+	upgraded.sasl = current.sasl
+	current.sasl = nil
 	return upgraded, nil
 }

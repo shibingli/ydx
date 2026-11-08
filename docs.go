@@ -14,17 +14,18 @@
 // buffpool, protocol, nodeid, base64, json, xml, afs, config, log, regexpx, router, gorm, redis,
 // asynq, cron, cache, sse, websocket, webtransport, realtime, render, i18n, openapi, auth (its
 // subpackages are grouped by domain: auth/token/{jwt,jose}, auth/protocol/{oauth2,oidc,saml,cas,
-// wsfed,federation,radius}, auth/directory/{ldap,scim,ntlm}, auth/mfa/{otp,webauthn}, auth/authz/rbac,
-// auth/keymgmt/{kms,kmip}, auth/crypto/xmlsig and auth/identity/cn), captcha and workflow, plus the
+// wsfed,federation,radius,kerberos}, auth/directory/{ldap,scim,ntlm}, auth/mfa/{otp,webauthn}, auth/authz/rbac,
+// auth/keymgmt/{kms,kmip}, auth/crypto/xmlsig and auth/identity/cn), authstore (Redis shared stores
+// for multi-instance deployments), captcha and workflow, plus the
 // openapi/ydrouter adapter and the middleware plugins under middleware/. Benchmarks are kept outside the product modules in
 // benchmarks/, one independent module per component, so product modules never depend on
 // benchmark-only libraries. The repository guard lives in repotest. |
 // 产品模块直接位于仓库根目录下，例如 errs、sysinfo、gc、buffpool、protocol、nodeid、base64、json、
 // xml、afs、config、log、regexpx、router、gorm、redis、asynq、cron、cache、sse、websocket、webtransport、
 // realtime、render、i18n、openapi、auth（子包按领域分组：auth/token/{jwt,jose}、
-// auth/protocol/{oauth2,oidc,saml,cas,wsfed,federation,radius}、auth/directory/{ldap,scim,ntlm}、
+// auth/protocol/{oauth2,oidc,saml,cas,wsfed,federation,radius,kerberos}、auth/directory/{ldap,scim,ntlm}、
 // auth/mfa/{otp,webauthn}、auth/authz/rbac、auth/keymgmt/{kms,kmip}、auth/crypto/xmlsig 与
-// auth/identity/cn）、captcha 与 workflow，以及 openapi/ydrouter 适配器与 middleware/ 下的中间件插件。基准统一放在产品模块
+// auth/identity/cn）、authstore（多实例 Redis 共享存储）、captcha 与 workflow，以及 openapi/ydrouter 适配器与 middleware/ 下的中间件插件。基准统一放在产品模块
 // 之外的 benchmarks/，每个组件一个独立模块，使产品模块永不依赖仅用于基准的库。仓库守卫位于 repotest。
 //
 // Each module is versioned by a subdirectory tag such as errs/v0.1.0 or middleware/cors/v0.1.0.

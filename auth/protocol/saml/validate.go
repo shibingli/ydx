@@ -61,6 +61,13 @@ type ResponseValidationOptions struct {
 	// no replay store is available. The default false fails closed. | AllowOneTimeUseWithoutReplayStore
 	// 在没有重放存储时接受 OneTimeUse 断言且不检测重放。默认 false 失败关闭。
 	AllowOneTimeUseWithoutReplayStore bool
+	// ReplayWindow controls replay-record retention. Zero values derive retention from the
+	// assertion's Conditions/NotOnOrAfter, SubjectConfirmationData/NotOnOrAfter and
+	// SessionNotOnOrAfter, falling back to DefaultReplayFallback when no upper bound is present. |
+	// ReplayWindow 控制重放记录保留时长。零值依据断言的 Conditions/NotOnOrAfter、
+	// SubjectConfirmationData/NotOnOrAfter 与 SessionNotOnOrAfter 计算保留时长；无上界时使用
+	// DefaultReplayFallback。
+	ReplayWindow ReplayWindow
 	// SignatureVerifier verifies XML signatures; nil means present signatures are rejected because
 	// they cannot be checked. | SignatureVerifier 校验 XML 签名；为空时因无法校验而拒绝存在的签名。
 	SignatureVerifier SignatureVerifier
@@ -124,6 +131,11 @@ func ValidateResponse(ctx context.Context, raw []byte, opts ResponseValidationOp
 	if err := xml.Unmarshal(raw, &response); err != nil {
 		return nil, errs.Wrap(err, ErrInvalidResponse)
 	}
+	window, err := opts.ReplayWindow.Normalized()
+	if err != nil {
+		return nil, err
+	}
+	opts.ReplayWindow = window
 	now := Now(opts.Now)
 	skew := opts.ClockSkew
 	if skew <= 0 {
@@ -401,35 +413,9 @@ func validateAssertion(ctx context.Context, entry assertionEntry, response Respo
 	if bearer != nil && response.InResponseTo != "" && bearer.InResponseTo != "" && bearer.InResponseTo != response.InResponseTo {
 		return nil, errs.Detail(ErrInvalidRequest, "subject confirmation InResponseTo mismatch | 主体确认 InResponseTo 不匹配")
 	}
-	expiresAt := now.Add(10 * time.Minute)
-	if assertion.Conditions != nil && assertion.Conditions.NotOnOrAfter != "" {
-		if parsed, err := ParseTime(assertion.Conditions.NotOnOrAfter); err == nil {
-			expiresAt = parsed
-		}
-	}
-	if bearer != nil && bearer.NotOnOrAfter != "" {
-		if parsed, err := ParseTime(bearer.NotOnOrAfter); err == nil && parsed.Before(expiresAt) {
-			expiresAt = parsed
-		}
-	}
-	// SessionNotOnOrAfter bounds the IdP session exactly like Conditions/NotOnOrAfter bounds the
-	// assertion: a value at or before the tolerated clock boundary is expired. | SessionNotOnOrAfter
-	// 与 Conditions/NotOnOrAfter 约束断言的方式一致地约束 IdP 会话：等于或早于容忍时钟边界即过期。
-	for index := range assertion.AuthnStatement {
-		statement := &assertion.AuthnStatement[index]
-		if statement.SessionNotOnOrAfter == "" {
-			continue
-		}
-		parsed, err := ParseTime(statement.SessionNotOnOrAfter)
-		if err != nil {
-			return nil, err
-		}
-		if !now.Add(-skew).Before(parsed) {
-			return nil, ErrResponseExpired
-		}
-		if parsed.Before(expiresAt) {
-			expiresAt = parsed
-		}
+	expiresAt, err := replayExpiry(opts.ReplayWindow, assertion, bearer, now, skew)
+	if err != nil {
+		return nil, err
 	}
 	recorded := false
 	if assertion.Conditions != nil && assertion.Conditions.OneTimeUse != nil {

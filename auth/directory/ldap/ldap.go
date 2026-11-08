@@ -105,12 +105,26 @@ type Config struct {
 	// SASL PLAIN，否则凭据会以明文经过网络。为了兼容默认值为 false；当服务端支持 StartTLS 或
 	// LDAPS 时应启用。
 	RequireSASLPlainTLS bool
+	// RequireSimpleBindTLS rejects simple Bind when the connection is not
+	// TLS-protected. A simple bind carries the password in cleartext, and both the
+	// first bind and the automatic replay after a reconnect are covered. The
+	// default is false for compatibility; enable it whenever the server supports
+	// StartTLS or LDAPS. | RequireSimpleBindTLS 在连接未受 TLS 保护时拒绝简单绑定。
+	// 简单绑定以明文传输口令，首次绑定与重连后的自动重放都受该设置约束。为了兼容默认值为
+	// false；当服务端支持 StartTLS 或 LDAPS 时应启用。
+	RequireSimpleBindTLS bool
 	// BindDN optionally auto-binds with a simple bind after every connection. | BindDN
 	// 可选地在每次连接后执行简单绑定。
 	BindDN string
 	// BindPassword is the auto-bind password. It is never included in errors or logs. |
 	// BindPassword 是自动绑定口令，绝不会出现在错误或日志中。
 	BindPassword string
+	// GSSAPI optionally auto-binds with Kerberos GSSAPI after every connection.
+	// It cannot be combined with BindDN or BindPassword. The options are copied,
+	// and the last successful exchange is replayed after a reconnect. | GSSAPI
+	// 可选地在每次连接后执行 Kerberos GSSAPI 绑定。它不能与 BindDN 或 BindPassword
+	// 同时使用。选项会被复制，重连后会重放最后一次成功的交换。
+	GSSAPI *GSSAPIOptions
 	// ReferralHandler is the default referral hook. | ReferralHandler 是默认转介钩子。
 	ReferralHandler ReferralHandler
 }
@@ -163,6 +177,13 @@ func Dial(ctx context.Context, cfg Config) (*Client, error) {
 			password: normalized.BindPassword,
 		}
 	}
+	if normalized.GSSAPI != nil {
+		if err := client.performSASLGSSAPILocked(ctx, *normalized.GSSAPI); err != nil {
+			client.closeConnLocked()
+			return nil, err
+		}
+		client.auth = &authState{kind: authGSSAPI, gssapi: *normalized.GSSAPI}
+	}
 	return client, nil
 }
 
@@ -196,6 +217,16 @@ func normalizeConfig(cfg Config) (normalizedConfig, error) {
 	}
 	if cfg.BindDN != "" && cfg.BindPassword == "" {
 		return normalizedConfig{}, errs.Detail(ErrInvalidConfig, "auto-bind DN requires a password; anonymous bind must be explicit | 自动绑定 DN 需要口令；匿名绑定必须显式执行")
+	}
+	if cfg.GSSAPI != nil && (cfg.BindDN != "" || cfg.BindPassword != "") {
+		return normalizedConfig{}, errs.Detail(ErrInvalidConfig, "GSSAPI cannot be combined with simple bind credentials | GSSAPI 不能与简单绑定凭据同时使用")
+	}
+	if cfg.GSSAPI != nil {
+		gssapi, err := normalizeGSSAPIOptions(*cfg.GSSAPI)
+		if err != nil {
+			return normalizedConfig{}, err
+		}
+		cfg.GSSAPI = &gssapi
 	}
 	if cfg.Timeout < 0 {
 		return normalizedConfig{}, errs.Detail(ErrInvalidConfig, "negative timeout | 超时为负")

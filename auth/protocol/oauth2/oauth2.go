@@ -106,11 +106,11 @@ const (
 	ClientSecretBasic = "client_secret_basic"
 	// ClientSecretPost is form-body client authentication. | ClientSecretPost 是表单体客户端认证。
 	ClientSecretPost = "client_secret_post"
-	// ClientSecretJWT names the HMAC-signed JWT method, which this implementation does not support:
-	// Client stores only a secret hash, so an HS256 assertion cannot be verified. Registrations
-	// using this value are rejected; use PrivateKeyJWT or a shared-secret method instead. |
-	// ClientSecretJWT 是 HMAC 签名 JWT 方法名，但本实现不支持：Client 只保存密钥哈希，无法校验
-	// HS256 断言。使用该值的注册会被拒绝；请改用 PrivateKeyJWT 或共享密钥方法。
+	// ClientSecretJWT names the RFC 7523 HMAC-signed JWT method. It is accepted only when
+	// ServerConfig.ClientSecretJWT supplies a ClientSecretResolver, because Client.SecretHash
+	// stores only a one-way hash that cannot verify an HMAC. | ClientSecretJWT 是 RFC 7523
+	// HMAC 签名 JWT 方法名。仅当 ServerConfig.ClientSecretJWT 提供 ClientSecretResolver 时才接受，
+	// 因为 Client.SecretHash 只保存无法校验 HMAC 的单向哈希。
 	ClientSecretJWT = "client_secret_jwt"
 	// PrivateKeyJWT is asymmetric JWT client authentication. | PrivateKeyJWT 是非对称 JWT 客户端认证。
 	PrivateKeyJWT = "private_key_jwt"
@@ -284,6 +284,8 @@ func sentinelForCode(code string) error {
 		return ErrAccessDenied
 	case ErrorInvalidDPoPProof:
 		return ErrInvalidDPoPProof
+	case ErrorUseDPoPNonce:
+		return ErrDPoPNonceRequired
 	case ErrorInvalidTarget:
 		return ErrInvalidTarget
 	case ErrorInvalidRequestObject:

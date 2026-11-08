@@ -78,9 +78,17 @@ type Options struct {
 	// Authorizer authorizes each request. nil allows every request. | Authorizer 对每个请求授权。
 	// nil 允许所有请求。
 	Authorizer Authorizer
-	// PasswordSetter provisions passwords. Without it a request carrying password is rejected. |
-	// PasswordSetter 预配口令。缺失时携带 password 的请求会被拒绝。
+	// PasswordSetter provisions passwords in a single post-commit call. It is ignored when
+	// PasswordProvisioner is set. Without either hook a request carrying password is rejected. |
+	// PasswordSetter 以单次提交后调用预配口令。设置 PasswordProvisioner 时忽略它。两者均缺失时携带
+	// password 的请求会被拒绝。
 	PasswordSetter PasswordSetter
+	// PasswordProvisioner performs two-phase external password provisioning. When set it takes
+	// precedence over PasswordSetter: BeginPassword runs before the profile write, Commit runs after
+	// the profile is stored, and Rollback compensates a failed Commit or profile write. |
+	// PasswordProvisioner 执行两阶段外部口令预配。设置后优先于 PasswordSetter：BeginPassword 在
+	// 资料写入前运行，Commit 在资料存储后运行，Rollback 补偿失败的 Commit 或资料写入。
+	PasswordProvisioner PasswordProvisioner
 	// PasswordPrecheck validates passwords before a profile write is committed. Without it the
 	// server calls PasswordSetter only after the store mutation and compensates a rejection by
 	// restoring the prior profile. | PasswordPrecheck 在资料写入提交前校验口令。缺失时服务端仅在
@@ -136,6 +144,9 @@ type Server struct {
 	authorizer Authorizer
 	// passwordSetter provisions write-only passwords. | passwordSetter 预配只写口令。
 	passwordSetter PasswordSetter
+	// passwordProvisioner performs two-phase external password provisioning. | passwordProvisioner
+	// 执行两阶段外部口令预配。
+	passwordProvisioner PasswordProvisioner
 	// passwordPrecheck validates passwords before a profile write commits. | passwordPrecheck 在
 	// 资料写入提交前校验口令。
 	passwordPrecheck PasswordPrechecker
@@ -213,6 +224,7 @@ func New(options Options) (*Server, error) {
 		bulkAtomic:          options.BulkAtomic,
 		bulkMaxUndoBytes:    bulkMaxUndoBytes,
 		passwordSetter:      options.PasswordSetter,
+		passwordProvisioner: options.PasswordProvisioner,
 		passwordPrecheck:    options.PasswordPrecheck,
 		allowAnyContentType: options.AllowAnyContentType,
 		clock:               clock,

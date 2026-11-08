@@ -154,6 +154,20 @@ func signDynamicRequest(raw, secret []byte, messageAuthenticator bool) ([16]byte
 	return authenticator, nil
 }
 
+// verifyInboundMessageAuthenticator verifies a request Message-Authenticator with the correct
+// authenticator vector for code. RFC 5176 section 3.4 and RFC 2866 compute an Accounting-Request
+// Message-Authenticator before the accounting Request Authenticator, so its vector is sixteen zero
+// octets; Access-Request uses its random Request Authenticator. | verifyInboundMessageAuthenticator
+// 使用与 code 对应的认证符向量校验请求 Message-Authenticator。RFC 5176 第 3.4 节与 RFC 2866 要求在
+// 计费 Request Authenticator 之前计算 Accounting-Request 的 Message-Authenticator，因此其向量为
+// 16 个零字节；Access-Request 使用随机 Request Authenticator。
+func verifyInboundMessageAuthenticator(code Code, raw, secret []byte, requestAuthenticator [16]byte) (present, valid bool, err error) {
+	if code == CodeAccountingRequest {
+		requestAuthenticator = [16]byte{}
+	}
+	return verifyMessageAuthenticatorRaw(raw, secret, requestAuthenticator)
+}
+
 // verifyMessageAuthenticatorRaw validates the Message-Authenticator of raw. It reports whether the
 // attribute is present and, when present, whether it matches. | verifyMessageAuthenticatorRaw 校验
 // raw 的 Message-Authenticator。它报告属性是否存在，以及存在时是否匹配。

@@ -31,11 +31,11 @@ ydx 是 yd 全栈框架的可复用组件仓库；组件源码以本仓库为唯
   依赖基准专用库。基准模块的包名同样等于目录名。
 - 产品模块：`errs`、`sysinfo`、`gc`、`buffpool`、`pool`、`protocol`、`nodeid`、`base64`、`json`、`xml`、`afs`、
   `config`、`log`、`regexpx`、`router`、`gorm`、`redis`、`asynq`、`cron`、`cache`、`sse`、`websocket`、
-  `webtransport`、`realtime`、`render`、`i18n`、`openapi`、`openapi/ydrouter`、`auth`、`captcha`、`guomi`、
+  `webtransport`、`realtime`、`render`、`i18n`、`openapi`、`openapi/ydrouter`、`auth`、`authstore`、`captcha`、`guomi`、
   `workflow`、`waf`、`raft`、`rdma`、`wal`、`wal/zstd`、`wal/uring`、`wal/cronbackup`、`middleware` 及
   `middleware/{accesslog,asyncafter,compress,cors,ratelimit,recovery,requestid,reqlog}`。
 - `auth` 是认证与权限工具集模块，子包共享一个 `go.mod`，并按领域分组：
-  `auth/token/{jwt,jose}`、`auth/protocol/{oauth2,oidc,saml,cas,wsfed,federation,radius}`、
+  `auth/token/{jwt,jose}`、`auth/protocol/{oauth2,oidc,saml,cas,wsfed,federation,radius,kerberos}`、
   `auth/directory/{ldap,scim,ntlm}`、`auth/mfa/{otp,webauthn}`、`auth/authz/rbac`、
   `auth/keymgmt/{kms,kmip}`、`auth/crypto/xmlsig`、`auth/identity/cn`。**不得新增平铺子包**：
   新包必须放入上述领域目录之一；目录名必须等于包名，且每个带实现的子包必须有同名主文件；
@@ -44,7 +44,12 @@ ydx 是 yd 全栈框架的可复用组件仓库；组件源码以本仓库为唯
   兼容；不得反向依赖 `yd`。原根目录 `jwt` 模块的实现已迁入 `auth/token/jwt`。`auth/token/jwt`
   的互操作测试可使用 `github.com/golang-jwt/jwt/v5` 作为仅测试对照，不得进入非测试代码；
   `auth` 依赖已发布的 `ydx/json` v0.1.17（修复原生解码器字符串 arena 越界 panic 与
-  fast-struct 解码计划缓存污染），`auth v0.1.0` 与 `json/v0.1.17` 均已打标签。
+  fast-struct 解码计划缓存污染）。`auth v0.1.3` 起包含 Kerberos/GSSAPI、TPM 2.0 EK activation
+  与完整 JOSE 序列化。
+- `authstore` 是独立模块，提供 auth 各包 Store/Registry/Replay/Challenge/State 接口的 Redis
+  多实例实现（`authstore/redis` 与 `authstore/{oauth2,oidc,saml,cas,scim,rbac,kms,kmip,wsfed,otp,webauthn}`）。
+  依赖方向只能是 `authstore → auth`，auth 不得反向依赖 authstore/Redis；测试使用 miniredis，
+  不得要求外部 Redis 才能通过 CI。模块根目录同样提供 `docs.go`、`go.mod`、`go.sum`。
 - `waf`（根目录）是唯一的 WAF 实现：自研 SecLang 引擎，原生支持 `router` 与 `net/http`，
   带热更新、钩子、原生/WASM 插件与报警；热路径使用必需字面量/字节集/最小长度预过滤与
   独立规则并发纯求值，动作仍按源码顺序提交。原 `middleware/waf`（Coraza 封装的 v1）已移除；

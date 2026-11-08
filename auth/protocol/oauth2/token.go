@@ -38,6 +38,15 @@ func (s *Server) Token(w http.ResponseWriter, r *http.Request) {
 		s.writeOAuthError(w, r, errs.Detail(ErrInvalidRequest, "grant_type is required | grant_type 必填"))
 		return
 	}
+	// Verify DPoP before a grant consumes its single-use code or polls a device grant, so the
+	// use_dpop_nonce retry required by RFC 9449 still has state to redeem. | 在授权消费一次性授权码
+	// 或轮询设备许可之前校验 DPoP，使 RFC 9449 要求的 use_dpop_nonce 重试仍有状态可兑换。
+	prepared, err := s.preverifyTokenDPoP(r)
+	if err != nil {
+		s.writeOAuthError(w, r, err)
+		return
+	}
+	r = prepared
 	var response *TokenResponse
 	switch grantType {
 	case GrantAuthorizationCode:
@@ -60,6 +69,11 @@ func (s *Server) Token(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		s.writeOAuthError(w, r, err)
 		return
+	}
+	if response != nil && response.TokenType == TokenTypeDPoP {
+		if nonce := s.issueDPoPNonce(r.Context()); nonce != "" {
+			w.Header().Set(DPoPNonceHeader, nonce)
+		}
 	}
 	writeJSON(w, http.StatusOK, response)
 }

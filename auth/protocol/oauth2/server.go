@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/shibingli/ydx/auth"
@@ -75,9 +76,12 @@ type AccessTokenVerifier interface {
 	VerifyAccessToken(ctx context.Context, token string) (*AccessTokenClaims, error)
 }
 
-// ClientAssertionVerifier verifies RFC 7523 private_key_jwt assertions. client_secret_jwt is not
-// supported because clients store only a secret hash. | ClientAssertionVerifier 校验 RFC 7523
-// private_key_jwt 断言。由于客户端只保存密钥哈希，不支持 client_secret_jwt。
+// ClientAssertionVerifier verifies RFC 7523 private_key_jwt assertions. client_secret_jwt is
+// verified separately by ClientSecretJWTVerifier through ServerConfig.ClientSecretJWT, because
+// clients store only a secret hash and the plaintext must come from a deployment resolver. |
+// ClientAssertionVerifier 校验 RFC 7523 private_key_jwt 断言。client_secret_jwt 由
+// ClientSecretJWTVerifier 经 ServerConfig.ClientSecretJWT 单独校验，因为客户端只保存密钥哈希，
+// 明文必须来自部署方解析器。
 type ClientAssertionVerifier interface {
 	// VerifyClientAssertion verifies assertion for client at audience. | VerifyClientAssertion 在 audience 处为 client 校验 assertion。
 	VerifyClientAssertion(ctx context.Context, client *Client, assertion, audience string) error
@@ -244,10 +248,21 @@ type ServerConfig struct {
 	DPoPRequired bool
 	// DPoPVerifier verifies proofs; required when DPoPRequired is set or a client sends DPoP. | DPoPVerifier 校验证明；DPoPRequired 或客户端发送 DPoP 时必填。
 	DPoPVerifier DPoPVerifier
-	// ClientAssertionVerifier verifies private_key_jwt authentication. client_secret_jwt is not
-	// supported because only secret hashes are stored. | ClientAssertionVerifier 校验
-	// private_key_jwt 认证。由于只保存密钥哈希，不支持 client_secret_jwt。
+	// DPoPNonceStore issues nonces for successful DPoP token responses and is pruned by periodic
+	// cleanup. When nil, a DPoPVerifier implementing DPoPNonceIssuer (including
+	// *DPoPProofVerifier) supplies and prunes its own nonces. | DPoPNonceStore 为成功的 DPoP 令牌
+	// 响应签发 nonce，并由周期清理剪除。空值时，实现了 DPoPNonceIssuer 的 DPoPVerifier（包括
+	// *DPoPProofVerifier）自行签发与剪除 nonce。
+	DPoPNonceStore DPoPNonceStore
+	// ClientAssertionVerifier verifies private_key_jwt authentication. | ClientAssertionVerifier
+	// 校验 private_key_jwt 认证。
 	ClientAssertionVerifier ClientAssertionVerifier
+	// ClientSecretJWT enables RFC 7523 client_secret_jwt authentication when non-nil. The
+	// verifier needs a ClientSecretResolver because Client.SecretHash only stores a one-way hash.
+	// A nil value keeps client_secret_jwt rejected. | ClientSecretJWT 非空时启用 RFC 7523
+	// client_secret_jwt 认证。校验器需要 ClientSecretResolver，因为 Client.SecretHash 只保存
+	// 单向哈希。空值继续拒绝 client_secret_jwt。
+	ClientSecretJWT *ClientSecretJWTConfig
 	// AccessTokenIssuer signs JWT access tokens. | AccessTokenIssuer 签发 JWT 访问令牌。
 	AccessTokenIssuer JWTIssuer
 	// AccessTokenVerifier verifies JWT access tokens for resource-server helpers. | AccessTokenVerifier 为资源服务器辅助函数校验 JWT 访问令牌。
@@ -295,6 +310,15 @@ type Server struct {
 	// repeating an issuer path that already became PathPrefix. | issuerOrigin 是 Issuer 的协议与
 	// 主机部分，用于构建端点 URL 时不重复已成为 PathPrefix 的 issuer 路径。
 	issuerOrigin string
+	// clientSecretJWT verifies RFC 7523 client_secret_jwt assertions; nil keeps the method
+	// disabled. | clientSecretJWT 校验 RFC 7523 client_secret_jwt 断言；空值使该方法保持禁用。
+	clientSecretJWT *ClientSecretJWTVerifier
+	// cleanupMu guards the cleanup scheduler handles below. | cleanupMu 保护下方的清理调度句柄。
+	cleanupMu sync.Mutex
+	// cleanupCancel stops the periodic cleanup goroutine. | cleanupCancel 停止周期清理协程。
+	cleanupCancel context.CancelFunc
+	// cleanupDone closes when the periodic cleanup goroutine exits. | cleanupDone 在周期清理协程退出时关闭。
+	cleanupDone chan struct{}
 }
 
 // NewServer returns a Server. | NewServer 返回 Server。
@@ -370,7 +394,19 @@ func NewServer(config ServerConfig) (*Server, error) {
 		// 会把授权端点变成 SSRF 原语。
 		return nil, errs.Detail(ErrInvalidConfig, "external request_uri needs request_uris registration or allowed hosts | 外部 request_uri 需要注册或主机白名单")
 	}
-	server := &Server{config: config, now: config.Clock, issuerOrigin: parsed.Scheme + "://" + parsed.Host}
+	var clientSecretJWT *ClientSecretJWTVerifier
+	if config.ClientSecretJWT != nil {
+		secretConfig := *config.ClientSecretJWT
+		if secretConfig.Now == nil && config.Clock != nil {
+			secretConfig.Now = config.Clock
+		}
+		verifier, err := NewClientSecretJWTVerifier(secretConfig)
+		if err != nil {
+			return nil, err
+		}
+		clientSecretJWT = verifier
+	}
+	server := &Server{config: config, now: config.Clock, issuerOrigin: parsed.Scheme + "://" + parsed.Host, clientSecretJWT: clientSecretJWT}
 	if server.now == nil {
 		server.now = time.Now
 	}
@@ -459,6 +495,49 @@ func (s *Server) Path(p string) string {
 // 会被应用两次。
 func (s *Server) Endpoint(p string) string { return s.issuerOrigin + s.Path(p) }
 
+// ClientSecretJWTEnabled reports whether RFC 7523 client_secret_jwt authentication is enabled. |
+// ClientSecretJWTEnabled 报告是否启用 RFC 7523 client_secret_jwt 认证。
+func (s *Server) ClientSecretJWTEnabled() bool {
+	return s != nil && s.clientSecretJWT != nil
+}
+
+// ClientSecretJWTRegistrarEnabled reports whether dynamic registration can persist an issued
+// client_secret_jwt secret. It is false when the method is disabled or no registrar is
+// configured. | ClientSecretJWTRegistrarEnabled 报告动态注册能否保存签发的 client_secret_jwt
+// 密钥。方法被禁用或未配置注册器时为 false。
+func (s *Server) ClientSecretJWTRegistrarEnabled() bool {
+	return s != nil && s.clientSecretJWT != nil && s.clientSecretJWT.config.Registrar != nil
+}
+
+// ClientSecretJWTSigningAlgs returns the accepted client_secret_jwt signing algorithms, or nil
+// when the method is disabled. | ClientSecretJWTSigningAlgs 返回接受的 client_secret_jwt 签名算法；
+// 方法被禁用时返回空。
+func (s *Server) ClientSecretJWTSigningAlgs() []string {
+	if s == nil || s.clientSecretJWT == nil {
+		return nil
+	}
+	return s.clientSecretJWT.SigningAlgs()
+}
+
+// RegisterClientSecret persists a secret issued by dynamic registration through the configured
+// ClientSecretRegistrar. It returns ErrClientSecretJWTDisabled when the method is disabled and an
+// ErrInvalidConfig detail when no registrar is configured. | RegisterClientSecret 通过已配置的
+// ClientSecretRegistrar 保存动态注册签发的密钥。方法被禁用时返回 ErrClientSecretJWTDisabled，
+// 未配置注册器时返回 ErrInvalidConfig 细节。
+func (s *Server) RegisterClientSecret(ctx context.Context, clientID, secret string) error {
+	if s == nil || s.clientSecretJWT == nil {
+		return ErrClientSecretJWTDisabled
+	}
+	registrar := s.clientSecretJWT.config.Registrar
+	if registrar == nil {
+		return errs.Detail(ErrInvalidConfig, "client_secret_jwt registration needs a secret registrar | client_secret_jwt 注册需要密钥注册器")
+	}
+	if err := registrar.RegisterClientSecret(ctx, clientID, secret); err != nil {
+		return errs.WrapDetail(err, ErrServerError, "client secret registrar failed | 客户端密钥注册器失败")
+	}
+	return nil
+}
+
 // maxFormBodyBytes limits form-encoded endpoint bodies. | maxFormBodyBytes 限制表单编码的端点正文。
 const maxFormBodyBytes = 1 << 20
 
@@ -525,6 +604,15 @@ func writeJSON(w http.ResponseWriter, status int, value any) {
 
 // writeOAuthError renders an OAuth error. | writeOAuthError 渲染 OAuth 错误。
 func (s *Server) writeOAuthError(w http.ResponseWriter, r *http.Request, err error) {
+	var nonceErr *DPoPNonceRequiredError
+	if errors.As(err, &nonceErr) {
+		if nonceErr.Nonce != "" {
+			w.Header().Set(DPoPNonceHeader, nonceErr.Nonce)
+		}
+		w.Header().Set("WWW-Authenticate", `DPoP error="use_dpop_nonce"`)
+		writeJSON(w, http.StatusBadRequest, NewError(ErrorUseDPoPNonce, "a fresh DPoP nonce is required | 需要新的 DPoP nonce"))
+		return
+	}
 	if s.config.ErrorHandler != nil && !isOAuthError(err) {
 		s.config.ErrorHandler(w, r, err)
 		return
@@ -577,6 +665,8 @@ func normalizeError(err error) *Error {
 		return NewError(ErrorLoginRequired, "login is required | 需要登录")
 	case errors.Is(err, ErrConsentRequired):
 		return NewError(ErrorConsentRequired, "consent is required | 需要授权同意")
+	case errors.Is(err, ErrDPoPNonceRequired):
+		return NewError(ErrorUseDPoPNonce, "a fresh DPoP nonce is required | 需要新的 DPoP nonce")
 	case errors.Is(err, ErrInvalidDPoPProof):
 		return NewError(ErrorInvalidDPoPProof, "invalid DPoP proof | DPoP 证明无效")
 	case errors.Is(err, ErrInvalidTarget):
@@ -693,4 +783,40 @@ func requestTarget(r *http.Request) string {
 		scheme = strings.TrimSpace(strings.Split(forwarded, ",")[0])
 	}
 	return scheme + "://" + r.Host + r.URL.EscapedPath()
+}
+
+// issueDPoPNonce returns a fresh nonce from the configured issuer, or an empty string when nonce
+// mode is disabled. | issueDPoPNonce 从配置的签发器返回新 nonce；未启用 nonce 模式时返回空字符串。
+func (s *Server) issueDPoPNonce(ctx context.Context) string {
+	if s == nil {
+		return ""
+	}
+	now := s.Now()
+	if issuer, ok := s.config.DPoPVerifier.(DPoPNonceIssuer); ok {
+		nonce, err := issuer.IssueDPoPNonce(ctx, now)
+		if err != nil {
+			s.warnDPoPNonce(err)
+			return ""
+		}
+		if nonce != "" {
+			return nonce
+		}
+	}
+	if store := s.config.DPoPNonceStore; store != nil {
+		nonce, err := store.Issue(ctx, now, defaultDPoPNonceTTL)
+		if err != nil {
+			s.warnDPoPNonce(err)
+			return ""
+		}
+		return nonce
+	}
+	return ""
+}
+
+// warnDPoPNonce logs a nonce issuance failure without failing the token response. | warnDPoPNonce
+// 记录 nonce 签发失败，但不使令牌响应失败。
+func (s *Server) warnDPoPNonce(err error) {
+	if s != nil && s.config.Logger != nil {
+		s.config.Logger.Warn("oauth2: DPoP nonce issuance failed | oauth2：DPoP nonce 签发失败", log.Err(err))
+	}
 }

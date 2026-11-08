@@ -189,13 +189,24 @@ type ProviderConfig struct {
 	// client_id or aud that does not identify this value; without it the receiver fails closed.
 	// OIDC Front-Channel Logout 1.0 does not define a client parameter, so a request without one is
 	// accepted once iss matches, because the registered frontchannel_logout_uri already binds the
-	// request to this client. Mapping sid or sub to a local session remains the caller's
-	// responsibility. | FrontchannelLogoutClientID 是部署作为接收前端登出请求的 RP 时使用的
+	// request to this client. Mapping sid or sub to a local session happens through
+	// FrontchannelLogoutHandler; without one it remains the caller's responsibility. |
+	// FrontchannelLogoutClientID 是部署作为接收前端登出请求的 RP 时使用的
 	// OAuth client_id。接收端拒绝 client_id 或 aud 未标识该值的请求；未设置时接收端按失败关闭
 	// 处理。OIDC 前端登出 1.0 未定义客户端参数，因此 iss 匹配后不带该参数的请求会被接受，因为
-	// 已注册的 frontchannel_logout_uri 已把请求绑定到此客户端。sid 或 sub 到本地会话的映射仍由
-	// 调用方负责。
+	// 已注册的 frontchannel_logout_uri 已把请求绑定到此客户端。sid 或 sub 到本地会话的映射通过
+	// FrontchannelLogoutHandler 完成；未设置处理器时仍由调用方负责。
 	FrontchannelLogoutClientID string
+	// FrontchannelLogoutHandler receives validated front-channel logout parameters and maps sid or
+	// sub to local sessions and revokes them. It runs only after method, iss, client binding and
+	// the sid/sub requirement passed, so the identifiers are trustworthy; returning an error makes
+	// the endpoint answer HTTP 500 instead of claiming success. When nil, FrontchannelLogout keeps
+	// the historical behaviour of rendering the logout page without revoking anything, and mapping
+	// the identifier remains the caller's responsibility. | FrontchannelLogoutHandler 接收已校验的
+	// 前端登出参数，把 sid 或 sub 映射到本地会话并撤销它们。它仅在方法、iss、客户端绑定与 sid/sub
+	// 要求均通过后运行，因此标识符可信；返回错误会让端点回复 HTTP 500，而不是声称成功。为空时
+	// FrontchannelLogout 保持历史行为，只渲染登出页面而不撤销，标识符映射仍由调用方负责。
+	FrontchannelLogoutHandler FrontchannelLogoutHandler
 	// BackchannelLogout enables back-channel logout. | BackchannelLogout 启用后端通道登出。
 	BackchannelLogout bool
 	// BackchannelLogoutClientID is the OAuth client_id this deployment uses when acting as an RP

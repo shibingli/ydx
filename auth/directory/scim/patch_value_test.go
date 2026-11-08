@@ -234,6 +234,7 @@ func TestPatchMultiValuesBranches(t *testing.T) {
 	if err := patchMultiValues(&list, path, patchAdd, "c"); err != nil || len(list) != 3 {
 		t.Fatalf("filtered add no match = %#v, %v", list, err)
 	}
+	list = base()
 	if err := patchMultiValues(&list, path, patchReplace, "c"); err == nil || !errors.Is(err, ErrNoTarget) {
 		t.Fatalf("filtered no match error = %v", err)
 	}

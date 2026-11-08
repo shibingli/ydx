@@ -14,6 +14,13 @@ import (
 // timestamp. | Config 配置 NTLMv2 客户端。零值选择 NTLMv2、严格目标信息校验、随机客户端
 // 挑战与服务端提供的时间戳。
 type Config struct {
+	// Timestamp overrides the challenge timestamp. A zero value uses the server
+	// MsvAvTimestamp pair, falling back to the current time. | Timestamp 覆盖挑战
+	// 时间戳。零值使用服务端 MsvAvTimestamp 对，缺失时回退到当前时间。
+	Timestamp time.Time
+	// Version overrides the NTLMSSP version field sent by the client. | Version
+	// 覆盖客户端发送的 NTLMSSP 版本字段。
+	Version *Version
 	// Domain is the Active Directory domain, or empty when Username is a UPN or
 	// carries DOMAIN\user. | Domain 是 Active Directory 域；当 Username 是 UPN 或带有
 	// DOMAIN\user 时可为空。
@@ -28,6 +35,21 @@ type Config struct {
 	// Workstation is the optional client workstation name. | Workstation 是可选客户端
 	// 工作站名称。
 	Workstation string
+	// RandomSessionKey overrides the random 16-byte exported session key used when
+	// KeyExchange is negotiated. It exists for deterministic tests and should be
+	// left nil in production. | RandomSessionKey 覆盖协商 KeyExchange 时使用的随机
+	// 16 字节导出会话密钥。它用于确定性测试，生产环境应保持 nil。
+	RandomSessionKey []byte
+	// ChannelBindings is the optional 16-byte GSS channel-binding value to insert
+	// as MsvAvChannelBindings. Use ChannelBindingHash to derive it from an RFC 5929
+	// tls-server-end-point certificate hash. | ChannelBindings 是可选 16 字节 GSS
+	// 通道绑定值，作为 MsvAvChannelBindings 插入。可用 ChannelBindingHash 从 RFC 5929
+	// tls-server-end-point 证书哈希派生。
+	ChannelBindings []byte
+	// ClientChallenge overrides the random eight-byte client challenge. It exists
+	// for deterministic tests and should be left nil in production. | ClientChallenge
+	// 覆盖随机八字节客户端挑战。它用于确定性测试，生产环境应保持 nil。
+	ClientChallenge []byte
 	// ResponseMode selects NTLMv2 (default), NTLMv1, or the NTLM2 session
 	// response. Non-default modes require AllowLegacy. | ResponseMode 选择 NTLMv2
 	// （默认）、NTLMv1 或 NTLM2 会话响应。非默认模式需要 AllowLegacy。
@@ -44,23 +66,19 @@ type Config struct {
 	// MICs are implemented only for NTLMv2. | ForceMIC 即使在服务端未设置
 	// MsvAvMICPresent 时也请求 MIC。MIC 仅为 NTLMv2 实现。
 	ForceMIC bool
-	// ChannelBindings is the optional 16-byte GSS channel-binding value to insert
-	// as MsvAvChannelBindings. Use ChannelBindingHash to derive it from an RFC 5929
-	// tls-server-end-point certificate hash. | ChannelBindings 是可选 16 字节 GSS
-	// 通道绑定值，作为 MsvAvChannelBindings 插入。可用 ChannelBindingHash 从 RFC 5929
-	// tls-server-end-point 证书哈希派生。
-	ChannelBindings []byte
-	// ClientChallenge overrides the random eight-byte client challenge. It exists
-	// for deterministic tests and should be left nil in production. | ClientChallenge
-	// 覆盖随机八字节客户端挑战。它用于确定性测试，生产环境应保持 nil。
-	ClientChallenge []byte
-	// Timestamp overrides the challenge timestamp. A zero value uses the server
-	// MsvAvTimestamp pair, falling back to the current time. | Timestamp 覆盖挑战
-	// 时间戳。零值使用服务端 MsvAvTimestamp 对，缺失时回退到当前时间。
-	Timestamp time.Time
-	// Version overrides the NTLMSSP version field sent by the client. | Version
-	// 覆盖客户端发送的 NTLMSSP 版本字段。
-	Version *Version
+	// Sign requests NTLMSSP message signing (FlagSign). It requires NTLMv2 and
+	// extended session security. | Sign 请求 NTLMSSP 消息签名（FlagSign）。它需要
+	// NTLMv2 与扩展会话安全。
+	Sign bool
+	// Seal requests NTLMSSP message sealing (FlagSeal). It requires Sign. | Seal
+	// 请求 NTLMSSP 消息密封（FlagSeal）。它需要 Sign。
+	Seal bool
+	// KeyExchange requests NTLMSSP session-key exchange (FlagKeyExchange). When
+	// negotiated, the client generates a random exported session key and encrypts
+	// it into the Type 3 SessionKey field. | KeyExchange 请求 NTLMSSP 会话密钥交换
+	// （FlagKeyExchange）。协商后，客户端生成随机导出会话密钥并加密到 Type 3 的
+	// SessionKey 字段。
+	KeyExchange bool
 }
 
 // clientState tracks the NTLMSSP exchange position. | clientState 跟踪 NTLMSSP 交换
@@ -84,24 +102,36 @@ const baseClientFlags = FlagUnicode | FlagOEM | FlagRequestTarget | FlagNTLM |
 // before Authenticate. | Client 对服务端执行一次 NTLMSSP Type 1/Type 3 交换。Client
 // 可安全并发使用，但每次交换必须在 Authenticate 前恰好调用一次 Negotiate。
 type Client struct {
-	mu sync.Mutex
+	timestamp time.Time
+	version   *Version
+	security  *SecuritySession
 
-	domain                 string
-	username               string
-	workstation            string
+	domain             string
+	username           string
+	workstation        string
+	channelBindings    []byte
+	clientChallenge    []byte
+	randomSessionKey   []byte
+	responseKey        []byte
+	lmResponseKey      []byte
+	sessionBaseKey     []byte
+	exportedSessionKey []byte
+
+	negotiate []byte
+	mu        sync.Mutex
+
+	flags                  NegotiateFlags
+	negotiatedFlags        NegotiateFlags
 	mode                   ResponseMode
 	allowMissingTargetInfo bool
 	forceMIC               bool
-	channelBindings        []byte
-	clientChallenge        []byte
-	timestamp              time.Time
-	version                *Version
-	flags                  NegotiateFlags
-	responseKey            []byte
-	lmResponseKey          []byte
+	sign                   bool
+	seal                   bool
+	keyExchange            bool
+	usedMIC                bool
+	closed                 bool
 
-	negotiate []byte
-	state     clientState
+	state clientState
 }
 
 // NewClient validates config and derives the response keys. Plaintext passwords
@@ -149,9 +179,34 @@ func NewClient(config Config) (*Client, error) {
 	if config.ForceMIC && mode != ResponseNTLMv2 {
 		return nil, errs.Detail(ErrUnsupported, "MIC requires NTLMv2 | MIC 需要 NTLMv2")
 	}
+	if config.Seal && !config.Sign {
+		return nil, errs.Detail(ErrSessionSecurity, "message sealing requires message signing | 消息密封需要消息签名")
+	}
+	if (config.Sign || config.Seal || config.KeyExchange) && mode != ResponseNTLMv2 {
+		return nil, errs.Detail(ErrSessionSecurity, "session security requires NTLMv2 | 会话安全需要 NTLMv2")
+	}
+	var randomSessionKey []byte
+	if config.RandomSessionKey != nil {
+		if !config.KeyExchange {
+			return nil, errs.Detail(ErrSessionSecurity, "a random session key requires KeyExchange | 随机会话密钥需要 KeyExchange")
+		}
+		if len(config.RandomSessionKey) != sessionKeySize {
+			return nil, errs.Detail(ErrSessionSecurity, "random session key is %d bytes, want %d | 随机会话密钥为 %d 字节，期望 %d", len(config.RandomSessionKey), sessionKeySize, len(config.RandomSessionKey), sessionKeySize)
+		}
+		randomSessionKey = append([]byte(nil), config.RandomSessionKey...)
+	}
 	flags := baseClientFlags
 	if mode != ResponseNTLMv1 {
 		flags |= FlagExtendedSessionSecurity
+	}
+	if config.Sign {
+		flags |= FlagSign
+	}
+	if config.Seal {
+		flags |= FlagSeal
+	}
+	if config.KeyExchange {
+		flags |= FlagKeyExchange
 	}
 	client := &Client{
 		domain:                 domain,
@@ -160,8 +215,12 @@ func NewClient(config Config) (*Client, error) {
 		mode:                   mode,
 		allowMissingTargetInfo: config.AllowMissingTargetInfo,
 		forceMIC:               config.ForceMIC,
+		sign:                   config.Sign,
+		seal:                   config.Seal,
+		keyExchange:            config.KeyExchange,
 		channelBindings:        bindings,
 		clientChallenge:        challenge,
+		randomSessionKey:       randomSessionKey,
 		timestamp:              config.Timestamp,
 		flags:                  flags,
 	}
@@ -188,6 +247,9 @@ func NewClient(config Config) (*Client, error) {
 func (c *Client) Negotiate() ([]byte, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if c.closed {
+		return nil, errs.Detail(ErrClientState, "client is closed | 客户端已关闭")
+	}
 	if c.state != clientStateIdle {
 		return nil, errs.Detail(ErrClientState, "Negotiate may be called only once | Negotiate 只能调用一次")
 	}
@@ -217,6 +279,9 @@ func (c *Client) Negotiate() ([]byte, error) {
 func (c *Client) Authenticate(challengeData []byte) ([]byte, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if c.closed {
+		return nil, errs.Detail(ErrClientState, "client is closed | 客户端已关闭")
+	}
 	if c.state != clientStateNegotiated {
 		return nil, errs.Detail(ErrClientState, "Authenticate requires a preceding Negotiate | Authenticate 需要先调用 Negotiate")
 	}
@@ -244,6 +309,25 @@ func (c *Client) Authenticate(challengeData []byte) ([]byte, error) {
 	if c.mode == ResponseNTLMv1 && challenge.Flags.Has(FlagExtendedSessionSecurity) {
 		return nil, errs.Detail(ErrChallenge, "server requires extended session security but NTLMv1 was selected | 服务端要求扩展会话安全，但已选择 NTLMv1")
 	}
+	negotiated := c.flags & challenge.Flags
+	if !negotiated.Has(FlagUnicode) {
+		return nil, errs.Detail(ErrChallenge, "negotiated flags lack Unicode | 协商标志缺少 Unicode")
+	}
+	if (negotiated.Has(FlagSign) || negotiated.Has(FlagSeal)) && !negotiated.Has(FlagExtendedSessionSecurity) {
+		return nil, errs.Detail(ErrSessionSecurity, "signing and sealing require extended session security | 签名与密封需要扩展会话安全")
+	}
+	if c.sign && !negotiated.Has(FlagSign) {
+		return nil, errs.Detail(ErrSigningNotNegotiated, "server did not negotiate the requested message signing | 服务端未协商请求的消息签名")
+	}
+	if c.seal && !negotiated.Has(FlagSeal) {
+		return nil, errs.Detail(ErrSealingNotNegotiated, "server did not negotiate the requested message sealing | 服务端未协商请求的消息密封")
+	}
+	if c.seal && !negotiated.Has(FlagSign) {
+		return nil, errs.Detail(ErrSessionSecurity, "message sealing requires message signing | 消息密封需要消息签名")
+	}
+	if c.keyExchange && !negotiated.Has(FlagKeyExchange) {
+		return nil, errs.Detail(ErrSessionSecurity, "server did not negotiate the requested session-key exchange | 服务端未协商请求的会话密钥交换")
+	}
 	if c.mode == ResponseNTLMv2 {
 		info, err = c.applyChannelBindings(info)
 		if err != nil {
@@ -264,6 +348,14 @@ func (c *Client) Authenticate(challengeData []byte) ([]byte, error) {
 		}
 	}
 	var lmResponse, ntResponse, sessionBaseKey []byte
+	var exportedSessionKey []byte
+	completed := false
+	defer func() {
+		if !completed {
+			wipe(sessionBaseKey)
+			wipe(exportedSessionKey)
+		}
+	}()
 	switch c.mode {
 	case ResponseNTLMv2:
 		targetInfo, err := info.withoutEndOfList().Encode()
@@ -292,9 +384,25 @@ func (c *Client) Authenticate(challengeData []byte) ([]byte, error) {
 			return nil, err
 		}
 	}
-	negotiated := c.flags & challenge.Flags
-	if !negotiated.Has(FlagUnicode) {
-		return nil, errs.Detail(ErrChallenge, "negotiated flags lack Unicode | 协商标志缺少 Unicode")
+	var encryptedSessionKey []byte
+	if negotiated.Has(FlagKeyExchange) {
+		if len(sessionBaseKey) != sessionKeySize {
+			return nil, errs.Detail(ErrSessionSecurity, "session base key is %d bytes, want %d | 会话基础密钥为 %d 字节，期望 %d", len(sessionBaseKey), sessionKeySize, len(sessionBaseKey), sessionKeySize)
+		}
+		if c.randomSessionKey != nil {
+			exportedSessionKey = append([]byte(nil), c.randomSessionKey...)
+		} else {
+			exportedSessionKey = make([]byte, sessionKeySize)
+			if _, err := rand.Read(exportedSessionKey); err != nil {
+				return nil, errs.WrapDetail(err, ErrRandom, "cannot generate the exported session key | 无法生成导出会话密钥")
+			}
+		}
+		encryptedSessionKey, err = rc4SessionKey(sessionBaseKey, exportedSessionKey)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		exportedSessionKey = append([]byte(nil), sessionBaseKey...)
 	}
 	message := &AuthenticateMessage{
 		LMResponse:  lmResponse,
@@ -302,6 +410,7 @@ func (c *Client) Authenticate(challengeData []byte) ([]byte, error) {
 		Domain:      c.domain,
 		Username:    c.username,
 		Workstation: c.workstation,
+		SessionKey:  encryptedSessionKey,
 		Flags:       negotiated,
 		Version:     c.version,
 	}
@@ -321,11 +430,26 @@ func (c *Client) Authenticate(challengeData []byte) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+	var security *SecuritySession
+	if negotiated.Has(FlagSign) || negotiated.Has(FlagSeal) {
+		security, err = NewSecuritySession(RoleClient, exportedSessionKey, negotiated)
+		if err != nil {
+			return nil, err
+		}
+	}
+	c.sessionBaseKey = sessionBaseKey
+	c.exportedSessionKey = exportedSessionKey
+	c.negotiatedFlags = negotiated
+	c.usedMIC = micRequested
+	c.security = security
 	c.state = clientStateAuthenticated
+	completed = true
 	wipe(c.responseKey)
 	wipe(c.lmResponseKey)
+	wipe(c.randomSessionKey)
 	c.responseKey = nil
 	c.lmResponseKey = nil
+	c.randomSessionKey = nil
 	return encoded, nil
 }
 

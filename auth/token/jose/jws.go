@@ -1,6 +1,7 @@
 package jose
 
 import (
+	"bytes"
 	"context"
 	"crypto"
 	"crypto/ecdsa"
@@ -29,9 +30,14 @@ type JWSHeader struct {
 	Typ string
 	// Cty is the optional "cty" parameter describing the payload content type. | Cty 是可选的 "cty" 参数，描述载荷内容类型。
 	Cty string
-	// Crit lists critical extensions; this implementation understands none, so signing with a
-	// non-empty Crit is refused. | Crit 列出关键扩展；本实现不支持任何扩展，因此 Crit 非空时拒绝签名。
+	// Crit lists critical extensions. Only "b64" from RFC 7797 is understood; any other entry is
+	// refused. | Crit 列出关键扩展。仅理解 RFC 7797 的 "b64"；其它条目一律拒绝。
 	Crit []string
+	// B64 is the RFC 7797 "b64" parameter: nil when absent, true when the payload is base64url
+	// encoded (the default), and false when the payload is unencoded. A false value requires "b64"
+	// to appear in Crit. | B64 是 RFC 7797 的 "b64" 参数：缺失时为 nil，true 表示载荷经 base64url
+	// 编码（默认），false 表示载荷未编码。取值为 false 时要求 Crit 中包含 "b64"。
+	B64 *bool
 	// Extra holds additional non-reserved header parameters. | Extra 保存额外的非保留头部参数。
 	Extra map[string]any
 }
@@ -126,7 +132,11 @@ type SignOptions struct {
 	Typ string
 	// Cty sets the "cty" header parameter. | Cty 设置 "cty" 头部参数。
 	Cty string
-	// Crit is refused when non-empty because no extension is understood. | Crit 非空时会被拒绝，因为本实现不支持任何扩展。
+	// Crit lists critical extensions. Only "b64" from RFC 7797 is understood; any other entry is
+	// refused with ErrUnsupportedCrit. A "b64" entry without an explicit UnencodedPayload selects
+	// b64=true, and UnencodedPayload adds the entry automatically. | Crit 列出关键扩展。仅理解
+	// RFC 7797 的 "b64"；其它条目一律以 ErrUnsupportedCrit 拒绝。未显式设置 UnencodedPayload 时，
+	// "b64" 条目会选择 b64=true；UnencodedPayload 会自动加入该条目。
 	Crit []string
 	// Extra holds additional header parameters; reserved names are refused. | Extra 保存额外头部参数；保留名会被拒绝。
 	Extra map[string]any
@@ -135,10 +145,18 @@ type SignOptions struct {
 	Serialization Serialization
 	// Detached omits the payload from the serialization for RFC 7515 Appendix F detached content.
 	// The signature still covers the payload, and the caller must present it to VerifyDetached.
-	// Only b64=true is supported, so a b64=false header is still refused. | Detached 按 RFC 7515 附录 F
-	// 从序列化中移除载荷。签名仍覆盖载荷，调用方必须把它交给 VerifyDetached。仅支持 b64=true，
-	// b64=false 头部仍会被拒绝。
+	// Detached works with both b64=true and RFC 7797 b64=false; an unencoded detached payload may
+	// contain any byte, including '.'. | Detached 按 RFC 7515 附录 F 从序列化中移除载荷。签名仍覆盖
+	// 载荷，调用方必须把它交给 VerifyDetached。Detached 同时适用于 b64=true 与 RFC 7797 b64=false；
+	// 未编码的分离载荷可以包含任意字节，包括 '.'。
 	Detached bool
+	// UnencodedPayload selects the RFC 7797 b64=false form and adds "b64" to Crit. A compact
+	// attached payload must not contain '.', because the compact serialization would become
+	// ambiguous; a JSON attached payload must be valid UTF-8 so it can be carried as a JSON string.
+	// Detached payloads have no such restriction. | UnencodedPayload 选择 RFC 7797 的 b64=false 形式，
+	// 并把 "b64" 加入 Crit。紧凑的非分离载荷不得包含 '.'，否则紧凑序列化会产生歧义；JSON 非分离载荷
+	// 必须是合法 UTF-8，才能作为 JSON 字符串承载。分离载荷没有这些限制。
+	UnencodedPayload bool
 	// LowS normalizes ES256, ES384 and ES512 signatures to the canonical low-S form. It has no
 	// effect on other algorithms. | LowS 把 ES256、ES384 与 ES512 签名规范化为规范的 low-S 形式。
 	// 其它算法不受影响。
@@ -194,8 +212,9 @@ func Sign(payload []byte, key *Key, opts SignOptions) (string, error) {
 		Crit:  opts.Crit,
 		Extra: opts.Extra,
 	}
-	if len(header.Crit) > 0 {
-		return "", errs.Detail(ErrUnsupportedCrit, "crit=%[1]v | crit=%[1]v", header.Crit)
+	if opts.UnencodedPayload {
+		b64 := false
+		header.B64 = &b64
 	}
 	switch opts.Serialization {
 	case SerializationCompact:
@@ -209,9 +228,12 @@ func Sign(payload []byte, key *Key, opts SignOptions) (string, error) {
 	}
 	// A plain JWT JSON payload goes through the existing ydx/auth/token/jwt signer, which is the same
 	// implementation the rest of ydx uses; every other case is signed here so arbitrary bytes
-	// remain possible. | 普通 JWT JSON 载荷走现有 ydx/auth/token/jwt 签名器，即 ydx 其余部分使用的
-	// 同一实现；其它情况在此签名，以便任意字节都能使用。
-	if header.Typ == "JWT" && header.Cty == "" && len(header.Extra) == 0 && isJSONObject(payload) {
+	// remain possible. The JWT signer emits neither crit nor b64, so any RFC 7797 option takes the
+	// direct path. | 普通 JWT JSON 载荷走现有 ydx/auth/token/jwt 签名器，即 ydx 其余部分使用的
+	// 同一实现；其它情况在此签名，以便任意字节都能使用。JWT 签名器不输出 crit 或 b64，因此任何
+	// RFC 7797 选项都走直接路径。
+	if header.Typ == "JWT" && header.Cty == "" && len(header.Extra) == 0 && header.B64 == nil &&
+		len(header.Crit) == 0 && isJSONObject(payload) {
 		jkey, err := key.PrivateKey()
 		if err != nil {
 			return "", err
@@ -228,10 +250,12 @@ func signDirect(payload []byte, key *Key, header JWSHeader, lowS bool) (string, 
 	if err != nil {
 		return "", err
 	}
+	unencoded := unencodedPayload(header)
+	if unencoded && bytes.IndexByte(payload, '.') >= 0 {
+		return "", errs.Detail(ErrInvalidConfig, "unencoded compact payload must not contain '.' | 未编码的紧凑载荷不得包含 '.'")
+	}
 	input := make([]byte, 0, len(headerBytes)+len(payload)+len(payload)/3+len(headerBytes)/3+2)
-	input = appendSegment(input, headerBytes)
-	input = append(input, '.')
-	input = appendSegment(input, payload)
+	input = appendJWSInput(input, headerBytes, payload, unencoded)
 	sig, err := signJWSWithLowS(header.Alg, key, input, lowS)
 	if err != nil {
 		return "", err
@@ -248,10 +272,9 @@ func signDetachedCompact(payload []byte, key *Key, header JWSHeader, lowS bool) 
 	if err != nil {
 		return "", err
 	}
+	unencoded := unencodedPayload(header)
 	input := make([]byte, 0, len(headerBytes)+len(payload)+len(payload)/3+len(headerBytes)/3+2)
-	input = appendSegment(input, headerBytes)
-	input = append(input, '.')
-	input = appendSegment(input, payload)
+	input = appendJWSInput(input, headerBytes, payload, unencoded)
 	sig, err := signJWSWithLowS(header.Alg, key, input, lowS)
 	if err != nil {
 		return "", err
@@ -338,10 +361,11 @@ func Verify(token string, resolver KeyResolver, opts VerifyOptions) (*Verified, 
 // 校验按 RFC 7515 附录 F 分离载荷的 JWS。
 //
 // The token may be a compact "header..signature" value or a flattened/general JSON document without
-// a payload member, and must not carry a payload itself. payload supplies the signed bytes; b64=true
-// is the only supported mode, so payload is always covered by the signature. | token 可以是
-// "header..signature" 紧凑值，或缺少 payload 成员的扁平/通用 JSON 文档，且自身不得携带载荷。
-// payload 提供被签名的字节；仅支持 b64=true，因此 payload 始终被签名覆盖。
+// a payload member, and must not carry a payload itself. payload supplies the signed bytes; both
+// b64=true and RFC 7797 b64=false are supported, so payload is always covered by the signature. |
+// token 可以是 "header..signature" 紧凑值，或缺少 payload 成员的扁平/通用 JSON 文档，且自身不得
+// 携带载荷。payload 提供被签名的字节；同时支持 b64=true 与 RFC 7797 b64=false，因此 payload
+// 始终被签名覆盖。
 func VerifyDetached(token string, payload []byte, resolver KeyResolver, opts VerifyOptions) (*Verified, error) {
 	return VerifyDetachedContext(context.Background(), token, payload, resolver, opts)
 }
@@ -357,14 +381,16 @@ func VerifyDetachedContext(ctx context.Context, token string, payload []byte, re
 // The input length is checked before any decoding: the limit is VerifyOptions.MaxTokenSize, or
 // DefaultMaxTokenSize when it is zero or negative, and an over-limit token is rejected with
 // ErrTokenTooLarge. The header is then decoded and its alg is checked against the allow list and key
-// family before the signature is validated; only then is the payload exposed. Critical extensions,
-// duplicate header members, alg=none and algorithm confusion are rejected. A general JSON
+// family before the signature is validated; only then is the payload exposed. RFC 7797 b64=false is
+// understood when "b64" appears in crit; every other critical extension, duplicate header members,
+// alg=none and algorithm confusion are rejected. A general JSON
 // serialization succeeds when any one of its signatures verifies; the first failure is returned when
 // none does. When ValidateClaims is set, a JSON-object payload is additionally validated by
 // ydx/auth/token/jwt, whose sentinels remain visible through errors.Is. | 任何解码之前先检查输入长度：
 // 上限为 VerifyOptions.MaxTokenSize，零值或负值时使用 DefaultMaxTokenSize，超限返回 ErrTokenTooLarge。
-// 随后解码头部，并在校验签名之前检查 alg 是否在白名单内且与密钥族匹配；之后才暴露载荷。关键扩展、
-// 重复头部成员、alg=none 与算法混淆都会被拒绝。通用 JSON 序列化在任意一个签名通过时即成功；全部失败时
+// 随后解码头部，并在校验签名之前检查 alg 是否在白名单内且与密钥族匹配；之后才暴露载荷。当 "b64"
+// 出现在 crit 中时理解 RFC 7797 的 b64=false；其它关键扩展、重复头部成员、alg=none 与算法混淆都会
+// 被拒绝。通用 JSON 序列化在任意一个签名通过时即成功；全部失败时
 // 返回第一个错误。启用 ValidateClaims 时，JSON 对象载荷还会经 ydx/auth/token/jwt 校验，其哨兵仍可通过
 // errors.Is 观察到。
 func VerifyContext(ctx context.Context, token string, resolver KeyResolver, opts VerifyOptions) (*Verified, error) {
@@ -492,13 +518,19 @@ func verifyVerified(ctx context.Context, protectedSeg string, unprotected Header
 		if verified.Claims == nil {
 			return nil, errs.Detail(ErrClaimsInvalid, "payload is not a JSON object | 载荷不是 JSON 对象")
 		}
-		checkPayloadSeg := payloadSeg
-		if detached {
-			checkPayloadSeg = EncodeSegment(payload)
-		}
-		compact := protectedSeg + "." + checkPayloadSeg + "." + sigSeg
-		if err := validateClaims(compact, key, header.Alg, opts); err != nil {
-			return nil, err
+		if unencodedPayload(header) {
+			if err := validateClaimsUnencoded(payload, opts); err != nil {
+				return nil, err
+			}
+		} else {
+			checkPayloadSeg := payloadSeg
+			if detached {
+				checkPayloadSeg = EncodeSegment(payload)
+			}
+			compact := protectedSeg + "." + checkPayloadSeg + "." + sigSeg
+			if err := validateClaims(compact, key, header.Alg, opts); err != nil {
+				return nil, err
+			}
 		}
 	}
 	return verified, nil
@@ -576,10 +608,16 @@ func verifyJWSSignature(ctx context.Context, protectedSeg string, unprotected He
 	if err != nil {
 		return fail(err)
 	}
+	unencoded := unencodedPayload(header)
 	var payload []byte
-	if detached {
+	switch {
+	case detached:
 		payload = detachedPayload
-	} else {
+	case unencoded:
+		// RFC 7797 b64=false carries the payload verbatim, so the segment is not base64url and
+		// must not be decoded. | RFC 7797 的 b64=false 原样承载载荷，因此该段不是 base64url，不得解码。
+		payload = []byte(payloadSeg)
+	default:
 		payload, err = DecodeSegment(payloadSeg)
 		if err != nil {
 			return fail(err)
@@ -588,7 +626,9 @@ func verifyJWSSignature(ctx context.Context, protectedSeg string, unprotected He
 	input := make([]byte, 0, len(protectedSeg)+1+len(payloadSeg))
 	input = append(input, protectedSeg...)
 	input = append(input, '.')
-	if detached {
+	if unencoded {
+		input = append(input, payload...)
+	} else if detached {
 		input = appendSegment(input, payload)
 	} else {
 		input = append(input, payloadSeg...)
@@ -609,6 +649,41 @@ func validateClaims(token string, key *Key, alg string, opts VerifyOptions) erro
 	keyFn := func(ydjwt.Header) (any, error) { return pub, nil }
 	_, err = ydjwt.Parse(token, keyFn, ydjwt.ParseOptions{
 		ValidAlgs:        []ydjwt.Alg{ydjwt.Alg(alg)},
+		Leeway:           opts.Leeway,
+		Now:              opts.Now,
+		RequireExp:       opts.RequireExp,
+		Issuer:           opts.Issuer,
+		Issuers:          opts.Issuers,
+		Audience:         opts.Audience,
+		Audiences:        opts.Audiences,
+		ValidateIssuedAt: opts.ValidateIssuedAt,
+		RequireIssuedAt:  opts.RequireIssuedAt,
+		RequireLowS:      opts.RequireLowS,
+	})
+	if err != nil {
+		return errs.Wrap(err, ErrClaimsInvalid)
+	}
+	return nil
+}
+
+// validateClaimsUnencoded runs the same registered-claim validation for an RFC 7797 b64=false
+// payload. The payload bytes are not a compact JWS segment, so they are wrapped in a synthetic
+// compact HS256 token with an ephemeral secret and parsed with exactly the same ParseOptions; the
+// random secret never leaves this function. | validateClaimsUnencoded 对 RFC 7797 b64=false 载荷
+// 运行相同的登记声明校验。载荷字节不是紧凑 JWS 段，因此用临时密钥把它们包装成合成的紧凑 HS256
+// 令牌，并以完全相同的 ParseOptions 解析；随机密钥不会离开本函数。
+func validateClaimsUnencoded(payload []byte, opts VerifyOptions) error {
+	secret, err := randomBytes(32)
+	if err != nil {
+		return err
+	}
+	token, err := ydjwt.SignJSON(payload, secret, ydjwt.HS256, ydjwt.SignOptions{})
+	if err != nil {
+		return errs.Wrap(err, ErrClaimsInvalid)
+	}
+	keyFn := func(ydjwt.Header) (any, error) { return secret, nil }
+	_, err = ydjwt.Parse(token, keyFn, ydjwt.ParseOptions{
+		ValidAlgs:        []ydjwt.Alg{ydjwt.HS256},
 		Leeway:           opts.Leeway,
 		Now:              opts.Now,
 		RequireExp:       opts.RequireExp,
@@ -655,25 +730,44 @@ func parseJWSHeader(raw []byte) (JWSHeader, Header, error) {
 			*f.dst = s
 		}
 	}
+	hasB64 := false
+	b64 := false
+	if v, present := m["b64"]; present {
+		bv, ok := v.(bool)
+		if !ok {
+			return JWSHeader{}, nil, errs.Detail(ErrInvalidHeader, "b64 is not a boolean | b64 不是布尔值")
+		}
+		b64, hasB64 = bv, true
+		h.B64 = &b64
+	}
+	hasCritB64 := false
 	if v, present := m["crit"]; present {
 		crit, ok := stringSlice(v)
 		if !ok {
 			return JWSHeader{}, nil, errs.Detail(ErrInvalidHeader, "crit is not a string array | crit 不是字符串数组")
 		}
-		if len(crit) > 0 {
-			return JWSHeader{}, nil, errs.Detail(ErrUnsupportedCrit, "crit=%[1]v | crit=%[1]v", crit)
+		seen := make(map[string]struct{}, len(crit))
+		for _, name := range crit {
+			if _, dup := seen[name]; dup {
+				return JWSHeader{}, nil, errs.Detail(ErrInvalidHeader, "duplicate crit entry %[1]q | crit 条目 %[1]q 重复", name)
+			}
+			if name != "b64" {
+				return JWSHeader{}, nil, errs.Detail(ErrUnsupportedCrit, "crit=%[1]v | crit=%[1]v", crit)
+			}
+			seen[name] = struct{}{}
+			hasCritB64 = true
 		}
 		h.Crit = crit
 	}
-	if _, present := m["b64"]; present {
-		// RFC 7797 unencoded payloads are not implemented; ignoring the parameter would change
-		// the meaning of the signature input, so it is refused outright. | RFC 7797 的未编码载荷
-		// 未实现；忽略该参数会改变签名输入的含义，因此直接拒绝。
-		return JWSHeader{}, nil, errs.Detail(ErrInvalidHeader, "b64 extension is not supported | 不支持 b64 扩展")
+	if hasB64 && !b64 && !hasCritB64 {
+		return JWSHeader{}, nil, errs.Detail(ErrInvalidHeader, "b64=false requires crit=[\"b64\"] | b64=false 要求 crit=[\"b64\"]")
+	}
+	if hasCritB64 && !hasB64 {
+		return JWSHeader{}, nil, errs.Detail(ErrInvalidHeader, "crit names b64 but b64 is absent | crit 指明 b64 但 b64 缺失")
 	}
 	for name, v := range m {
 		switch name {
-		case "alg", "kid", "typ", "cty", "crit":
+		case "alg", "kid", "typ", "cty", "crit", "b64":
 			continue
 		}
 		if h.Extra == nil {
@@ -706,13 +800,61 @@ func stringSlice(v any) ([]string, bool) {
 
 // encodeJWSHeader serializes a protected header with deterministic member order. | encodeJWSHeader
 // 以确定的成员顺序序列化受保护头部。
+//
+// The RFC 7797 b64 parameter is emitted after kid and before crit, which reproduces the protected
+// header of the RFC 7797 example byte for byte. The "b64" member is added automatically for
+// UnencodedPayload-style input, and crit is expanded with "b64" when b64=false. | RFC 7797 的 b64
+// 参数位于 kid 之后、crit 之前，从而逐字节复现 RFC 7797 示例的受保护头部。UnencodedPayload 风格的
+// 输入会自动加入 "b64" 成员，b64=false 时 crit 会自动补充 "b64"。
 func encodeJWSHeader(h JWSHeader) ([]byte, error) {
+	h, err := normalizeSigningJWSHeader(h)
+	if err != nil {
+		return nil, err
+	}
+	return appendJWSHeader(nil, h)
+}
+
+// normalizeSigningJWSHeader validates crit and b64 for signing and fills in their defaults. |
+// normalizeSigningJWSHeader 为签名校验 crit 与 b64 并填入默认值。
+//
+// Only the RFC 7797 "b64" extension is understood. Duplicate crit entries are refused; b64=false
+// gains a "b64" crit entry; a "b64" crit entry without an explicit b64 parameter selects b64=true. |
+// 仅理解 RFC 7797 的 "b64" 扩展。重复的 crit 条目会被拒绝；b64=false 会获得 "b64" crit 条目；
+// 只有 "b64" crit 条目而未显式给出 b64 参数时选择 b64=true。
+func normalizeSigningJWSHeader(h JWSHeader) (JWSHeader, error) {
 	if h.Alg == "" || h.Alg == "none" || !supportedJWSAlg(h.Alg) {
-		return nil, errs.Detail(ErrAlgNotAllowed, "alg=%[1]q | 算法=%[1]q", h.Alg)
+		return JWSHeader{}, errs.Detail(ErrAlgNotAllowed, "alg=%[1]q | 算法=%[1]q", h.Alg)
 	}
-	if len(h.Crit) > 0 {
-		return nil, errs.Detail(ErrUnsupportedCrit, "crit=%[1]v | crit=%[1]v", h.Crit)
+	crit := make([]string, 0, len(h.Crit)+1)
+	seen := make(map[string]struct{}, len(h.Crit))
+	for _, name := range h.Crit {
+		if _, dup := seen[name]; dup {
+			return JWSHeader{}, errs.Detail(ErrInvalidHeader, "duplicate crit entry %[1]q | crit 条目 %[1]q 重复", name)
+		}
+		if name != "b64" {
+			return JWSHeader{}, errs.Detail(ErrUnsupportedCrit, "crit=%[1]v | crit=%[1]v", h.Crit)
+		}
+		seen[name] = struct{}{}
+		crit = append(crit, name)
 	}
+	if h.B64 == nil {
+		if _, ok := seen["b64"]; ok {
+			v := true
+			h.B64 = &v
+		}
+	}
+	if h.B64 != nil && !*h.B64 {
+		if _, ok := seen["b64"]; !ok {
+			crit = append(crit, "b64")
+		}
+	}
+	h.Crit = crit
+	return h, nil
+}
+
+// appendJWSHeader appends an already normalized protected header. | appendJWSHeader 追加已规范化的
+// 受保护头部。
+func appendJWSHeader(out []byte, h JWSHeader) ([]byte, error) {
 	reserved := map[string]struct{}{"alg": {}, "kid": {}, "typ": {}, "cty": {}, "crit": {}, "b64": {}}
 	extraKeys := make([]string, 0, len(h.Extra))
 	for name := range h.Extra {
@@ -723,7 +865,6 @@ func encodeJWSHeader(h JWSHeader) ([]byte, error) {
 	}
 	sort.Strings(extraKeys)
 
-	out := make([]byte, 0, 64+len(extraKeys)*16)
 	out = append(out, `{"alg":`...)
 	out = appendJSONString(out, h.Alg)
 	if h.Typ != "" {
@@ -738,6 +879,24 @@ func encodeJWSHeader(h JWSHeader) ([]byte, error) {
 		out = append(out, `,"kid":`...)
 		out = appendJSONString(out, h.Kid)
 	}
+	if h.B64 != nil {
+		out = append(out, `,"b64":`...)
+		if *h.B64 {
+			out = append(out, "true"...)
+		} else {
+			out = append(out, "false"...)
+		}
+	}
+	if len(h.Crit) > 0 {
+		out = append(out, `,"crit":[`...)
+		for i, name := range h.Crit {
+			if i > 0 {
+				out = append(out, ',')
+			}
+			out = appendJSONString(out, name)
+		}
+		out = append(out, ']')
+	}
 	for _, name := range extraKeys {
 		value, err := jsonValue(h.Extra[name])
 		if err != nil {
@@ -749,6 +908,24 @@ func encodeJWSHeader(h JWSHeader) ([]byte, error) {
 		out = append(out, value...)
 	}
 	return append(out, '}'), nil
+}
+
+// unencodedPayload reports whether the protected header selects RFC 7797 b64=false. | unencodedPayload
+// 报告受保护头部是否选择 RFC 7797 的 b64=false。
+func unencodedPayload(h JWSHeader) bool {
+	return h.B64 != nil && !*h.B64
+}
+
+// appendJWSInput appends the JWS signing input: the encoded protected header, '.', and either the
+// base64url payload or the raw unencoded payload. | appendJWSInput 追加 JWS 签名输入：编码后的受保护
+// 头部、'.'，以及 base64url 载荷或未编码的原始载荷。
+func appendJWSInput(dst, headerBytes, payload []byte, unencoded bool) []byte {
+	dst = appendSegment(dst, headerBytes)
+	dst = append(dst, '.')
+	if unencoded {
+		return append(dst, payload...)
+	}
+	return appendSegment(dst, payload)
 }
 
 // jsonValue encodes one header value with ydx/json. | jsonValue 使用 ydx/json 编码一个头部值。

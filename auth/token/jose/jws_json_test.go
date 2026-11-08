@@ -1,15 +1,36 @@
 package jose
 
 import (
+	"bytes"
 	"crypto/elliptic"
 	"errors"
 	"math/big"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	ydjwt "github.com/shibingli/ydx/auth/token/jwt"
 )
+
+// jwsDocObject decodes a JWS JSON serialization into a generic map. | jwsDocObject 把 JWS JSON
+// 序列化解码为通用映射。
+func jwsDocObject(t *testing.T, token string) map[string]any {
+	t.Helper()
+	var doc map[string]any
+	if err := unmarshal([]byte(token), &doc); err != nil {
+		t.Fatalf("decode JWS JSON failed: %v", err)
+	}
+	return doc
+}
+
+// signerPublic returns the public half of k published under kid. | signerPublic 返回以 kid 发布的 k
+// 公钥部分。
+func signerPublic(k *Key, kid string) *Key {
+	pub := k.Public()
+	pub.Kid = kid
+	return pub
+}
 
 // jsonString returns s as a JSON string literal. | jsonString 返回 s 的 JSON 字符串字面量。
 func jsonString(s string) string {
@@ -444,4 +465,391 @@ func TestJWSSerializationOptionErrors(t *testing.T) {
 	if _, err := Verify(token, resolverFor(key, ""), VerifyOptions{Serialization: Serialization("bogus")}); !errors.Is(err, ErrInvalidConfig) {
 		t.Fatalf("Verify unknown serialization err = %v, want ErrInvalidConfig", err)
 	}
+}
+
+// TestSignMultiGeneral signs one payload with two independent keys and verifies that signature
+// policy is evaluated per signature: the first accepted signature wins and an any-verifies
+// resolver still validates the document. | TestSignMultiGeneral 用两个独立密钥对同一载荷签名，并
+// 校验签名策略按每个签名求值：第一个通过的签名获胜，任意一个可验的解析器仍能验证文档。
+func TestSignMultiGeneral(t *testing.T) {
+	payload := []byte(`{"sub":"multi-sign"}`)
+	hs := jwsTestKey(t, "HS256")
+	es := jwsTestKey(t, "ES256")
+	signers := []Signer{
+		{Key: hs, Header: JWSHeader{Alg: "HS256", Kid: "hs"}},
+		{Key: es, Header: JWSHeader{Alg: "ES256", Kid: "es"}},
+	}
+	token, err := SignMulti(payload, signers, MultiSignOptions{})
+	if err != nil {
+		t.Fatalf("SignMulti failed: %v", err)
+	}
+	doc := jwsDocObject(t, token)
+	sigs, ok := doc["signatures"].([]any)
+	if !ok || len(sigs) != 2 {
+		t.Fatalf("signatures = %v, want two entries", doc["signatures"])
+	}
+	if doc["payload"] != EncodeSegment(payload) {
+		t.Fatalf("payload member = %v", doc["payload"])
+	}
+	if _, ok := doc["protected"]; ok {
+		t.Fatalf("general form leaked flattened protected member")
+	}
+	for i, raw := range sigs {
+		entry, ok := raw.(map[string]any)
+		if !ok {
+			t.Fatalf("signature %d = %v", i, raw)
+		}
+		if entry["protected"] == "" || entry["signature"] == "" {
+			t.Fatalf("signature %d missing members: %v", i, entry)
+		}
+	}
+
+	resolver := KeySetResolver(&KeySet{Keys: []*Key{signerPublic(hs, "hs"), signerPublic(es, "es")}})
+	verified, err := Verify(token, resolver, VerifyOptions{})
+	if err != nil {
+		t.Fatalf("Verify failed: %v", err)
+	}
+	if verified.Header.Kid != "hs" {
+		t.Fatalf("first accepted kid = %q, want hs", verified.Header.Kid)
+	}
+
+	// With only ES256 allowed the HS256 signature is skipped and the second one is accepted. | 仅允许
+	// ES256 时跳过 HS256 签名并接受第二个签名。
+	verified, err = Verify(token, resolver, VerifyOptions{ValidAlgs: []string{"ES256"}})
+	if err != nil {
+		t.Fatalf("Verify with ES256 policy failed: %v", err)
+	}
+	if verified.Header.Kid != "es" {
+		t.Fatalf("ES256-policy kid = %q, want es", verified.Header.Kid)
+	}
+
+	// A resolver that only knows the second signer still validates the document. | 仅认识第二个签名方的
+	// 解析器仍能验证文档。
+	esOnly := KeySetResolver(&KeySet{Keys: []*Key{signerPublic(es, "es")}})
+	verified, err = Verify(token, esOnly, VerifyOptions{})
+	if err != nil {
+		t.Fatalf("Verify with ES-only resolver failed: %v", err)
+	}
+	if verified.Header.Kid != "es" {
+		t.Fatalf("ES-only kid = %q, want es", verified.Header.Kid)
+	}
+
+	if _, err := Verify(strings.Repeat("A", DefaultMaxTokenSize+1), resolver, VerifyOptions{}); !errors.Is(err, ErrTokenTooLarge) {
+		t.Fatalf("Verify over size limit err = %v, want ErrTokenTooLarge", err)
+	}
+}
+
+// TestSignMultiSerializationSelection covers automatic and explicit flattened/general selection,
+// single-signature general documents, count limits and unknown serializations. |
+// TestSignMultiSerializationSelection 覆盖自动与显式扁平/通用选择、单签名通用文档、数量限制与未知
+// 序列化。
+func TestSignMultiSerializationSelection(t *testing.T) {
+	payload := []byte("payload | 载荷")
+	key := jwsTestKey(t, "HS256")
+	one := []Signer{{Key: key, Header: JWSHeader{Alg: "HS256", Kid: "k"}}}
+	two := []Signer{one[0], one[0]}
+
+	flat, err := SignMulti(payload, one, MultiSignOptions{})
+	if err != nil {
+		t.Fatalf("SignMulti(auto, one) failed: %v", err)
+	}
+	doc := jwsDocObject(t, flat)
+	if _, ok := doc["signatures"]; ok {
+		t.Fatalf("auto single signer produced general form: %s", flat)
+	}
+	if doc["protected"] == "" || doc["signature"] == "" {
+		t.Fatalf("flattened members = %v", doc)
+	}
+
+	explicitFlat, err := SignMulti(payload, one, MultiSignOptions{Serialization: SerializationFlattened})
+	if err != nil || explicitFlat != flat {
+		t.Fatalf("explicit flattened = %q, %v; want auto output", explicitFlat, err)
+	}
+
+	generalOne, err := SignMulti(payload, one, MultiSignOptions{Serialization: SerializationGeneral})
+	if err != nil {
+		t.Fatalf("SignMulti(general, one) failed: %v", err)
+	}
+	if sigs, ok := jwsDocObject(t, generalOne)["signatures"].([]any); !ok || len(sigs) != 1 {
+		t.Fatalf("single-signature general form = %s", generalOne)
+	}
+
+	autoTwo, err := SignMulti(payload, two, MultiSignOptions{})
+	if err != nil {
+		t.Fatalf("SignMulti(auto, two) failed: %v", err)
+	}
+	if sigs, ok := jwsDocObject(t, autoTwo)["signatures"].([]any); !ok || len(sigs) != 2 {
+		t.Fatalf("auto two signers = %s", autoTwo)
+	}
+
+	exactlyMax := make([]Signer, maxJWSSigners)
+	for i := range exactlyMax {
+		exactlyMax[i] = one[0]
+	}
+	if _, err := SignMulti(payload, exactlyMax, MultiSignOptions{}); err != nil {
+		t.Fatalf("SignMulti(%d signers) failed: %v", maxJWSSigners, err)
+	}
+	tooMany := make([]Signer, maxJWSSigners+1)
+	for i := range tooMany {
+		tooMany[i] = one[0]
+	}
+	if _, err := SignMulti(payload, tooMany, MultiSignOptions{}); !errors.Is(err, ErrInvalidConfig) {
+		t.Fatalf("too many signers err = %v, want ErrInvalidConfig", err)
+	}
+
+	cases := []struct {
+		name    string
+		signers []Signer
+		opts    MultiSignOptions
+	}{
+		{"no signers", nil, MultiSignOptions{}},
+		{"flattened two", two, MultiSignOptions{Serialization: SerializationFlattened}},
+		{"unknown serialization", one, MultiSignOptions{Serialization: Serialization("bogus")}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := SignMulti(payload, tc.signers, tc.opts); !errors.Is(err, ErrInvalidConfig) {
+				t.Fatalf("SignMulti err = %v, want ErrInvalidConfig", err)
+			}
+		})
+	}
+}
+
+// TestSignMultiDetached covers RFC 7515 Appendix F detached payloads for flattened and general
+// documents. | TestSignMultiDetached 覆盖扁平与通用文档的 RFC 7515 附录 F 分离载荷。
+func TestSignMultiDetached(t *testing.T) {
+	payload := []byte(`{"sub":"detached","n":7}`)
+	key := jwsTestKey(t, "HS256")
+	signers := []Signer{
+		{Key: key, Header: JWSHeader{Alg: "HS256", Kid: "a"}},
+		{Key: key, Header: JWSHeader{Alg: "HS256", Kid: "b"}},
+	}
+	resolver := KeySetResolver(&KeySet{Keys: []*Key{signerPublic(key, "a"), signerPublic(key, "b")}})
+	token, err := SignMulti(payload, signers, MultiSignOptions{Detached: true})
+	if err != nil {
+		t.Fatalf("SignMulti detached failed: %v", err)
+	}
+	if _, ok := jwsDocObject(t, token)["payload"]; ok {
+		t.Fatalf("detached document carries payload: %s", token)
+	}
+	verified, err := VerifyDetached(token, payload, resolver, VerifyOptions{})
+	if err != nil {
+		t.Fatalf("VerifyDetached failed: %v", err)
+	}
+	if !bytes.Equal(verified.Payload, payload) {
+		t.Fatalf("payload = %q", verified.Payload)
+	}
+	if _, err := VerifyDetached(token, []byte(`{"sub":"detached","n":8}`), resolver, VerifyOptions{}); !errors.Is(err, ErrSignatureInvalid) {
+		t.Fatalf("wrong detached payload err = %v, want ErrSignatureInvalid", err)
+	}
+
+	single, err := SignMulti(payload, signers[:1], MultiSignOptions{Detached: true, Serialization: SerializationFlattened})
+	if err != nil {
+		t.Fatalf("SignMulti detached flattened failed: %v", err)
+	}
+	if _, ok := jwsDocObject(t, single)["payload"]; ok {
+		t.Fatalf("flattened detached document carries payload: %s", single)
+	}
+	mustVerifyDetached(t, single, payload, resolverFor(key, "a"), VerifyOptions{})
+}
+
+// TestSignMultiUnprotectedHeaders covers per-signature unprotected headers, their merge with the
+// protected header, and the parameters that must stay protected. | TestSignMultiUnprotectedHeaders
+// 覆盖每签名非保护头部、其与受保护头部的合并，以及必须保持受保护的参数。
+func TestSignMultiUnprotectedHeaders(t *testing.T) {
+	payload := []byte(`{"sub":"unprotected"}`)
+	key := jwsTestKey(t, "HS256")
+	signers := []Signer{{
+		Key:         key,
+		Header:      JWSHeader{Alg: "HS256"},
+		Unprotected: map[string]any{"kid": "u", "jku": "https://example.test/jwks"},
+	}}
+	token, err := SignMulti(payload, signers, MultiSignOptions{Serialization: SerializationFlattened})
+	if err != nil {
+		t.Fatalf("SignMulti failed: %v", err)
+	}
+	doc := jwsDocObject(t, token)
+	header, ok := doc["header"].(map[string]any)
+	if !ok {
+		t.Fatalf("unprotected header = %v", doc["header"])
+	}
+	if header["kid"] != "u" || header["jku"] != "https://example.test/jwks" {
+		t.Fatalf("unprotected header = %v", header)
+	}
+	verified := mustVerify(t, token, resolverFor(key, "u"), VerifyOptions{})
+	if verified.Header.Kid != "" || verified.RawHeader.String("kid") != "u" {
+		t.Fatalf("merged header = %+v / %v", verified.Header, verified.RawHeader)
+	}
+
+	cases := []struct {
+		name        string
+		header      JWSHeader
+		unprotected map[string]any
+	}{
+		{"alg", JWSHeader{Alg: "HS256"}, map[string]any{"alg": "HS256"}},
+		{"crit", JWSHeader{Alg: "HS256"}, map[string]any{"crit": []any{"b64"}}},
+		{"b64", JWSHeader{Alg: "HS256"}, map[string]any{"b64": false}},
+		{"duplicate kid", JWSHeader{Alg: "HS256", Kid: "x"}, map[string]any{"kid": "u"}},
+		{"duplicate extra", JWSHeader{Alg: "HS256", Extra: map[string]any{"jku": "a"}}, map[string]any{"jku": "b"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := SignMulti(payload, []Signer{{Key: key, Header: tc.header, Unprotected: tc.unprotected}}, MultiSignOptions{})
+			if !errors.Is(err, ErrInvalidHeader) {
+				t.Fatalf("SignMulti err = %v, want ErrInvalidHeader", err)
+			}
+		})
+	}
+}
+
+// TestSignMultiUnencoded covers RFC 7797 b64=false multi-signature documents, the shared-mode rule,
+// detached binary payloads and verification. | TestSignMultiUnencoded 覆盖 RFC 7797 b64=false 多签名
+// 文档、共享模式规则、分离二进制载荷与验签。
+func TestSignMultiUnencoded(t *testing.T) {
+	key := jwsTestKey(t, "HS256")
+	b64False := false
+	signers := []Signer{
+		{Key: key, Header: JWSHeader{Alg: "HS256", Kid: "a", B64: &b64False}},
+		{Key: key, Header: JWSHeader{Alg: "HS256", Kid: "b", B64: &b64False, Crit: []string{"b64"}}},
+	}
+	payload := []byte("$.02 | 载荷")
+	resolver := KeySetResolver(&KeySet{Keys: []*Key{signerPublic(key, "a"), signerPublic(key, "b")}})
+	token, err := SignMulti(payload, signers, MultiSignOptions{Detached: true})
+	if err != nil {
+		t.Fatalf("SignMulti unencoded failed: %v", err)
+	}
+	verified, err := VerifyDetached(token, payload, resolver, VerifyOptions{})
+	if err != nil {
+		t.Fatalf("VerifyDetached unencoded failed: %v", err)
+	}
+	if !bytes.Equal(verified.Payload, payload) {
+		t.Fatalf("payload = %q", verified.Payload)
+	}
+
+	attached, err := SignMulti(payload, signers, MultiSignOptions{})
+	if err != nil {
+		t.Fatalf("SignMulti unencoded attached failed: %v", err)
+	}
+	if jwsDocObject(t, attached)["payload"] != string(payload) {
+		t.Fatalf("attached payload member = %v, want raw text", jwsDocObject(t, attached)["payload"])
+	}
+	mustVerify(t, attached, resolver, VerifyOptions{})
+
+	mixed := []Signer{
+		{Key: key, Header: JWSHeader{Alg: "HS256", B64: &b64False}},
+		{Key: key, Header: JWSHeader{Alg: "HS256"}},
+	}
+	if _, err := SignMulti(payload, mixed, MultiSignOptions{}); !errors.Is(err, ErrInvalidConfig) {
+		t.Fatalf("mixed b64 mode err = %v, want ErrInvalidConfig", err)
+	}
+
+	// An attached unencoded payload must be valid UTF-8; a detached one may be arbitrary octets. |
+	// 附加的未编码载荷必须是合法 UTF-8；分离载荷可以是任意字节。
+	binary := []byte{0xff, 0xfe, 0x00, 0x2e}
+	binarySigner := []Signer{{Key: key, Header: JWSHeader{Alg: "HS256", B64: &b64False}}}
+	if _, err := SignMulti(binary, binarySigner, MultiSignOptions{}); !errors.Is(err, ErrInvalidConfig) {
+		t.Fatalf("invalid UTF-8 attached err = %v, want ErrInvalidConfig", err)
+	}
+	binaryToken, err := SignMulti(binary, binarySigner, MultiSignOptions{Detached: true})
+	if err != nil {
+		t.Fatalf("SignMulti binary detached failed: %v", err)
+	}
+	binaryVerified := mustVerifyDetached(t, binaryToken, binary, resolverFor(key, ""), VerifyOptions{})
+	if !bytes.Equal(binaryVerified.Payload, binary) {
+		t.Fatalf("binary payload = %x", binaryVerified.Payload)
+	}
+}
+
+// TestSignMultiErrors covers signer validation: nil keys, missing or conflicting algorithms,
+// reserved extras, crit rules and repeated signing keys. | TestSignMultiErrors 覆盖签名方校验：空密钥、
+// 缺失或冲突的算法、保留扩展、crit 规则与重复签名密钥。
+func TestSignMultiErrors(t *testing.T) {
+	payload := []byte("x")
+	key := jwsTestKey(t, "HS256")
+	bare := *key
+	bare.Alg = ""
+	b64False := false
+	cases := []struct {
+		name   string
+		signer Signer
+		want   error
+	}{
+		{"nil key", Signer{Header: JWSHeader{Alg: "HS256"}}, ErrInvalidKey},
+		{"no alg", Signer{Key: &bare}, ErrAlgNotAllowed},
+		{"none alg", Signer{Key: key, Header: JWSHeader{Alg: "none"}}, ErrAlgNotAllowed},
+		{"unknown alg", Signer{Key: key, Header: JWSHeader{Alg: "HS999"}}, ErrAlgNotAllowed},
+		{"key alg conflict", Signer{Key: key, Header: JWSHeader{Alg: "HS384"}}, ErrAlgNotAllowed},
+		{"crit exp", Signer{Key: key, Header: JWSHeader{Alg: "HS256", Crit: []string{"exp"}}}, ErrUnsupportedCrit},
+		{"crit duplicate", Signer{Key: key, Header: JWSHeader{Alg: "HS256", Crit: []string{"b64", "b64"}}}, ErrInvalidHeader},
+		{"extra alg", Signer{Key: key, Header: JWSHeader{Alg: "HS256", Extra: map[string]any{"alg": "HS256"}}}, ErrInvalidHeader},
+		{"extra crit", Signer{Key: key, Header: JWSHeader{Alg: "HS256", Extra: map[string]any{"crit": []any{}}}}, ErrInvalidHeader},
+		{"extra b64", Signer{Key: key, Header: JWSHeader{Alg: "HS256", Extra: map[string]any{"b64": &b64False}}}, ErrInvalidHeader},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := SignMulti(payload, []Signer{tc.signer}, MultiSignOptions{}); !errors.Is(err, tc.want) {
+				t.Fatalf("SignMulti err = %v, want %v", err, tc.want)
+			}
+		})
+	}
+}
+
+// TestSignMultiDeterministic checks that repeated signing produces identical bytes and that
+// unprotected headers are encoded with sorted member names. | TestSignMultiDeterministic 检查重复签名
+// 产生完全相同的字节，且非保护头部按成员名排序编码。
+func TestSignMultiDeterministic(t *testing.T) {
+	payload := []byte(`{"sub":"deterministic"}`)
+	key := jwsTestKey(t, "HS256")
+	signers := []Signer{
+		{Key: key, Header: JWSHeader{Alg: "HS256", Kid: "a"}, Unprotected: map[string]any{"z": 1, "a": 2}},
+		{Key: key, Header: JWSHeader{Alg: "HS256", Kid: "b"}},
+	}
+	first, err := SignMulti(payload, signers, MultiSignOptions{Detached: true})
+	if err != nil {
+		t.Fatalf("SignMulti failed: %v", err)
+	}
+	second, err := SignMulti(payload, signers, MultiSignOptions{Detached: true})
+	if err != nil {
+		t.Fatalf("SignMulti failed: %v", err)
+	}
+	if first != second {
+		t.Fatalf("output differs:\n%s\n%s", first, second)
+	}
+	if !strings.Contains(first, `"header":{"a":2,"z":1}`) {
+		t.Fatalf("unprotected header is not sorted: %s", first)
+	}
+}
+
+// TestSignMultiConcurrent signs and verifies general JWS documents concurrently under the race
+// detector. | TestSignMultiConcurrent 在竞态检测器下并发签发与验签通用 JWS 文档。
+func TestSignMultiConcurrent(t *testing.T) {
+	key := jwsTestKey(t, "HS256")
+	signers := []Signer{
+		{Key: key, Header: JWSHeader{Alg: "HS256", Kid: "a"}},
+		{Key: key, Header: JWSHeader{Alg: "HS256", Kid: "b"}},
+	}
+	resolver := KeySetResolver(&KeySet{Keys: []*Key{signerPublic(key, "a"), signerPublic(key, "b")}})
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		i := i
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			payload := []byte(strings.Repeat("m", i+1))
+			token, err := SignMulti(payload, signers, MultiSignOptions{})
+			if err != nil {
+				t.Errorf("SignMulti failed: %v", err)
+				return
+			}
+			verified, err := Verify(token, resolver, VerifyOptions{})
+			if err != nil {
+				t.Errorf("Verify failed: %v", err)
+				return
+			}
+			if !bytes.Equal(verified.Payload, payload) {
+				t.Errorf("payload = %q, want %q", verified.Payload, payload)
+			}
+		}()
+	}
+	wg.Wait()
 }

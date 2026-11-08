@@ -29,24 +29,25 @@ SCIM 2.0、WebAuthn、TOTP/HOTP、RBAC/ABAC、CAS、联邦登录与 RADIUS。所
 | 包 | 职责 | 主要标准 |
 |---|---|---|
 | `auth` | 用户、主体、身份关联、会话、密码策略、审计、账号生命周期 | NIST SP 800-63B 口令与认证建议 |
-| `auth/token/jwt` | JWT 签发、验签、中间件（原根目录 `jwt` 模块迁入） | RFC 7515/7518/7519 |
-| `auth/token/jose` | JWK/JWKS、JWS、JWE、密钥缓存与远程 JWKS | RFC 7515-7519、7638、3394、8037 |
-| `auth/protocol/oauth2` | 授权服务器与客户端、令牌、自省、撤销、PAR、设备码、令牌交换、DPoP、mTLS、RFC 9101 请求对象 | RFC 6749/6750/7009/7523/7636/7662/8414/8628/8693/8705/8707/9068/9101/9126/9207/9449 |
+| `auth/token/jwt` | JWT 签发、验签、中间件（原根目录 `jwt` 模块迁入）、iat/多 issuer/多 audience、low-S | RFC 7515/7518/7519、RFC 7797 |
+| `auth/token/jose` | JWK/JWKS、JWS、JWE、密钥缓存与远程 JWKS、JWS/JWE JSON/Flattened、多签名、detached、b64=false | RFC 7515-7519、7638、7797、3394、8037 |
+| `auth/protocol/oauth2` | 授权服务器与客户端、令牌、自省、撤销、PAR、设备码、令牌交换、DPoP/DPoP nonce、mTLS、client_secret_jwt、RFC 9101 请求对象 | RFC 6749/6750/7009/7523/7636/7662/8414/8628/8693/8705/8707/9068/9101/9126/9207/9449 |
 | `auth/protocol/oidc` | OpenID Provider、Discovery、UserInfo、动态注册、登出、会话管理、RP、JARM | OpenID Connect Core 1.0、Discovery 1.0、Registration 1.0、RP-Initiated/Front/Back-Channel Logout、Session Management、JARM |
 | `auth/crypto/xmlsig` | XML C14N、XMLDSig、XML Encryption、SM2/SM3/SM4 | W3C C14N 1.0/1.1、XMLDSig 1.1、XML Encryption 1.1、GM/T |
-| `auth/protocol/saml` | SAML 2.0 IdP/SP、Metadata、SSO/SLO、POST/Redirect/Artifact 绑定与 Artifact Resolution Service | SAML 2.0 Core/Profiles/Bindings/Metadata |
-| `auth/directory/ldap` | 纯 Go LDAP v3 客户端、过滤器、分页、StartTLS、SASL（PLAIN/EXTERNAL/SCRAM/GSS-SPNEGO NTLMv2）、连接池、AD 辅助 | RFC 4511/4515/2696/2891/3062/4532/5802/7677、AD 兼容 |
-| `auth/directory/ntlm` | NTLMSSP Type 1/2/3、NTLMv2/LMv2、SPNEGO、AV pairs、channel binding、NTLMv1 兼容开关 | MS-NLMP、RFC 4178 |
-| `auth/mfa/webauthn` | WebAuthn Level 2/3、Passkeys、CBOR/COSE、attestation、可配置计数器策略与信任根 | W3C WebAuthn L2/L3、RFC 8949 |
-| `auth/directory/scim` | SCIM 2.0 服务端/客户端、过滤、PATCH、Bulk（默认非事务，可选原子回滚与结构化 bulkId 解析）、ETag | RFC 7643/7644 |
+| `auth/protocol/saml` | SAML 2.0 IdP/SP、Metadata、SSO/SLO、POST/Redirect/Artifact 绑定、SOAP 1.2、ARS failover、OneTimeUse 重放存储 | SAML 2.0 Core/Profiles/Bindings/Metadata |
+| `auth/directory/ldap` | 纯 Go LDAP v3 客户端、过滤器、分页、StartTLS、SASL（PLAIN/EXTERNAL/SCRAM/GSS-SPNEGO NTLMv2/GSSAPI Kerberos）、连接池健康探测、AD 辅助 | RFC 4511/4515/2696/2891/3062/4120/4532/4752/5802/7677、AD 兼容 |
+| `auth/directory/ntlm` | NTLMSSP Type 1/2/3、NTLMv2/LMv2、完整 SPNEGO、mechListMIC、SIGN/SEAL、AV pairs、channel binding、Acceptor | MS-NLMP、RFC 4178 |
+| `auth/mfa/webauthn` | WebAuthn Level 2/3、Passkeys、CBOR/COSE、attestation、SafetyNet/AndroidKey/TPM 策略、TPM EK activation、计数器策略与信任根 | W3C WebAuthn L2/L3、RFC 8949、TPM 2.0 |
+| `auth/directory/scim` | SCIM 2.0 服务端/客户端、过滤、PATCH、Bulk（原子回滚）、ETag、两阶段口令预配 | RFC 7643/7644 |
 | `auth/mfa/otp` | HOTP/TOTP、otpauth URI、恢复码、重放保护、Steam Guard | RFC 4226/6238 |
 | `auth/authz/rbac` | RBAC + ABAC 策略引擎、角色继承、条件、组合算法、中间件 | 无单独 RFC；模型对齐 NIST RBAC/ABAC |
-| `auth/protocol/cas` | CAS 1.0/2.0/3.0 服务端与客户端、TGT/ST/PGT/PT、代理链路、3.0 JSON 视图、后端单点登出 | Apereo CAS Protocol 1.0/2.0/3.0 |
+| `auth/protocol/cas` | CAS 1.0/2.0/3.0 服务端与客户端、TGT/ST/PGT/PT、代理链路、3.0 JSON 视图、后端/前端单点登出、LogoutRequest XML 签名 | Apereo CAS Protocol 1.0/2.0/3.0 |
 | `auth/protocol/wsfed` | WS-Federation 被动请求方配置、RP/STS、SAML 1.1/2.0 令牌 | WS-Federation 1.2、WS-Trust 1.3 |
+| `auth/protocol/kerberos` | Kerberos V5 客户端/Acceptor、GSSAPI/SPNEGO、keytab、AES128/256-CTS-HMAC-SHA1-96、RC4-HMAC、通道绑定 | RFC 4120/3961/3962/4121/4178/4752/4757 |
 | `auth/protocol/federation` | 社交/企业登录经纪、账号关联、JIT 预配、中外提供方预设 | OAuth 2.0/OIDC + 各提供方 API |
 | `auth/keymgmt/kms` | 自研 KMS：密钥生命周期、版本/轮换、信封加密、签名、REST API | NIST SP 800-57、JOSE/JWK、GM/T |
 | `auth/keymgmt/kmip` | KMIP TTLV 编解码、客户端/服务端、1.4/2.0 版本化负载、JWK 扩展、密钥与对象全生命周期 | OASIS KMIP 1.4/2.0、RFC 7517 |
-| `auth/protocol/radius` | RADIUS 认证/计费客户端、PAP/CHAP/MS-CHAPv2/EAP、Message-Authenticator、RFC 5176 CoA/Disconnect 客户端与 NAS 侧动态授权响应器、重复请求缓存 | RFC 2865/2866/2868/2869/3579/5176/6613/6614 |
+| `auth/protocol/radius` | RADIUS 客户端/relay-proxy/Access/Accounting 服务端、PAP/CHAP/MS-CHAPv2/EAP-MD5/EAP-MSCHAPv2/EAP-TLS/TTLS/PEAP、Message-Authenticator、RFC 5176 CoA/Disconnect | RFC 2865/2866/2868/2869/3579/3748/5216/5281/5176/6613/6614 |
 | `auth/identity/cn` | 大陆手机号、居民身份证、统一社会信用代码、银行卡校验与脱敏、实名认证/短信 OTP 接口 | GB 11643-1999、GB 32100-2015、工信部号段 |
 
 ## 快速开始（ydx/router 原生入口）
@@ -288,6 +289,36 @@ JWK/PKCS#8/PKIX 导出策略；OIDC 的 `SigningKey`、SAML 的 `XMLDSigSigner` 
   周期清理；`RequireEmailVerification` 下联邦未验证邮箱新用户置为 `UserPending`；
   `PasswordPolicy` 支持逐字段默认；`Config.RequireMFAToken` 可关闭旧空 MFAToken 路径；
   identity/cn 默认客户端仅跟随同源/HTTPS 升级重定向，响应字段超限与解码错误不再回显原文。
+
+## 第四轮完整性补全（v0.1.3）
+
+本轮以“不留半成品”为标准补齐此前列出的全部硬边界：
+
+- **Kerberos V5 + GSSAPI/SPNEGO**：新增 `auth/protocol/kerberos`，实现 AS/TGS/AP 交换、
+  AES128/256-CTS-HMAC-SHA1-96、RC4-HMAC、MIT keytab、SRV/TXT KDC 发现、GSSAPI 初始上下文、
+  AP-REP 双向认证、通道绑定、RFC 4121 Wrap/Unwrap/MIC 与 Acceptor；LDAP 新增
+  `BindSASLGSSAPI` 与 `Config.GSSAPI`，支持 SPNEGO/raw Kerberos、authzID、通道绑定与重连重放。
+  已通过真实 MIT KDC 互操作测试（`-tags interopkdc`）。
+- **JOSE**：JWE General/Flattened JSON（多接收方、AAD、zip）、JWS 多签名签发、RFC 7797
+  `b64=false` 全部实现；compact 仍为默认。
+- **OAuth2/OIDC**：RFC 9449 DPoP nonce 全流程与 `cnf.jkt` 绑定；`client_secret_jwt` 在部署方
+  提供 `ClientSecretResolver` 后可完整认证并参与动态注册；Front-Channel Logout 支持 sid/sub
+  会话回调；内存状态周期清理。
+- **NTLM**：完整 SPNEGO 状态机、mechListMIC、服务端 Acceptor、NTLMSSP SIGN/SEAL
+  （RC4 + HMAC-MD5、序列号、双向密钥派生）；LDAP SASL NTLM 使用新状态机并校验 mechListMIC。
+- **RADIUS**：relay/proxy（Access/Accounting、Proxy-State、MS-MPPE 重加密、循环检测）、
+  可复用 Access/Accounting 服务端（UDP/TCP/TLS）、MS-CHAPv2 服务端、EAP-MD5/EAP-MSCHAPv2/
+  EAP-TLS/EAP-TTLS/PEAPv0、Accounting Message-Authenticator 与重复抑制。
+- **SAML/SCIM**：SAML 重放窗口可配置、SOAP 1.2 Artifact Resolution、多端点 failover；
+  SCIM 两阶段 `PasswordProvisioner`（Begin/Commit/Rollback）与创建失败显式回滚错误。
+- **WebAuthn**：TPM 2.0 EK credential activation 完整实现（自研 TPM2 编解码、MakeCredential/
+  ActivateCredential、Linux `/dev/tpmrm0`、Windows TBS、软件 TPM 测试、WebAuthn 注册集成）；
+  自定义校验器不能再绕过 SafetyNet/AndroidKey/TPM 策略。
+- **KMS/KMIP**：KMIP Batch Undo 改为按受影响对象的事务化逆操作日志（含 Destroy 材料恢复）；
+  KMS 版本化 `KMSM2` 包装、REST 安全、DeriveKey 对称限制；KMIP Export、版本策略与惰性重连。
+- **多实例共享存储**：新增独立模块 `github.com/shibingli/ydx/authstore`，为 auth 根包与
+  oauth2/oidc/saml/cas/scim/rbac/kms/kmip/wsfed/otp/webauthn 的全部 Store/Registry/Replay/
+  Challenge/State 接口提供 Redis 实现（Lua 原子性、Cluster 哈希槽、miniredis 多实例测试）。
 
 ## 与主流实现的对比
 

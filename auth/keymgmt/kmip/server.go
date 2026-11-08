@@ -67,6 +67,11 @@ type ServerConfig struct {
 	Logger *log.Logger
 	// MaxRequestSize limits a single encoded request; zero uses DefaultMaxMessageSize. | MaxRequestSize 限制单个编码请求；零值使用 DefaultMaxMessageSize。
 	MaxRequestSize int
+	// MaxUndoLogBytes limits the memory retained by the per-batch Batch Undo journal; zero uses
+	// DefaultMaxUndoLogBytes. A mutating item that would exceed the budget fails without changing the store. |
+	// MaxUndoLogBytes 限制每批 Batch Undo 撤销日志保留的内存；零值使用 DefaultMaxUndoLogBytes。会使预算超限的
+	// 变更项会失败且不改变存储。
+	MaxUndoLogBytes int
 	// Limits optionally overrides the TTLV resource limits. | Limits 可选覆盖 TTLV 资源限制。
 	Limits Limits
 	// ReadTimeout bounds one request read; zero disables the deadline. | ReadTimeout 限制一次请求读取；零值不设截止时间。
@@ -80,20 +85,23 @@ type ServerConfig struct {
 // Server is a KMIP server. It accepts TTLV request messages over TCP or TLS and dispatches batch items. | Server
 // 是 KMIP 服务器，通过 TCP 或 TLS 接收 TTLV 请求消息并分发批处理项。
 type Server struct {
-	cfg     ServerConfig
-	limits  Limits
-	store   Store
-	now     Clock
-	ctx     context.Context
-	cancel  context.CancelFunc
-	mu      sync.Mutex
-	lns     map[net.Listener]struct{}
-	conns   map[net.Conn]struct{}
-	wg      sync.WaitGroup
-	closed  bool
-	once    sync.Once
-	addr    net.Addr
-	maxSize int
+	cfg       ServerConfig
+	limits    Limits
+	store     Store
+	now       Clock
+	ctx       context.Context
+	cancel    context.CancelFunc
+	mu        sync.Mutex
+	batchMu   sync.Mutex
+	undo      *batchUndoLog
+	lns       map[net.Listener]struct{}
+	conns     map[net.Conn]struct{}
+	wg        sync.WaitGroup
+	closed    bool
+	once      sync.Once
+	addr      net.Addr
+	maxSize   int
+	undoLimit int
 }
 
 // NewServer returns a server using cfg. The caller must close it to release listeners and connections. | NewServer
@@ -111,6 +119,10 @@ func NewServer(cfg ServerConfig) (*Server, error) {
 	if cfg.ShutdownTimeout <= 0 {
 		cfg.ShutdownTimeout = 5 * time.Second
 	}
+	undoLimit := cfg.MaxUndoLogBytes
+	if undoLimit <= 0 {
+		undoLimit = DefaultMaxUndoLogBytes
+	}
 	limits := cfg.Limits.normalized()
 	if limits.MaxSize > cfg.MaxRequestSize {
 		limits.MaxSize = cfg.MaxRequestSize
@@ -121,15 +133,16 @@ func NewServer(cfg ServerConfig) (*Server, error) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	return &Server{
-		cfg:     cfg,
-		limits:  limits,
-		store:   cfg.Store,
-		now:     clock,
-		ctx:     ctx,
-		cancel:  cancel,
-		lns:     make(map[net.Listener]struct{}),
-		conns:   make(map[net.Conn]struct{}),
-		maxSize: cfg.MaxRequestSize,
+		cfg:       cfg,
+		limits:    limits,
+		store:     cfg.Store,
+		now:       clock,
+		ctx:       ctx,
+		cancel:    cancel,
+		lns:       make(map[net.Listener]struct{}),
+		conns:     make(map[net.Conn]struct{}),
+		maxSize:   cfg.MaxRequestSize,
+		undoLimit: undoLimit,
 	}, nil
 }
 
@@ -303,19 +316,12 @@ func (s *Server) Close() error {
 	return nil
 }
 
-// mutatingOperation reports whether op can change persisted state. | mutatingOperation 报告 op 是否
-// 可能改变持久化状态。
-func mutatingOperation(op Operation) bool {
-	switch op {
-	case OpGet, OpGetAttributes, OpGetAttributeList, OpLocate, OpQuery, OpDiscoverVersions, OpCheck, OpExport:
-		return false
-	default:
-		return true
-	}
-}
-
-// handleMessage executes all batch items under the batch continuation policy. | handleMessage 按批处理继续策略执行全部批处理项。
+// handleMessage executes all batch items under the batch continuation policy. Batches are serialized per server so
+// that a Batch Undo journal only ever covers the mutations of its own request message. | handleMessage 按批处理继续
+// 策略执行全部批处理项。服务器内批处理串行执行，因此 Batch Undo 撤销日志只覆盖本请求消息的变更。
 func (s *Server) handleMessage(conn net.Conn, request RequestMessage) ResponseMessage {
+	s.batchMu.Lock()
+	defer s.batchMu.Unlock()
 	now := s.now()
 	version := request.Header.ProtocolVersion
 	if !version.Valid() {
@@ -336,9 +342,13 @@ func (s *Server) handleMessage(conn net.Conn, request RequestMessage) ResponseMe
 		request.Header.BatchErrorContinuationOption == BatchStop ||
 		request.Header.BatchErrorContinuationOption == BatchUndo
 	batchUndo := request.Header.BatchErrorContinuationOption == BatchUndo && !unsupportedVersion
-	var snapshot []ObjectRecord
-	hasSnapshot := false
-	defer func() { zeroizeRecords(snapshot) }()
+	if batchUndo {
+		s.undo = newBatchUndoLog(s.undoLimit)
+		defer func() {
+			s.undo.clear()
+			s.undo = nil
+		}()
+	}
 	credentials := credentialsFromHeader(request.Header.Authentication)
 	remote := ""
 	if conn != nil && conn.RemoteAddr() != nil {
@@ -360,22 +370,14 @@ func (s *Server) handleMessage(conn net.Conn, request RequestMessage) ResponseMe
 			response.BatchItems = append(response.BatchItems, failureItem(item, err))
 			if stopOnError {
 				if batchUndo {
-					s.undoBatch(&response, snapshot, hasSnapshot)
+					_ = s.undoBatch(&response)
 				}
 				break
 			}
 			continue
 		}
-		if batchUndo && !hasSnapshot && mutatingOperation(item.Operation) {
-			records, err := s.store.List(s.ctx)
-			if err != nil {
-				response.BatchItems = append(response.BatchItems, failureItem(item, errs.WrapDetail(err, ErrOperationFailed,
-					"batch undo snapshot | 批处理撤销快照失败")))
-				s.undoBatch(&response, nil, false)
-				break
-			}
-			snapshot = records
-			hasSnapshot = true
+		if s.undo != nil {
+			s.undo.beginItem(item.Operation)
 		}
 		payload, err := s.dispatchForVersion(item, request.Header.ProtocolVersion)
 		if err != nil {
@@ -385,7 +387,7 @@ func (s *Server) handleMessage(conn net.Conn, request RequestMessage) ResponseMe
 			response.BatchItems = append(response.BatchItems, failureItem(item, err))
 			if stopOnError {
 				if batchUndo {
-					s.undoBatch(&response, snapshot, hasSnapshot)
+					_ = s.undoBatch(&response)
 				}
 				break
 			}
@@ -402,26 +404,29 @@ func (s *Server) handleMessage(conn net.Conn, request RequestMessage) ResponseMe
 	return response
 }
 
-// undoBatch restores the pre-batch store snapshot after a failure when one was taken. Successful
-// response items become Operation Undone and their payloads are dropped so that no key material is
-// exported for an operation that was rolled back. | undoBatch 在已拍摄快照时于失败后恢复批处理前的
-// 存储快照。成功的响应项变为 Operation Undone，并丢弃其负载，避免为已回滚的操作导出密钥材料。
-func (s *Server) undoBatch(response *ResponseMessage, snapshot []ObjectRecord, restore bool) {
-	if restore {
-		if err := s.restoreSnapshot(snapshot); err != nil {
-			s.warn("kmip batch undo failed | KMIP 批处理撤销失败", log.Err(err))
-			for i := range response.BatchItems {
-				if response.BatchItems[i].ResultStatus != ResultStatusSuccess {
-					continue
-				}
-				response.BatchItems[i].ResultStatus = ResultStatusOperationFailed
-				response.BatchItems[i].ResultReason = ResultReasonGeneralFailure
-				response.BatchItems[i].ResultMessage = "batch undo failed | 批处理撤销失败"
-				response.BatchItems[i].Payload = Item{}
+// undoBatch replays the per-batch inverse-operation journal after a failed Batch Undo item. Successful response
+// items become Operation Undone and their payloads are dropped so that no key material is exported for an operation
+// that was rolled back. When a restore fails, the joined diagnostic is logged and returned, and every successful
+// item is reported as a general failure because batch atomicity could not be established. | undoBatch 在 Batch Undo
+// 项失败后重放每批逆操作日志。成功的响应项变为 Operation Undone，并丢弃其负载，避免为已回滚的操作导出密钥材料。
+// 恢复失败时记录并返回合并诊断，所有成功项都报告为通用失败，因为无法保证批处理原子性。
+func (s *Server) undoBatch(response *ResponseMessage) error {
+	var rollbackErr error
+	if s.undo != nil {
+		rollbackErr = s.undo.rollback(s.ctx, s.store)
+	}
+	if rollbackErr != nil {
+		s.warn("kmip batch undo failed | KMIP 批处理撤销失败", log.Err(rollbackErr))
+		for i := range response.BatchItems {
+			if response.BatchItems[i].ResultStatus != ResultStatusSuccess {
+				continue
 			}
-			return
+			response.BatchItems[i].ResultStatus = ResultStatusOperationFailed
+			response.BatchItems[i].ResultReason = ResultReasonGeneralFailure
+			response.BatchItems[i].ResultMessage = "batch undo failed | 批处理撤销失败: " + rollbackErr.Error()
+			response.BatchItems[i].Payload = Item{}
 		}
-		zeroizeRecords(snapshot)
+		return rollbackErr
 	}
 	for i := range response.BatchItems {
 		if response.BatchItems[i].ResultStatus != ResultStatusSuccess {
@@ -430,46 +435,60 @@ func (s *Server) undoBatch(response *ResponseMessage, snapshot []ObjectRecord, r
 		response.BatchItems[i].ResultStatus = ResultStatusOperationUndone
 		response.BatchItems[i].Payload = Item{}
 	}
+	return nil
 }
 
-// restoreSnapshot reconciles the store with a snapshot taken before the batch. | restoreSnapshot 使存储与批处理前拍摄的快照一致。
-func (s *Server) restoreSnapshot(snapshot []ObjectRecord) error {
-	current, err := s.store.List(s.ctx)
-	if err != nil {
-		return err
-	}
-	keep := make(map[string]struct{}, len(snapshot))
-	for i := range snapshot {
-		keep[snapshot[i].UniqueIdentifier] = struct{}{}
-	}
-	for i := range current {
-		if _, ok := keep[current[i].UniqueIdentifier]; ok {
-			continue
-		}
-		if err := s.store.Delete(s.ctx, current[i].UniqueIdentifier); err != nil && !errors.Is(err, ErrItemNotFound) {
+// createRecord stores a new record and journals its identifier so Batch Undo can delete it. | createRecord 存储新记录
+// 并记录其标识符，使 Batch Undo 能删除它。
+func (s *Server) createRecord(record ObjectRecord) error {
+	if s.undo != nil {
+		if err := s.undo.recordCreate(record.UniqueIdentifier); err != nil {
 			return err
 		}
 	}
-	for i := range snapshot {
-		record := cloneRecord(snapshot[i])
-		if err := s.store.Update(s.ctx, record); err != nil {
-			if !errors.Is(err, ErrItemNotFound) {
-				return err
-			}
-			if err := s.store.Create(s.ctx, record); err != nil {
-				return err
-			}
+	if err := s.store.Create(s.ctx, record); err != nil {
+		if s.undo != nil {
+			s.undo.dropLast(undoMutationCreate, record.UniqueIdentifier)
 		}
+		return err
 	}
 	return nil
 }
 
-// zeroizeRecords clears object key material in a record slice. | zeroizeRecords 清除记录切片中的对象密钥材料。
-func zeroizeRecords(records []ObjectRecord) {
-	for i := range records {
-		if records[i].Object != nil {
-			records[i].Object.Zeroize()
+// updateRecord replaces an existing record. previous must be a deep copy of the record as it was loaded before the
+// caller applied its mutation; ownership of previous transfers to the undo journal, or it is zeroized when no
+// journal is active. | updateRecord 替换既有记录。previous 必须是调用方应用变更前加载记录的深拷贝；previous 的
+// 所有权转移给撤销日志，没有活动日志时则将其清零。
+func (s *Server) updateRecord(previous, record ObjectRecord) error {
+	if s.undo != nil {
+		if err := s.undo.recordUpdate(previous); err != nil {
+			zeroizeRecord(&previous)
+			return err
 		}
+	} else {
+		zeroizeRecord(&previous)
+	}
+	if err := s.store.Update(s.ctx, record); err != nil {
+		if s.undo != nil {
+			s.undo.dropLast(undoMutationUpdate, record.UniqueIdentifier)
+		}
+		return err
+	}
+	return nil
+}
+
+// discardNewRecord removes a record that was created earlier in the same batch without journaling the removal, and
+// drops its create entry. It is the compensating action for a partially applied multi-object operation such as
+// Create Key Pair. | discardNewRecord 删除同一批中先前创建且不记录删除操作的记录，并丢弃其创建条目。它是
+// Create Key Pair 等多对象操作部分失败时的补偿动作。
+func (s *Server) discardNewRecord(uniqueIdentifier string) {
+	if err := s.store.Delete(s.ctx, uniqueIdentifier); err != nil && !errors.Is(err, ErrItemNotFound) {
+		// Keep the create entry so a later Batch Undo rollback retries the deletion. | 保留创建条目，使后续
+		// Batch Undo 回滚可以重试删除。
+		return
+	}
+	if s.undo != nil {
+		s.undo.dropLast(undoMutationCreate, uniqueIdentifier)
 	}
 }
 

@@ -34,6 +34,7 @@ const (
 	authExternal
 	authSCRAM
 	authNTLM
+	authGSSAPI
 )
 
 // authState is the effective bound identity. Passwords stay in memory so a
@@ -47,6 +48,7 @@ type authState struct {
 	authcid  string
 	scram    SCRAMOptions
 	ntlm     NTLMOptions
+	gssapi   GSSAPIOptions
 }
 
 // Client is a serialized LDAP client connection. One request is in flight per
@@ -436,8 +438,15 @@ func (c *Client) BindAnonymous(ctx context.Context) error {
 }
 
 // performSimpleBindLocked sends one simple BindRequest without changing the
-// replay state. | performSimpleBindLocked 发送一次简单 BindRequest 且不改变重放状态。
+// replay state. When Config.RequireSimpleBindTLS is set it refuses to send the
+// password over a transport that is not TLS-protected, which also covers the
+// automatic replay after a reconnect. | performSimpleBindLocked 发送一次简单
+// BindRequest 且不改变重放状态。启用 Config.RequireSimpleBindTLS 且传输未受 TLS 保护时，
+// 它拒绝发送口令；重连后的自动重放同样受此保护。
 func (c *Client) performSimpleBindLocked(ctx context.Context, dn, password string) (*BindResponse, error) {
+	if c.cfg.RequireSimpleBindTLS && (c.conn == nil || !c.conn.secure) {
+		return nil, ErrTLSRequired
+	}
 	message, err := c.exchangeLocked(ctx, &BindRequest{
 		Version:        3,
 		DN:             dn,
@@ -475,6 +484,8 @@ func (c *Client) replayAuthLocked(ctx context.Context, auth *authState) error {
 		return c.performSCRAMLocked(ctx, auth.scram)
 	case authNTLM:
 		return c.performNTLMLocked(ctx, auth.ntlm)
+	case authGSSAPI:
+		return c.performSASLGSSAPILocked(ctx, auth.gssapi)
 	default:
 		return errs.Detail(ErrInvalidConfig, "unknown authentication replay kind %d | 未知认证重放类型 %d", auth.kind, auth.kind)
 	}

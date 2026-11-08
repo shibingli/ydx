@@ -138,7 +138,7 @@ func (p *Provider) RegisterClient(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_client_metadata", "metadata is not valid JSON | 元数据不是合法 JSON")
 		return
 	}
-	if err := validateClientMetadata(&metadata); err != nil {
+	if err := validateClientMetadataFor(&metadata, p.oauth); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_client_metadata", err.Error())
 		return
 	}
@@ -162,6 +162,16 @@ func (p *Provider) RegisterClient(w http.ResponseWriter, r *http.Request) {
 	if err := p.oauth.Config().Clients.CreateClient(r.Context(), client); err != nil {
 		invalidConfig(w, err)
 		return
+	}
+	if secret != "" && client.TokenEndpointAuthMethod == oauth2.ClientSecretJWT {
+		if err := p.oauth.RegisterClientSecret(r.Context(), client.ID, secret); err != nil {
+			// The client row is useless without a resolver-visible secret, so undo it instead of
+			// leaving a registration that can never authenticate. | 缺少解析器可见密钥的客户端记录
+			// 无法认证，因此回滚，而不是留下一条永远无法认证的注册。
+			_ = p.oauth.Config().Clients.DeleteClient(r.Context(), client.ID)
+			invalidConfig(w, err)
+			return
+		}
 	}
 	response := RegistrationResponse{
 		ClientID:                client.ID,
@@ -224,13 +234,22 @@ func (p *Provider) ClientConfiguration(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "invalid_client_metadata", "client_id does not match the path | client_id 与路径不匹配")
 			return
 		}
-		if err := validateClientMetadata(&metadata); err != nil {
+		if err := validateClientMetadataFor(&metadata, p.oauth); err != nil {
 			writeError(w, http.StatusBadRequest, "invalid_client_metadata", err.Error())
 			return
 		}
 		updated := cloneOIDCClient(client)
 		updated.UpdatedAt = p.Now()
-		if _, err := applyClientMetadata(updated, &metadata, false); err != nil {
+		method := metadata.TokenEndpointAuthMethod
+		if method == "" {
+			method = oauth2.ClientSecretBasic
+		}
+		// Switching to client_secret_jwt needs a fresh registrar-persisted secret because a
+		// previously issued shared secret may be unknown to the deployment resolver. | 切换到
+		// client_secret_jwt 需要新的、由注册器保存的密钥，因为部署解析器可能不知道此前签发的共享密钥。
+		issueSecret := method == oauth2.ClientSecretJWT && (client.TokenEndpointAuthMethod != oauth2.ClientSecretJWT || client.SecretHash == "")
+		secret, err := applyClientMetadata(updated, &metadata, issueSecret)
+		if err != nil {
 			writeError(w, http.StatusBadRequest, "invalid_client_metadata", err.Error())
 			return
 		}
@@ -240,8 +259,16 @@ func (p *Provider) ClientConfiguration(w http.ResponseWriter, r *http.Request) {
 			invalidConfig(w, err)
 			return
 		}
+		if secret != "" && updated.TokenEndpointAuthMethod == oauth2.ClientSecretJWT {
+			if err := p.oauth.RegisterClientSecret(r.Context(), updated.ID, secret); err != nil {
+				_ = p.oauth.Config().Clients.UpdateClient(r.Context(), client)
+				invalidConfig(w, err)
+				return
+			}
+		}
 		writeJSON(w, http.StatusOK, RegistrationResponse{
 			ClientID:              updated.ID,
+			ClientSecret:          secret,
 			ClientIDIssuedAt:      updated.CreatedAt.Unix(),
 			RegistrationClientURI: updated.RegistrationClientURI,
 			ClientMetadata:        metadataFromClient(updated),
@@ -271,8 +298,19 @@ func clientIDFromPath(path, prefix string) string {
 	return path
 }
 
-// validateClientMetadata validates registration metadata. | validateClientMetadata 校验注册元数据。
+// validateClientMetadata validates registration metadata with client_secret_jwt disabled. Servers
+// that enable the method must call validateClientMetadataFor with their OAuth server. |
+// validateClientMetadata 在 client_secret_jwt 禁用时校验注册元数据。启用该方法的服务器必须调用
+// validateClientMetadataFor 并传入其 OAuth 服务器。
 func validateClientMetadata(metadata *ClientMetadata) error {
+	return validateClientMetadataFor(metadata, nil)
+}
+
+// validateClientMetadataFor validates registration metadata against server capabilities. A nil
+// server keeps client_secret_jwt disabled, which is the safe default. |
+// validateClientMetadataFor 依据服务器能力校验注册元数据。server 为空时 client_secret_jwt 保持
+// 禁用，这是安全默认。
+func validateClientMetadataFor(metadata *ClientMetadata, server *oauth2.Server) error {
 	if metadata == nil {
 		return errs.Detail(ErrInvalidRequest, "metadata is nil | 元数据为空")
 	}
@@ -308,10 +346,24 @@ func validateClientMetadata(metadata *ClientMetadata) error {
 	switch metadata.TokenEndpointAuthMethod {
 	case "", oauth2.ClientSecretBasic, oauth2.ClientSecretPost, oauth2.PrivateKeyJWT, oauth2.ClientAuthNone, oauth2.TLSClientAuth, oauth2.SelfSignedTLSClientAuth:
 	case oauth2.ClientSecretJWT:
-		// The client store keeps only a secret hash, so an HS256 assertion can never be verified;
-		// reject the registration instead of advertising a method that always fails. | 客户端存储
-		// 只保存密钥哈希，HS256 断言永远无法校验；因此拒绝注册，而不是公布一个总会失败的方法。
-		return errs.Detail(ErrInvalidRequest, "client_secret_jwt is not supported because only a secret hash is stored; use private_key_jwt or client_secret_basic | 不支持 client_secret_jwt，因为只保存密钥哈希；请使用 private_key_jwt 或 client_secret_basic")
+		// The method is accepted only when the server enables it and a registrar can persist the
+		// issued plaintext secret. Without persistence no resolver could verify a later
+		// assertion, and storing plaintext by default would weaken the client store. | 只有服务器
+		// 启用该方法且注册器能保存签发的明文密钥时才接受。缺少持久化时解析器无法校验后续断言，
+		// 而默认保存明文会削弱客户端存储。
+		if server == nil || !server.ClientSecretJWTEnabled() {
+			return errs.Detail(ErrInvalidRequest, "client_secret_jwt is not enabled by the server | 服务器未启用 client_secret_jwt")
+		}
+		if !server.ClientSecretJWTRegistrarEnabled() {
+			return errs.Detail(ErrInvalidRequest, "client_secret_jwt registration cannot persist the issued secret; register a preconfigured client instead | client_secret_jwt 注册无法保存签发的密钥；请改为预配置客户端")
+		}
+		if metadata.TokenEndpointAuthSigningAlg != "" {
+			switch metadata.TokenEndpointAuthSigningAlg {
+			case "HS256", "HS384", "HS512":
+			default:
+				return errs.Detail(ErrInvalidRequest, "token_endpoint_auth_signing_alg %[1]q is not valid for client_secret_jwt | token_endpoint_auth_signing_alg %[1]q 不适用于 client_secret_jwt", metadata.TokenEndpointAuthSigningAlg)
+			}
+		}
 	default:
 		return errs.Detail(ErrInvalidRequest, "unsupported token_endpoint_auth_method | 不支持的 token_endpoint_auth_method")
 	}
@@ -542,7 +594,24 @@ func applyClientMetadata(client *oauth2.Client, metadata *ClientMetadata, issueS
 		client.SecretHash = ""
 		return "", nil
 	}
-	if client.TokenEndpointAuthMethod != oauth2.ClientSecretBasic && client.TokenEndpointAuthMethod != oauth2.ClientSecretPost {
+	switch client.TokenEndpointAuthMethod {
+	case oauth2.ClientSecretBasic, oauth2.ClientSecretPost:
+	case oauth2.ClientSecretJWT:
+		// HS512 signs with a 64-byte key, so a client_secret_jwt secret carries 64 random bytes
+		// to keep every enabled algorithm usable. The client store still keeps only its hash; the
+		// plaintext reaches the resolver through ClientSecretRegistrar. | HS512 使用 64 字节密钥
+		// 签名，因此 client_secret_jwt 密钥包含 64 个随机字节，使所有启用算法可用。客户端存储仍只
+		// 保存其哈希；明文经 ClientSecretRegistrar 到达解析器。
+		if !issueSecret && client.SecretHash != "" {
+			return "", nil
+		}
+		secret, err := auth.RandomToken(64)
+		if err != nil {
+			return "", err
+		}
+		client.SetSecret(secret)
+		return secret, nil
+	default:
 		// private_key_jwt and mTLS clients authenticate with keys or certificates, so a
 		// shared secret would be unused and should not be minted. | private_key_jwt 与
 		// mTLS 客户端使用密钥或证书认证，共享密钥不会被使用，不应签发。

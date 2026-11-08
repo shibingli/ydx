@@ -1,11 +1,14 @@
 // Package jose implements the JSON Object Signing and Encryption toolkit used by the OAuth 2.0
-// and OpenID Connect servers: JWK and JWKS handling, compact and JSON-serialized JWS, compact
-// JWE and the HTTP helpers needed to publish and consume a key set. JWS supports the compact,
-// flattened JSON and general JSON serializations, including detached payloads (RFC 7515
-// Appendix F); JWE remains compact-only. | Package jose 实现 OAuth 2.0 与 OpenID Connect 服务端
-// 使用的 JSON 对象签名与加密工具集：JWK 与 JWKS 处理、紧凑与 JSON 序列化的 JWS、紧凑 JWE，以及
-// 发布与读取密钥集所需的 HTTP 辅助能力。JWS 支持紧凑、扁平 JSON 与通用 JSON 序列化，包括分离
-// 载荷（RFC 7515 附录 F）；JWE 仍仅支持紧凑形式。
+// and OpenID Connect servers: JWK and JWKS handling, compact and JSON-serialized JWS and JWE,
+// and the HTTP helpers needed to publish and consume a key set. JWS supports the compact,
+// flattened JSON and general JSON serializations, multiple signatures, detached payloads (RFC
+// 7515 Appendix F) and unencoded payloads (RFC 7797); JWE supports the compact, flattened JSON
+// and general JSON serializations, extra authenticated data, compression and multiple
+// recipients. | Package jose 实现 OAuth 2.0 与 OpenID Connect 服务端使用的 JSON 对象签名与
+// 加密工具集：JWK 与 JWKS 处理、紧凑与 JSON 序列化的 JWS 与 JWE，以及发布与读取密钥集所需的
+// HTTP 辅助能力。JWS 支持紧凑、扁平 JSON 与通用 JSON 序列化、多签名、分离载荷（RFC 7515
+// 附录 F）与未编码载荷（RFC 7797）；JWE 支持紧凑、扁平 JSON 与通用 JSON 序列化、附加认证
+// 数据、压缩与多接收方。
 //
 // The package keeps the wire formats independent from ydx/router so that oidc, oauth2 and
 // external resource servers can share one implementation. Handlers are plain http.Handler
@@ -20,8 +23,9 @@
 //   - A key whose family does not match the header algorithm is refused, which closes
 //     algorithm-confusion attacks in both directions. | 密钥族与头部算法不符时一律拒绝，从而
 //     双向封堵算法混淆攻击。
-//   - Critical header extensions are rejected because this implementation understands none of
-//     them. | 关键头部扩展一律拒绝，因为本实现不理解任何扩展。
+//   - Critical header extensions are rejected except for RFC 7797 "b64" on JWS, the only
+//     extension this implementation understands; JWE understands none. | 关键头部扩展一律拒绝，
+//     JWS 仅理解 RFC 7797 的 "b64"，JWE 不理解任何扩展。
 //   - Token headers with duplicate member names are refused before decoding, so two parsers can
 //     never disagree about which value is authoritative. | 成员名重复的令牌头部在解码前即被拒绝，
 //     因此任何两个解析器都不可能对哪个取值生效产生分歧。
@@ -64,8 +68,9 @@ var (
 	ErrKeyNotFound = errs.New("jose: key not found | jose：密钥不存在")
 	// ErrDuplicateKey reports a key set with two keys carrying the same non-empty kid. | ErrDuplicateKey 表示密钥集中存在两个 kid 相同且非空的密钥。
 	ErrDuplicateKey = errs.New("jose: duplicate key identifier | jose：密钥标识重复")
-	// ErrMalformed reports a token that is not a well-formed compact JWS, compact JWE or JWS JSON
-	// serialization. | ErrMalformed 表示令牌不是结构良好的紧凑 JWS、紧凑 JWE 或 JWS JSON 序列化。
+	// ErrMalformed reports a token that is not a well-formed compact JWS, compact JWE or JWS or
+	// JWE JSON serialization. | ErrMalformed 表示令牌不是结构良好的紧凑 JWS、紧凑 JWE 或
+	// JWS/JWE JSON 序列化。
 	ErrMalformed = errs.New("jose: malformed token | jose：令牌格式非法")
 	// ErrSignatureInvalid reports a signature that did not verify. | ErrSignatureInvalid 表示签名校验未通过。
 	ErrSignatureInvalid = errs.New("jose: invalid signature | jose：签名校验失败")
@@ -77,7 +82,9 @@ var (
 	// the wrong size, or an RSA key whose modulus is smaller than 2048 bits. | ErrWeakKey 表示
 	// HMAC 密钥短于算法哈希输出、对称密钥长度不符，或 RSA 密钥模数小于 2048 位。
 	ErrWeakKey = errs.New("jose: key is too weak | jose：密钥过弱")
-	// ErrUnsupportedCrit reports a non-empty crit header; no extension is understood. | ErrUnsupportedCrit 表示 crit 头部非空；本实现不支持任何扩展。
+	// ErrUnsupportedCrit reports a critical extension this implementation does not understand.
+	// JWS understands "b64"; JWE understands none. | ErrUnsupportedCrit 表示本实现不理解的
+	// 关键扩展。JWS 理解 "b64"，JWE 不理解任何扩展。
 	ErrUnsupportedCrit = errs.New("jose: unsupported critical header | jose：不支持的关键头部")
 	// ErrInvalidHeader reports a structurally invalid or ambiguous JOSE header. | ErrInvalidHeader 表示 JOSE 头部结构非法或存在歧义。
 	ErrInvalidHeader = errs.New("jose: invalid header | jose：头部非法")

@@ -81,6 +81,16 @@ type UserVersionReplacer interface {
 	ReplaceUserIfVersion(ctx context.Context, user *User, expectedVersion string) (*User, error)
 }
 
+// GroupVersionReplacer is the Group counterpart of UserVersionReplacer. The server uses it to make
+// bulk rollback of a replaced Group atomic with respect to concurrent updates. | GroupVersionReplacer
+// 是 UserVersionReplacer 的 Group 对应接口。服务端用它使被替换 Group 的批量回滚相对并发更新保持
+// 原子。
+type GroupVersionReplacer interface {
+	// ReplaceGroupIfVersion replaces the Group when its current entity tag matches expectedVersion.
+	// | ReplaceGroupIfVersion 在当前实体标签匹配 expectedVersion 时替换 Group。
+	ReplaceGroupIfVersion(ctx context.Context, group *Group, expectedVersion string) (*Group, error)
+}
+
 // MemoryStore is a concurrency-safe in-memory Store. It keeps creation order so pagination is
 // deterministic. | MemoryStore 是并发安全的内存 Store。它保留创建顺序，使分页结果确定。
 type MemoryStore struct {
@@ -349,6 +359,19 @@ func (s *MemoryStore) GetGroup(ctx context.Context, id string) (*Group, error) {
 // ReplaceGroup replaces the stored Group with the same identifier. | ReplaceGroup 替换具有相同标识
 // 的已存储 Group。
 func (s *MemoryStore) ReplaceGroup(ctx context.Context, group *Group) (*Group, error) {
+	return s.replaceGroup(ctx, group, "")
+}
+
+// ReplaceGroupIfVersion replaces the stored Group only when its entity tag matches expectedVersion.
+// An empty expectedVersion disables the precondition. | ReplaceGroupIfVersion 仅在已存储 Group 的实体
+// 标签匹配 expectedVersion 时替换；expectedVersion 为空时禁用前置条件。
+func (s *MemoryStore) ReplaceGroupIfVersion(ctx context.Context, group *Group, expectedVersion string) (*Group, error) {
+	return s.replaceGroup(ctx, group, expectedVersion)
+}
+
+// replaceGroup implements ReplaceGroup and ReplaceGroupIfVersion. | replaceGroup 实现 ReplaceGroup
+// 与 ReplaceGroupIfVersion。
+func (s *MemoryStore) replaceGroup(ctx context.Context, group *Group, expectedVersion string) (*Group, error) {
 	if err := storeContextError(ctx); err != nil {
 		return nil, err
 	}
@@ -367,6 +390,10 @@ func (s *MemoryStore) ReplaceGroup(ctx context.Context, group *Group) (*Group, e
 	existing, ok := s.groups[stored.ID]
 	if !ok {
 		return nil, errs.Detail(ErrNotFound, "Group %q not found | Group %q 不存在", stored.ID, stored.ID)
+	}
+	if expectedVersion != "" && normalizeETag(groupVersion(existing)) != normalizeETag(expectedVersion) {
+		return nil, errs.Detail(ErrPreconditionFailed, "Group %q version changed | Group %q 版本已变化",
+			stored.ID, stored.ID)
 	}
 	nameKey := strings.ToLower(strings.TrimSpace(stored.DisplayName))
 	if owner, exists := s.groupNames[nameKey]; exists && owner != stored.ID {

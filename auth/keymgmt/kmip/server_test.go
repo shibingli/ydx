@@ -1,7 +1,6 @@
 package kmip
 
 import (
-	"context"
 	"encoding/binary"
 	"errors"
 	"io"
@@ -420,47 +419,18 @@ func TestReadRequestRejectsUnexpectedRootTag(t *testing.T) {
 	}
 }
 
-// listCountingStore counts List calls. | listCountingStore 统计 List 调用。
-type listCountingStore struct {
-	*MemoryStore
-	listMu sync.Mutex
-	lists  int
-}
-
-// List counts one call and delegates to the memory store. | List 计数一次并委托给内存存储。
-func (s *listCountingStore) List(ctx context.Context) ([]ObjectRecord, error) {
-	s.listMu.Lock()
-	s.lists++
-	s.listMu.Unlock()
-	return s.MemoryStore.List(ctx)
-}
-
-// resetLists zeroes the call counter. | resetLists 清零调用计数。
-func (s *listCountingStore) resetLists() {
-	s.listMu.Lock()
-	s.lists = 0
-	s.listMu.Unlock()
-}
-
-// listCount returns the call counter. | listCount 返回调用计数。
-func (s *listCountingStore) listCount() int {
-	s.listMu.Lock()
-	defer s.listMu.Unlock()
-	return s.lists
-}
-
-// TestServerBatchUndoSkipsSnapshotForReadOnlyBatch covers lazy undo snapshotting. |
-// TestServerBatchUndoSkipsSnapshotForReadOnlyBatch 覆盖按需拍摄撤销快照。
-func TestServerBatchUndoSkipsSnapshotForReadOnlyBatch(t *testing.T) {
-	store := &listCountingStore{MemoryStore: NewMemoryStore()}
-	server, err := NewServer(ServerConfig{AllowPlaintext: true, Store: store})
+// TestServerBatchUndoReadOnlyBatchDoesNotJournal covers the per-batch journal's zero cost for reads. The
+// one-byte budget would reject any journal entry, so read-only items can only succeed when nothing is journaled. |
+// TestServerBatchUndoReadOnlyBatchDoesNotJournal 覆盖每批日志对只读操作零开销。一字节预算会拒绝任何日志条目，
+// 因此只有不记录任何条目时只读项才能成功。
+func TestServerBatchUndoReadOnlyBatchDoesNotJournal(t *testing.T) {
+	server, err := NewServer(ServerConfig{AllowPlaintext: true, Store: NewMemoryStore(), MaxUndoLogBytes: 1})
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}
 	t.Cleanup(func() { _ = server.Close() })
 	uid := createSymmetric(t, server)
 
-	store.resetLists()
 	response := roundTrip(t, server, RequestMessage{
 		Header: RequestHeader{ProtocolVersion: DefaultProtocolVersion, BatchErrorContinuationOption: BatchUndo},
 		BatchItems: []RequestBatchItem{
@@ -473,11 +443,7 @@ func TestServerBatchUndoSkipsSnapshotForReadOnlyBatch(t *testing.T) {
 			t.Fatalf("read-only item %d status = %v | 只读项状态错误", i, item.ResultStatus)
 		}
 	}
-	if lists := store.listCount(); lists != 0 {
-		t.Fatalf("read-only Batch Undo took %d snapshots, want 0 | 只读 Batch Undo 拍摄了 %d 次快照", lists, lists)
-	}
 
-	store.resetLists()
 	failed := roundTrip(t, server, RequestMessage{
 		Header: RequestHeader{ProtocolVersion: DefaultProtocolVersion, BatchErrorContinuationOption: BatchUndo},
 		BatchItems: []RequestBatchItem{
@@ -493,8 +459,5 @@ func TestServerBatchUndoSkipsSnapshotForReadOnlyBatch(t *testing.T) {
 	}
 	if failed.BatchItems[0].Payload.Type != 0 {
 		t.Fatal("undone read retained its payload | 已撤销的读取保留了负载")
-	}
-	if lists := store.listCount(); lists != 0 {
-		t.Fatalf("failed read-only Batch Undo took %d snapshots, want 0 | 失败的只读 Batch Undo 拍摄了 %d 次快照", lists, lists)
 	}
 }

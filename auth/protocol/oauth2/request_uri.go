@@ -250,6 +250,17 @@ func (c *requestURICache) prune(now time.Time) {
 	}
 }
 
+// pruneNow removes expired cache and single-use entries. | pruneNow 清除过期缓存与一次性记录。
+func (c *requestURICache) pruneNow(now time.Time) {
+	if c == nil {
+		return
+	}
+	now = now.UTC()
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.prune(now)
+}
+
 // evictSoonest removes the entry with the earliest expiry; the caller holds the mutex. | evictSoonest
 // 移除最早到期的条目；调用方持有互斥锁。
 func (c *requestURICache) evictSoonest() {

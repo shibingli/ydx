@@ -172,6 +172,36 @@ var (
 	// ErrRandom reports a failure of the cryptographic random source. | ErrRandom 表示
 	// 加密随机源失败。
 	ErrRandom = errs.New("ntlm: random source failed | ntlm：随机源失败")
+	// ErrMechListMIC reports a missing, malformed or mismatched SPNEGO
+	// mechListMIC. | ErrMechListMIC 表示 SPNEGO mechListMIC 缺失、畸形或不匹配。
+	ErrMechListMIC = errs.New("ntlm: invalid mechListMIC | ntlm：mechListMIC 非法")
+	// ErrSPNEGOState reports a SPNEGO state-machine violation. | ErrSPNEGOState 表示
+	// SPNEGO 状态机违规。
+	ErrSPNEGOState = errs.New("ntlm: invalid SPNEGO state | ntlm：SPNEGO 状态非法")
+	// ErrAuthentication reports a failed NTLM challenge-response verification. |
+	// ErrAuthentication 表示 NTLM 挑战响应校验失败。
+	ErrAuthentication = errs.New("ntlm: authentication failed | ntlm：认证失败")
+	// ErrAcceptorState reports acceptor methods used out of order or twice. |
+	// ErrAcceptorState 表示接受方方法顺序错误或重复调用。
+	ErrAcceptorState = errs.New("ntlm: invalid acceptor state | ntlm：接受方状态非法")
+	// ErrAcceptorConfig reports an unusable acceptor configuration. | ErrAcceptorConfig
+	// 表示接受方配置不可用。
+	ErrAcceptorConfig = errs.New("ntlm: invalid acceptor configuration | ntlm：接受方配置非法")
+	// ErrSessionSecurity reports unusable NTLMSSP signing or sealing state. |
+	// ErrSessionSecurity 表示 NTLMSSP 签名或密封状态不可用。
+	ErrSessionSecurity = errs.New("ntlm: invalid session security | ntlm：会话安全非法")
+	// ErrSigningNotNegotiated reports a signing operation without FlagSign. |
+	// ErrSigningNotNegotiated 表示未协商 FlagSign 却执行签名操作。
+	ErrSigningNotNegotiated = errs.New("ntlm: message signing was not negotiated | ntlm：未协商消息签名")
+	// ErrSealingNotNegotiated reports a sealing operation without FlagSeal. |
+	// ErrSealingNotNegotiated 表示未协商 FlagSeal 却执行密封操作。
+	ErrSealingNotNegotiated = errs.New("ntlm: message sealing was not negotiated | ntlm：未协商消息密封")
+	// ErrSignature reports a malformed or mismatched NTLMSSP message signature. |
+	// ErrSignature 表示 NTLMSSP 消息签名畸形或不匹配。
+	ErrSignature = errs.New("ntlm: invalid message signature | ntlm：消息签名非法")
+	// ErrSequence reports an out-of-order, replayed or exhausted NTLMSSP message
+	// sequence number. | ErrSequence 表示 NTLMSSP 消息序列号乱序、重放或耗尽。
+	ErrSequence = errs.New("ntlm: invalid message sequence number | ntlm：消息序列号非法")
 )
 
 // SplitUsername resolves Active Directory login forms into the NTLM domain and

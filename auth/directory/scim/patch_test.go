@@ -78,7 +78,7 @@ func TestApplyUserPatchPathlessOperations(t *testing.T) {
 	if _, err := ApplyUserPatch(base, []PatchOperation{{Op: "add", Path: "", Value: "text"}}); err == nil || !errors.Is(err, ErrInvalidValue) {
 		t.Fatalf("pathless scalar error = %v", err)
 	}
-	if _, err := ApplyUserPatch(base, []PatchOperation{{Op: "remove", Path: "", Value: map[string]any{}}}); err == nil || !errors.Is(err, ErrInvalidPath) {
+	if _, err := ApplyUserPatch(base, []PatchOperation{{Op: "remove", Path: "", Value: map[string]any{}}}); err == nil || !errors.Is(err, ErrNoTarget) {
 		t.Fatalf("pathless remove error = %v", err)
 	}
 }
@@ -303,7 +303,7 @@ func TestApplyGroupPatch(t *testing.T) {
 	if len(base.Members) != 2 || base.DisplayName != "Admins" {
 		t.Fatalf("input group was mutated: %+v", base)
 	}
-	if _, err := ApplyGroupPatch(base, []PatchOperation{{Op: "remove", Path: "displayName"}}); err == nil || !errors.Is(err, ErrInvalidValue) {
+	if _, err := ApplyGroupPatch(base, []PatchOperation{{Op: "remove", Path: "displayName"}}); err == nil || !errors.Is(err, ErrMutability) {
 		t.Fatalf("remove displayName error = %v", err)
 	}
 	if _, err := ApplyGroupPatch(base, []PatchOperation{{Op: "replace", Path: "id", Value: "g2"}}); err == nil || !errors.Is(err, ErrMutability) {

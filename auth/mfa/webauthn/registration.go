@@ -203,6 +203,9 @@ func (s *Service) FinishRegistration(ctx context.Context, ceremony *Ceremony, re
 		}
 		discoverable = credProps.RK
 	}
+	if err := s.verifyRegistrationEKActivation(ctx, stored.UserID, attestationObject, result, response.TPMEKActivation); err != nil {
+		return nil, err
+	}
 	credential := &Credential{
 		ID:              append([]byte(nil), credentialID...),
 		UserID:          stored.UserID,

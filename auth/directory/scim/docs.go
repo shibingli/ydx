@@ -37,20 +37,40 @@
 // applied entries back in reverse order and removes the bulkId mappings created by rolled-back
 // operations. The response is then one RFC 7644 Error object whose status reflects the original
 // operation failure; FailOnErrors is ignored because processing always stops at the first failure.
-// Rollback never calls PasswordSetter or any other hook, so external credential provisioning
-// performed before a failure is not undone. Rollback refuses to overwrite a resource whose entity
-// tag changed concurrently and reports ErrBulkRollbackConflict; an incomplete rollback reports
-// ErrBulkRollbackFailed with a generic client detail, while the joined original and rollback errors
-// remain available through errors.Is. Options.BulkMaxUndoBytes bounds the estimated undo log
+// Rollback never calls PasswordSetter, PasswordProvisioner or any other hook, so external credential
+// provisioning performed before a failure is not undone. Rollback refuses to overwrite a resource
+// whose entity tag changed concurrently and reports ErrBulkRollbackConflict; an incomplete rollback
+// reports ErrBulkRollbackFailed with a generic client detail, while the joined original and rollback
+// errors remain available through errors.Is. Options.BulkMaxUndoBytes bounds the estimated undo log
 // memory and violations fail with ErrBulkUndoLimit before the overflowing mutation is applied. |
 // Options.BulkAtomic 启用可选的事务模式。每个 User 与 Group 变更都会记录补偿撤销条目（创建记录删除，
 // 更新与补丁记录先前资源，删除记录先前资源用于重建）。首次失败会停止处理、按逆序回滚已应用条目，并
 // 移除已回滚操作创建的 bulkId 映射。响应随后是单个 RFC 7644 Error 对象，其状态反映原始操作失败；
-// FailOnErrors 被忽略，因为处理总是在首次失败时停止。回滚绝不会调用 PasswordSetter 或其他钩子，
-// 因此失败前已执行的外部口令预配不会被撤销。回滚拒绝覆盖实体标签已被并发修改的资源，并报告
-// ErrBulkRollbackConflict；回滚不完整会报告 ErrBulkRollbackFailed 且客户端明细为通用文案，而合并
-// 后的原始错误与回滚错误仍可通过 errors.Is 判定。Options.BulkMaxUndoBytes 限制撤销日志的估算内存，
-// 超限会在应用会溢出的变更前以 ErrBulkUndoLimit 失败。
+// FailOnErrors 被忽略，因为处理总是在首次失败时停止。回滚绝不会调用 PasswordSetter、
+// PasswordProvisioner 或其他钩子，因此失败前已执行的外部口令预配不会被撤销。回滚拒绝覆盖实体标签
+// 已被并发修改的资源，并报告 ErrBulkRollbackConflict；回滚不完整会报告 ErrBulkRollbackFailed 且
+// 客户端明细为通用文案，而合并后的原始错误与回滚错误仍可通过 errors.Is 判定。
+// Options.BulkMaxUndoBytes 限制撤销日志的估算内存，超限会在应用会溢出的变更前以 ErrBulkUndoLimit
+// 失败。
+//
+// # Password provisioning | 口令预配
+//
+// Options.PasswordPrecheck runs before every password write and rejects the request before any
+// profile or external change. Options.PasswordProvisioner then performs a two-phase external write:
+// BeginPassword runs before the profile is stored, Commit runs after it succeeds, and Rollback runs
+// when either step fails. A provisioner takes precedence over Options.PasswordSetter; the legacy
+// setter remains available for single-phase hooks. Begin failure leaves the profile untouched.
+// Commit failure restores the prior profile and rolls the external transaction back. A rollback
+// failure is never ignored: it is reported as ErrPasswordRollbackFailed together with the original
+// cause, and a concurrent profile change during compensation is reported as
+// ErrPasswordRollbackConflict. On create, a failed delete of the newly created profile is likewise
+// joined into ErrPasswordRollbackFailed. | Options.PasswordPrecheck 在每次口令写入前运行，并在任何
+// 资料或外部变更前拒绝请求。Options.PasswordProvisioner 随后执行两阶段外部写入：BeginPassword 在
+// 存储资料前运行，Commit 在资料存储成功后运行，任一步失败时运行 Rollback。预配器优先于
+// Options.PasswordSetter；旧版 setter 仍可用于单阶段钩子。Begin 失败不会改动资料。Commit 失败会恢复
+// 先前资料并回滚外部事务。回滚失败绝不会被忽略：它与原始原因一并报告为
+// ErrPasswordRollbackFailed；补偿期间资料被并发修改则报告 ErrPasswordRollbackConflict。创建时若
+// 删除新建资料失败，也会合并进 ErrPasswordRollbackFailed。
 //
 // # Server | 服务端
 //

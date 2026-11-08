@@ -159,15 +159,15 @@ func effectiveVersion(flags NegotiateFlags, version *Version) *Version {
 // NegotiateMessage is an NTLMSSP Type 1 NEGOTIATE_MESSAGE. | NegotiateMessage 是
 // NTLMSSP Type 1 NEGOTIATE_MESSAGE。
 type NegotiateMessage struct {
-	// Flags is the advertised negotiate-flag set. | Flags 是声明的协商标志集。
-	Flags NegotiateFlags
+	// Version is encoded when Flags contains FlagVersion. A nil value selects
+	// DefaultVersion. | 当 Flags 包含 FlagVersion 时编码；nil 选择 DefaultVersion。
+	Version *Version
 	// Domain is the optional domain name. | Domain 是可选的域名。
 	Domain string
 	// Workstation is the optional workstation name. | Workstation 是可选的工作站名称。
 	Workstation string
-	// Version is encoded when Flags contains FlagVersion. A nil value selects
-	// DefaultVersion. | 当 Flags 包含 FlagVersion 时编码；nil 选择 DefaultVersion。
-	Version *Version
+	// Flags is the advertised negotiate-flag set. | Flags 是声明的协商标志集。
+	Flags NegotiateFlags
 }
 
 // Encode serializes the Type 1 message. | Encode 序列化 Type 1 消息。

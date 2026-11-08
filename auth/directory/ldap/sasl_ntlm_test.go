@@ -48,6 +48,7 @@ type ntlmTestRecorder struct {
 	mechanisms   []string
 	negotiate    *ntlm.NegotiateMessage
 	authenticate *ntlm.AuthenticateMessage
+	finalToken   *ntlm.SPNEGOToken
 }
 
 // snapshot returns a race-free view of the recorded exchange. | snapshot 返回已记录
@@ -56,6 +57,14 @@ func (r *ntlmTestRecorder) snapshot() (int, []string, *ntlm.NegotiateMessage, *n
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.binds, append([]string(nil), r.mechanisms...), r.negotiate, r.authenticate
+}
+
+// finalSPNEGO returns the parsed final client SPNEGO token, if any. | finalSPNEGO
+// 返回已解析的最终客户端 SPNEGO 令牌（如有）。
+func (r *ntlmTestRecorder) finalSPNEGO() *ntlm.SPNEGOToken {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.finalToken
 }
 
 // ntlmTestHandler returns a mock handler that validates a complete NTLMv2
@@ -160,6 +169,9 @@ func ntlmTestHandleFinal(session *mockSession, messageID int, authentication SAS
 		if err != nil {
 			return err
 		}
+		recorder.mu.Lock()
+		recorder.finalToken = parsed
+		recorder.mu.Unlock()
 		token = parsed.Token()
 	}
 	authenticate, err := ntlm.DecodeAuthenticate(token)
@@ -396,6 +408,29 @@ func TestBindNTLMGSSSPNEGO(t *testing.T) {
 	}
 }
 
+// TestBindSASLNTLMAlias verifies the compatibility alias performs the same
+// exchange as BindNTLM. | TestBindSASLNTLMAlias 校验兼容别名执行与 BindNTLM 相同的交换。
+func TestBindSASLNTLMAlias(t *testing.T) {
+	mock := &ntlmAcceptorMock{
+		newConfig: func() ntlm.AcceptorConfig { return ntlmAcceptorConfig(ntlmAcceptorOptions{}) },
+	}
+	server := startMockServer(t, mock.handle)
+	client := ntlmTestDial(t, server)
+	if err := client.BindSASLNTLM(mustTimeoutContext(t, 5*time.Second), NTLMOptions{
+		Username: `EXAMPLE\alice`,
+		Password: ntlmTestPassword,
+	}); err != nil {
+		t.Fatalf("BindSASLNTLM: %v", err)
+	}
+	connections, results, extraBinds, _ := mock.snapshot()
+	if connections != 1 || results != 1 || extraBinds != 0 {
+		t.Fatalf("connections = %d, results = %d, extra binds = %d, want 1, 1, 0", connections, results, extraBinds)
+	}
+	if client.auth == nil || client.auth.kind != authNTLM {
+		t.Fatalf("auth state = %+v, want authNTLM", client.auth)
+	}
+}
+
 // TestBindNTLMRawMechanism performs the exchange with raw NTLMSSP tokens. |
 // TestBindNTLMRawMechanism 使用裸 NTLMSSP 令牌执行交换。
 func TestBindNTLMRawMechanism(t *testing.T) {
@@ -577,6 +612,7 @@ func TestBindNTLMRejectsInvalidChallengeTokens(t *testing.T) {
 		name     string
 		wrap     func([]byte) ([]byte, error)
 		sentinel error
+		accept   bool
 	}{
 		{
 			name:     "malformed spnego",
@@ -600,6 +636,7 @@ func TestBindNTLMRejectsInvalidChallengeTokens(t *testing.T) {
 			wrap: func(challenge []byte) ([]byte, error) {
 				return ntlmTestNegTokenResp(&requestMIC, nil, challenge), nil
 			},
+			accept: true,
 		},
 		{
 			name: "accept completed state",
@@ -651,6 +688,26 @@ func TestBindNTLMRejectsInvalidChallengeTokens(t *testing.T) {
 				Username: `EXAMPLE\alice`,
 				Password: ntlmTestPassword,
 			})
+			if test.accept {
+				// NegStateRequestMIC is a normal request for the client
+				// mechListMIC, not an unsupported challenge. | NegStateRequestMIC
+				// 是对客户端 mechListMIC 的正常请求，不是不支持的挑战。
+				if err != nil {
+					t.Fatalf("BindNTLM rejected a request-mic challenge: %v", err)
+				}
+				binds, _, _, authenticate := recorder.snapshot()
+				if binds != 2 {
+					t.Fatalf("binds = %d, want 2", binds)
+				}
+				if authenticate == nil {
+					t.Fatal("client did not emit a Type 3 message")
+				}
+				final := recorder.finalSPNEGO()
+				if final == nil || !final.HasMechListMIC {
+					t.Fatalf("final SPNEGO token lacks a mechListMIC: %+v", final)
+				}
+				return
+			}
 			if err == nil {
 				t.Fatal("BindNTLM accepted an invalid challenge token")
 			}
@@ -692,6 +749,8 @@ func TestBindNTLMFinalSPNEGOToken(t *testing.T) {
 		{
 			name:        "accept incomplete",
 			credentials: ntlmTestNegTokenResp(&acceptIncomplete, nil, nil),
+			wantErr:     true,
+			sentinel:    ntlm.ErrSPNEGOState,
 		},
 		{
 			name:        "reject",
@@ -747,6 +806,12 @@ func TestBindNTLMFinalSPNEGOToken(t *testing.T) {
 				}
 				if client.auth != nil {
 					t.Fatalf("auth state = %+v, want nil after failure", client.auth)
+				}
+				// The server reported success before the final token failed
+				// verification, so the transport must be torn down. | 服务端在
+				// 最终令牌校验失败前已报告成功，因此必须拆除传输。
+				if client.conn != nil {
+					t.Fatal("connection was not invalidated after a final SPNEGO failure")
 				}
 			} else if err != nil {
 				t.Fatalf("BindNTLM: %v", err)

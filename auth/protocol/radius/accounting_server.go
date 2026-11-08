@@ -109,6 +109,9 @@ type AccountingServerRequest struct {
 	// HasEventTimestamp reports whether Event-Timestamp was present. | HasEventTimestamp 报告是否携带
 	// Event-Timestamp。
 	HasEventTimestamp bool
+	// HasMessageAuthenticator reports whether the request carried a valid Message-Authenticator. |
+	// HasMessageAuthenticator 报告请求是否携带合法 Message-Authenticator。
+	HasMessageAuthenticator bool
 	// Identifier is the request identifier, reused by the response. | Identifier 是请求标识符，由响应复用。
 	Identifier uint8
 }
@@ -175,27 +178,44 @@ type AccountingServerConfig struct {
 	// dropped. Negative values are rejected. | MaxConcurrent 是同时处理的最大请求数；零值选择
 	// DefaultMaxConcurrentRequests。超出上限的 UDP 请求与流连接会被丢弃。负值会被拒绝。
 	MaxConcurrent int
+	// RequireMessageAuthenticator drops requests without a valid Message-Authenticator. Requests
+	// with an invalid value are always dropped. | RequireMessageAuthenticator 丢弃不携带合法
+	// Message-Authenticator 的请求。值非法的请求始终被丢弃。
+	RequireMessageAuthenticator bool
+	// DuplicateCacheSize is the maximum number of recently signed Accounting-Responses replayed
+	// for byte-identical retransmissions; zero selects DefaultAccountingDuplicateCacheSize and a
+	// negative value is rejected. | DuplicateCacheSize 是为字节完全相同的重传重放的最近已签名
+	// Accounting-Response 最大数量；零值选择 DefaultAccountingDuplicateCacheSize，负值会被拒绝。
+	DuplicateCacheSize int
+	// DuplicateWindow is how long a cached response is replayed; zero selects
+	// DefaultAccountingDuplicateWindow and a negative value disables duplicate suppression. |
+	// DuplicateWindow 是缓存响应的重放时长；零值选择 DefaultAccountingDuplicateWindow，负值禁用重复
+	// 抑制。
+	DuplicateWindow time.Duration
 }
 
 // AccountingServer is a reusable Accounting-Request recorder over UDP, TCP or TLS. | AccountingServer
 // 是基于 UDP、TCP 或 TLS 的可复用 Accounting-Request 记录器。
 //
 // The server validates packet structure, resolves the client secret, verifies the RFC 2866 Request
-// Authenticator, checks the required attributes, invokes the AccountingHandler and returns a signed
-// Accounting-Response. Proxy-State is echoed unchanged. RFC 2869 does not define a Message-
-// Authenticator calculation for Accounting-Request, so the server does not validate one, and it does
-// not suppress duplicate records: retransmissions are delivered to the handler. Requests are handled
-// concurrently up to MaxConcurrent. An AccountingServer is safe for concurrent use, and Close may run
-// while Serve is active. | 服务器校验报文结构、解析客户端密钥、校验 RFC 2866 Request Authenticator、
+// Authenticator, verifies a present Message-Authenticator, checks the required attributes, invokes
+// the AccountingHandler and returns a signed Accounting-Response. Proxy-State is echoed unchanged.
+// When the request carried a Message-Authenticator the response carries one too. Byte-identical
+// retransmissions from the same peer within DuplicateWindow replay the cached signed response
+// without invoking the handler again. Requests are handled concurrently up to MaxConcurrent. An
+// AccountingServer is safe for concurrent use, and Close may run while Serve is active. | 服务器校验
+// 报文结构、解析客户端密钥、校验 RFC 2866 Request Authenticator、校验存在的 Message-Authenticator、
 // 检查必选属性、调用 AccountingHandler，并返回已签名的 Accounting-Response。Proxy-State 原样回显。
-// RFC 2869 未定义 Accounting-Request 的 Message-Authenticator 算法，因此服务器不校验该属性，也不
-// 抑制重复记录：重传会交给处理器。请求最多按 MaxConcurrent 并发处理。AccountingServer 可并发使用，
-// Close 可在 Serve 活动期间调用。
+// 请求携带 Message-Authenticator 时响应也会携带。同一对端在 DuplicateWindow 内字节完全相同的重传会
+// 重放缓存的已签名响应，不再调用处理器。请求最多按 MaxConcurrent 并发处理。AccountingServer 可并发
+// 使用，Close 可在 Serve 活动期间调用。
 type AccountingServer struct {
-	handler   AccountingHandler
-	secrets   *serverSecretResolver
-	logger    *log.Logger
-	transport *serverTransport
+	handler    AccountingHandler
+	secrets    *serverSecretResolver
+	logger     *log.Logger
+	transport  *serverTransport
+	duplicates *accountingDuplicateCache
+	requireMA  bool
 }
 
 // NewAccountingServer validates config and returns a server. The server does not bind until Listen
@@ -220,14 +240,27 @@ func NewAccountingServer(config AccountingServerConfig) (*AccountingServer, erro
 	if config.ClientLookup == nil && len(config.Secret) == 0 {
 		return nil, errs.Detail(ErrInvalidConfig, "shared secret or client lookup is required")
 	}
+	if config.DuplicateCacheSize < 0 {
+		return nil, errs.Detail(ErrInvalidConfig, "duplicate cache size must not be negative")
+	}
+	cacheSize := config.DuplicateCacheSize
+	if cacheSize == 0 {
+		cacheSize = DefaultAccountingDuplicateCacheSize
+	}
+	cacheWindow := config.DuplicateWindow
+	if cacheWindow == 0 {
+		cacheWindow = DefaultAccountingDuplicateWindow
+	}
 	logger := config.Logger
 	if logger == nil {
 		logger = log.Default()
 	}
 	server := &AccountingServer{
-		handler: config.Handler,
-		secrets: newServerSecretResolver(config.Secret, config.ClientLookup),
-		logger:  logger,
+		handler:    config.Handler,
+		secrets:    newServerSecretResolver(config.Secret, config.ClientLookup),
+		logger:     logger,
+		requireMA:  config.RequireMessageAuthenticator,
+		duplicates: newAccountingDuplicateCache(cacheSize, cacheWindow),
 	}
 	server.transport = newServerTransport(serverTransportConfig{
 		settings: settings,
@@ -303,11 +336,28 @@ func (s *AccountingServer) handleRequest(ctx context.Context, raw []byte, remote
 		s.logDrop(remote, err)
 		return nil, false
 	}
+	present, valid, err := verifyInboundMessageAuthenticator(packet.Code, raw, secret, packet.Authenticator)
+	if err != nil {
+		s.logDrop(remote, errs.Wrap(err, ErrInvalidResponse))
+		return nil, false
+	}
+	if present && !valid {
+		s.logDrop(remote, errs.Detail(ErrMessageAuthenticator, "accounting request Message-Authenticator mismatch"))
+		return nil, false
+	}
+	if !present && s.requireMA {
+		s.logDrop(remote, errs.Detail(ErrMessageAuthenticator, "accounting request lacks a required Message-Authenticator"))
+		return nil, false
+	}
+	if cached, ok := s.duplicates.lookup(remote, raw, time.Now()); ok {
+		return cached, true
+	}
 	request, err := decodeAccountingServerRequest(packet, remote)
 	if err != nil {
 		s.logDrop(remote, err)
 		return nil, false
 	}
+	request.HasMessageAuthenticator = present
 	result, err := s.handler.HandleAccounting(ctx, request)
 	if err != nil {
 		s.logger.Warn("radius: accounting handler failed | radius：计费处理器失败",
@@ -319,17 +369,18 @@ func (s *AccountingServer) handleRequest(ctx context.Context, raw []byte, remote
 			log.Str("peer", peerString(remote)))
 		return nil, true
 	}
-	response, err := buildAccountingResponse(packet, result, secret)
+	response, err := buildAccountingResponse(packet, result, secret, present)
 	if err != nil {
 		s.logger.Warn("radius: invalid accounting response | radius：计费响应非法",
 			log.Str("peer", peerString(remote)), log.Err(err))
-		response, err = buildAccountingResponse(packet, &AccountingServerResult{}, secret)
+		response, err = buildAccountingResponse(packet, &AccountingServerResult{}, secret, present)
 		if err != nil {
 			s.logger.Error("radius: cannot encode accounting response | radius：无法编码计费响应",
 				log.Str("peer", peerString(remote)), log.Err(err))
 			return nil, true
 		}
 	}
+	s.duplicates.store(remote, raw, response, time.Now())
 	return response, true
 }
 
@@ -433,7 +484,7 @@ func decodeAccountingServerRequest(packet *Packet, remote net.Addr) (*Accounting
 
 // buildAccountingResponse encodes and signs an Accounting-Response. | buildAccountingResponse 编码并
 // 签名 Accounting-Response。
-func buildAccountingResponse(packet *Packet, result *AccountingServerResult, secret []byte) ([]byte, error) {
+func buildAccountingResponse(packet *Packet, result *AccountingServerResult, secret []byte, includeMessageAuthenticator bool) ([]byte, error) {
 	if result == nil {
 		result = &AccountingServerResult{}
 	}
@@ -441,10 +492,15 @@ func buildAccountingResponse(packet *Packet, result *AccountingServerResult, sec
 		Code:          CodeAccountingResponse,
 		Identifier:    packet.Identifier,
 		Authenticator: packet.Authenticator,
-		Attributes:    accountingResponseAttributes(packet, result),
+		Attributes:    accountingResponseAttributes(packet, result, includeMessageAuthenticator),
 	})
 	if err != nil {
 		return nil, errs.Wrap(err, ErrInternal)
+	}
+	if includeMessageAuthenticator {
+		if err := signMessageAuthenticator(raw, secret, packet.Authenticator); err != nil {
+			return nil, errs.Wrap(err, ErrInternal)
+		}
 	}
 	if err := applyResponseAuthenticator(raw, secret); err != nil {
 		return nil, errs.Wrap(err, ErrInternal)
@@ -454,7 +510,7 @@ func buildAccountingResponse(packet *Packet, result *AccountingServerResult, sec
 
 // accountingResponseAttributes assembles the Accounting-Response attribute list. |
 // accountingResponseAttributes 组装 Accounting-Response 属性列表。
-func accountingResponseAttributes(packet *Packet, result *AccountingServerResult) Attributes {
+func accountingResponseAttributes(packet *Packet, result *AccountingServerResult, includeMessageAuthenticator bool) Attributes {
 	var attributes Attributes
 	for _, proxyState := range packet.Attributes.GetAll(AttrProxyState) {
 		attributes = append(attributes, Attributes{proxyState}.Clone()...)
@@ -468,6 +524,9 @@ func accountingResponseAttributes(packet *Packet, result *AccountingServerResult
 			continue
 		}
 		attributes = append(attributes, Attributes{attribute}.Clone()...)
+	}
+	if includeMessageAuthenticator {
+		attributes.Add(AttrMessageAuthenticator, make([]byte, 16))
 	}
 	return attributes
 }

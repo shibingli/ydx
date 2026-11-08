@@ -76,4 +76,27 @@ var (
 	ErrResidentKeyRequired = errs.New("webauthn: resident key required | webauthn：需要常驻密钥")
 	// ErrNotSupported reports an operation the active backend does not implement. | ErrNotSupported 表示当前后端不支持该操作。
 	ErrNotSupported = errs.New("webauthn: operation not supported | webauthn：操作不支持")
+	// ErrTPMUnavailable reports that no TPM device or platform TPM service is available. |
+	// ErrTPMUnavailable 表示没有可用的 TPM 设备或平台 TPM 服务。
+	ErrTPMUnavailable = errs.New("webauthn: TPM unavailable | webauthn：TPM 不可用")
+	// ErrUnsupported reports a capability unavailable on the current platform; it is an alias of
+	// ErrNotSupported so errors.Is matches either name. | ErrUnsupported 表示当前平台不具备的能力；它是
+	// ErrNotSupported 的别名，因此 errors.Is 用任一名称都能匹配。
+	ErrUnsupported = ErrNotSupported
+	// ErrTPMTransport reports a platform TPM transport failure such as a write or ioctl error. |
+	// ErrTPMTransport 表示写入或 ioctl 等平台 TPM 传输失败。
+	ErrTPMTransport = errs.New("webauthn: TPM transport failure | webauthn：TPM 传输失败")
+	// ErrTPMTimeout reports that a TPM command exceeded its deadline. | ErrTPMTimeout 表示 TPM 命令超过期限。
+	ErrTPMTimeout = errs.New("webauthn: TPM command timed out | webauthn：TPM 命令超时")
+	// ErrTPMCommand reports a TPM error response code. | ErrTPMCommand 表示 TPM 错误响应码。
+	ErrTPMCommand = errs.New("webauthn: TPM command failed | webauthn：TPM 命令失败")
+	// ErrTPMStructure reports a malformed, truncated or oversized TPM 2.0 structure. |
+	// ErrTPMStructure 表示 TPM 2.0 结构非法、被截断或超长。
+	ErrTPMStructure = errs.New("webauthn: invalid TPM 2.0 structure | webauthn：TPM 2.0 结构非法")
+	// ErrEKActivation reports a rejected TPM endorsement-key credential activation. |
+	// ErrEKActivation 表示 TPM 背书密钥凭据激活被拒绝。
+	ErrEKActivation = errs.New("webauthn: TPM EK credential activation failed | webauthn：TPM EK 凭据激活失败")
+	// ErrEKCertificate reports an unacceptable endorsement-key certificate or chain. |
+	// ErrEKCertificate 表示背书密钥证书或证书链不可接受。
+	ErrEKCertificate = errs.New("webauthn: invalid TPM endorsement-key certificate | webauthn：TPM 背书密钥证书非法")
 )

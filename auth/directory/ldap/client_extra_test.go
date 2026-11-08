@@ -227,6 +227,178 @@ func TestStartTLSFromConfig(t *testing.T) {
 	})
 }
 
+// TestSimpleBindRequiresTLS verifies Config.RequireSimpleBindTLS keeps simple
+// bind passwords off cleartext links for the first bind, the automatic bind, and
+// the reconnect replay, while accepting LDAPS and StartTLS. |
+// TestSimpleBindRequiresTLS 校验 Config.RequireSimpleBindTLS 使简单绑定口令不经明文链路，
+// 覆盖首次绑定、自动绑定与重连重放，并接受 LDAPS 与 StartTLS。
+func TestSimpleBindRequiresTLS(t *testing.T) {
+	t.Run("rejects cleartext bind", func(t *testing.T) {
+		server := startMockServer(t, func(session *mockSession, message *LDAPMessage) error {
+			if _, ok := message.Op.(*BindRequest); ok {
+				t.Error("cleartext simple bind reached the server")
+				return session.writeSimpleResult(message.MessageID, &BindResponse{Result: LDAPResult{Code: ResultSuccess}})
+			}
+			return errors.New("unexpected operation")
+		})
+		client, err := DialURL(context.Background(), server.URL(), Config{RequireSimpleBindTLS: true})
+		if err != nil {
+			t.Fatalf("DialURL: %v", err)
+		}
+		defer client.Close()
+		if err := client.Bind(context.Background(), "cn=user", "password"); !errors.Is(err, ErrTLSRequired) {
+			t.Fatalf("Bind error = %v", err)
+		}
+		if client.auth != nil {
+			t.Fatalf("rejected bind stored authentication: %+v", client.auth)
+		}
+	})
+	t.Run("rejects cleartext automatic bind", func(t *testing.T) {
+		server := startMockServer(t, func(session *mockSession, message *LDAPMessage) error {
+			if _, ok := message.Op.(*BindRequest); ok {
+				t.Error("cleartext automatic bind reached the server")
+			}
+			return nil
+		})
+		_, err := DialURL(context.Background(), server.URL(), Config{
+			RequireSimpleBindTLS: true,
+			BindDN:               "cn=user",
+			BindPassword:         "password",
+		})
+		if !errors.Is(err, ErrTLSRequired) {
+			t.Fatalf("Dial error = %v", err)
+		}
+	})
+	t.Run("rejects cleartext replay", func(t *testing.T) {
+		server := startMockServer(t, func(session *mockSession, message *LDAPMessage) error {
+			if _, ok := message.Op.(*BindRequest); ok {
+				t.Error("cleartext replay bind reached the server")
+				return session.writeSimpleResult(message.MessageID, &BindResponse{Result: LDAPResult{Code: ResultSuccess}})
+			}
+			return errors.New("unexpected operation")
+		})
+		client, err := DialURL(context.Background(), server.URL())
+		if err != nil {
+			t.Fatalf("DialURL: %v", err)
+		}
+		defer client.Close()
+		client.auth = &authState{kind: authSimple, dn: "cn=user", password: "password"}
+		client.cfg.RequireSimpleBindTLS = true
+		if err := client.Reconnect(context.Background()); !errors.Is(err, ErrTLSRequired) {
+			t.Fatalf("Reconnect error = %v", err)
+		}
+	})
+	t.Run("accepts LDAPS", func(t *testing.T) {
+		certificate, pool := testCertificate(t)
+		var (
+			mu    sync.Mutex
+			binds []string
+		)
+		server := startMockServerTLS(t, &tls.Config{Certificates: []tls.Certificate{certificate}, MinVersion: tls.VersionTLS12},
+			func(session *mockSession, message *LDAPMessage) error {
+				request, ok := message.Op.(*BindRequest)
+				if !ok {
+					return errors.New("expected bind")
+				}
+				auth, ok := request.Authentication.(SimpleAuthentication)
+				if !ok {
+					return errors.New("expected simple authentication")
+				}
+				mu.Lock()
+				binds = append(binds, request.DN+"\x00"+auth.Password)
+				mu.Unlock()
+				return session.writeSimpleResult(message.MessageID, &BindResponse{Result: LDAPResult{Code: ResultSuccess}})
+			})
+		client, err := DialURL(context.Background(), server.URL(), Config{
+			TLSConfig:            testTLSConfig(pool),
+			RequireSimpleBindTLS: true,
+			BindDN:               "cn=user",
+			BindPassword:         "password",
+		})
+		if err != nil {
+			t.Fatalf("DialURL: %v", err)
+		}
+		defer client.Close()
+		mu.Lock()
+		defer mu.Unlock()
+		if len(binds) != 1 || binds[0] != "cn=user\x00password" {
+			t.Fatalf("binds = %q", binds)
+		}
+	})
+	t.Run("accepts StartTLS", func(t *testing.T) {
+		certificate, pool := testCertificate(t)
+		server := startMockServer(t, func(session *mockSession, message *LDAPMessage) error {
+			switch request := message.Op.(type) {
+			case *ExtendedRequest:
+				if request.Name != OIDStartTLS {
+					return errors.New("unexpected extended request")
+				}
+				if err := session.writeSimpleResult(message.MessageID,
+					&ExtendedResponse{Result: LDAPResult{Code: ResultSuccess}}); err != nil {
+					return err
+				}
+				session.Upgrade(&tls.Config{Certificates: []tls.Certificate{certificate}, MinVersion: tls.VersionTLS12})
+				return nil
+			case *BindRequest:
+				return session.writeSimpleResult(message.MessageID, &BindResponse{Result: LDAPResult{Code: ResultSuccess}})
+			default:
+				return errors.New("unexpected operation")
+			}
+		})
+		client, err := DialURL(context.Background(), server.URL(), Config{
+			StartTLS:             true,
+			TLSConfig:            testTLSConfig(pool),
+			RequireSimpleBindTLS: true,
+			BindDN:               "cn=user",
+			BindPassword:         "password",
+		})
+		if err != nil {
+			t.Fatalf("DialURL: %v", err)
+		}
+		defer client.Close()
+		if client.auth == nil || client.auth.kind != authSimple {
+			t.Fatalf("authentication state = %+v", client.auth)
+		}
+	})
+	t.Run("replays over TLS", func(t *testing.T) {
+		certificate, pool := testCertificate(t)
+		var (
+			mu    sync.Mutex
+			binds int
+		)
+		server := startMockServerTLS(t, &tls.Config{Certificates: []tls.Certificate{certificate}, MinVersion: tls.VersionTLS12},
+			func(session *mockSession, message *LDAPMessage) error {
+				if _, ok := message.Op.(*BindRequest); !ok {
+					return errors.New("expected bind")
+				}
+				mu.Lock()
+				binds++
+				mu.Unlock()
+				return session.writeSimpleResult(message.MessageID, &BindResponse{Result: LDAPResult{Code: ResultSuccess}})
+			})
+		client, err := DialURL(context.Background(), server.URL(), Config{
+			TLSConfig:            testTLSConfig(pool),
+			RequireSimpleBindTLS: true,
+		})
+		if err != nil {
+			t.Fatalf("DialURL: %v", err)
+		}
+		defer client.Close()
+		if err := client.Bind(context.Background(), "cn=user", "password"); err != nil {
+			t.Fatalf("Bind: %v", err)
+		}
+		server.closeAllConns(t)
+		if err := client.Reconnect(context.Background()); err != nil {
+			t.Fatalf("Reconnect: %v", err)
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		if binds != 2 {
+			t.Fatalf("bind count = %d, want 2", binds)
+		}
+	})
+}
+
 // TestClientReconnectReplaysSASLPlain verifies PLAIN credentials are replayed on
 // reconnect. | TestClientReconnectReplaysSASLPlain 校验重连时重放 PLAIN 凭据。
 func TestClientReconnectReplaysSASLPlain(t *testing.T) {

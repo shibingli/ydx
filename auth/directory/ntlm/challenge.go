@@ -13,17 +13,17 @@ const challengeBaseHeader = 8 + 4 + 4 + 8 + 8 + securityBufferSize + securityBuf
 // ChallengeMessage is an NTLMSSP Type 2 CHALLENGE_MESSAGE. | ChallengeMessage 是
 // NTLMSSP Type 2 CHALLENGE_MESSAGE。
 type ChallengeMessage struct {
-	// Flags is the server negotiate-flag set. | Flags 是服务端协商标志集。
-	Flags NegotiateFlags
-	// ServerChallenge is the eight-byte server nonce. | ServerChallenge 是八字节服务端随机数。
-	ServerChallenge [8]byte
+	// Version is present when Flags contains FlagVersion. | 当 Flags 包含 FlagVersion
+	// 时存在。
+	Version *Version
 	// TargetName is the optional target name. | TargetName 是可选的目标名称。
 	TargetName string
 	// TargetInfo holds the parsed AV pairs. | TargetInfo 保存解析后的 AV 对。
 	TargetInfo TargetInfo
-	// Version is present when Flags contains FlagVersion. | 当 Flags 包含 FlagVersion
-	// 时存在。
-	Version *Version
+	// Flags is the server negotiate-flag set. | Flags 是服务端协商标志集。
+	Flags NegotiateFlags
+	// ServerChallenge is the eight-byte server nonce. | ServerChallenge 是八字节服务端随机数。
+	ServerChallenge [8]byte
 }
 
 // Encode serializes the Type 2 message. It exists for servers, test fixtures and

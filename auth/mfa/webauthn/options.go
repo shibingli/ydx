@@ -259,6 +259,10 @@ type CredentialCreationResponse struct {
 	Response AuthenticatorAttestationResponse `json:"response"`
 	// ClientExtensionResults carries client extension outputs. | ClientExtensionResults 携带客户端扩展输出。
 	ClientExtensionResults ClientExtensionResults `json:"clientExtensionResults,omitempty"`
+	// TPMEKActivation carries optional TPM endorsement-key activation evidence. It is checked only
+	// when Config.TPMEKActivation is enabled. | TPMEKActivation 携带可选的 TPM 背书密钥激活证据。
+	// 仅在启用 Config.TPMEKActivation 时校验。
+	TPMEKActivation *TPMEKActivationEvidence `json:"tpmEkActivation,omitempty"`
 }
 
 // AuthenticatorAssertionResponse is the response member of an authentication credential. | AuthenticatorAssertionResponse 是认证凭据的 response 成员。

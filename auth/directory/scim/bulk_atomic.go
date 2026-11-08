@@ -386,6 +386,22 @@ func (e *bulkUndoEntry) rollbackDeleteGroup(ctx context.Context, store Store) er
 // rollbackRestoreUser restores the pre-update snapshot of a User unless it changed concurrently. |
 // rollbackRestoreUser 恢复 User 的更新前快照，除非它已被并发修改。
 func (e *bulkUndoEntry) rollbackRestoreUser(ctx context.Context, store Store) error {
+	// Prefer the conditional write when the store supports it: the version check and the restore
+	// then form one atomic step instead of a read-check-write window. | 存储支持条件写时优先使用：
+	// 版本检查与恢复成为一个原子步骤，而不是读取-检查-写入的窗口。
+	if e.appliedVersion != "" && e.priorUser != nil {
+		if replacer, ok := store.(UserVersionReplacer); ok {
+			restored := e.priorUser.Clone()
+			restored.Password = ""
+			if _, err := replacer.ReplaceUserIfVersion(ctx, restored, e.appliedVersion); err != nil {
+				if errors.Is(err, ErrPreconditionFailed) || errors.Is(err, ErrNotFound) {
+					return rollbackConflict(ResourceTypeNameUser, e.id)
+				}
+				return rollbackStoreFailure(err, ResourceTypeNameUser, e.id)
+			}
+			return nil
+		}
+	}
 	current, err := store.GetUser(ctx, e.id)
 	if err != nil {
 		if errors.Is(err, ErrNotFound) {
@@ -410,6 +426,20 @@ func (e *bulkUndoEntry) rollbackRestoreUser(ctx context.Context, store Store) er
 // rollbackRestoreGroup restores the pre-update snapshot of a Group unless it changed concurrently. |
 // rollbackRestoreGroup 恢复 Group 的更新前快照，除非它已被并发修改。
 func (e *bulkUndoEntry) rollbackRestoreGroup(ctx context.Context, store Store) error {
+	// Prefer the conditional write when the store supports it, matching the User path. | 存储支持
+	// 条件写时优先使用，与 User 路径一致。
+	if e.appliedVersion != "" && e.priorGroup != nil {
+		if replacer, ok := store.(GroupVersionReplacer); ok {
+			restored := e.priorGroup.Clone()
+			if _, err := replacer.ReplaceGroupIfVersion(ctx, restored, e.appliedVersion); err != nil {
+				if errors.Is(err, ErrPreconditionFailed) || errors.Is(err, ErrNotFound) {
+					return rollbackConflict(ResourceTypeNameGroup, e.id)
+				}
+				return rollbackStoreFailure(err, ResourceTypeNameGroup, e.id)
+			}
+			return nil
+		}
+	}
 	current, err := store.GetGroup(ctx, e.id)
 	if err != nil {
 		if errors.Is(err, ErrNotFound) {

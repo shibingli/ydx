@@ -46,30 +46,38 @@ func (s *Server) authenticateClient(ctx context.Context, r *http.Request, form u
 		if clientID == "" {
 			return nil, errs.Detail(ErrInvalidClient, "client_id is required with a client assertion | 客户端断言必须带 client_id")
 		}
-		if s.config.ClientAssertionVerifier == nil {
+		if s.config.ClientAssertionVerifier == nil && s.clientSecretJWT == nil {
 			return nil, errs.Detail(ErrInvalidClient, "client assertions are not configured | 未配置客户端断言校验")
 		}
 		client, err := s.config.Clients.GetClient(ctx, clientID)
 		if err != nil {
 			return nil, err
 		}
-		// Assertions may only be used by clients registered for private_key_jwt. A client
-		// registered for a shared-secret method must not bypass the secret by presenting an
-		// assertion, and a client registered for none is public by definition. client_secret_jwt
-		// cannot be verified at all because only a secret hash is stored. | 只有注册为
-		// private_key_jwt 的客户端可以使用断言。注册为共享密钥方法的客户端不得用断言绕过密钥，
-		// 注册为 none 的客户端按定义是公共客户端。client_secret_jwt 完全无法校验，因为只保存
-		// 密钥哈希。
-		if registeredAuthMethod(client) == ClientSecretJWT {
-			return nil, errs.Detail(ErrInvalidClient, "client_secret_jwt is not supported because only a secret hash is stored | 不支持 client_secret_jwt，因为只保存密钥哈希")
+		// Assertions may only be used by clients registered for a JWT client authentication
+		// method. A client registered for a shared-secret method must not bypass the secret by
+		// presenting an assertion, and a client registered for none is public by definition. |
+		// 只有注册为 JWT 客户端认证方法的客户端可以使用断言。注册为共享密钥方法的客户端不得用断言
+		// 绕过密钥，注册为 none 的客户端按定义是公共客户端。
+		switch registeredAuthMethod(client) {
+		case ClientSecretJWT:
+			if s.clientSecretJWT == nil {
+				return nil, errs.Detail(ErrInvalidClient, "client_secret_jwt is not enabled; configure ServerConfig.ClientSecretJWT with a secret resolver | 未启用 client_secret_jwt；请用密钥解析器配置 ServerConfig.ClientSecretJWT")
+			}
+			if err := s.clientSecretJWT.VerifyClientAssertion(ctx, client, assertion, s.Endpoint(endpointPath)); err != nil {
+				return nil, errs.Wrap(err, ErrInvalidClient)
+			}
+			return client, nil
+		case PrivateKeyJWT:
+			if s.config.ClientAssertionVerifier == nil {
+				return nil, errs.Detail(ErrInvalidClient, "private_key_jwt is not configured | 未配置 private_key_jwt")
+			}
+			if err := s.config.ClientAssertionVerifier.VerifyClientAssertion(ctx, client, assertion, s.Endpoint(endpointPath)); err != nil {
+				return nil, errs.Wrap(err, ErrInvalidClient)
+			}
+			return client, nil
+		default:
+			return nil, errs.Detail(ErrInvalidClient, "client is not registered for a JWT client assertion method | 客户端未注册 JWT 客户端断言方法")
 		}
-		if registeredAuthMethod(client) != PrivateKeyJWT {
-			return nil, errs.Detail(ErrInvalidClient, "client is not registered for private_key_jwt | 客户端未注册 private_key_jwt")
-		}
-		if err := s.config.ClientAssertionVerifier.VerifyClientAssertion(ctx, client, assertion, s.Endpoint(endpointPath)); err != nil {
-			return nil, errs.Wrap(err, ErrInvalidClient)
-		}
-		return client, nil
 	}
 	if clientID == "" {
 		return nil, errs.Detail(ErrInvalidClient, "client_id is missing | 缺少 client_id")
@@ -110,7 +118,10 @@ func (s *Server) authenticateClient(ctx context.Context, r *http.Request, form u
 		}
 		return client, nil
 	case ClientSecretJWT:
-		return nil, errs.Detail(ErrInvalidClient, "client_secret_jwt is not supported because only a secret hash is stored; register private_key_jwt or a shared-secret method | 不支持 client_secret_jwt，因为只保存密钥哈希；请注册 private_key_jwt 或共享密钥方法")
+		if s.clientSecretJWT == nil {
+			return nil, errs.Detail(ErrInvalidClient, "client_secret_jwt is not enabled; configure ServerConfig.ClientSecretJWT with a secret resolver | 未启用 client_secret_jwt；请用密钥解析器配置 ServerConfig.ClientSecretJWT")
+		}
+		return nil, errs.Detail(ErrInvalidClient, "client assertion is required for client_secret_jwt | client_secret_jwt 要求客户端断言")
 	case PrivateKeyJWT:
 		return nil, errs.Detail(ErrInvalidClient, "client assertion is required for the registered authentication method | 注册的认证方法要求客户端断言")
 	default:

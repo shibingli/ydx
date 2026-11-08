@@ -611,20 +611,20 @@ func TestServerAuthorizer(t *testing.T) {
 	}
 }
 
-// failingListStore fails List after a configurable successful call count. | failingListStore 在可配置的成功调用次数后使 List 失败。
-type failingListStore struct {
+// failingDeleteStore fails Delete after a configurable successful call count. | failingDeleteStore 在可配置的成功调用次数后使 Delete 失败。
+type failingDeleteStore struct {
 	Store
 	calls     int
 	failAfter int
 }
 
-// List implements Store. | List 实现 Store。
-func (s *failingListStore) List(ctx context.Context) ([]ObjectRecord, error) {
+// Delete implements Store. | Delete 实现 Store。
+func (s *failingDeleteStore) Delete(ctx context.Context, uniqueIdentifier string) error {
 	s.calls++
 	if s.failAfter > 0 && s.calls >= s.failAfter {
-		return nil, ErrClosed
+		return ErrClosed
 	}
-	return s.Store.List(ctx)
+	return s.Store.Delete(ctx, uniqueIdentifier)
 }
 
 // TestServerBatchPolicies covers Stop, Continue, Undo, undo failure and version rejection. |
@@ -680,7 +680,7 @@ func TestServerBatchPolicies(t *testing.T) {
 		t.Fatalf("Undo left %d records | Undo 留下 %d 条记录", len(records), len(records))
 	}
 
-	failing := &failingListStore{Store: NewMemoryStore(), failAfter: 2}
+	failing := &failingDeleteStore{Store: NewMemoryStore(), failAfter: 1}
 	server4, err := NewServer(ServerConfig{AllowPlaintext: true, Store: failing})
 	if err != nil {
 		t.Fatalf("NewServer failing store: %v", err)

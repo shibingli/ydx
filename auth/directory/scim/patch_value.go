@@ -56,6 +56,18 @@ func asString(value any) (string, bool) {
 	return "", false
 }
 
+// isPatchScalar reports whether value is a scalar suitable for a sub-attribute path. Objects and
+// arrays describe whole entries and are decoded separately. | isPatchScalar 报告 value 是否适合子属性
+// 路径的标量。对象与数组描述完整条目，另行解码。
+func isPatchScalar(value any) bool {
+	switch value.(type) {
+	case string, float64, float32, int, int64, int32, bool:
+		return true
+	default:
+		return false
+	}
+}
+
 // asBool accepts a boolean or its textual form. | asBool 接受布尔值或其文本形式。
 func asBool(value any) (bool, bool) {
 	switch item := value.(type) {
@@ -260,6 +272,129 @@ func removeMultiIndexes(list *[]MultiValue, indexes []int) {
 	*list = out
 }
 
+// filterConstraints extracts equality constraints from a value filter. Only "and" conjunctions of
+// "eq" comparisons describe a concrete new entry; "or", "not", presence and non-equality
+// comparisons cannot be materialized and are ignored. Attribute names are lowercased. | filterConstraints
+// 从值过滤器提取相等约束。只有 "eq" 比较的 "and" 连接能描述具体的新条目；"or"、"not"、存在性与
+// 非相等比较无法物化，会被忽略。属性名转为小写。
+func filterConstraints(filter Filter) map[string]any {
+	constraints := make(map[string]any)
+	collectFilterConstraints(filter, constraints)
+	return constraints
+}
+
+// collectFilterConstraints walks filter and records equality constraints in out. | collectFilterConstraints
+// 遍历 filter 并把相等约束记录到 out。
+func collectFilterConstraints(filter Filter, out map[string]any) {
+	switch typed := filter.(type) {
+	case *attributeFilter:
+		if typed.op != opEQ || typed.path == nil {
+			return
+		}
+		name := typed.path.SubAttribute
+		if name == "" {
+			name = typed.path.Attribute
+		}
+		if name == "" {
+			return
+		}
+		switch typed.value.kind {
+		case litString, litNumber:
+			out[strings.ToLower(name)] = typed.value.text
+		case litBool:
+			out[strings.ToLower(name)] = typed.value.boolean
+		}
+	case *logicalFilter:
+		if typed.op != "and" {
+			return
+		}
+		collectFilterConstraints(typed.left, out)
+		collectFilterConstraints(typed.right, out)
+	}
+}
+
+// fillMultiValueConstraints assigns missing sub-attributes of m from equality constraints. Explicit
+// values already present in m are never overwritten. | fillMultiValueConstraints 用相等约束填充 m
+// 缺失的子属性。m 中已有的显式值绝不会被覆盖。
+func fillMultiValueConstraints(m *MultiValue, constraints map[string]any) {
+	if m == nil {
+		return
+	}
+	set := func(dst *string, name string) {
+		if *dst != "" {
+			return
+		}
+		if text, ok := constraints[name].(string); ok {
+			*dst = text
+		}
+	}
+	set(&m.Value, "value")
+	set(&m.Display, "display")
+	set(&m.Type, "type")
+	set(&m.Ref, "$ref")
+	if m.Ref == "" {
+		set(&m.Ref, "ref")
+	}
+	if m.Primary {
+		return
+	}
+	if value, ok := constraints["primary"].(bool); ok && value {
+		m.Primary = true
+	}
+}
+
+// fillAddressConstraints assigns missing sub-attributes of a from equality constraints. | fillAddressConstraints
+// 用相等约束填充 a 缺失的子属性。
+func fillAddressConstraints(a *Address, constraints map[string]any) {
+	if a == nil {
+		return
+	}
+	set := func(dst *string, name string) {
+		if *dst != "" {
+			return
+		}
+		if text, ok := constraints[name].(string); ok {
+			*dst = text
+		}
+	}
+	set(&a.Formatted, "formatted")
+	set(&a.StreetAddress, "streetaddress")
+	set(&a.Locality, "locality")
+	set(&a.Region, "region")
+	set(&a.PostalCode, "postalcode")
+	set(&a.Country, "country")
+	set(&a.Type, "type")
+	if a.Primary {
+		return
+	}
+	if value, ok := constraints["primary"].(bool); ok && value {
+		a.Primary = true
+	}
+}
+
+// fillMemberConstraints assigns missing sub-attributes of m from equality constraints. | fillMemberConstraints
+// 用相等约束填充 m 缺失的子属性。
+func fillMemberConstraints(m *GroupMember, constraints map[string]any) {
+	if m == nil {
+		return
+	}
+	set := func(dst *string, name string) {
+		if *dst != "" {
+			return
+		}
+		if text, ok := constraints[name].(string); ok {
+			*dst = text
+		}
+	}
+	set(&m.Value, "value")
+	set(&m.Display, "display")
+	set(&m.Type, "type")
+	set(&m.Ref, "$ref")
+	if m.Ref == "" {
+		set(&m.Ref, "ref")
+	}
+}
+
 // patchMultiValues applies one operation to a []MultiValue attribute. | patchMultiValues 对一个
 // []MultiValue 属性应用一个操作。
 func patchMultiValues(list *[]MultiValue, path *AttributePath, kind patchOpKind, value any) error {
@@ -298,9 +433,22 @@ func patchMultiValues(list *[]MultiValue, path *AttributePath, kind patchOpKind,
 	indexes := matchedMultiIndexes(*list, path.ValueFilter)
 	if len(indexes) == 0 {
 		if kind == patchAdd {
+			constraints := filterConstraints(path.ValueFilter)
+			if path.SubAttribute != "" && isPatchScalar(value) {
+				entry := MultiValue{}
+				fillMultiValueConstraints(&entry, constraints)
+				if err := setMultiSubField(&entry, path.SubAttribute, patchAdd, value); err != nil {
+					return err
+				}
+				*list = append(*list, entry)
+				return nil
+			}
 			entries, err := decodeMultiValues(value)
 			if err != nil {
 				return err
+			}
+			for i := range entries {
+				fillMultiValueConstraints(&entries[i], constraints)
 			}
 			*list = append(*list, entries...)
 			return nil
@@ -488,9 +636,22 @@ func patchAddresses(list *[]Address, path *AttributePath, kind patchOpKind, valu
 	indexes := matchedAddressIndexes(*list, path.ValueFilter)
 	if len(indexes) == 0 {
 		if kind == patchAdd {
+			constraints := filterConstraints(path.ValueFilter)
+			if path.SubAttribute != "" && isPatchScalar(value) {
+				entry := Address{}
+				fillAddressConstraints(&entry, constraints)
+				if err := setAddressSubField(&entry, path.SubAttribute, patchAdd, value); err != nil {
+					return err
+				}
+				*list = append(*list, entry)
+				return nil
+			}
 			entries, err := decodeAddresses(value)
 			if err != nil {
 				return err
+			}
+			for i := range entries {
+				fillAddressConstraints(&entries[i], constraints)
 			}
 			*list = append(*list, entries...)
 			return nil
@@ -738,9 +899,22 @@ func patchGroupMembers(list *[]GroupMember, path *AttributePath, kind patchOpKin
 	indexes := matchedMemberIndexes(*list, path.ValueFilter)
 	if len(indexes) == 0 {
 		if kind == patchAdd {
+			constraints := filterConstraints(path.ValueFilter)
+			if path.SubAttribute != "" && isPatchScalar(value) {
+				entry := GroupMember{}
+				fillMemberConstraints(&entry, constraints)
+				if err := setMemberSubField(&entry, path.SubAttribute, patchAdd, value); err != nil {
+					return err
+				}
+				*list = append(*list, entry)
+				return nil
+			}
 			entries, err := decodeGroupMembers(value)
 			if err != nil {
 				return err
+			}
+			for i := range entries {
+				fillMemberConstraints(&entries[i], constraints)
 			}
 			*list = append(*list, entries...)
 			return nil

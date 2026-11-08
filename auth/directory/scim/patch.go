@@ -107,7 +107,7 @@ func applyUserOperation(u *User, operation PatchOperation) error {
 	text := strings.TrimSpace(operation.Path)
 	if text == "" {
 		if kind == patchRemove {
-			return errs.Detail(ErrInvalidPath, "remove requires a path | remove 需要 path")
+			return errs.Detail(ErrNoTarget, "remove requires a path | remove 需要 path")
 		}
 		if operation.Value == nil {
 			return errs.Detail(ErrInvalidValue, "pathless operation requires an object value | 无路径操作需要对象值")
@@ -130,7 +130,7 @@ func applyGroupOperation(g *Group, operation PatchOperation) error {
 	text := strings.TrimSpace(operation.Path)
 	if text == "" {
 		if kind == patchRemove {
-			return errs.Detail(ErrInvalidPath, "remove requires a path | remove 需要 path")
+			return errs.Detail(ErrNoTarget, "remove requires a path | remove 需要 path")
 		}
 		if operation.Value == nil {
 			return errs.Detail(ErrInvalidValue, "pathless operation requires an object value | 无路径操作需要对象值")
@@ -206,7 +206,7 @@ func applyUserPath(u *User, path *AttributePath, kind patchOpKind, value any) er
 		if path.SubAttribute != "" {
 			return errs.Detail(ErrInvalidPath, "userName has no sub-attribute %q | userName 没有子属性 %q", path.SubAttribute, path.SubAttribute)
 		}
-		return patchString(&u.UserName, kind, value)
+		return patchRequiredString(&u.UserName, path.Attribute, kind, value)
 	case "externalid":
 		return patchSimpleField(&u.ExternalID, path, kind, value)
 	case "displayname":
@@ -273,10 +273,7 @@ func applyGroupPath(g *Group, path *AttributePath, kind patchOpKind, value any) 
 		if path.SubAttribute != "" {
 			return errs.Detail(ErrInvalidPath, "displayName has no sub-attribute %q | displayName 没有子属性 %q", path.SubAttribute, path.SubAttribute)
 		}
-		if kind == patchRemove {
-			return errs.Detail(ErrInvalidValue, "displayName is required | displayName 为必需属性")
-		}
-		return patchString(&g.DisplayName, kind, value)
+		return patchRequiredString(&g.DisplayName, path.Attribute, kind, value)
 	case "members":
 		return patchGroupMembers(&g.Members, path, kind, value)
 	}
@@ -371,6 +368,25 @@ func patchString(dst *string, kind patchOpKind, value any) error {
 	text, ok := asString(value)
 	if !ok {
 		return errs.Detail(ErrInvalidValue, "expected a string value | 期望字符串值")
+	}
+	*dst = text
+	return nil
+}
+
+// patchRequiredString replaces a required string attribute. Removing it, assigning nil or assigning
+// an empty string would unassign a required attribute and is reported as ErrMutability per RFC 7644
+// section 3.5.2. | patchRequiredString 替换必需字符串属性。移除、赋 nil 或赋空字符串都会取消必需
+// 属性，按 RFC 7644 第 3.5.2 节报告 ErrMutability。
+func patchRequiredString(dst *string, name string, kind patchOpKind, value any) error {
+	if kind == patchRemove || value == nil {
+		return errs.Detail(ErrMutability, "required attribute %q cannot be removed | 必需属性 %q 不可移除", name, name)
+	}
+	text, ok := asString(value)
+	if !ok {
+		return errs.Detail(ErrInvalidValue, "attribute %q must be a string | 属性 %q 必须是字符串", name, name)
+	}
+	if text == "" {
+		return errs.Detail(ErrMutability, "required attribute %q cannot be unassigned | 必需属性 %q 不可置空", name, name)
 	}
 	*dst = text
 	return nil

@@ -4,7 +4,7 @@
 // Subpackages are grouped by domain and must not be added flat under auth/:
 //
 //	auth/token/      jwt, jose
-//	auth/protocol/   oauth2, oidc, saml, cas, wsfed, federation, radius
+//	auth/protocol/   oauth2, oidc, saml, cas, wsfed, federation, radius, kerberos
 //	auth/directory/  ldap, scim, ntlm
 //	auth/mfa/        otp, webauthn
 //	auth/authz/      rbac

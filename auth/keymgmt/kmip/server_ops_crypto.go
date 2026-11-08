@@ -261,7 +261,7 @@ func (s *Server) handleUnwrapKey(request UnwrapKeyRequest) (Item, error) {
 		return Item{}, err
 	}
 	defer record.Object.Zeroize()
-	if err := s.store.Create(s.ctx, record); err != nil {
+	if err := s.createRecord(record); err != nil {
 		return Item{}, err
 	}
 	return UnwrapKeyResponse{UniqueIdentifier: uid, ObjectType: request.Object.Type}.Item()

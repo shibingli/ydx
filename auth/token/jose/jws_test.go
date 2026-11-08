@@ -1,6 +1,7 @@
 package jose
 
 import (
+	"bytes"
 	"crypto"
 	"crypto/hmac"
 	"crypto/rand"
@@ -8,6 +9,7 @@ import (
 	"crypto/sha256"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -493,4 +495,243 @@ func TestVerifyTokenSizeLimit(t *testing.T) {
 	if _, err := Verify(huge, resolver, VerifyOptions{}); !errors.Is(err, ErrTokenTooLarge) {
 		t.Fatalf("Verify over default limit err = %v, want ErrTokenTooLarge", err)
 	}
+}
+
+// rfc7797VectorKey parses the HMAC key of the RFC 7797 section 4 examples. | rfc7797VectorKey 解析
+// RFC 7797 第 4 节示例的 HMAC 密钥。
+func rfc7797VectorKey(t *testing.T) *Key {
+	t.Helper()
+	key, err := ParseKey([]byte(`{"kty":"oct","k":"AyM1SysPpbyDfgZld3umj1qzKObwVMkoqQ-EstJQLr_T-1qS0gZH75aKtMN3Yj0iPS4hcgUuTwjAzZr1Z9CAow"}`))
+	if err != nil {
+		t.Fatalf("ParseKey(RFC 7797) failed: %v", err)
+	}
+	return key
+}
+
+// mustVerifyDetached verifies token against payload and fails the test on error. | mustVerifyDetached
+// 使用 payload 校验 token，出错时失败测试。
+func mustVerifyDetached(t *testing.T, token string, payload []byte, resolver KeyResolver, opts VerifyOptions) *Verified {
+	t.Helper()
+	verified, err := VerifyDetached(token, payload, resolver, opts)
+	if err != nil {
+		t.Fatalf("VerifyDetached failed: %v", err)
+	}
+	return verified
+}
+
+// TestJWSRFC7797Vector reproduces the RFC 7797 section 4 example byte for byte, including the
+// protected header member order, and verifies the same signature in the flattened JSON form. |
+// TestJWSRFC7797Vector 逐字节复现 RFC 7797 第 4 节示例（包括受保护头部的成员顺序），并在扁平 JSON
+// 形式中校验同一签名。
+func TestJWSRFC7797Vector(t *testing.T) {
+	key := rfc7797VectorKey(t)
+	payload := []byte("$.02")
+	const wantProtected = "eyJhbGciOiJIUzI1NiIsImI2NCI6ZmFsc2UsImNyaXQiOlsiYjY0Il19"
+	const wantToken = wantProtected + "..A5dxf2s96_n5FLueVuW1Z_vh161FwXZC4YLPff6dmDY"
+	token := mustSign(t, payload, key, SignOptions{Alg: "HS256", Detached: true, UnencodedPayload: true})
+	if token != wantToken {
+		t.Fatalf("detached compact = %q, want %q", token, wantToken)
+	}
+	verified := mustVerifyDetached(t, token, payload, resolverFor(key, ""), VerifyOptions{ValidAlgs: []string{"HS256"}})
+	if !bytes.Equal(verified.Payload, payload) {
+		t.Fatalf("payload = %q", verified.Payload)
+	}
+
+	flat := mustSign(t, payload, key, SignOptions{
+		Alg: "HS256", Serialization: SerializationFlattened, UnencodedPayload: true,
+	})
+	var doc map[string]any
+	if err := unmarshal([]byte(flat), &doc); err != nil {
+		t.Fatalf("decode flattened JWS failed: %v", err)
+	}
+	if doc["payload"] != "$.02" {
+		t.Fatalf("payload member = %v, want raw $.02", doc["payload"])
+	}
+	if doc["protected"] != wantProtected {
+		t.Fatalf("protected = %v, want %q", doc["protected"], wantProtected)
+	}
+	if doc["signature"] != "A5dxf2s96_n5FLueVuW1Z_vh161FwXZC4YLPff6dmDY" {
+		t.Fatalf("signature = %v", doc["signature"])
+	}
+	verified = mustVerify(t, flat, resolverFor(key, ""), VerifyOptions{ValidAlgs: []string{"HS256"}})
+	if !bytes.Equal(verified.Payload, payload) {
+		t.Fatalf("flattened payload = %q", verified.Payload)
+	}
+}
+
+// TestJWSUnencodedPayloadCompact covers compact signing and verification with and without a period
+// in the payload, plus detached tamper detection. | TestJWSUnencodedPayloadCompact 覆盖载荷含与不含
+// 句点的紧凑签名和验签，以及分离载荷的篡改检测。
+func TestJWSUnencodedPayloadCompact(t *testing.T) {
+	key := jwsTestKey(t, "HS256")
+	resolver := resolverFor(key, "")
+	opts := VerifyOptions{ValidAlgs: []string{"HS256"}}
+
+	payload := []byte("hello world | 你好")
+	token := mustSign(t, payload, key, SignOptions{Alg: "HS256", UnencodedPayload: true})
+	parts := strings.Split(token, ".")
+	if len(parts) != 3 {
+		t.Fatalf("compact token has %d segments: %q", len(parts), token)
+	}
+	if parts[1] != string(payload) {
+		t.Fatalf("payload segment = %q, want raw %q", parts[1], payload)
+	}
+	if verified := mustVerify(t, token, resolver, opts); !bytes.Equal(verified.Payload, payload) {
+		t.Fatalf("payload = %q", verified.Payload)
+	}
+
+	if _, err := Sign([]byte("a.b"), key, SignOptions{Alg: "HS256", UnencodedPayload: true}); !errors.Is(err, ErrInvalidConfig) {
+		t.Fatalf("attached payload with '.' err = %v, want ErrInvalidConfig", err)
+	}
+	dotted := []byte("a.b")
+	detached := mustSign(t, dotted, key, SignOptions{Alg: "HS256", UnencodedPayload: true, Detached: true})
+	if verified := mustVerifyDetached(t, detached, dotted, resolver, opts); !bytes.Equal(verified.Payload, dotted) {
+		t.Fatalf("detached payload = %q", verified.Payload)
+	}
+	if _, err := VerifyDetached(detached, []byte("a.c"), resolver, opts); !errors.Is(err, ErrSignatureInvalid) {
+		t.Fatalf("tampered detached payload err = %v, want ErrSignatureInvalid", err)
+	}
+
+	tampered := parts[0] + "." + string(payload) + "!" + "." + parts[2]
+	if _, err := Verify(tampered, resolver, opts); !errors.Is(err, ErrSignatureInvalid) {
+		t.Fatalf("tampered attached payload err = %v, want ErrSignatureInvalid", err)
+	}
+}
+
+// TestJWSUnencodedPayloadHeaderSelection covers the two ways to request the b64 parameter and the
+// automatic crit expansion. | TestJWSUnencodedPayloadHeaderSelection 覆盖请求 b64 参数的两种方式与
+// crit 自动扩展。
+func TestJWSUnencodedPayloadHeaderSelection(t *testing.T) {
+	key := jwsTestKey(t, "HS256")
+	resolver := resolverFor(key, "")
+	opts := VerifyOptions{ValidAlgs: []string{"HS256"}}
+	payload := []byte("payload | 载荷")
+
+	// A lone "b64" crit entry without an explicit b64 member selects b64=true. | 孤立 "b64" crit
+	// 条目在缺少显式 b64 成员时选择 b64=true。
+	explicitTrue := mustSign(t, payload, key, SignOptions{Alg: "HS256", Crit: []string{"b64"}})
+	head, err := DecodeSegment(strings.Split(explicitTrue, ".")[0])
+	if err != nil {
+		t.Fatalf("DecodeSegment failed: %v", err)
+	}
+	if !strings.Contains(string(head), `"b64":true`) || !strings.Contains(string(head), `"crit":["b64"]`) {
+		t.Fatalf("b64=true header = %s", head)
+	}
+	mustVerify(t, explicitTrue, resolver, opts)
+
+	// UnencodedPayload with an explicit crit entry must not duplicate it. | UnencodedPayload 与显式
+	// crit 条目一起使用时不得重复。
+	unencoded := mustSign(t, payload, key, SignOptions{
+		Alg: "HS256", UnencodedPayload: true, Crit: []string{"b64"},
+	})
+	head, err = DecodeSegment(strings.Split(unencoded, ".")[0])
+	if err != nil {
+		t.Fatalf("DecodeSegment failed: %v", err)
+	}
+	if strings.Count(string(head), `"b64"`) != 2 || !strings.Contains(string(head), `"b64":false`) {
+		t.Fatalf("b64=false header = %s", head)
+	}
+	mustVerify(t, unencoded, resolver, opts)
+}
+
+// TestJWSUnencodedPayloadErrors covers signing and verification refusals around crit and b64. |
+// TestJWSUnencodedPayloadErrors 覆盖围绕 crit 与 b64 的签名和验签拒绝。
+func TestJWSUnencodedPayloadErrors(t *testing.T) {
+	key := jwsTestKey(t, "HS256")
+	signCases := []struct {
+		name string
+		opts SignOptions
+		want error
+	}{
+		{"crit exp", SignOptions{Alg: "HS256", Crit: []string{"exp"}}, ErrUnsupportedCrit},
+		{"crit duplicate", SignOptions{Alg: "HS256", Crit: []string{"b64", "b64"}}, ErrInvalidHeader},
+		{"extra b64", SignOptions{Alg: "HS256", Extra: map[string]any{"b64": false}}, ErrInvalidHeader},
+		{"extra crit", SignOptions{Alg: "HS256", Extra: map[string]any{"crit": []any{}}}, ErrInvalidHeader},
+		{"extra alg", SignOptions{Alg: "HS256", Extra: map[string]any{"alg": "HS256"}}, ErrInvalidHeader},
+	}
+	for _, tc := range signCases {
+		t.Run("sign/"+tc.name, func(t *testing.T) {
+			if _, err := Sign([]byte("x"), key, tc.opts); !errors.Is(err, tc.want) {
+				t.Fatalf("Sign err = %v, want %v", err, tc.want)
+			}
+		})
+	}
+
+	verifyCases := []struct {
+		name   string
+		header string
+		want   error
+	}{
+		{"b64=false without crit", `{"alg":"HS256","b64":false}`, ErrInvalidHeader},
+		{"crit b64 without b64", `{"alg":"HS256","crit":["b64"]}`, ErrInvalidHeader},
+		{"b64 not boolean", `{"alg":"HS256","b64":"false","crit":["b64"]}`, ErrInvalidHeader},
+		{"crit not array", `{"alg":"HS256","b64":false,"crit":"b64"}`, ErrInvalidHeader},
+		{"crit duplicate", `{"alg":"HS256","b64":false,"crit":["b64","b64"]}`, ErrInvalidHeader},
+		{"crit unknown", `{"alg":"HS256","b64":false,"crit":["exp","b64"]}`, ErrUnsupportedCrit},
+	}
+	for _, tc := range verifyCases {
+		t.Run("verify/"+tc.name, func(t *testing.T) {
+			token := EncodeSegment([]byte(tc.header)) + "." + EncodeSegment([]byte("x")) + ".AAAA"
+			if _, err := Verify(token, resolverFor(key, ""), VerifyOptions{}); !errors.Is(err, tc.want) {
+				t.Fatalf("Verify err = %v, want %v", err, tc.want)
+			}
+		})
+	}
+}
+
+// TestJWSUnencodedPayloadClaims runs registered-claim validation over b64=false detached and
+// attached payloads. | TestJWSUnencodedPayloadClaims 对 b64=false 的分离与附加载荷运行登记声明校验。
+func TestJWSUnencodedPayloadClaims(t *testing.T) {
+	key := jwsTestKey(t, "HS256")
+	resolver := resolverFor(key, "")
+	now := time.Unix(1700000000, 0)
+	opts := VerifyOptions{
+		ValidAlgs:        []string{"HS256"},
+		ValidateClaims:   true,
+		RequireExp:       true,
+		ValidateIssuedAt: true,
+		Now:              func() time.Time { return now },
+	}
+	good := []byte(`{"sub":"u","exp":1800000000,"iat":1600000000}`)
+	detached := mustSign(t, good, key, SignOptions{Alg: "HS256", Detached: true, UnencodedPayload: true})
+	verified := mustVerifyDetached(t, detached, good, resolver, opts)
+	if string(verified.Claims) != string(good) {
+		t.Fatalf("claims = %s", verified.Claims)
+	}
+	attached := mustSign(t, good, key, SignOptions{
+		Alg: "HS256", Serialization: SerializationFlattened, UnencodedPayload: true,
+	})
+	mustVerify(t, attached, resolver, opts)
+
+	expired := []byte(`{"sub":"u","exp":1600000001}`)
+	expiredToken := mustSign(t, expired, key, SignOptions{Alg: "HS256", Detached: true, UnencodedPayload: true})
+	if _, err := VerifyDetached(expiredToken, expired, resolver, opts); !errors.Is(err, ErrClaimsInvalid) {
+		t.Fatalf("expired b64=false claims err = %v, want ErrClaimsInvalid", err)
+	}
+}
+
+// TestJWSUnencodedPayloadConcurrent signs and verifies b64=false tokens concurrently under the race
+// detector. | TestJWSUnencodedPayloadConcurrent 在竞态检测器下并发签名与验签 b64=false 令牌。
+func TestJWSUnencodedPayloadConcurrent(t *testing.T) {
+	key := jwsTestKey(t, "HS256")
+	resolver := resolverFor(key, "")
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		i := i
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			payload := []byte(strings.Repeat("c", i+1) + ".payload")
+			token := mustSign(t, payload, key, SignOptions{Alg: "HS256", Detached: true, UnencodedPayload: true})
+			verified, err := VerifyDetached(token, payload, resolver, VerifyOptions{ValidAlgs: []string{"HS256"}})
+			if err != nil {
+				t.Errorf("VerifyDetached failed: %v", err)
+				return
+			}
+			if !bytes.Equal(verified.Payload, payload) {
+				t.Errorf("payload = %q, want %q", verified.Payload, payload)
+			}
+		}()
+	}
+	wg.Wait()
 }

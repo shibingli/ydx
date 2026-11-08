@@ -219,6 +219,11 @@ type AttestationResult struct {
 	CredentialPublicKey *COSEKey
 	// AuthData is the parsed authenticator data. | AuthData 是解析后的认证器数据。
 	AuthData *AuthenticatorData
+	// EKActivation is the verified TPM endorsement-key credential activation bound to a tpm
+	// attestation, when Config.TPMEKActivation is enabled and registration supplied evidence. |
+	// EKActivation 是绑定到 tpm 认证声明的已校验 TPM 背书密钥凭据激活；仅在启用
+	// Config.TPMEKActivation 且注册提供证据时设置。
+	EKActivation *TPMEKActivationResult
 }
 
 // ParseAttestationObject decodes a CBOR attestation object and its authenticator data. | ParseAttestationObject 解码 CBOR 认证声明对象及其认证器数据。

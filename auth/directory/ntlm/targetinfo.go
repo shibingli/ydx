@@ -57,10 +57,10 @@ const (
 // depends on Type. | AVPair 是一个 target-info AV 对。Value 是任意八位组，其含义
 // 取决于 Type。
 type AVPair struct {
-	// Type is the AV pair identifier. | Type 是 AV 对标识。
-	Type AVType
 	// Value is the AV pair payload. | Value 是 AV 对载荷。
 	Value []byte
+	// Type is the AV pair identifier. | Type 是 AV 对标识。
+	Type AVType
 }
 
 // TargetInfo is the ordered AV pair sequence carried in a Type 2 challenge and

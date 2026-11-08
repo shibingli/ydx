@@ -31,6 +31,14 @@ func (o *AttestationObject) verifyAndroidSafetyNet(ctx context.Context, result *
 		if err := opts.SafetyNetVerifier.VerifySafetyNet(ctx, response, expectedNonce[:]); err != nil {
 			return errs.WrapDetail(err, ErrUntrustedAttestation, "SafetyNet verifier rejected the response | SafetyNet 校验器拒绝了响应")
 		}
+		// A custom verifier adds checks; a non-zero policy still applies afterwards so configured
+		// policy cannot be silently disabled. | 自定义校验器只增加校验；非零策略随后仍会执行，因此已配置
+		// 策略不能被静默关闭。
+		if !opts.SafetyNetPolicy.isZero() {
+			if err := verifySafetyNetPolicyChecks(jws, expectedNonce[:], version, opts); err != nil {
+				return err
+			}
+		}
 		verified, err := verifySafetyNetTrust(jws.certs, opts)
 		if err != nil {
 			return err
@@ -40,11 +48,27 @@ func (o *AttestationObject) verifyAndroidSafetyNet(ctx context.Context, result *
 		result.TrustVerified = verified
 		return nil
 	}
+	if err := verifySafetyNetPolicyChecks(jws, expectedNonce[:], version, opts); err != nil {
+		return err
+	}
+	verified, err := verifyCertificateChain(jws.certs, opts.withSafetyNetRoots())
+	if err != nil {
+		return err
+	}
+	result.Type = AttestationTypeBasic
+	result.TrustPath = jws.certs
+	result.TrustVerified = verified
+	return nil
+}
+
+// verifySafetyNetPolicyChecks applies the mandatory JWS checks and every configured policy field. |
+// verifySafetyNetPolicyChecks 执行强制 JWS 校验与全部已配置策略字段。
+func verifySafetyNetPolicyChecks(jws *safetyNetJWS, expectedNonce []byte, version string, opts AttestationOptions) error {
 	policy := opts.SafetyNetPolicy
 	if err := policy.validate(); err != nil {
 		return err
 	}
-	if err := verifySafetyNetJWSPolicy(jws, expectedNonce[:], policy); err != nil {
+	if err := verifySafetyNetJWSPolicy(jws, expectedNonce, policy); err != nil {
 		return err
 	}
 	if len(policy.AllowedVersions) > 0 && !containsString(policy.AllowedVersions, version) {
@@ -61,13 +85,6 @@ func (o *AttestationObject) verifyAndroidSafetyNet(ctx context.Context, result *
 	if attested.Before(now.Add(-window)) || attested.After(now.Add(window)) {
 		return errs.Detail(ErrInvalidAttestation, "SafetyNet timestamp is outside the %s window | SafetyNet 时间戳超出 %s 窗口", window, window)
 	}
-	verified, err := verifyCertificateChain(jws.certs, opts.withSafetyNetRoots())
-	if err != nil {
-		return err
-	}
-	result.Type = AttestationTypeBasic
-	result.TrustPath = jws.certs
-	result.TrustVerified = verified
 	return nil
 }
 

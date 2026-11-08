@@ -35,6 +35,9 @@ func (s *Server) MetadataDocument() *ServerMetadata {
 	if s.config.ClientAssertionVerifier != nil {
 		authMethods = append(authMethods, PrivateKeyJWT)
 	}
+	if s.ClientSecretJWTEnabled() {
+		authMethods = append(authMethods, ClientSecretJWT)
+	}
 	authMethods = append(authMethods, TLSClientAuth, SelfSignedTLSClientAuth)
 	pkceMethods := []string{PKCES256}
 	if s.config.AllowPKCEPlain {
@@ -75,8 +78,13 @@ func (s *Server) MetadataDocument() *ServerMetadata {
 	if signer, ok := s.config.AuthorizationResponseSigner.(AuthorizationSigningAlgProvider); ok {
 		metadata.AuthorizationSigningAlgValuesSupported = append([]string(nil), signer.AuthorizationSigningAlgValuesSupported()...)
 	}
+	var authSigningAlgs []string
 	if s.config.ClientAssertionVerifier != nil {
-		metadata.TokenEndpointAuthSigningAlgValuesSupported = []string{"RS256", "PS256", "ES256", "EdDSA"}
+		authSigningAlgs = append(authSigningAlgs, "RS256", "PS256", "ES256", "EdDSA")
+	}
+	authSigningAlgs = append(authSigningAlgs, s.ClientSecretJWTSigningAlgs()...)
+	if len(authSigningAlgs) > 0 {
+		metadata.TokenEndpointAuthSigningAlgValuesSupported = authSigningAlgs
 	}
 	if s.config.DPoPVerifier != nil {
 		metadata.DPoPSigningAlgValuesSupported = []string{"RS256", "PS256", "ES256", "EdDSA"}

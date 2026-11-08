@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/shibingli/ydx/base64"
@@ -69,6 +70,11 @@ type ClientConfig struct {
 type OAuthClient struct {
 	config ClientConfig
 	http   *http.Client
+	// dpopMu guards dpopNonce. | dpopMu 保护 dpopNonce。
+	dpopMu sync.Mutex
+	// dpopNonce is the most recent DPoP-Nonce supplied by the server. | dpopNonce 是服务器最近提供的
+	// DPoP-Nonce。
+	dpopNonce string
 }
 
 // NewClient returns a Client. | NewClient 返回 Client。
@@ -96,6 +102,27 @@ func NewClient(config ClientConfig) (*OAuthClient, error) {
 
 // Config returns a copy of the client configuration. | Config 返回客户端配置副本。
 func (c *OAuthClient) Config() ClientConfig { return c.config }
+
+// DPoPNonce returns the most recent DPoP-Nonce value received from the server. | DPoPNonce 返回最近
+// 从服务器收到的 DPoP-Nonce 值。
+func (c *OAuthClient) DPoPNonce() string {
+	if c == nil {
+		return ""
+	}
+	c.dpopMu.Lock()
+	defer c.dpopMu.Unlock()
+	return c.dpopNonce
+}
+
+// rememberDPoPNonce stores a server-supplied nonce. | rememberDPoPNonce 保存服务器提供的 nonce。
+func (c *OAuthClient) rememberDPoPNonce(nonce string) {
+	if c == nil || nonce == "" {
+		return
+	}
+	c.dpopMu.Lock()
+	c.dpopNonce = nonce
+	c.dpopMu.Unlock()
+}
 
 // AuthCodeOption customizes an authorization URL. | AuthCodeOption 定制授权 URL。
 type AuthCodeOption func(*authCodeOptions)
@@ -622,36 +649,87 @@ func (c *OAuthClient) tokenRequest(ctx context.Context, form url.Values) (*Token
 	return &token, nil
 }
 
+// formResponse is one form POST response used for DPoP nonce handling. | formResponse 是用于 DPoP
+// nonce 处理的一次表单 POST 响应。
+type formResponse struct {
+	// status is the HTTP status code. | status 是 HTTP 状态码。
+	status int
+	// body is the response body. | body 是响应正文。
+	body []byte
+	// nonce is the DPoP-Nonce response header. | nonce 是 DPoP-Nonce 响应头。
+	nonce string
+	// nonceChallenge reports an RFC 9449 use_dpop_nonce response. | nonceChallenge 表示 RFC 9449
+	// use_dpop_nonce 响应。
+	nonceChallenge bool
+}
+
 // postForm sends a form-encoded request with client authentication. | postForm 发送带客户端认证的表单请求。
+//
+// When the server answers use_dpop_nonce and supplies a new nonce, a DPoP signer that implements
+// DPoPNonceSigner retries the request exactly once with that nonce. | 当服务器返回 use_dpop_nonce
+// 并提供新 nonce 时，实现 DPoPNonceSigner 的 DPoP 签名器会使用该 nonce 恰好重试一次。
 func (c *OAuthClient) postForm(ctx context.Context, endpoint string, form url.Values, authenticate bool) (int, []byte, error) {
+	response, err := c.postFormOnce(ctx, endpoint, form, authenticate)
+	if err != nil {
+		return 0, nil, err
+	}
+	c.rememberDPoPNonce(response.nonce)
+	if response.nonceChallenge && response.nonce != "" && c.supportsDPoPNonce() {
+		retry, err := c.postFormOnce(ctx, endpoint, form, authenticate)
+		if err != nil {
+			return 0, nil, err
+		}
+		c.rememberDPoPNonce(retry.nonce)
+		response = retry
+	}
+	return response.status, response.body, nil
+}
+
+// postFormOnce performs exactly one form POST. | postFormOnce 恰好执行一次表单 POST。
+func (c *OAuthClient) postFormOnce(ctx context.Context, endpoint string, form url.Values, authenticate bool) (formResponse, error) {
+	var out formResponse
 	body := form.Encode()
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(body))
 	if err != nil {
-		return 0, nil, errs.Wrap(err, ErrInvalidRequest)
+		return out, errs.Wrap(err, ErrInvalidRequest)
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("Cache-Control", "no-store")
 	if authenticate {
 		if err := c.applyClientAuth(req, form); err != nil {
-			return 0, nil, err
+			return out, err
 		}
 	}
 	if c.config.DPoPKey != nil {
 		if err := c.applyDPoP(req); err != nil {
-			return 0, nil, err
+			return out, err
 		}
 	}
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return 0, nil, errs.Wrap(err, ErrServerError)
+		return out, errs.Wrap(err, ErrServerError)
 	}
 	defer func() { _ = resp.Body.Close() }()
 	data, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {
-		return 0, nil, errs.Wrap(err, ErrServerError)
+		return out, errs.Wrap(err, ErrServerError)
 	}
-	return resp.StatusCode, data, nil
+	out.status = resp.StatusCode
+	out.body = data
+	out.nonce = resp.Header.Get(DPoPNonceHeader)
+	out.nonceChallenge = isUseDPoPNonceResponse(resp.StatusCode, resp.Header, data)
+	return out, nil
+}
+
+// supportsDPoPNonce reports whether the configured signer can embed a server nonce. |
+// supportsDPoPNonce 报告配置的签名器能否嵌入服务器 nonce。
+func (c *OAuthClient) supportsDPoPNonce() bool {
+	if c == nil || c.config.DPoPKey == nil {
+		return false
+	}
+	_, ok := c.config.DPoPKey.(DPoPNonceSigner)
+	return ok
 }
 
 // applyClientAuth attaches client authentication to req. | applyClientAuth 把客户端认证附加到 req。

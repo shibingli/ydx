@@ -14,10 +14,58 @@ import (
 	"github.com/shibingli/ydx/auth/token/jose"
 	"github.com/shibingli/ydx/errs"
 	"github.com/shibingli/ydx/json"
+	"github.com/shibingli/ydx/log"
 )
 
 // BackchannelLogoutEvent is the OIDC back-channel logout event key. | BackchannelLogoutEvent 是 OIDC 后端登出事件键。
 const BackchannelLogoutEvent = "http://schemas.openid.net/event/backchannel-logout"
+
+// FrontchannelLogoutRequest carries the validated parameters of an OIDC Front-Channel Logout 1.0
+// request. | FrontchannelLogoutRequest 携带已校验的 OIDC 前端登出 1.0 请求参数。
+type FrontchannelLogoutRequest struct {
+	// Issuer is the validated iss parameter. | Issuer 是已校验的 iss 参数。
+	Issuer string
+	// ClientID is the receiver client identifier configured through
+	// ProviderConfig.FrontchannelLogoutClientID. A request that carried client_id or aud already
+	// matched this value, so the identified session belongs to this client. | ClientID 是通过
+	// ProviderConfig.FrontchannelLogoutClientID 配置的接收端客户端标识。携带 client_id 或 aud 的
+	// 请求已与该值匹配，因此被标识的会话属于此客户端。
+	ClientID string
+	// SID is the sid parameter, empty when the request omitted it. | SID 是 sid 参数，请求未提供时为空。
+	SID string
+	// Subject is the sub parameter, empty when the request omitted it. | Subject 是 sub 参数，请求未
+	// 提供时为空。
+	Subject string
+}
+
+// FrontchannelLogoutHandler maps a validated front-channel logout request to local sessions and
+// revokes them. | FrontchannelLogoutHandler 把已校验的前端登出请求映射到本地会话并撤销它们。
+//
+// The provider calls it only after method, iss, client binding and the sid/sub requirement passed,
+// so Issuer and ClientID are trustworthy and at least one of SID and Subject is set. A returned
+// error makes the receiver answer HTTP 500 instead of claiming success; return nil after the
+// mapping is applied. Implementations must tolerate repeated requests because front-channel
+// logout may be delivered more than once. | 提供方仅在方法、iss、客户端绑定与 sid/sub 要求均通过后
+// 调用它，因此 Issuer 与 ClientID 可信，且 SID 与 Subject 至少一个非空。返回错误会让接收端回复
+// HTTP 500 而不是声称成功；映射完成后返回 nil。前端登出可能重复投递，实现必须容忍重复请求。
+type FrontchannelLogoutHandler interface {
+	// FrontchannelLogout applies the validated logout request. | FrontchannelLogout 应用已校验的
+	// 登出请求。
+	FrontchannelLogout(ctx context.Context, request FrontchannelLogoutRequest) error
+}
+
+// FrontchannelLogoutFunc adapts a function to FrontchannelLogoutHandler. | FrontchannelLogoutFunc
+// 把函数适配为 FrontchannelLogoutHandler。
+type FrontchannelLogoutFunc func(ctx context.Context, request FrontchannelLogoutRequest) error
+
+// FrontchannelLogout calls f; a nil f succeeds without doing anything. | FrontchannelLogout 调用
+// f；nil f 直接成功且不执行任何操作。
+func (f FrontchannelLogoutFunc) FrontchannelLogout(ctx context.Context, request FrontchannelLogoutRequest) error {
+	if f == nil {
+		return nil
+	}
+	return f(ctx, request)
+}
 
 // LogoutTokenClaims is an OIDC back-channel logout token. | LogoutTokenClaims 是 OIDC 后端登出令牌。
 type LogoutTokenClaims struct {
@@ -344,15 +392,19 @@ func (p *Provider) BackchannelLogout(w http.ResponseWriter, r *http.Request) {
 // ProviderConfig.FrontchannelLogoutClientID and rejects requests for another client; without a
 // configured client ID the endpoint fails closed. OIDC Front-Channel Logout 1.0 defines neither a
 // client_id nor an aud parameter, so a request without one is accepted because the registered
-// frontchannel_logout_uri already binds it to this client. This handler does not revoke sessions:
-// mapping sid or sub to a local session remains the caller's responsibility, and callers must
-// verify that the identifier belongs to a session of the configured client. |
-// FrontchannelLogout 为 RP 渲染前端登出页面。它要求 GET、iss 标识本提供方，且 sid 或 sub 至少
-// 出现一个。请求携带 client_id 或 aud 参数时，处理器要求其标识
+// frontchannel_logout_uri already binds it to this client. After every check passes,
+// ProviderConfig.FrontchannelLogoutHandler, when set, receives the validated parameters and maps
+// sid or sub to local sessions and revokes them; its error makes the endpoint answer HTTP 500
+// instead of reporting success. Without a handler the endpoint keeps the historical behaviour of
+// rendering the logout page without revoking anything, and mapping the identifier remains the
+// caller's responsibility. | FrontchannelLogout 为 RP 渲染前端登出页面。它要求 GET、iss 标识本
+// 提供方，且 sid 或 sub 至少出现一个。请求携带 client_id 或 aud 参数时，处理器要求其标识
 // ProviderConfig.FrontchannelLogoutClientID，并拒绝面向其他客户端的请求；未配置 client ID 时
 // 端点按失败关闭处理。OIDC 前端登出 1.0 未定义 client_id 与 aud 参数，因此不带这些参数的请求会被
-// 接受，因为已注册的 frontchannel_logout_uri 已将其绑定到此客户端。本处理器不撤销会话：sid 或
-// sub 到本地会话的映射仍由调用方负责，调用方必须确认该标识属于配置客户端的会话。
+// 接受，因为已注册的 frontchannel_logout_uri 已将其绑定到此客户端。所有检查通过后，
+// ProviderConfig.FrontchannelLogoutHandler 若已设置会收到已校验参数，把 sid 或 sub 映射到本地
+// 会话并撤销；其错误会让端点回复 HTTP 500，而不是报告成功。未设置处理器时端点保持历史行为，
+// 只渲染登出页面而不撤销，标识符映射仍由调用方负责。
 func (p *Provider) FrontchannelLogout(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		w.Header().Set("Allow", "GET")
@@ -387,6 +439,21 @@ func (p *Provider) FrontchannelLogout(w http.ResponseWriter, r *http.Request) {
 	if sid == "" && sub == "" {
 		badRequest(w, "sid or sub is required | 必须提供 sid 或 sub")
 		return
+	}
+	if handler := p.config.FrontchannelLogoutHandler; handler != nil {
+		err := handler.FrontchannelLogout(r.Context(), FrontchannelLogoutRequest{
+			Issuer:   issuer,
+			ClientID: clientID,
+			SID:      sid,
+			Subject:  sub,
+		})
+		if err != nil {
+			if p.config.Logger != nil {
+				p.config.Logger.Warn("oidc: front-channel logout handler failed | oidc：前端登出处理器失败", log.Err(err))
+			}
+			writeError(w, http.StatusInternalServerError, "server_error", "front-channel logout failed | 前端登出失败")
+			return
+		}
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")

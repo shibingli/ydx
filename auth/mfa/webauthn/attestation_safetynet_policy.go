@@ -21,9 +21,10 @@ const DefaultSafetyNetTimestampTolerance = time.Minute
 // 零值保持基线行为：ctsProfileMatch 必须为 true，nonce 与 JWS 签名必须有效，时间戳必须落在
 // DefaultSafetyNetTimestampTolerance 内。每个非零字段都会增加更严格的要求。
 //
-// A custom SafetyNetVerifier replaces the built-in JWS checks and therefore owns this policy as
-// well; SafetyNetPolicy is used only by the built-in path. | 自定义 SafetyNetVerifier 会替换内置
-// JWS 校验，因此也自行负责该策略；SafetyNetPolicy 仅用于内置校验路径。
+// A custom SafetyNetVerifier adds checks; a non-zero SafetyNetPolicy is still enforced after it
+// returns, so a custom verifier cannot silently disable configured policy. | 自定义
+// SafetyNetVerifier 只增加校验；非零 SafetyNetPolicy 会在其返回后继续执行，因此自定义校验器不能静默
+// 关闭已配置策略。
 type SafetyNetPolicy struct {
 	// RequireBasicIntegrity requires the payload basicIntegrity member to be true. | RequireBasicIntegrity
 	// 要求载荷中的 basicIntegrity 成员为 true。
@@ -47,6 +48,15 @@ type SafetyNetPolicy struct {
 	// rejected as invalid configuration. | TimestampTolerance 是 timestampMs 与校验时钟之间可接受的
 	// 绝对偏差。零值表示 DefaultSafetyNetTimestampTolerance；负值会作为非法配置被拒绝。
 	TimestampTolerance time.Duration
+}
+
+// isZero reports whether no optional policy field is set. | isZero 报告是否未设置任何可选策略字段。
+func (p SafetyNetPolicy) isZero() bool {
+	return !p.RequireBasicIntegrity &&
+		len(p.AllowedAPKCertificateDigests) == 0 &&
+		len(p.AllowedEvaluationTypes) == 0 &&
+		len(p.AllowedVersions) == 0 &&
+		p.TimestampTolerance == 0
 }
 
 // validate reports whether the policy is well formed. | validate 报告策略是否格式合法。

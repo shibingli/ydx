@@ -75,7 +75,7 @@ func (s *Server) handleCreateForVersion(request CreateRequest, version ProtocolV
 	if record.Object != nil {
 		defer record.Object.Zeroize()
 	}
-	if err := s.store.Create(s.ctx, record); err != nil {
+	if err := s.createRecord(record); err != nil {
 		return Item{}, err
 	}
 	return CreateResponse{ObjectType: request.ObjectType, UniqueIdentifier: uid}.ItemForVersion(version)
@@ -156,11 +156,11 @@ func (s *Server) handleCreateKeyPairForVersion(request CreateKeyPairRequest, ver
 	}
 	defer privateRecord.Object.Zeroize()
 	defer publicRecord.Object.Zeroize()
-	if err := s.store.Create(s.ctx, privateRecord); err != nil {
+	if err := s.createRecord(privateRecord); err != nil {
 		return Item{}, err
 	}
-	if err := s.store.Create(s.ctx, publicRecord); err != nil {
-		_ = s.store.Delete(s.ctx, privateID)
+	if err := s.createRecord(publicRecord); err != nil {
+		s.discardNewRecord(privateID)
 		return Item{}, err
 	}
 	return CreateKeyPairResponse{
@@ -215,7 +215,7 @@ func (s *Server) handleRegisterForVersion(request RegisterRequest, version Proto
 		return Item{}, err
 	}
 	defer record.Object.Zeroize()
-	if err := s.store.Create(s.ctx, record); err != nil {
+	if err := s.createRecord(record); err != nil {
 		return Item{}, err
 	}
 	return RegisterResponse{UniqueIdentifier: uid}.ItemForVersion(version)
@@ -331,18 +331,22 @@ func (s *Server) handleActivate(request ActivateRequest) (Item, error) {
 	state := effectiveState(&record, s.now())
 	switch state {
 	case StatePreActive:
-		record.State = StateActive
-		now := s.now()
-		if record.ActivationDate.IsZero() || record.ActivationDate.After(now) {
-			record.ActivationDate = now
-		}
-		record.LastChangeDate = now
 	case StateActive:
 		return Item{}, errs.Detail(ErrState, "object %q is already active | 对象 %q 已处于活动状态", record.UniqueIdentifier, record.UniqueIdentifier)
 	default:
 		return Item{}, errs.Detail(ErrState, "cannot activate an object in state %s | 无法激活处于状态 %s 的对象", state, state)
 	}
-	if err := s.store.Update(s.ctx, record); err != nil {
+	var previous ObjectRecord
+	if s.undo != nil {
+		previous = cloneRecord(record)
+	}
+	record.State = StateActive
+	now := s.now()
+	if record.ActivationDate.IsZero() || record.ActivationDate.After(now) {
+		record.ActivationDate = now
+	}
+	record.LastChangeDate = now
+	if err := s.updateRecord(previous, record); err != nil {
 		return Item{}, err
 	}
 	return ActivateResponse{UniqueIdentifier: record.UniqueIdentifier}.Item()
@@ -361,6 +365,10 @@ func (s *Server) handleRevoke(request RevokeRequest) (Item, error) {
 	if state != StatePreActive && state != StateActive {
 		return Item{}, errs.Detail(ErrState, "cannot revoke an object in state %s | 无法撤销处于状态 %s 的对象", state, state)
 	}
+	var previous ObjectRecord
+	if s.undo != nil {
+		previous = cloneRecord(record)
+	}
 	now := s.now()
 	record.RevocationReason = request.Reason
 	record.DeactivationDate = now
@@ -375,7 +383,7 @@ func (s *Server) handleRevoke(request RevokeRequest) (Item, error) {
 		record.State = StateDeactivated
 	}
 	record.LastChangeDate = now
-	if err := s.store.Update(s.ctx, record); err != nil {
+	if err := s.updateRecord(previous, record); err != nil {
 		return Item{}, err
 	}
 	return RevokeResponse{UniqueIdentifier: record.UniqueIdentifier}.Item()
@@ -390,6 +398,12 @@ func (s *Server) handleDestroy(request DestroyRequest) (Item, error) {
 	if record.State == StateDestroyed {
 		return Item{}, errs.Detail(ErrState, "object %q is already destroyed | 对象 %q 已销毁", record.UniqueIdentifier, record.UniqueIdentifier)
 	}
+	var previous ObjectRecord
+	if s.undo != nil {
+		// Capture the material before zeroizing the working copy so rollback can restore the exact key.
+		// | 在清零工作副本前捕获材料，使回滚能够恢复原始密钥。
+		previous = cloneRecord(record)
+	}
 	if record.Object != nil {
 		record.Object.Zeroize()
 	}
@@ -398,7 +412,7 @@ func (s *Server) handleDestroy(request DestroyRequest) (Item, error) {
 	now := s.now()
 	record.DestroyDate = now
 	record.LastChangeDate = now
-	if err := s.store.Update(s.ctx, record); err != nil {
+	if err := s.updateRecord(previous, record); err != nil {
 		return Item{}, err
 	}
 	return DestroyResponse{UniqueIdentifier: record.UniqueIdentifier}.Item()
@@ -485,7 +499,7 @@ func (s *Server) handleDeriveKeyForVersion(request DeriveKeyRequest, version Pro
 		return Item{}, err
 	}
 	defer record.Object.Zeroize()
-	if err := s.store.Create(s.ctx, record); err != nil {
+	if err := s.createRecord(record); err != nil {
 		return Item{}, err
 	}
 	return DeriveKeyResponse{UniqueIdentifier: uid}.ItemForVersion(version)

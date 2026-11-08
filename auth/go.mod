@@ -12,6 +12,7 @@ require (
 	github.com/shibingli/ydx/router v0.1.14
 	github.com/shibingli/ydx/xml v0.1.1
 	golang.org/x/crypto v0.58.0
+	golang.org/x/sys v0.49.0
 )
 
 require (
@@ -20,6 +21,5 @@ require (
 	github.com/shibingli/ydx/protocol v0.1.5 // indirect
 	github.com/shibingli/ydx/sysinfo v0.1.4 // indirect
 	github.com/spf13/afero v1.15.0 // indirect
-	golang.org/x/sys v0.49.0 // indirect
 	golang.org/x/text v0.43.0 // indirect
 )

@@ -139,17 +139,21 @@ func (s *Server) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 	s.respondUser(w, r, http.StatusCreated, created, attributes, excluded)
 }
 
-// createUser persists a new user and provisions its password. When undo is non-nil an atomic bulk
-// request records a delete compensation before the password hook runs, so a rejected password
-// still rolls the created resource back with the rest of the transaction. | createUser 持久化新用户
-// 并预配口令。undo 非 nil 时，原子批量请求会在口令钩子运行前记录删除补偿，因此口令被拒绝时仍会连同
-// 事务其余部分一起回滚已创建资源。
+// createUser persists a new user and provisions its password. A two-phase provisioner begins
+// before the store write and commits after it; the legacy setter runs after the store write. When
+// undo is non-nil an atomic bulk request records a delete compensation before the password hook
+// runs, so a rejected password still rolls the created resource back with the rest of the
+// transaction. A failed rollback is never ignored: the returned error joins the cause with every
+// failed compensation step. | createUser 持久化新用户并预配口令。两阶段预配器在存储写入前开始并在
+// 其后提交；旧版 setter 在存储写入后运行。undo 非 nil 时，原子批量请求会在口令钩子运行前记录删除
+// 补偿，因此口令被拒绝时仍会连同事务其余部分一起回滚已创建资源。回滚失败绝不会被忽略：返回错误会
+// 合并原因与每个失败的补偿步骤。
 func (s *Server) createUser(ctx context.Context, user *User, password string, undo *bulkUndoLog, bulkID string) (*User, error) {
 	if user == nil {
 		return nil, errs.Detail(ErrInvalidValue, "nil User | User 为空")
 	}
-	if password != "" && s.passwordSetter == nil {
-		return nil, errs.Detail(ErrNotConfigured, "password provisioning requires PasswordSetter | 口令预配需要 PasswordSetter")
+	if password != "" && !s.passwordProvisioningConfigured() {
+		return nil, errs.Detail(ErrNotConfigured, "password provisioning requires PasswordProvisioner or PasswordSetter | 口令预配需要 PasswordProvisioner 或 PasswordSetter")
 	}
 	incoming := user.Clone()
 	incoming.ID = ""
@@ -159,22 +163,42 @@ func (s *Server) createUser(ctx context.Context, user *User, password string, un
 	if err := s.precheckPassword(ctx, incoming, password); err != nil {
 		return nil, err
 	}
-	created, err := s.store.CreateUser(ctx, incoming)
+	tx, err := s.beginPassword(ctx, incoming, password)
 	if err != nil {
 		return nil, err
 	}
+	created, err := s.store.CreateUser(ctx, incoming)
+	if err != nil {
+		return nil, s.abortPasswordProvisioning(ctx, tx, err)
+	}
 	if undo != nil {
 		if err := undo.recordCreatedUser(created, bulkID); err != nil {
-			if deleteErr := s.store.DeleteUser(ctx, created.ID); deleteErr != nil {
-				return nil, errs.WrapDetail(errors.Join(err, deleteErr), ErrBulkRollbackFailed,
-					"cannot record undo entry and cannot remove created User | 无法记录撤销条目且无法删除已创建 User")
+			rollbackCtx := detachedCompensationContext(ctx)
+			compensation := []error{err}
+			if deleteErr := s.store.DeleteUser(rollbackCtx, created.ID); deleteErr != nil && !errors.Is(deleteErr, ErrNotFound) {
+				compensation = append(compensation, deleteErr)
 			}
-			return nil, err
+			if tx != nil {
+				if txErr := tx.Rollback(rollbackCtx); txErr != nil {
+					compensation = append(compensation, txErr)
+				}
+			}
+			if len(compensation) == 1 {
+				return nil, err
+			}
+			return nil, errs.WrapDetail(errors.Join(compensation...), ErrBulkRollbackFailed,
+				"cannot record undo entry and cannot fully compensate the created User | 无法记录撤销条目且无法完全补偿已创建的 User")
 		}
+	}
+	if tx != nil {
+		if err := s.commitPasswordTransaction(ctx, tx); err != nil {
+			return nil, s.compensateCreatedUser(ctx, tx, created, err, undo == nil)
+		}
+		return created, nil
 	}
 	if err := s.setPassword(ctx, created, password); err != nil {
 		if undo == nil {
-			_ = s.store.DeleteUser(ctx, created.ID)
+			return nil, s.compensateCreatedUser(ctx, nil, created, err, true)
 		}
 		return nil, err
 	}
@@ -219,19 +243,24 @@ func (s *Server) handleReplaceUser(w http.ResponseWriter, r *http.Request, id st
 }
 
 // replaceUser replaces an existing user, preserving read-only membership and provisioning the
-// password. The password precheck runs before the store commits. Without an atomic undo handle a
-// rejected post-commit password restores the prior profile with a conditional write and keeps a
-// concurrently changed profile. The undo handle marks the recorded compensation applied as soon as
-// the store commits, so a later password rejection still triggers a rollback in atomic bulk mode. |
-// replaceUser 替换已有用户，保留只读成员关系并预配口令。口令预检在存储提交前运行。没有原子撤销
-// 句柄时，提交后遭拒的口令会用条件写入恢复先前资料，并保留被并发修改的资料。存储提交后 undo 句柄
-// 立即把已记录的补偿标记为已应用，因此后续口令拒绝在原子批量模式下仍会触发回滚。
+// password. The password precheck runs before the store commits. A configured
+// PasswordProvisioner begins before the store write and commits after it; a Begin failure leaves
+// the profile untouched, and a Commit failure restores the prior profile and rolls back the
+// external transaction. The legacy setter runs after the store write. Without an atomic undo handle
+// a rejected password restores the prior profile with a conditional write and keeps a concurrently
+// changed profile. The undo handle marks the recorded compensation applied as soon as the store
+// commits, so a later password rejection still triggers a rollback in atomic bulk mode. |
+// replaceUser 替换已有用户，保留只读成员关系并预配口令。口令预检在存储提交前运行。配置
+// PasswordProvisioner 时在存储写入前开始、在其后提交；Begin 失败不改动资料，Commit 失败会恢复先前
+// 资料并回滚外部事务。旧版 setter 在存储写入后运行。没有原子撤销句柄时，拒绝的口令会用条件写入恢复
+// 先前资料，并保留被并发修改的资料。存储提交后 undo 句柄立即把已记录的补偿标记为已应用，因此后续
+// 口令拒绝在原子批量模式下仍会触发回滚。
 func (s *Server) replaceUser(ctx context.Context, existing, incoming *User, password string, undo *bulkUndoHandle) (*User, error) {
 	if existing == nil || incoming == nil {
 		return nil, errs.Detail(ErrInvalidValue, "nil User | User 为空")
 	}
-	if password != "" && s.passwordSetter == nil {
-		return nil, errs.Detail(ErrNotConfigured, "password provisioning requires PasswordSetter | 口令预配需要 PasswordSetter")
+	if password != "" && !s.passwordProvisioningConfigured() {
+		return nil, errs.Detail(ErrNotConfigured, "password provisioning requires PasswordProvisioner or PasswordSetter | 口令预配需要 PasswordProvisioner 或 PasswordSetter")
 	}
 	replacement := incoming.Clone()
 	replacement.ID = existing.ID
@@ -241,11 +270,24 @@ func (s *Server) replaceUser(ctx context.Context, existing, incoming *User, pass
 	if err := s.precheckPassword(ctx, replacement, password); err != nil {
 		return nil, err
 	}
-	stored, err := s.store.ReplaceUser(ctx, replacement)
+	tx, err := s.beginPassword(ctx, replacement, password)
 	if err != nil {
 		return nil, err
 	}
+	stored, err := s.store.ReplaceUser(ctx, replacement)
+	if err != nil {
+		return nil, s.abortPasswordProvisioning(ctx, tx, err)
+	}
 	undo.markApplied(userVersion(stored))
+	if tx != nil {
+		if err := s.commitPasswordTransaction(ctx, tx); err != nil {
+			if undo == nil {
+				return nil, s.compensateReplacedUser(ctx, tx, existing, stored, err)
+			}
+			return nil, s.abortPasswordProvisioning(ctx, tx, err)
+		}
+		return stored, nil
+	}
 	if err := s.setPassword(ctx, stored, password); err != nil {
 		if undo == nil {
 			return nil, s.compensatePasswordFailure(ctx, existing, stored, err)

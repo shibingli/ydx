@@ -160,15 +160,21 @@ type Config struct {
 	AndroidPackageName string
 	// SafetyNetVerifier overrides the built-in Android SafetyNet JWS verification. | SafetyNetVerifier 覆盖内置 Android SafetyNet JWS 校验。
 	SafetyNetVerifier SafetyNetVerifier
-	// SafetyNetPolicy tightens the built-in android-safetynet verification. It is ignored when
-	// SafetyNetVerifier is set. The zero value keeps the baseline behavior. | SafetyNetPolicy 收紧
-	// 内置 android-safetynet 校验。设置 SafetyNetVerifier 时忽略本字段。零值保持基线行为。
+	// SafetyNetPolicy tightens android-safetynet verification. A non-zero policy is enforced after
+	// SafetyNetVerifier returns, so a custom verifier cannot disable it. The zero value keeps the
+	// baseline behavior. | SafetyNetPolicy 收紧 android-safetynet 校验。非零策略在
+	// SafetyNetVerifier 返回后仍会执行，因此自定义校验器不能关闭它。零值保持基线行为。
 	SafetyNetPolicy SafetyNetPolicy
-	// AndroidKeyPolicy tightens the built-in android-key KeyDescription verification. It is
-	// ignored when AndroidKeyVerifier is set. The zero value keeps the baseline behavior. |
-	// AndroidKeyPolicy 收紧内置 android-key KeyDescription 校验。设置 AndroidKeyVerifier 时忽略本字段。
+	// AndroidKeyPolicy tightens the built-in android-key KeyDescription verification. A non-zero
+	// policy is enforced after AndroidKeyVerifier returns, so a custom verifier cannot disable it.
+	// The zero value keeps the baseline behavior. | AndroidKeyPolicy 收紧内置 android-key
+	// KeyDescription 校验。非零策略在 AndroidKeyVerifier 返回后仍会执行，因此自定义校验器不能关闭它。
 	// 零值保持基线行为。
 	AndroidKeyPolicy AndroidKeyPolicy
+	// TPMEKActivation configures optional TPM endorsement-key credential activation. Nil disables
+	// the feature and leaves registration behavior unchanged. | TPMEKActivation 配置可选的 TPM
+	// 背书密钥凭据激活。为空时关闭该功能并保持注册行为不变。
+	TPMEKActivation *TPMEKActivationConfig
 	// Clock supplies the current time. Nil uses time.Now. | Clock 提供当前时间。为空时使用 time.Now。
 	Clock func() time.Time
 	// Algorithms lists the offered COSE algorithms. Nil means DefaultAlgorithms. | Algorithms 列出提供的 COSE 算法。为空表示 DefaultAlgorithms。
@@ -187,31 +193,33 @@ type Config struct {
 //
 // A Service is safe for concurrent use after New returns. | New 返回后 Service 可安全并发使用。
 type Service struct {
-	rpDisplayName   string
-	rpID            string
-	origins         []string
-	challengeLen    int
-	timeout         time.Duration
-	userVerif       UserVerificationRequirement
-	attestation     ConveyancePreference
-	challenges      ChallengeStore
-	credentials     CredentialStore
-	counterPolicy   CounterPolicy
-	roots           *x509.CertPool
-	safetynetRoots  *x509.CertPool
-	androidRoots    *x509.CertPool
-	androidKey      AndroidKeyVerifier
-	androidPackage  string
-	safetynet       SafetyNetVerifier
-	safetyNetPolicy SafetyNetPolicy
-	androidPolicy   AndroidKeyPolicy
-	clock           func() time.Time
-	algorithms      []int
-	tokenBinding    string
-	requireTB       bool
-	allowCross      bool
-	topOrigins      []string
-	signLocks       [64]sync.Mutex
+	rpDisplayName        string
+	rpID                 string
+	origins              []string
+	challengeLen         int
+	timeout              time.Duration
+	userVerif            UserVerificationRequirement
+	attestation          ConveyancePreference
+	challenges           ChallengeStore
+	credentials          CredentialStore
+	counterPolicy        CounterPolicy
+	roots                *x509.CertPool
+	safetynetRoots       *x509.CertPool
+	androidRoots         *x509.CertPool
+	androidKey           AndroidKeyVerifier
+	androidPackage       string
+	safetynet            SafetyNetVerifier
+	safetyNetPolicy      SafetyNetPolicy
+	androidPolicy        AndroidKeyPolicy
+	tpmEKActivation      *TPMEKActivationConfig
+	tpmEKActivationStore *tpmEKActivationSessionStore
+	clock                func() time.Time
+	algorithms           []int
+	tokenBinding         string
+	requireTB            bool
+	allowCross           bool
+	topOrigins           []string
+	signLocks            [64]sync.Mutex
 }
 
 // New validates config and returns a Service. | New 校验 config 并返回 Service。
@@ -319,6 +327,14 @@ func New(config Config) (*Service, error) {
 	}
 	if s.clock == nil {
 		s.clock = time.Now
+	}
+	tpmPolicy, err := normalizeTPMEKActivationConfig(config.TPMEKActivation, s.roots)
+	if err != nil {
+		return nil, err
+	}
+	if tpmPolicy != nil {
+		s.tpmEKActivation = tpmPolicy
+		s.tpmEKActivationStore = newTPMEKActivationSessionStore(tpmPolicy.MaxPendingChallenges, s.clock)
 	}
 	if s.allowCross && len(s.topOrigins) == 0 {
 		return nil, errs.Detail(ErrInvalidConfig, "cross-origin is enabled without allowed top origins | 启用跨来源但未提供允许的顶层来源")

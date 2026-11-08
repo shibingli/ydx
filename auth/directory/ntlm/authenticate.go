@@ -13,27 +13,29 @@ const authenticateBaseHeader = 8 + 4 + 6*securityBufferSize + 4
 // AuthenticateMessage is an NTLMSSP Type 3 AUTHENTICATE_MESSAGE. | AuthenticateMessage
 // 是 NTLMSSP Type 3 AUTHENTICATE_MESSAGE。
 type AuthenticateMessage struct {
-	// LMResponse is the LM challenge response field. | LMResponse 是 LM 挑战响应字段。
-	LMResponse []byte
-	// NTResponse is the NT challenge response field. | NTResponse 是 NT 挑战响应字段。
-	NTResponse []byte
+	// Version is present when Flags contains FlagVersion. | 当 Flags 包含 FlagVersion
+	// 时存在。
+	Version *Version
 	// Domain is the authentication domain. | Domain 是认证域。
 	Domain string
 	// Username is the authentication user name. | Username 是认证用户名。
 	Username string
 	// Workstation is the client workstation name. | Workstation 是客户端工作站名称。
 	Workstation string
-	// SessionKey is the encrypted random session key, unused by this client. |
-	// SessionKey 是加密的随机会话密钥，本客户端不使用。
+	// LMResponse is the LM challenge response field. | LMResponse 是 LM 挑战响应字段。
+	LMResponse []byte
+	// NTResponse is the NT challenge response field. | NTResponse 是 NT 挑战响应字段。
+	NTResponse []byte
+	// SessionKey is the EncryptedRandomSessionKey field. It is populated only
+	// when FlagKeyExchange is negotiated and holds the RC4-encrypted exported
+	// session key. | SessionKey 是 EncryptedRandomSessionKey 字段。仅当协商
+	// FlagKeyExchange 时填充，保存经 RC4 加密的导出会话密钥。
 	SessionKey []byte
-	// Flags is the negotiated flag set. | Flags 是协商标志集。
-	Flags NegotiateFlags
-	// Version is present when Flags contains FlagVersion. | 当 Flags 包含 FlagVersion
-	// 时存在。
-	Version *Version
 	// MIC is the optional 16-byte message integrity code. A non-nil value must be
 	// exactly 16 bytes. | MIC 是可选的 16 字节消息完整性代码。非 nil 值必须恰好 16 字节。
 	MIC []byte
+	// Flags is the negotiated flag set. | Flags 是协商标志集。
+	Flags NegotiateFlags
 }
 
 // Encode serializes the Type 3 message. When MIC is non-nil the message reserves
@@ -179,4 +181,46 @@ func DecodeAuthenticate(data []byte) (*AuthenticateMessage, error) {
 	message.Workstation = workstation
 	message.SessionKey = values[5]
 	return message, nil
+}
+
+// AuthenticateMICInput returns a copy of a raw Type 3 message with its MIC field
+// zeroed and reports whether the message carries a MIC. The zeroed copy is the
+// third input to the Type 1/2/3 MIC computation described by MS-NLMP 3.1.5.1.2.
+// MIC presence uses the same offset inference as DecodeAuthenticate. | AuthenticateMICInput
+// 返回把 MIC 字段置零的原始 Type 3 消息副本，并报告消息是否携带 MIC。置零副本是
+// MS-NLMP 3.1.5.1.2 所述 Type 1/2/3 MIC 计算的第三个输入。MIC 是否存在使用与
+// DecodeAuthenticate 相同的偏移推断。
+func AuthenticateMICInput(data []byte) ([]byte, bool, error) {
+	if err := checkMessage(data, MessageTypeAuthenticate); err != nil {
+		return nil, false, err
+	}
+	if len(data) < authenticateBaseHeader {
+		return nil, false, errs.Detail(ErrMessage, "authenticate message is truncated | 认证消息被截断")
+	}
+	flags := NegotiateFlags(binary.LittleEndian.Uint32(data[60:64]))
+	header := authenticateBaseHeader
+	if flags.Has(FlagVersion) {
+		if header+versionSize > len(data) {
+			return nil, false, errs.Detail(ErrMessage, "version field is truncated | 版本字段被截断")
+		}
+		header += versionSize
+	}
+	minimumOffset := len(data)
+	for index := 0; index < 6; index++ {
+		buffer, err := decodeSecurityBuffer(data, 12+index*securityBufferSize)
+		if err != nil {
+			return nil, false, err
+		}
+		if buffer.length > 0 && int(buffer.offset) < minimumOffset {
+			minimumOffset = int(buffer.offset)
+		}
+	}
+	if len(data) < header+micSize || minimumOffset < header+micSize {
+		return append([]byte(nil), data...), false, nil
+	}
+	zeroed := append([]byte(nil), data...)
+	for index := header; index < header+micSize; index++ {
+		zeroed[index] = 0
+	}
+	return zeroed, true, nil
 }

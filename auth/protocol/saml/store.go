@@ -137,13 +137,29 @@ func artifactStoreOf(store Store) (ArtifactStore, error) {
 
 // AssertionReplayStore records assertion identifiers to enforce Conditions/OneTimeUse. It is an
 // optional extension of Store: providers discover it by type assertion on the configured Store and
-// also accept it directly through ResponseValidationOptions and ServiceProviderConfig. |
+// also accept it directly through ResponseValidationOptions and ServiceProviderConfig.
+//
+// Implementations must make SeenAndStore atomic under concurrent calls: for a fresh identifier,
+// exactly one concurrent call must report seen=false and all others must report seen=true. Records
+// must remain live until expiresAt. A record whose expiry is at or before now may be replaced.
+// Implementations must return a non-nil error when the record cannot be read or written; returning
+// (false, nil) on failure would silently accept a replay. A nil or typed-nil store is a validation
+// error, never a reason to skip replay detection. Cleanup of expired records is optional and is
+// exposed through AssertionReplayCleaner. |
 // AssertionReplayStore 记录断言标识以强制 Conditions/OneTimeUse。它是 Store 的可选扩展：提供方通过
 // 类型断言已配置的 Store 发现它，也可通过 ResponseValidationOptions 与 ServiceProviderConfig 直接配置。
+//
+// 实现必须保证 SeenAndStore 在并发调用下具有原子性：对于新标识，恰好一个并发调用报告
+// seen=false，其余全部报告 seen=true。记录必须保留至 expiresAt。过期时间等于或早于 now 的记录可被
+// 替换。无法读取或写入记录时实现必须返回非空错误；失败时返回 (false, nil) 会静默接受重放。空或
+// 类型为空的存储是校验错误，绝不能成为跳过重放检测的理由。过期记录清理是可选的，通过
+// AssertionReplayCleaner 暴露。
 type AssertionReplayStore interface {
 	// SeenAndStore atomically records assertionID until expiresAt and reports whether the identifier
-	// was already recorded. A true result means the assertion is a replay. | SeenAndStore 原子记录
-	// assertionID 直到 expiresAt，并报告该标识是否已被记录。返回 true 表示断言重放。
+	// was already recorded. A true result means the assertion is a replay. An error means replay
+	// status is unknown and validation must fail closed. | SeenAndStore 原子记录 assertionID 直到
+	// expiresAt，并报告该标识是否已被记录。返回 true 表示断言重放。返回错误表示重放状态未知，校验
+	// 必须失败关闭。
 	SeenAndStore(ctx context.Context, assertionID string, expiresAt, now time.Time) (seen bool, err error)
 }
 
@@ -187,13 +203,20 @@ func NewMemoryStore() *MemoryStore {
 	}
 }
 
-// SaveRequest stores an outstanding request. | SaveRequest 保存未完成请求。
+// SaveRequest stores an outstanding request. A nil receiver reports ErrInvalidConfig. | SaveRequest
+// 保存未完成请求。接收者为空返回 ErrInvalidConfig。
 func (s *MemoryStore) SaveRequest(_ context.Context, request *RequestState) error {
+	if s == nil {
+		return errs.Detail(ErrInvalidConfig, "SAML store is nil | SAML 存储为空")
+	}
 	if request == nil || request.ID == "" {
 		return errs.Detail(ErrInvalidRequest, "request id is empty | 请求标识为空")
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.requests == nil {
+		s.requests = make(map[string]*RequestState)
+	}
 	if _, exists := s.requests[request.ID]; exists {
 		return errs.Detail(ErrReplay, "request id already exists | 请求标识已存在")
 	}
@@ -201,8 +224,12 @@ func (s *MemoryStore) SaveRequest(_ context.Context, request *RequestState) erro
 	return nil
 }
 
-// ConsumeRequest atomically consumes a request. | ConsumeRequest 原子消费请求。
+// ConsumeRequest atomically consumes a request. A nil receiver reports ErrInvalidConfig. |
+// ConsumeRequest 原子消费请求。接收者为空返回 ErrInvalidConfig。
 func (s *MemoryStore) ConsumeRequest(_ context.Context, id string, now time.Time) (*RequestState, error) {
+	if s == nil {
+		return nil, errs.Detail(ErrInvalidConfig, "SAML store is nil | SAML 存储为空")
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	request, ok := s.requests[id]
@@ -225,14 +252,21 @@ func (s *MemoryStore) SaveAssertion(ctx context.Context, id string, expiresAt, n
 	return !seen, nil
 }
 
-// SeenAndStore atomically records an assertion ID for one-time-use enforcement. | SeenAndStore
-// 原子记录断言标识以强制一次性使用。
+// SeenAndStore atomically records an assertion ID for one-time-use enforcement. A nil receiver
+// fails closed with ErrInvalidConfig. | SeenAndStore 原子记录断言标识以强制一次性使用。接收者为空
+// 时以 ErrInvalidConfig 失败关闭。
 func (s *MemoryStore) SeenAndStore(_ context.Context, id string, expiresAt, now time.Time) (bool, error) {
+	if s == nil {
+		return false, errs.Detail(ErrInvalidConfig, "SAML store is nil | SAML 存储为空")
+	}
 	if id == "" {
 		return false, errs.Detail(ErrInvalidResponse, "assertion id is empty | 断言标识为空")
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.assertions == nil {
+		s.assertions = make(map[string]time.Time)
+	}
 	if existing, ok := s.assertions[id]; ok && now.Before(existing) {
 		return true, nil
 	}
@@ -240,8 +274,12 @@ func (s *MemoryStore) SeenAndStore(_ context.Context, id string, expiresAt, now 
 	return false, nil
 }
 
-// SaveArtifact stores an artifact record. | SaveArtifact 保存工件记录。
+// SaveArtifact stores an artifact record. A nil receiver reports ErrInvalidConfig. | SaveArtifact
+// 保存工件记录。接收者为空返回 ErrInvalidConfig。
 func (s *MemoryStore) SaveArtifact(_ context.Context, record *ArtifactRecord, now time.Time) error {
+	if s == nil {
+		return errs.Detail(ErrInvalidConfig, "SAML store is nil | SAML 存储为空")
+	}
 	if record == nil || len(record.Message) == 0 {
 		return errs.Detail(ErrArtifactInvalid, "artifact record is empty | 工件记录为空")
 	}
@@ -253,6 +291,9 @@ func (s *MemoryStore) SaveArtifact(_ context.Context, record *ArtifactRecord, no
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.artifacts == nil {
+		s.artifacts = make(map[string]*ArtifactRecord)
+	}
 	key := record.Artifact.storeKey()
 	if existing, ok := s.artifacts[key]; ok && (existing.ExpiresAt.IsZero() || now.Before(existing.ExpiresAt)) {
 		return errs.Detail(ErrReplay, "artifact already exists | 工件已存在")
@@ -261,8 +302,12 @@ func (s *MemoryStore) SaveArtifact(_ context.Context, record *ArtifactRecord, no
 	return nil
 }
 
-// TakeArtifact atomically consumes an artifact. | TakeArtifact 原子消费工件。
+// TakeArtifact atomically consumes an artifact. A nil receiver reports ErrInvalidConfig. |
+// TakeArtifact 原子消费工件。接收者为空返回 ErrInvalidConfig。
 func (s *MemoryStore) TakeArtifact(_ context.Context, artifact Artifact, now time.Time) (*ArtifactRecord, error) {
+	if s == nil {
+		return nil, errs.Detail(ErrInvalidConfig, "SAML store is nil | SAML 存储为空")
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	key := artifact.storeKey()
@@ -281,19 +326,30 @@ func (s *MemoryStore) TakeArtifact(_ context.Context, artifact Artifact, now tim
 	return record.Clone(), nil
 }
 
-// SaveSession stores an IdP session. | SaveSession 保存 IdP 会话。
+// SaveSession stores an IdP session. A nil receiver reports ErrInvalidConfig. | SaveSession 保存
+// IdP 会话。接收者为空返回 ErrInvalidConfig。
 func (s *MemoryStore) SaveSession(_ context.Context, session *Session) error {
+	if s == nil {
+		return errs.Detail(ErrInvalidConfig, "SAML store is nil | SAML 存储为空")
+	}
 	if session == nil || session.ID == "" {
 		return errs.Detail(ErrInvalidRequest, "session id is empty | 会话标识为空")
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.sessions == nil {
+		s.sessions = make(map[string]*Session)
+	}
 	s.sessions[session.ID] = session.Clone()
 	return nil
 }
 
-// GetSession returns an IdP session. | GetSession 返回 IdP 会话。
+// GetSession returns an IdP session. A nil receiver reports ErrInvalidConfig. | GetSession 返回 IdP
+// 会话。接收者为空返回 ErrInvalidConfig。
 func (s *MemoryStore) GetSession(_ context.Context, id string) (*Session, error) {
+	if s == nil {
+		return nil, errs.Detail(ErrInvalidConfig, "SAML store is nil | SAML 存储为空")
+	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	session, ok := s.sessions[id]
@@ -303,16 +359,24 @@ func (s *MemoryStore) GetSession(_ context.Context, id string) (*Session, error)
 	return session.Clone(), nil
 }
 
-// DeleteSession removes an IdP session. | DeleteSession 删除 IdP 会话。
+// DeleteSession removes an IdP session. A nil receiver reports ErrInvalidConfig. | DeleteSession
+// 删除 IdP 会话。接收者为空返回 ErrInvalidConfig。
 func (s *MemoryStore) DeleteSession(_ context.Context, id string) error {
+	if s == nil {
+		return errs.Detail(ErrInvalidConfig, "SAML store is nil | SAML 存储为空")
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	delete(s.sessions, id)
 	return nil
 }
 
-// ListSessions returns the sessions of a subject. | ListSessions 返回主体会话。
+// ListSessions returns the sessions of a subject. A nil receiver reports ErrInvalidConfig. |
+// ListSessions 返回主体会话。接收者为空返回 ErrInvalidConfig。
 func (s *MemoryStore) ListSessions(_ context.Context, nameID string) ([]*Session, error) {
+	if s == nil {
+		return nil, errs.Detail(ErrInvalidConfig, "SAML store is nil | SAML 存储为空")
+	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	out := make([]*Session, 0, 4)
@@ -324,8 +388,37 @@ func (s *MemoryStore) ListSessions(_ context.Context, nameID string) ([]*Session
 	return out, nil
 }
 
-// Cleanup removes expired records. | Cleanup 删除过期记录。
+// CleanupAssertions removes expired assertion records and returns the removed count. It
+// implements AssertionReplayCleaner. | CleanupAssertions 删除过期断言记录并返回删除数量。它实现
+// AssertionReplayCleaner。
+func (s *MemoryStore) CleanupAssertions(_ context.Context, now time.Time) (int, error) {
+	if s == nil {
+		return 0, errs.Detail(ErrInvalidConfig, "SAML store is nil | SAML 存储为空")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.cleanupAssertionsLocked(now), nil
+}
+
+// cleanupAssertionsLocked removes expired assertion records. The caller holds s.mu. |
+// cleanupAssertionsLocked 删除过期断言记录。调用方持有 s.mu。
+func (s *MemoryStore) cleanupAssertionsLocked(now time.Time) int {
+	removed := 0
+	for id, expiresAt := range s.assertions {
+		if !now.Before(expiresAt) {
+			delete(s.assertions, id)
+			removed++
+		}
+	}
+	return removed
+}
+
+// Cleanup removes expired records. A nil receiver reports ErrInvalidConfig. | Cleanup 删除过期记录。
+// 接收者为空返回 ErrInvalidConfig。
 func (s *MemoryStore) Cleanup(_ context.Context, now time.Time) error {
+	if s == nil {
+		return errs.Detail(ErrInvalidConfig, "SAML store is nil | SAML 存储为空")
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for id, request := range s.requests {
@@ -333,11 +426,7 @@ func (s *MemoryStore) Cleanup(_ context.Context, now time.Time) error {
 			delete(s.requests, id)
 		}
 	}
-	for id, expiresAt := range s.assertions {
-		if !now.Before(expiresAt) {
-			delete(s.assertions, id)
-		}
-	}
+	s.cleanupAssertionsLocked(now)
 	for id, session := range s.sessions {
 		if !session.ExpiresAt.IsZero() && !now.Before(session.ExpiresAt) {
 			delete(s.sessions, id)
