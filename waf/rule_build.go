@@ -61,7 +61,7 @@ func buildRuleSet(entries []specEntry, defaults []actionSpec, defaultPhase Phase
 					" | 规则已跳过")
 				continue
 			}
-			return nil, warnings, err
+			return nil, warnings, errs.WrapDetail(err, ErrBuild, "%s:%d", entry.file, entry.line)
 		}
 		if rule == nil {
 			continue
@@ -302,7 +302,7 @@ func compileRuleSpec(spec *ruleSpec, defaults []actionSpec, defaultPhase Phase, 
 		if err != nil {
 			// A chain is meaningful only as a whole. A skipped member must not leave a weaker
 			// prefix chain active. | 链只有完整才有意义；跳过成员不能让较弱的前缀链继续生效。
-			return nil, err
+			return nil, errs.WrapDetail(err, ErrBuild, "%s:%d", childSpec.file, childSpec.line)
 		}
 		if child == nil {
 			return nil, nil

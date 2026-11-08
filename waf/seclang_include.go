@@ -89,13 +89,20 @@ func (l *ruleLoader) expandFile(name string, depth int, stack map[string]bool) (
 // expandText expands Include directives in already-read text. | expandText 在已读取文本中展开
 // Include 指令。
 func (l *ruleLoader) expandText(text, file string, depth int, stack map[string]bool) (string, error) {
+	return l.expandTextAt(text, file, depth, stack, 0)
+}
+
+// expandTextAt expands Include directives and offsets every reported line by lineBase. |
+// expandTextAt 展开 Include 指令，并把报告的行号加上 lineBase 偏移。
+func (l *ruleLoader) expandTextAt(text, file string, depth int, stack map[string]bool, lineBase int) (string, error) {
 	var b strings.Builder
 	b.Grow(len(text) + 256)
 	base := l.dir(file)
 	for _, line := range splitLogicalLines(text) {
+		lineNumber := line.line + lineBase
 		tokens, err := lexLine(line.text)
 		if err != nil {
-			return "", errs.WrapDetail(err, ErrParse, "%s:%d", file, line.line)
+			return "", errs.WrapDetail(err, ErrParse, "%s:%d", file, lineNumber)
 		}
 		if len(tokens) == 0 || (tokens[0] != "Include" && tokens[0] != "IncludeOptional") {
 			// Source markers preserve the original file and line for diagnostics after every
@@ -103,7 +110,7 @@ func (l *ruleLoader) expandText(text, file string, depth int, stack map[string]b
 			b.WriteString("#@ydx ")
 			b.WriteString(file)
 			b.WriteByte(':')
-			b.WriteString(itoa(line.line))
+			b.WriteString(itoa(lineNumber))
 			b.WriteByte('\n')
 			b.WriteString(line.text)
 			b.WriteByte('\n')
@@ -111,23 +118,23 @@ func (l *ruleLoader) expandText(text, file string, depth int, stack map[string]b
 		}
 		if len(tokens) != 2 {
 			return "", errs.Detail(ErrParse, "%s:%d: Include requires one path | %s:%d：Include 需要一个路径",
-				file, line.line, file, line.line)
+				file, lineNumber, file, lineNumber)
 		}
 		pattern := tokens[1]
 		resolved := l.join(base, pattern)
 		matches, err := l.glob(resolved)
 		if err != nil {
 			return "", errs.WrapDetail(err, ErrSource, "%s:%d: include glob failed | %s:%d：Include 通配失败",
-				file, line.line, file, line.line)
+				file, lineNumber, file, lineNumber)
 		}
 		if len(matches) == 0 {
 			if tokens[0] == "IncludeOptional" {
-				l.warn(file + ":" + itoa(line.line) + ": optional include not found: " + pattern +
+				l.warn(file + ":" + itoa(lineNumber) + ": optional include not found: " + pattern +
 					" | 可选 Include 未找到")
 				continue
 			}
 			return "", errs.Detail(ErrSource, "%s:%d: include not found: %q | %s:%d：Include 未找到 %q",
-				file, line.line, pattern, file, line.line, pattern)
+				file, lineNumber, pattern, file, lineNumber, pattern)
 		}
 		for _, match := range matches {
 			expanded, err := l.expandFile(match, depth+1, stack)
@@ -166,8 +173,9 @@ func (l *ruleLoader) expandTopLevel(files, directives []string) (string, error) 
 			}
 		}
 	}
+	var inlineBase int
 	for _, directive := range directives {
-		expanded, err := l.expandText(directive, "<directives>", 0, make(map[string]bool))
+		expanded, err := l.expandTextAt(directive, "<directives>", 0, make(map[string]bool), inlineBase)
 		if err != nil {
 			return "", err
 		}
@@ -175,8 +183,15 @@ func (l *ruleLoader) expandTopLevel(files, directives []string) (string, error) 
 		if !strings.HasSuffix(expanded, "\n") {
 			b.WriteByte('\n')
 		}
+		inlineBase += physicalLineCount(directive)
 	}
 	return b.String(), nil
+}
+
+// physicalLineCount returns the number of source lines consumed by text. | physicalLineCount 返回
+// text 占用的源码行数。
+func physicalLineCount(text string) int {
+	return strings.Count(strings.TrimSuffix(text, "\n"), "\n") + 1
 }
 
 // itoa renders an integer without importing fmt. | itoa 在不引入 fmt 的情况下渲染整数。

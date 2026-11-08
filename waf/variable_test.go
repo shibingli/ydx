@@ -5,6 +5,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 // TestNamesKeySelectors pins exact-key matching on the *_NAMES collections. | TestNamesKeySelectors
@@ -97,5 +98,25 @@ func TestArgsCombinedSizeCacheInvalidatedByBody(t *testing.T) {
 	response := serveTest(t, instance, request)
 	if response.Code != http.StatusForbidden {
 		t.Fatalf("status = %d, want 403; combined size cache was not invalidated", response.Code)
+	}
+}
+
+// TestTimeVariablesUseUTC verifies the TIME family converts the transaction clock to UTC. |
+// TestTimeVariablesUseUTC 验证 TIME 系列把事务时钟转换为 UTC。
+func TestTimeVariablesUseUTC(t *testing.T) {
+	tx := &transaction{
+		now:     time.Date(2024, 1, 1, 23, 30, 0, 0, time.FixedZone("UTC+2", 2*3600)),
+		nowInit: true,
+	}
+	for name, want := range map[string]string{
+		"TIME":      "21:30:00",
+		"TIME_HOUR": "21",
+		"TIME_DAY":  "1",
+		"TIME_MON":  "1",
+		"TIME_YEAR": "2024",
+	} {
+		if got := tx.timeValue(name); got != want {
+			t.Fatalf("%s = %q, want %q", name, got, want)
+		}
 	}
 }

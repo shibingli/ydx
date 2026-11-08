@@ -20,17 +20,18 @@ type responseWriter struct {
 
 	buffer []byte
 
-	status         int
-	wroteHeader    bool
-	headerSent     bool
-	inspectHeaders bool
-	inspectBody    bool
-	inspectPhase4  bool
-	buffering      bool
-	streaming      bool
-	interrupted    bool
-	hijacked       bool
-	tooLarge       bool
+	status           int
+	wroteHeader      bool
+	headerSent       bool
+	inspectHeaders   bool
+	inspectBody      bool
+	inspectPhase4    bool
+	sniffContentType bool
+	buffering        bool
+	streaming        bool
+	interrupted      bool
+	hijacked         bool
+	tooLarge         bool
 }
 
 // newResponseWriter creates a response wrapper. | newResponseWriter 创建响应包装器。
@@ -55,6 +56,14 @@ func (w *responseWriter) WriteHeader(code int) {
 	if w.wroteHeader || w.hijacked {
 		return
 	}
+	if code >= 100 && code < 200 && code != http.StatusSwitchingProtocols {
+		// Informational responses such as 103 Early Hints precede the final response. Forward them
+		// without ending the transaction or evaluating phase 3 against a non-final status.
+		// | 103 Early Hints 等信息性响应先于最终响应；直接转发，不结束事务，也不对非最终状态求值
+		// phase 3。
+		w.rw.WriteHeader(code)
+		return
+	}
 	w.wroteHeader = true
 	w.status = code
 	w.tx.setResponseHeaders(w.rw.Header(), code, w.req.Proto)
@@ -65,8 +74,19 @@ func (w *responseWriter) WriteHeader(code int) {
 			return
 		}
 	}
-	w.buffering = w.inspectBody && w.tx.responseBodyAccess && w.e.rules.needsResponseBody &&
-		bodyAllowed(code, w.req.Method) && w.eligibleContentType()
+	if w.inspectBody && w.tx.responseBodyAccess && w.e.rules.needsResponseBody &&
+		bodyAllowed(code, w.req.Method) {
+		if w.rw.Header().Get("Content-Type") == "" {
+			// net/http derives the final Content-Type by sniffing the first body bytes. Buffer the
+			// body and decide eligibility from the same bytes, so omitting the header cannot bypass
+			// phase 4 inspection. | net/http 会嗅探首批正文字节以确定最终 Content-Type。这里缓冲
+			// 正文并用相同字节判断是否可检测，避免省略响应头绕过 phase 4。
+			w.sniffContentType = true
+			w.buffering = true
+		} else {
+			w.buffering = w.eligibleContentType()
+		}
+	}
 	if !w.buffering && w.inspectPhase4 {
 		// Phase 4 rules that do not need a buffered body still run before headers are sent, so
 		// they can interrupt the response. | 不需要缓冲正文的 phase 4 规则仍在发送响应头之前运行，
@@ -137,7 +157,14 @@ func (w *responseWriter) Write(p []byte) (int, error) {
 // flushPartial inspects the buffered prefix and sends it. It reports whether sending continued.
 // | flushPartial 检测已缓冲前缀并发送；返回是否继续发送。
 func (w *responseWriter) flushPartial() bool {
-	w.tx.setResponseBody(w.buffer)
+	if w.inspectBody && w.responseBodyEligible() {
+		w.tx.setResponseBody(w.buffer)
+	} else {
+		// The final MIME type is outside the configured list: phase 4 still runs for header and
+		// status rules, but RESPONSE_BODY stays empty. | 最终 MIME 不在配置列表中：phase 4 仍为响应头与
+		// 状态规则运行，但 RESPONSE_BODY 保持为空。
+		w.tx.setResponseBody(nil)
+	}
 	w.e.processResponseBody(w.tx)
 	if w.tx.interruption != nil {
 		w.writeBlock()
@@ -293,6 +320,28 @@ func (w *responseWriter) eligibleContentType() bool {
 	if err != nil {
 		mediaType = strings.ToLower(strings.TrimSpace(strings.Split(contentType, ";")[0]))
 	}
+	return w.mimeEligible(mediaType)
+}
+
+// responseBodyEligible reports whether the buffered body may be exposed to phase 4 rules. When the
+// application omitted Content-Type, the same sniffing net/http performs decides eligibility. |
+// responseBodyEligible 报告缓冲正文是否可暴露给 phase 4 规则。应用省略 Content-Type 时，使用
+// net/http 将执行的同一嗅探结果判断。
+func (w *responseWriter) responseBodyEligible() bool {
+	if !w.sniffContentType {
+		return true
+	}
+	detected := http.DetectContentType(w.buffer)
+	mediaType, _, err := mime.ParseMediaType(detected)
+	if err != nil {
+		mediaType = strings.ToLower(strings.TrimSpace(strings.Split(detected, ";")[0]))
+	}
+	return w.mimeEligible(mediaType)
+}
+
+// mimeEligible reports whether mediaType matches the configured response MIME list. | mimeEligible
+// 报告 mediaType 是否匹配配置的响应 MIME 列表。
+func (w *responseWriter) mimeEligible(mediaType string) bool {
 	mediaType = strings.ToLower(mediaType)
 	for _, eligible := range w.e.rules.responseMime {
 		eligible = strings.ToLower(eligible)

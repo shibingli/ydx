@@ -177,6 +177,7 @@ func newAlerter(cfg AlertConfig, logger *log.Logger, counts *counters) (*alerter
 		}
 	}
 	if len(a.sinks) == 0 {
+		cancel()
 		return nil, errs.Detail(ErrInvalidOption, "alerting enabled without sinks | 报警已开启但没有 Sink")
 	}
 	go a.worker()

@@ -2,6 +2,7 @@ package waf
 
 import (
 	"errors"
+	"strings"
 	"testing"
 	"testing/fstest"
 )
@@ -208,5 +209,142 @@ func TestLenientSkipsInvalidRule(t *testing.T) {
 	}, func(options *Options) { options.Lenient = true })
 	if response := serveTest(t, instance, httptestNewRequest("/ok")); response.Code != 403 {
 		t.Fatalf("valid rule did not block: %d", response.Code)
+	}
+}
+
+func TestStrictCompileErrorCarriesFileAndLine(t *testing.T) {
+	files := fstest.MapFS{
+		"main.conf": &fstest.MapFile{Data: []byte(
+			"SecRule REQUEST_URI \"@contains x\" \"id:9130,phase:1,pass,t:notATransform\"\n")},
+	}
+	_, err := New(Options{RootFS: files, RuleFiles: []string{"main.conf"}})
+	if err == nil {
+		t.Fatal("expected compile error")
+	}
+	if !errors.Is(err, ErrBuild) {
+		t.Fatalf("error = %v, want ErrBuild", err)
+	}
+	if !strings.Contains(err.Error(), "main.conf:1") {
+		t.Fatalf("error = %v, want main.conf:1", err)
+	}
+}
+
+func TestStrictChainMemberErrorCarriesLine(t *testing.T) {
+	files := fstest.MapFS{
+		"chain.conf": &fstest.MapFile{Data: []byte(
+			"SecRule REQUEST_URI \"@contains x\" \"id:9131,phase:1,chain,pass\"\n" +
+				"SecRule REQUEST_METHOD \"@streq GET\" \"id:9132,exec:/bin/true\"\n")},
+	}
+	_, err := New(Options{RootFS: files, RuleFiles: []string{"chain.conf"}})
+	if err == nil {
+		t.Fatal("expected chain member compile error")
+	}
+	if !strings.Contains(err.Error(), "chain.conf:2") {
+		t.Fatalf("error = %v, want chain.conf:2", err)
+	}
+}
+
+func TestStrictUpdateIDListErrors(t *testing.T) {
+	directives := []string{
+		`SecRule REQUEST_URI "@contains x" "id:9133,phase:1,pass"`,
+		`SecRuleRemoveById 0`,
+	}
+	if _, err := New(Options{Directives: directives}); err == nil {
+		t.Fatal("strict mode accepted an invalid update id")
+	} else if !errors.Is(err, ErrBuild) || !strings.Contains(err.Error(), "<directives>:2") {
+		t.Fatalf("error = %v, want ErrBuild with <directives>:2", err)
+	}
+	instance := newTestWAF(t, directives, func(options *Options) { options.Lenient = true })
+	if response := serveTest(t, instance, httptestNewRequest("/x")); response.Code != 200 {
+		t.Fatalf("lenient mode status = %d, want 200", response.Code)
+	}
+}
+
+func TestBackslashContinuationJoinsDirective(t *testing.T) {
+	instance := newTestWAF(t, []string{
+		"SecRule REQUEST_URI \"@contains joined\" \\\n    \"id:9150,phase:1,deny,status:403\"",
+	}, nil)
+	if response := serveTest(t, instance, httptestNewRequest("/joined")); response.Code != 403 {
+		t.Fatalf("status = %d, want 403", response.Code)
+	}
+}
+
+func TestContinuationErrorReportsDirectiveStartLine(t *testing.T) {
+	_, err := New(Options{Directives: []string{
+		"SecRule REQUEST_URI \"@contains first\" \"id:9151,phase:1,pass\"\n" +
+			"SecRule REQUEST_URI \"@contains second\" \\\n" +
+			"  \"id:9152,phase:1,pass,t:notATransform\"",
+	}})
+	if err == nil {
+		t.Fatal("expected compile error")
+	}
+	if !strings.Contains(err.Error(), "<directives>:2") {
+		t.Fatalf("error = %v, want <directives>:2", err)
+	}
+}
+
+func TestRuleUpdateTargetByIDRange(t *testing.T) {
+	var events []Event
+	instance := newTestWAF(t, []string{
+		`SecRule REQUEST_URI "@streq attackvalue" "id:9160,phase:1,pass"`,
+		`SecRule REQUEST_URI "@streq attackvalue" "id:9161,phase:1,pass"`,
+		`SecRule REQUEST_URI "@streq attackvalue" "id:9162,phase:1,pass"`,
+		`SecRuleUpdateTargetById 9160-9161 "ARGS:attack"`,
+	}, func(options *Options) {
+		options.Observer = func(event Event) { events = append(events, event) }
+	})
+	serveTest(t, instance, httptestNewRequest("/?attack=attackvalue"))
+	if len(events) != 1 {
+		t.Fatalf("events = %d, want 1", len(events))
+	}
+	matched := make(map[int]bool, len(events[0].Matches))
+	for _, match := range events[0].Matches {
+		matched[match.RuleID] = true
+	}
+	if !matched[9160] || !matched[9161] {
+		t.Fatalf("range did not update both rules: %#v", events[0].Matches)
+	}
+	if matched[9162] {
+		t.Fatalf("rule outside the range was updated: %#v", events[0].Matches)
+	}
+}
+
+func TestRuleIDRange(t *testing.T) {
+	for _, id := range []string{"0", "1000000", "-1"} {
+		_, err := New(Options{Directives: []string{
+			`SecRule REQUEST_URI "@contains x" "id:` + id + `,phase:1,pass,nolog"`,
+		}})
+		if err == nil {
+			t.Fatalf("id %s was accepted", id)
+		}
+		if !strings.Contains(err.Error(), "invalid rule id") {
+			t.Fatalf("id %s error = %v", id, err)
+		}
+	}
+	instance := newTestWAF(t, []string{
+		`SecRule REQUEST_URI "@contains x" "id:999999,phase:1,deny,status:403"`,
+	}, nil)
+	if response := serveTest(t, instance, httptestNewRequest("/x")); response.Code != 403 {
+		t.Fatalf("max id status = %d, want 403", response.Code)
+	}
+}
+
+func TestUnknownMacroExpandsEmptyWithOneWarning(t *testing.T) {
+	var warnings []string
+	macro, err := compileMacroWarn("x-%{NO_SUCH_VARIABLE}-y", func(message string) {
+		warnings = append(warnings, message)
+	})
+	if err != nil {
+		t.Fatalf("compileMacroWarn: %v", err)
+	}
+	var tx transaction
+	if value := macro.expand(&tx); value != "x--y" {
+		t.Fatalf("expand = %q, want x--y", value)
+	}
+	if len(warnings) != 1 {
+		t.Fatalf("warnings = %v, want exactly one", warnings)
+	}
+	if _, err := compileMacro("%{NO_SUCH_VARIABLE}"); err != nil {
+		t.Fatalf("compileMacro: %v", err)
 	}
 }

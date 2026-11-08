@@ -131,8 +131,12 @@
 //	})
 //
 // In a multi-machine deployment every instance polls the same bundle URL (or receives pushed
-// bundles through ApplyBundle). NodeID tags alerts with the instance identity. | 多机部署中，每个
-// 实例轮询同一个规则包 URL（或通过 ApplyBundle 接收推送）。NodeID 会在报警中标记实例身份。
+// bundles through ApplyBundle). New starts background polling when WatchInterval and Source are
+// set; callers that prefer to own the goroutine can run Watch(ctx) instead, and Close or Shutdown
+// stops both. NodeID tags alerts with the instance identity. | 多机部署中，每个实例轮询同一个规则包
+// URL（或通过 ApplyBundle 接收推送）。当 WatchInterval 与 Source 已设置时 New 会启动后台轮询；
+// 希望自行管理协程的调用方可改用 Watch(ctx)，Close 或 Shutdown 会停止两者。NodeID 会在报警中标记
+// 实例身份。
 //
 // # Hooks | 钩子
 //

@@ -50,6 +50,34 @@ func observeMatches(t *testing.T, directives []string, workers int, target strin
 	return response.Code, matches
 }
 
+func TestParallelEvaluationPrewarmsLazyCollections(t *testing.T) {
+	var directives []string
+	for i := 0; i < 8; i++ {
+		directives = append(directives, `SecRule ARGS_COMBINED_SIZE "@ge 0" "id:`+
+			itoa(9810+i)+`,phase:1,pass,nolog"`)
+	}
+	for i := 0; i < 4; i++ {
+		directives = append(directives, `SecRule REQUEST_LINE "@contains GET" "id:`+
+			itoa(9820+i)+`,phase:1,pass,nolog"`)
+	}
+	instance, err := New(Options{
+		Directives:      directives,
+		ParallelWorkers: 8,
+		Logger:          log.New(log.Options{Writer: io.Discard, Level: log.ErrorLevel}),
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer func() { _ = instance.Close() }()
+	request := httptest.NewRequest(http.MethodGet, "/?a=1", nil)
+	for i := 0; i < 12; i++ {
+		request.Header.Set("X-Pad-"+string(rune('a'+i)), "1")
+	}
+	if response := serveTest(t, instance, request); response.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", response.Code)
+	}
+}
+
 func TestParallelRulesMatchSequentialSemantics(t *testing.T) {
 	for _, detection := range []bool{false, true} {
 		sequentialStatus, sequentialMatches := observeMatches(t, parallelRules(), 1, "/abcd", detection)

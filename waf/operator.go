@@ -218,7 +218,7 @@ func compileOperator(negated bool, name, arg string, cc compileContext) (*operat
 			return nil, errs.Detail(ErrParse, "operator %s requires an argument | 算子 %s 需要参数", name, name)
 		}
 		if strings.Contains(arg, "%{") {
-			compiled, err := compileMacro(arg)
+			compiled, err := compileMacroWarn(arg, cc.warn)
 			if err != nil {
 				return nil, err
 			}

@@ -814,31 +814,35 @@ func (e *engine) hookSubscribed(point HookPoint) bool {
 	return e.plugins != nil && e.plugins.has(point)
 }
 
-// runHook dispatches one hook event to the shared registry and engine plugins. | runHook 把一个
-// 钩子事件分发给共享注册表与引擎插件。
+// runHook dispatches one hook event to the shared registry and engine plugins. A nil transaction
+// is used for instance-level events such as HookReload; request-scoped helpers on the resulting
+// HookContext then read as empty. | runHook 把一个钩子事件分发给共享注册表与引擎插件。事务为 nil
+// 时用于 HookReload 等实例级事件；此时 HookContext 的请求级助手返回空值。
 func (e *engine) runHook(point HookPoint, tx *transaction, phase Phase, rule *Rule, match *Match, err error) {
-	if tx == nil || !e.hookSubscribed(point) {
+	if !e.hookSubscribed(point) {
 		return
 	}
 	ctx := &HookContext{
-		Point:        point,
-		Phase:        phase,
-		Rule:         rule,
-		Match:        match,
-		Err:          err,
-		tx:           tx,
-		Request:      tx.req,
-		Interruption: tx.interruption,
-		Version:      e.version,
+		Point:   point,
+		Phase:   phase,
+		Rule:    rule,
+		Match:   match,
+		Err:     err,
+		Version: e.version,
 	}
-	ctx.Tx = &Transaction{tx: tx}
+	if tx != nil {
+		ctx.tx = tx
+		ctx.Request = tx.req
+		ctx.Interruption = tx.interruption
+		ctx.Tx = &Transaction{tx: tx}
+	}
 	if e.hooks != nil {
 		e.hooks.run(ctx)
 	}
 	if e.plugins != nil {
 		e.plugins.runHook(ctx)
 	}
-	if ctx.Interruption != nil && tx.interruption == nil {
+	if tx != nil && ctx.Interruption != nil && tx.interruption == nil {
 		tx.interruption = ctx.Interruption
 	}
 }

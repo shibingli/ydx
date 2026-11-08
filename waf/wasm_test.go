@@ -4,6 +4,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 
@@ -104,6 +105,57 @@ func minimalWASM(version, verdict uint32, trap bool) []byte {
 	return module
 }
 
+// closeableWASM builds a plugin whose ydx_waf_close reports through the host log. | closeableWASM
+// 构建在 ydx_waf_close 中通过宿主日志上报的插件。
+func closeableWASM() []byte {
+	module := []byte{0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00}
+	types := wasmVec(
+		[]byte{0x60, 0x00, 0x01, 0x7f},
+		[]byte{0x60, 0x02, 0x7f, 0x7f, 0x01, 0x7f},
+		[]byte{0x60, 0x01, 0x7f, 0x01, 0x7f},
+		[]byte{0x60, 0x01, 0x7f, 0x00},
+		[]byte{0x60, 0x03, 0x7f, 0x7f, 0x7f, 0x00},
+		[]byte{0x60, 0x00, 0x00},
+	)
+	importEntry := wasmName(wasmHostModule)
+	importEntry = append(importEntry, wasmName("log")...)
+	importEntry = append(importEntry, 0x00)
+	importEntry = append(importEntry, 0x04)
+	imports := wasmVec(importEntry)
+	functions := wasmVec([]byte{0x00}, []byte{0x01}, []byte{0x01}, []byte{0x02}, []byte{0x03}, []byte{0x05})
+	memory := wasmVec([]byte{0x00, 0x01})
+	messages := []byte("plugin-closed")
+	exports := wasmVec(
+		wasmExport("ydx_waf_abi_version", 0x00, 1),
+		wasmExport("ydx_waf_init", 0x00, 2),
+		wasmExport("ydx_waf_on_hook", 0x00, 3),
+		wasmExport("ydx_waf_alloc", 0x00, 4),
+		wasmExport("ydx_waf_free", 0x00, 5),
+		wasmExport("ydx_waf_close", 0x00, 6),
+		wasmExport("memory", 0x02, 0),
+	)
+	code := wasmVec(
+		wasmBody(0x41, 0x01),
+		wasmBody(0x41, 0x00),
+		wasmBody(0x41, 0x00),
+		wasmBody(0x41, 0x80, 0x08),
+		wasmBody(),
+		wasmBody(0x41, 0x01, 0x41, 0x08, 0x41, byte(len(messages)), 0x10, 0x00),
+	)
+	segment := []byte{0x00, 0x41, 0x08, 0x0b}
+	segment = append(segment, appendU32(nil, uint32(len(messages)))...)
+	segment = append(segment, messages...)
+	data := wasmVec(segment)
+	module = append(module, wasmSection(1, types)...)
+	module = append(module, wasmSection(2, imports)...)
+	module = append(module, wasmSection(3, functions)...)
+	module = append(module, wasmSection(5, memory)...)
+	module = append(module, wasmSection(7, exports)...)
+	module = append(module, wasmSection(10, code)...)
+	module = append(module, wasmSection(11, data)...)
+	return module
+}
+
 // newWASMTestWAF builds an instance with one WASM plugin. | newWASMTestWAF 构建带一个 WASM 插件的实例。
 func newWASMTestWAF(t *testing.T, config WASMPluginConfig) *WAF {
 	t.Helper()
@@ -167,6 +219,28 @@ func TestWASMPluginFailOpenOnTrap(t *testing.T) {
 	response := serveTest(t, instance, httptestNewRequest("/x"))
 	if response.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", response.Code)
+	}
+}
+
+func TestWASMPluginCloseCallsGuestCleanup(t *testing.T) {
+	var logs strings.Builder
+	instance, err := New(Options{
+		Directives: []string{`SecRule REQUEST_URI "@contains x" "id:1,phase:1,pass,nolog"`},
+		Logger:     log.New(log.Options{Writer: &logs, Level: log.DebugLevel}),
+		WASMPlugins: []WASMPluginConfig{{
+			Name:   "closer",
+			Bytes:  closeableWASM(),
+			Points: []HookPoint{HookBeforePhase},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := instance.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if !strings.Contains(logs.String(), "plugin-closed") {
+		t.Fatalf("guest close was not called:\n%s", logs.String())
 	}
 }
 

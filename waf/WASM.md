@@ -19,6 +19,7 @@
 | `ydx_waf_on_hook` | `(ptr i32, len i32) -> i32` | 必需；参数是 UTF-8 JSON 事件 |
 | `ydx_waf_alloc` | `(size i32) -> i32` | 非空事件必需；返回可写内存偏移 |
 | `ydx_waf_free` | `(ptr i32)` | 可选；每次调用后释放事件缓冲 |
+| `ydx_waf_close` | `() -> i32` | 可选；实例释放前调用一次，返回值忽略 |
 | `memory` | memory | 必需 |
 
 `ydx_waf_on_hook` 返回值：
@@ -76,7 +77,8 @@
 ## 生命周期与隔离
 
 - 模块编译一次；实例按并发需求创建，最多 `MaxInstances` 个（默认 32）。
-- 每个实例独立执行 `ydx_waf_init`，可持有实例内状态；不同实例之间不共享内存。
+- 每个实例独立执行 `ydx_waf_init`，可持有实例内状态；不同实例之间不共享内存。实例被丢弃或
+  插件关闭时，若导出了 `ydx_waf_close`，引擎会先以 100ms 上限调用一次，再释放模块内存。
 - 单次调用受 `Timeout`（默认 `Options.PluginTimeout`，100ms）约束；启用
   `WithCloseOnContextDone`，超时会终止客户代码并丢弃该实例。
 - `MaxMemoryPages` 限制客户内存（默认 256 页 = 16 MiB）。

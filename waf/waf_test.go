@@ -1,6 +1,7 @@
 package waf
 
 import (
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -224,5 +225,91 @@ func TestRouterIntegration(t *testing.T) {
 	engine.ServeHTTP(allowed, httptest.NewRequest(http.MethodGet, "/allowed", nil))
 	if allowed.Code != http.StatusOK || allowed.Body.String() != "allowed" {
 		t.Fatalf("allowed = %d %q", allowed.Code, allowed.Body.String())
+	}
+}
+
+// failAfterReader returns one payload chunk and then a permanent error. | failAfterReader 返回一次
+// 数据块，随后返回永久错误。
+type failAfterReader struct {
+	sent bool
+}
+
+// Read implements io.Reader. | Read 实现 io.Reader。
+func (f *failAfterReader) Read(p []byte) (int, error) {
+	if !f.sent {
+		f.sent = true
+		return copy(p, "partial"), nil
+	}
+	return 0, errors.New("simulated read failure | 模拟读取失败")
+}
+
+// shutdownRule keeps the rule set non-empty without matching test requests. | shutdownRule 保持规则集
+// 非空，同时不匹配测试请求。
+var shutdownRule = []string{
+	`SecRule REQUEST_URI "@contains /never-matches" "id:9079,phase:1,deny,status:403"`,
+}
+
+func TestFailClosedRejectsWhileShuttingDown(t *testing.T) {
+	instance := newTestWAF(t, shutdownRule, nil)
+	if err := instance.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	response := serveTest(t, instance, httptestNewRequest("/"))
+	if response.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503", response.Code)
+	}
+	if response.Body.String() == "business-body" {
+		t.Fatal("handler ran while failing closed")
+	}
+}
+
+func TestFailOpenServesWhileShuttingDown(t *testing.T) {
+	instance := newTestWAF(t, shutdownRule, func(o *Options) { o.FailOpen = true })
+	if err := instance.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	response := serveTest(t, instance, httptestNewRequest("/"))
+	if response.Code != http.StatusOK || response.Body.String() != "business-body" {
+		t.Fatalf("response = %d %q", response.Code, response.Body.String())
+	}
+}
+
+func TestFailOpenOnRequestBodyReadError(t *testing.T) {
+	directives := []string{
+		`SecRule REQUEST_BODY "@rx attack" "id:9080,phase:2,deny,status:403"`,
+	}
+	closed := newTestWAF(t, directives, nil)
+	closedRequest := httptest.NewRequest(http.MethodPost, "/submit", nil)
+	closedRequest.Body = io.NopCloser(&failAfterReader{})
+	closedRequest.ContentLength = -1
+	closedResponse := serveTest(t, closed, closedRequest)
+	if closedResponse.Code != http.StatusBadRequest {
+		t.Fatalf("fail-closed status = %d, want 400", closedResponse.Code)
+	}
+
+	open := newTestWAF(t, directives, func(o *Options) { o.FailOpen = true })
+	openRequest := httptest.NewRequest(http.MethodPost, "/submit", nil)
+	openRequest.Body = io.NopCloser(&failAfterReader{})
+	openRequest.ContentLength = -1
+	openResponse := serveTest(t, open, openRequest)
+	if openResponse.Code != http.StatusOK || openResponse.Body.String() != "business-body" {
+		t.Fatalf("fail-open response = %d %q", openResponse.Code, openResponse.Body.String())
+	}
+	if open.Stats().Errors == 0 {
+		t.Fatal("fail-open read error was not counted")
+	}
+}
+
+func TestReloadWithUpdatesFailOpen(t *testing.T) {
+	instance := newTestWAF(t, shutdownRule, nil)
+	if err := instance.ReloadWith(Options{Directives: shutdownRule, FailOpen: true}); err != nil {
+		t.Fatalf("ReloadWith: %v", err)
+	}
+	if err := instance.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	response := serveTest(t, instance, httptestNewRequest("/"))
+	if response.Code != http.StatusOK || response.Body.String() != "business-body" {
+		t.Fatalf("response = %d %q", response.Code, response.Body.String())
 	}
 }

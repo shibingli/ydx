@@ -314,16 +314,23 @@ func (r *hookRegistry) run(ctx *HookContext) {
 	}
 }
 
-// invoke calls one hook with panic isolation. | invoke 在 panic 隔离下调用一个钩子。
+// invoke calls one hook with panic isolation. A failure increments Stats.Errors and is reported
+// once through HookPluginError. Failure hooks are never re-entered for their own HookPluginError
+// event, which keeps a failing error handler from recursing. | invoke 在 panic 隔离下调用一个钩子。
+// 失败会累加 Stats.Errors，并通过 HookPluginError 报告一次；错误处理钩子自身失败时不会再次进入
+// HookPluginError，从而避免递归。
 func (r *hookRegistry) invoke(hook Hook, ctx *HookContext) {
 	start := time.Now()
 	defer func() {
 		if recovered := recover(); recovered != nil {
+			failure := errs.Detail(ErrHook, "hook %q panicked: %v | 钩子 %q 发生 panic：%v",
+				hook.Name(), recovered, hook.Name(), recovered)
 			if r.counters != nil {
 				r.counters.errors.Add(1)
 			}
 			r.logger.Error("waf hook panicked | WAF 钩子发生 panic",
 				log.Str("hook", hook.Name()), log.Any("panic", recovered))
+			r.notifyPluginError(ctx, failure)
 		}
 		if r.timeout > 0 && time.Since(start) > r.timeout {
 			r.logger.Warn("waf hook exceeded timeout | WAF 钩子超过超时时间",
@@ -337,5 +344,31 @@ func (r *hookRegistry) invoke(hook Hook, ctx *HookContext) {
 		}
 		r.logger.Error("waf hook failed | WAF 钩子失败",
 			log.Str("hook", hook.Name()), log.Err(err))
+		r.notifyPluginError(ctx, err)
 	}
+}
+
+// notifyPluginError reports one hook failure to HookPluginError subscribers. The event is not
+// generated while handling HookPluginError itself, so a failing error hook cannot recurse.
+// | notifyPluginError 把一次钩子失败报告给 HookPluginError 订阅者。处理 HookPluginError 本身时不会
+// 再生成该事件，因此失败的错误钩子不会递归。
+func (r *hookRegistry) notifyPluginError(ctx *HookContext, failure error) {
+	if r == nil || ctx == nil || failure == nil || ctx.Point == HookPluginError ||
+		!r.has(HookPluginError) {
+		return
+	}
+	hookCtx := &HookContext{
+		Point:   HookPluginError,
+		Err:     failure,
+		tx:      ctx.tx,
+		Request: ctx.Request,
+		Rule:    ctx.Rule,
+		Match:   ctx.Match,
+		Phase:   ctx.Phase,
+		Version: ctx.Version,
+	}
+	if ctx.tx != nil {
+		hookCtx.Tx = &Transaction{tx: ctx.tx}
+	}
+	r.run(hookCtx)
 }

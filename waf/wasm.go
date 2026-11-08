@@ -27,6 +27,7 @@ const (
 	defaultWASMInstances   = 32
 	wasmFailureThreshold   = 5
 	wasmDisableCooldown    = 30 * time.Second
+	wasmCloseTimeout       = 100 * time.Millisecond
 	maxWASMModuleBytes     = 32 << 20
 	maxWASMPayloadBytes    = 1 << 20
 	maxWASMLogBytes        = 4 << 10
@@ -101,6 +102,7 @@ type wasmInstance struct {
 	fnHook  api.Function
 	fnAlloc api.Function
 	fnFree  api.Function
+	fnClose api.Function
 	current atomic.Pointer[wasmCallState]
 	name    string
 	closed  atomic.Bool
@@ -256,14 +258,16 @@ func loadWASMBytes(config WASMPluginConfig) ([]byte, error) {
 	return data, nil
 }
 
-// run invokes the plugin for one hook event. | run 为一个钩子事件调用插件。
+// run invokes the plugin for one hook event. Instance-level events such as HookReload carry no
+// transaction; host variable functions then read and write nothing. | run 为一个钩子事件调用插件。
+// HookReload 等实例级事件不携带事务；此时宿主变量函数读写空值。
 func (p *wasmPlugin) run(ctx *HookContext) error {
-	if p == nil || p.closed.Load() || ctx == nil || ctx.tx == nil {
+	if p == nil || p.closed.Load() || ctx == nil {
 		return nil
 	}
 	if until := p.disabledUntil.Load(); until != 0 {
 		if time.Now().UnixNano() < until {
-			if p.failClosed {
+			if ctx.tx != nil && p.failClosed {
 				ctx.Deny(http.StatusServiceUnavailable, "wasm plugin disabled | WASM 插件已禁用")
 				return ErrDisabled
 			}
@@ -287,19 +291,21 @@ func (p *wasmPlugin) run(ctx *HookContext) error {
 	result, err := p.runtime.invoke(callCtx, ctx.tx, payload)
 	if err != nil {
 		p.recordFailure()
-		if p.failClosed {
+		if p.failClosed && ctx.tx != nil {
 			ctx.Deny(http.StatusServiceUnavailable, "wasm plugin unavailable | WASM 插件不可用")
 		}
 		return errs.Wrap(err, ErrWASM)
 	}
 	p.failures.Store(0)
-	switch result.verdict {
-	case 1:
-		ctx.Deny(result.status, result.message)
-	case 2:
-		ctx.Drop(result.status, result.message)
-	case 3:
-		ctx.tx.allow = true
+	if ctx.tx != nil {
+		switch result.verdict {
+		case 1:
+			ctx.Deny(result.status, result.message)
+		case 2:
+			ctx.Drop(result.status, result.message)
+		case 3:
+			ctx.tx.allow = true
+		}
 	}
 	return nil
 }
@@ -445,6 +451,7 @@ func (r *wasmRuntime) newInstance(ctx context.Context) (*wasmInstance, error) {
 		fnHook:  fnHook,
 		fnAlloc: module.ExportedFunction("ydx_waf_alloc"),
 		fnFree:  module.ExportedFunction("ydx_waf_free"),
+		fnClose: module.ExportedFunction("ydx_waf_close"),
 	}
 	r.modules.Store(name, instance)
 	if len(r.config) > 0 {
@@ -482,18 +489,33 @@ func (r *wasmRuntime) newInstance(ctx context.Context) (*wasmInstance, error) {
 	return instance, nil
 }
 
-// close releases the runtime and every instance. | close 释放运行时与全部实例。
+// close releases the runtime and every idle instance. Engines are retired only after their
+// in-flight requests finish, so no instance can be executing a hook here. | close 释放运行时与
+// 全部空闲实例。引擎只在在途请求结束后退休，因此此处不会有实例正在执行钩子。
 func (r *wasmRuntime) close() {
 	if r == nil || r.closed.Swap(true) {
 		return
 	}
+	r.mu.Lock()
+	idle := r.idle
+	r.idle = nil
+	r.mu.Unlock()
+	for _, instance := range idle {
+		instance.close()
+	}
 	_ = r.rt.Close(context.Background())
 }
 
-// close releases one guest module. | close 释放一个客户模块。
+// close runs the optional guest ydx_waf_close export and releases the module. | close 调用可选的
+// 客户 ydx_waf_close 导出并释放模块。
 func (i *wasmInstance) close() {
 	if i == nil || i.closed.Swap(true) {
 		return
+	}
+	if i.fnClose != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), wasmCloseTimeout)
+		_, _ = i.fnClose.Call(ctx)
+		cancel()
 	}
 	_ = i.mod.Close(context.Background())
 }

@@ -8,6 +8,10 @@ import (
 	"github.com/shibingli/ydx/errs"
 )
 
+// maxRuleID bounds rule identifiers to the ModSecurity-compatible range. | maxRuleID 把规则标识
+// 限制在 ModSecurity 兼容范围内。
+const maxRuleID = 999999
+
 // blockingAction is the disruptive action selected by SecDefaultAction. The SecLang block action
 // executes this action instead of always denying. | blockingAction 是 SecDefaultAction 选定的
 // 破坏性动作。SecLang 的 block 动作执行该动作，而不是总是拒绝。
@@ -96,8 +100,9 @@ func applyAction(spec actionSpec, rule *compiledRule, cc compileContext) error {
 	switch spec.name {
 	case "id":
 		id, err := strconv.Atoi(spec.value)
-		if err != nil || id < 0 {
-			return errs.Detail(ErrParse, "invalid rule id %q | 非法的规则 id %q", spec.value, spec.value)
+		if err != nil || id < 1 || id > maxRuleID {
+			return errs.Detail(ErrParse, "invalid rule id %q (want 1-%d) | 非法的规则 id %q（应为 1-%d）",
+				spec.value, maxRuleID, spec.value, maxRuleID)
 		}
 		rule.meta.ID = id
 	case "phase":
@@ -111,14 +116,14 @@ func applyAction(spec actionSpec, rule *compiledRule, cc compileContext) error {
 	case "ver":
 		rule.meta.Ver = spec.value
 	case "msg":
-		compiled, err := compileMacro(spec.value)
+		compiled, err := compileMacroWarn(spec.value, cc.warn)
 		if err != nil {
 			return err
 		}
 		rule.meta.Msg = spec.value
 		rule.msgMacro = compiled
 	case "logdata":
-		compiled, err := compileMacro(spec.value)
+		compiled, err := compileMacroWarn(spec.value, cc.warn)
 		if err != nil {
 			return err
 		}
@@ -202,7 +207,7 @@ func applyAction(spec actionSpec, rule *compiledRule, cc compileContext) error {
 			rule.block = false
 			rule.redirect = ""
 		case "redirect":
-			compiled, err := compileMacro(rule.blocking.data)
+			compiled, err := compileMacroWarn(rule.blocking.data, cc.warn)
 			if err != nil {
 				return err
 			}
@@ -222,7 +227,7 @@ func applyAction(spec actionSpec, rule *compiledRule, cc compileContext) error {
 		if spec.value == "" {
 			return errs.Detail(ErrParse, "redirect requires a target | redirect 需要目标地址")
 		}
-		compiled, err := compileMacro(spec.value)
+		compiled, err := compileMacroWarn(spec.value, cc.warn)
 		if err != nil {
 			return err
 		}
@@ -232,13 +237,13 @@ func applyAction(spec actionSpec, rule *compiledRule, cc compileContext) error {
 		rule.drop = false
 		rule.block = false
 	case "setvar":
-		action, err := compileSetVar(spec.value)
+		action, err := compileSetVar(spec.value, cc.warn)
 		if err != nil {
 			return err
 		}
 		rule.setvars = append(rule.setvars, action)
 	case "expirevar":
-		action, err := compileExpireVar(spec.value)
+		action, err := compileExpireVar(spec.value, cc.warn)
 		if err != nil {
 			return err
 		}
@@ -301,7 +306,7 @@ func parsePhase(value string) (Phase, error) {
 }
 
 // compileSetVar compiles one setvar action. | compileSetVar 编译一个 setvar 动作。
-func compileSetVar(value string) (setVarAction, error) {
+func compileSetVar(value string, warn func(string)) (setVarAction, error) {
 	action := setVarAction{op: '='}
 	if strings.HasPrefix(value, "!") {
 		name, err := txVariableName(value[1:])
@@ -330,7 +335,7 @@ func compileSetVar(value string) (setVarAction, error) {
 		action.op = '-'
 		raw = raw[1:]
 	}
-	compiled, err := compileMacro(raw)
+	compiled, err := compileMacroWarn(raw, warn)
 	if err != nil {
 		return setVarAction{}, err
 	}
@@ -350,7 +355,7 @@ func txVariableName(value string) (string, error) {
 }
 
 // compileExpireVar compiles one expirevar action. | compileExpireVar 编译一个 expirevar 动作。
-func compileExpireVar(value string) (expireVarAction, error) {
+func compileExpireVar(value string, warn func(string)) (expireVarAction, error) {
 	name, raw, ok := strings.Cut(value, "=")
 	if !ok {
 		return expireVarAction{}, errs.Detail(ErrParse, "invalid expirevar %q | 非法的 expirevar %q", value, value)
@@ -359,7 +364,7 @@ func compileExpireVar(value string) (expireVarAction, error) {
 	if err != nil {
 		return expireVarAction{}, err
 	}
-	compiled, err := compileMacro(raw)
+	compiled, err := compileMacroWarn(raw, warn)
 	if err != nil {
 		return expireVarAction{}, err
 	}
@@ -521,7 +526,7 @@ func parseIDList(value string) ([]int, error) {
 				return nil, errs.Detail(ErrParse, "invalid rule id range %q | 非法的规则 id 范围 %q", field, field)
 			}
 			high, err := strconv.Atoi(highText)
-			if err != nil || high < low || high-low > 100000 {
+			if err != nil || high < low || high-low > 100000 || low < 1 || high > maxRuleID {
 				return nil, errs.Detail(ErrParse, "invalid rule id range %q | 非法的规则 id 范围 %q", field, field)
 			}
 			for id := low; id <= high; id++ {
@@ -530,7 +535,7 @@ func parseIDList(value string) ([]int, error) {
 			continue
 		}
 		id, err := strconv.Atoi(field)
-		if err != nil || id < 0 {
+		if err != nil || id < 1 || id > maxRuleID {
 			return nil, errs.Detail(ErrParse, "invalid rule id %q | 非法的规则 id %q", field, field)
 		}
 		out = append(out, id)

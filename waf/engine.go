@@ -49,7 +49,7 @@ type engine struct {
 
 // buildEngine parses and compiles one bundle into an engine. | buildEngine 把一个规则包解析并编译
 // 为引擎。
-func buildEngine(opts Options, bundle *Bundle, logger *log.Logger, hooks *hookRegistry, counters *counters) (*engine, error) {
+func buildEngine(opts Options, bundle *Bundle, logger *log.Logger, hooks *hookRegistry, counters *counters, native *nativePluginSet) (*engine, error) {
 	if bundle == nil || len(bundle.Data) == 0 {
 		return nil, ErrNoRules
 	}
@@ -86,7 +86,7 @@ func buildEngine(opts Options, bundle *Bundle, logger *log.Logger, hooks *hookRe
 	for _, warning := range warnings {
 		logger.Warn("waf rule warning | WAF 规则警告", log.Str("warning", warning))
 	}
-	plugins, err := buildPlugins(opts, bundle, logger, counters, hooks)
+	plugins, err := buildPlugins(opts, bundle, native, logger, counters, hooks)
 	if err != nil {
 		return nil, err
 	}

@@ -109,6 +109,87 @@ func TestHookPanicAndErrorAreIsolated(t *testing.T) {
 	}
 }
 
+func TestHookFailureTriggersPluginErrorWithoutRecursion(t *testing.T) {
+	instance := newTestWAF(t, []string{
+		`SecRule REQUEST_URI "@contains x" "id:9205,phase:1,pass,nolog"`,
+	}, nil)
+	var errorHookCalls atomic.Int32
+	var observed atomic.Int32
+	if err := instance.AddHook(HookFunc{
+		HookName:   "failing",
+		HookPoints: []HookPoint{HookBeforePhase, HookPluginError},
+		Fn: func(ctx *HookContext) error {
+			if ctx.Point == HookPluginError {
+				errorHookCalls.Add(1)
+				return errors.New("error hook failed")
+			}
+			if ctx.Phase == PhaseRequestHeaders {
+				return errors.New("phase hook failed")
+			}
+			return nil
+		},
+	}); err != nil {
+		t.Fatalf("AddHook failing: %v", err)
+	}
+	if err := instance.AddHook(HookFunc{
+		HookName:   "observer",
+		HookPoints: []HookPoint{HookPluginError},
+		Fn: func(ctx *HookContext) error {
+			if ctx.Err != nil {
+				observed.Add(1)
+			}
+			return nil
+		},
+	}); err != nil {
+		t.Fatalf("AddHook observer: %v", err)
+	}
+	serveTest(t, instance, httptestNewRequest("/x"))
+	if errorHookCalls.Load() != 1 {
+		t.Fatalf("HookPluginError calls = %d, want 1; recursion must stop after one level", errorHookCalls.Load())
+	}
+	if observed.Load() != 1 {
+		t.Fatalf("observed failures = %d, want 1", observed.Load())
+	}
+	if stats := instance.Stats(); stats.Errors != 2 {
+		t.Fatalf("errors = %d, want 2", stats.Errors)
+	}
+}
+
+func TestHookPanicTriggersPluginError(t *testing.T) {
+	instance := newTestWAF(t, []string{
+		`SecRule REQUEST_URI "@contains x" "id:9206,phase:1,pass,nolog"`,
+	}, nil)
+	var reported atomic.Int32
+	if err := instance.AddHook(HookFunc{
+		HookName:   "panicking",
+		HookPoints: []HookPoint{HookBeforePhase},
+		Fn: func(ctx *HookContext) error {
+			if ctx.Phase == PhaseRequestHeaders {
+				panic("boom")
+			}
+			return nil
+		},
+	}); err != nil {
+		t.Fatalf("AddHook panicking: %v", err)
+	}
+	if err := instance.AddHook(HookFunc{
+		HookName:   "reporter",
+		HookPoints: []HookPoint{HookPluginError},
+		Fn: func(ctx *HookContext) error {
+			if ctx.Err != nil {
+				reported.Add(1)
+			}
+			return nil
+		},
+	}); err != nil {
+		t.Fatalf("AddHook reporter: %v", err)
+	}
+	serveTest(t, instance, httptestNewRequest("/x"))
+	if reported.Load() != 1 {
+		t.Fatalf("panic reports = %d, want 1", reported.Load())
+	}
+}
+
 func TestHookDuplicateAndRemove(t *testing.T) {
 	instance := newTestWAF(t, []string{
 		`SecRule REQUEST_URI "@contains x" "id:9203,phase:1,pass,nolog"`,

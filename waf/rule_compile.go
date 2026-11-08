@@ -161,6 +161,10 @@ func compileRuleSet(directives []parsedDirective, opts Options, cc compileContex
 			updates = append(updates, updateOp{kind: directive.Kind, args: directive.Args, file: directive.File, line: directive.Line})
 		case dirConfig:
 			if err := applyConfigDirective(directive, &cfg, cc); err != nil {
+				location := directive.File + ":" + strconv.Itoa(directive.Line)
+				if !strings.Contains(err.Error(), location) {
+					err = errs.WrapDetail(err, ErrParse, "%s", location)
+				}
 				return nil, warnings, err
 			}
 		}
@@ -168,7 +172,9 @@ func compileRuleSet(directives []parsedDirective, opts Options, cc compileContex
 	if pendingChain != nil {
 		return nil, warnings, errs.Detail(ErrParse, "unterminated rule chain at %s:%d | %s:%d 规则链未闭合", pendingChain.file, pendingChain.line, pendingChain.file, pendingChain.line)
 	}
-	applyUpdates(entries, updates, warn)
+	if err := applyUpdates(entries, updates, warn, cc.strict); err != nil {
+		return nil, warnings, err
+	}
 	if opts.Mode != ModeDefault {
 		cfg.engineMode = opts.Mode
 	}
@@ -229,15 +235,26 @@ func scanSpecMeta(spec *ruleSpec, directive parsedDirective) {
 	}
 }
 
-// applyUpdates applies deferred update and removal directives in source order. | applyUpdates
-// 按源码顺序应用延迟的更新与移除指令。
-func applyUpdates(entries []specEntry, updates []updateOp, warn func(string)) {
+// applyUpdates applies deferred update and removal directives in source order. Invalid id lists
+// are build errors in strict mode and warnings in lenient mode. | applyUpdates 按源码顺序应用延迟
+// 的更新与移除指令；非法 id 列表在严格模式下是构建错误，在宽松模式下记录警告。
+func applyUpdates(entries []specEntry, updates []updateOp, warn func(string), strict bool) error {
+	report := func(update updateOp, err error) error {
+		message := update.file + ":" + strconv.Itoa(update.line) + ": " + err.Error()
+		if strict {
+			return errs.Detail(ErrBuild, "%s", message)
+		}
+		warn(message)
+		return nil
+	}
 	for _, update := range updates {
 		switch update.kind {
 		case dirUpdateTargetByID:
 			ids, err := parseIDList(update.args[0])
 			if err != nil {
-				warn(update.file + ":" + strconv.Itoa(update.line) + ": " + err.Error())
+				if reportErr := report(update, err); reportErr != nil {
+					return reportErr
+				}
 				continue
 			}
 			targets := strings.Join(update.args[1:], "|")
@@ -258,7 +275,9 @@ func applyUpdates(entries []specEntry, updates []updateOp, warn func(string)) {
 		case dirUpdateActionByID:
 			ids, err := parseIDList(update.args[0])
 			if err != nil {
-				warn(update.file + ":" + strconv.Itoa(update.line) + ": " + err.Error())
+				if reportErr := report(update, err); reportErr != nil {
+					return reportErr
+				}
 				continue
 			}
 			actions := strings.Join(update.args[1:], ",")
@@ -270,7 +289,9 @@ func applyUpdates(entries []specEntry, updates []updateOp, warn func(string)) {
 		case dirRemoveTargetByID:
 			ids, err := parseIDList(update.args[0])
 			if err != nil {
-				warn(update.file + ":" + strconv.Itoa(update.line) + ": " + err.Error())
+				if reportErr := report(update, err); reportErr != nil {
+					return reportErr
+				}
 				continue
 			}
 			targets := update.args[1:]
@@ -283,7 +304,9 @@ func applyUpdates(entries []specEntry, updates []updateOp, warn func(string)) {
 			for _, arg := range update.args {
 				ids, err := parseIDList(arg)
 				if err != nil {
-					warn(update.file + ":" + strconv.Itoa(update.line) + ": " + err.Error())
+					if reportErr := report(update, err); reportErr != nil {
+						return reportErr
+					}
 					continue
 				}
 				forEachSpec(entries, func(spec *ruleSpec) {
@@ -310,6 +333,7 @@ func applyUpdates(entries []specEntry, updates []updateOp, warn func(string)) {
 			}
 		}
 	}
+	return nil
 }
 
 // forEachSpec visits every rule spec, including chain members. | forEachSpec 访问每条规则，包括

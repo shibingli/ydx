@@ -662,12 +662,14 @@ func (tx *transaction) singleValue(name string) (varValue, bool) {
 	}
 }
 
-// requestLineValue returns the cached request line. | requestLineValue 返回缓存的请求行。
+// requestLineValue returns the cached request line. It never writes the cache, so parallel rule
+// evaluation can read it without synchronization. | requestLineValue 返回缓存的请求行。它从不写入
+// 缓存，因此并行规则求值可以无同步读取。
 func (tx *transaction) requestLineValue() string {
-	if tx.requestLine == "" && tx.req != nil {
-		tx.requestLine = tx.req.Method + " " + tx.uriRaw + " " + tx.req.Proto
+	if tx.requestLine != "" || tx.req == nil {
+		return tx.requestLine
 	}
-	return tx.requestLine
+	return tx.req.Method + " " + tx.uriRaw + " " + tx.req.Proto
 }
 
 // ruleField returns a RULE collection field for the current rule. | ruleField 返回当前规则的
@@ -713,9 +715,9 @@ func (tx *transaction) ruleFieldValue(key string) varValue {
 	return varValue{Name: "RULE", Key: strings.ToLower(key), Value: tx.ruleField(key)}
 }
 
-// timeValue renders one TIME variable. | timeValue 渲染一个 TIME 变量。
+// timeValue renders one TIME variable in UTC. | timeValue 以 UTC 渲染一个 TIME 变量。
 func (tx *transaction) timeValue(name string) string {
-	now := tx.clock()
+	now := tx.clock().UTC()
 	switch name {
 	case "TIME":
 		return now.Format("15:04:05")

@@ -17,6 +17,11 @@ func (w *WAF) serve(rw http.ResponseWriter, r *http.Request, run func(http.Respo
 	e, ok := w.acquire()
 	if !ok {
 		w.counts.rejected.Add(1)
+		if w.failOpen.Load() {
+			w.logger.Warn("waf is shutting down, failing open | WAF 正在关闭，失败放行")
+			run(rw)
+			return true
+		}
 		http.Error(rw, http.StatusText(http.StatusServiceUnavailable), http.StatusServiceUnavailable)
 		return false
 	}
@@ -92,24 +97,32 @@ func (w *WAF) serve(rw http.ResponseWriter, r *http.Request, run func(http.Respo
 		if err != nil {
 			w.counts.errors.Add(1)
 			serveErr = errs.Wrap(err, ErrBodyRead)
-			status = http.StatusBadRequest
-			http.Error(rw, http.StatusText(status), status)
-			return false
-		}
-		tx.requestBody = data
-		tx.bodyRead = true
-		tx.argsCombinedReady = false
-		tx.bodyTooLarge = tooLarge
-		if tooLarge && tx.bodyLimitAction == LimitReject {
-			serveErr = ErrRequestBodyTooLarge
-			tx.interruption = &Interruption{
-				Action:  "deny",
-				Status:  http.StatusRequestEntityTooLarge,
-				Phase:   PhaseRequestBody,
-				Message: "request body too large | 请求正文过大",
+			if !w.failOpen.Load() {
+				status = http.StatusBadRequest
+				http.Error(rw, http.StatusText(status), status)
+				return false
 			}
-			w.respondInterruption(rw, r, e, tx, &status)
-			return false
+			// The body is already lost to the read error; continue with header and phase 2
+			// evaluation over the remaining variables. | 正文已因读取错误丢失；继续执行头部与
+			// 其余变量上的 phase 2 求值。
+			w.logger.Warn("waf request body read failed, failing open without body inspection | WAF 读取请求正文失败，失败放行并跳过正文检测",
+				log.Err(err))
+		} else {
+			tx.requestBody = data
+			tx.bodyRead = true
+			tx.argsCombinedReady = false
+			tx.bodyTooLarge = tooLarge
+			if tooLarge && tx.bodyLimitAction == LimitReject {
+				serveErr = ErrRequestBodyTooLarge
+				tx.interruption = &Interruption{
+					Action:  "deny",
+					Status:  http.StatusRequestEntityTooLarge,
+					Phase:   PhaseRequestBody,
+					Message: "request body too large | 请求正文过大",
+				}
+				w.respondInterruption(rw, r, e, tx, &status)
+				return false
+			}
 		}
 	}
 	if e.rules.hasPhaseRules(PhaseRequestBody) {

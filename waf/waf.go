@@ -20,6 +20,7 @@ type WAF struct {
 	current atomic.Pointer[engine]
 	bundle  *Bundle
 	hooks   *hookRegistry
+	native  *nativePluginSet
 	alerter atomic.Pointer[alerter]
 	logger  *log.Logger
 
@@ -30,10 +31,14 @@ type WAF struct {
 	opts     Options
 	counts   counters
 	watchWG  sync.WaitGroup
+	done     chan struct{}
 
 	mu      sync.Mutex
 	auditMu sync.Mutex
-	closed  atomic.Bool
+	// failOpen mirrors Options.FailOpen for the request path without touching mutable options.
+	// | failOpen 为请求路径镜像 Options.FailOpen，避免读取可变选项。
+	failOpen atomic.Bool
+	closed   atomic.Bool
 }
 
 // New builds a WAF instance from rules, a rule source or explicit directives. | New 从规则、规则
@@ -44,7 +49,8 @@ func New(o Options) (*WAF, error) {
 		return nil, err
 	}
 	logger := normalized.loggerOrDefault()
-	w := &WAF{opts: normalized, logger: logger}
+	w := &WAF{opts: normalized, logger: logger, done: make(chan struct{})}
+	w.failOpen.Store(normalized.FailOpen)
 	w.hooks = newHookRegistry(normalized.Hooks, logger, &w.counts, normalized.PluginTimeout)
 	alerting, err := newAlerter(normalized.Alerting, logger, &w.counts)
 	if err != nil {
@@ -56,12 +62,19 @@ func New(o Options) (*WAF, error) {
 		w.closeAlerter()
 		return nil, err
 	}
-	e, err := buildEngine(normalized, bundle, logger, w.hooks, &w.counts)
+	native, err := newNativePluginSet(normalized.Plugins, bundle, logger, normalized.Lenient)
 	if err != nil {
 		w.closeAlerter()
 		return nil, err
 	}
+	e, err := buildEngine(normalized, bundle, logger, w.hooks, &w.counts, native)
+	if err != nil {
+		native.release()
+		w.closeAlerter()
+		return nil, err
+	}
 	w.bundle = bundle
+	w.native = native
 	w.current.Store(e)
 	if normalized.WatchInterval > 0 && normalized.Source != nil {
 		w.startWatcher()
@@ -111,6 +124,9 @@ func (w *WAF) initialBundle(ctx context.Context, opts Options) (*Bundle, error) 
 		w.persist(opts, bundle)
 		return bundle, nil
 	}
+	// Count the failure even when a fallback succeeds so Stats.Errors exposes degraded sources.
+	// | 即使回退成功也计一次失败，使 Stats.Errors 能暴露降级的规则来源。
+	w.counts.errors.Add(1)
 	w.logger.Warn("waf rule source failed, trying fallback | WAF 规则来源失败，尝试回退",
 		log.Err(err), log.Str("fallback", "last-known-good"))
 	if opts.LastKnownGood != "" {
@@ -216,7 +232,7 @@ func (w *WAF) Reload() error {
 		return err
 	}
 	w.persist(opts, bundle)
-	return w.reloadLocked(opts, bundle)
+	return w.reloadLocked(opts, bundle, w.native)
 }
 
 // ReloadWith replaces the options and rebuilds the engine. When the source reports no change,
@@ -250,7 +266,20 @@ func (w *WAF) ReloadWith(o Options) error {
 	if alertErr != nil {
 		return alertErr
 	}
-	if err := w.reloadLocked(normalized, bundle); err != nil {
+	native := w.native
+	if !samePluginNames(w.opts.Plugins, normalized.Plugins) {
+		native, alertErr = newNativePluginSet(normalized.Plugins, bundle, w.logger, normalized.Lenient)
+		if alertErr != nil {
+			if nextAlerter != nil {
+				nextAlerter.close()
+			}
+			return alertErr
+		}
+	}
+	if err := w.reloadLocked(normalized, bundle, native); err != nil {
+		if native != w.native {
+			native.release()
+		}
 		if nextAlerter != nil {
 			nextAlerter.close()
 		}
@@ -278,23 +307,30 @@ func (w *WAF) ApplyBundle(bundle *Bundle) error {
 		return ErrClosed
 	}
 	w.persist(w.opts, bundle)
-	return w.reloadLocked(w.opts, bundle)
+	return w.reloadLocked(w.opts, bundle, w.native)
 }
 
-// reloadLocked builds, validates and swaps while the caller holds mu. | reloadLocked 在调用方持有
-// mu 时构建、校验并替换。
-func (w *WAF) reloadLocked(opts Options, bundle *Bundle) error {
-	next, err := buildEngine(opts, bundle, w.logger, w.hooks, &w.counts)
+// reloadLocked builds, validates and swaps while the caller holds mu. Native plugin ownership
+// moves to the new engine; the previous generation is released after the swap. | reloadLocked 在
+// 调用方持有 mu 时构建、校验并替换。原生插件所有权移交给新引擎；交换后释放上一代际。
+func (w *WAF) reloadLocked(opts Options, bundle *Bundle, native *nativePluginSet) error {
+	next, err := buildEngine(opts, bundle, w.logger, w.hooks, &w.counts, native)
 	if err != nil {
 		w.counts.errors.Add(1)
 		w.logger.Error("waf reload failed | WAF 重载失败", log.Err(err))
 		return err
 	}
+	previousNative := w.native
 	previous := w.current.Swap(next)
+	w.native = native
 	w.opts = opts
+	w.failOpen.Store(opts.FailOpen)
 	w.bundle = bundle
 	if len(opts.Hooks) > 0 {
 		w.hooks.Replace(opts.Hooks)
+	}
+	if previousNative != nil && previousNative != native {
+		previousNative.release()
 	}
 	if previous != nil {
 		previous.retire()
@@ -305,7 +341,7 @@ func (w *WAF) reloadLocked(opts Options, bundle *Bundle) error {
 	w.logger.Info("waf rules reloaded | WAF 规则已重新加载",
 		log.Str("version", next.version), log.Str("digest", next.digest),
 		log.Int("rules", next.rulesCount()))
-	w.hooks.run(&HookContext{Point: HookReload, Version: next.version})
+	next.runHook(HookReload, nil, PhaseNone, nil, nil, nil)
 	return nil
 }
 
@@ -329,10 +365,67 @@ func (w *WAF) resolveWatch(ctx context.Context) error {
 		return ErrNotModified
 	}
 	w.persist(opts, bundle)
-	return w.reloadLocked(opts, bundle)
+	return w.reloadLocked(opts, bundle, w.native)
 }
 
-// startWatcher launches the polling goroutine. | startWatcher 启动轮询协程。
+// Watch polls the configured source until ctx is cancelled or the WAF is closed. New already
+// starts an equivalent background watcher when WatchInterval and Source are set; Watch is for
+// callers that prefer to own the polling goroutine. Cancel ctx or call Close/Shutdown to stop it.
+// | Watch 轮询配置的来源，直到 ctx 被取消或 WAF 关闭。当 WatchInterval 与 Source 已设置时，New
+// 已启动等价的后台 watcher；Watch 供希望自行驱动轮询协程的调用方使用。取消 ctx 或调用
+// Close/Shutdown 可停止它。
+func (w *WAF) Watch(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if w.closed.Load() {
+		return ErrClosed
+	}
+	w.mu.Lock()
+	interval := w.opts.WatchInterval
+	source := w.opts.Source
+	w.mu.Unlock()
+	if source == nil || interval <= 0 {
+		return ErrInvalidOption
+	}
+	return w.watchLoop(ctx, interval)
+}
+
+// watchLoop polls one source at interval until ctx ends or the WAF closes. | watchLoop 按 interval
+// 轮询来源，直到 ctx 结束或 WAF 关闭。
+func (w *WAF) watchLoop(ctx context.Context, interval time.Duration) error {
+	delay := interval
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-w.done:
+			return ErrClosed
+		case <-timer.C:
+		}
+		err := w.resolveWatch(ctx)
+		wait := interval
+		switch {
+		case err == nil, errors.Is(err, ErrNotModified):
+			delay = interval
+		case errors.Is(err, ErrClosed):
+			return ErrClosed
+		default:
+			delay *= 2
+			if delay > 10*interval {
+				delay = 10 * interval
+			}
+			wait = jitterDuration(delay, defaultRetryJitter)
+			w.logger.Warn("waf rule poll failed | WAF 规则轮询失败",
+				log.Err(err), log.Dur("next", wait))
+		}
+		timer.Reset(wait)
+	}
+}
+
+// startWatcher launches the automatic polling goroutine. | startWatcher 启动自动轮询协程。
 func (w *WAF) startWatcher() {
 	if w.opts.WatchInterval <= 0 || w.opts.Source == nil {
 		return
@@ -342,32 +435,7 @@ func (w *WAF) startWatcher() {
 	w.watchWG.Add(1)
 	go func() {
 		defer w.watchWG.Done()
-		interval := w.opts.WatchInterval
-		delay := interval
-		timer := time.NewTimer(delay)
-		defer timer.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-timer.C:
-			}
-			err := w.resolveWatch(ctx)
-			switch {
-			case err == nil, errors.Is(err, ErrNotModified):
-				delay = interval
-			case errors.Is(err, ErrClosed):
-				return
-			default:
-				delay *= 2
-				if delay > 10*interval {
-					delay = 10 * interval
-				}
-				w.logger.Warn("waf rule poll failed | WAF 规则轮询失败",
-					log.Err(err), log.Dur("next", delay))
-			}
-			timer.Reset(delay)
-		}
+		_ = w.watchLoop(ctx, w.opts.WatchInterval)
 	}()
 }
 
@@ -435,10 +503,15 @@ func (w *WAF) Close() error {
 	if w.closed.Swap(true) {
 		return nil
 	}
+	close(w.done)
 	if e := w.current.Swap(nil); e != nil {
 		e.retire()
 	}
 	w.retiring = nil
+	if w.native != nil {
+		w.native.release()
+		w.native = nil
+	}
 	w.closeAlerter()
 	return nil
 }
@@ -462,13 +535,19 @@ func (w *WAF) Shutdown(ctx context.Context) error {
 		w.mu.Unlock()
 		return nil
 	}
+	close(w.done)
 	engines := make([]*engine, 0, len(w.retiring)+1)
 	if e := w.current.Swap(nil); e != nil {
 		engines = append(engines, e)
 	}
 	engines = append(engines, w.retiring...)
 	w.retiring = nil
+	native := w.native
+	w.native = nil
 	w.mu.Unlock()
+	if native != nil {
+		native.release()
+	}
 	w.closeAlerter()
 	for _, e := range engines {
 		e.retire()

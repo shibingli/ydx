@@ -6,11 +6,14 @@ import (
 	"github.com/shibingli/ydx/errs"
 )
 
-// macroPart is either literal text or a variable selector. | macroPart 是字面量文本或变量选择器。
+// macroPart is either literal text or a variable selector. An unknown selector is kept as an
+// empty variable reference so a warning is emitted once and expansion yields no text. |
+// macroPart 是字面量文本或变量选择器。未知选择器保留为空的变量引用，从而只记录一次警告且展开为空。
 type macroPart struct {
 	literal  string
 	selector varSelector
 	isVar    bool
+	unknown  bool
 }
 
 // macro is a compiled SecLang macro string. | macro 是编译后的 SecLang 宏字符串。
@@ -19,9 +22,17 @@ type macro struct {
 	parts []macroPart
 }
 
-// compileMacro parses %{NAME} and %{NAME.KEY} references into a reusable macro. | compileMacro 把
-// %{NAME} 与 %{NAME.KEY} 引用解析为可复用宏。
+// compileMacro parses %{NAME} and %{NAME.KEY} references into a reusable macro. Unknown variable
+// references expand to an empty string. | compileMacro 把 %{NAME} 与 %{NAME.KEY} 引用解析为可复用
+// 宏；未知变量引用展开为空串。
 func compileMacro(s string) (macro, error) {
+	return compileMacroWarn(s, nil)
+}
+
+// compileMacroWarn is compileMacro with a warning callback for unknown variable references. The
+// callback is invoked once per unknown reference. | compileMacroWarn 是带未知变量引用警告回调的
+// compileMacro；每个未知引用调用一次回调。
+func compileMacroWarn(s string, warn func(string)) (macro, error) {
 	if !strings.Contains(s, "%{") {
 		return macro{plain: s}, nil
 	}
@@ -43,20 +54,29 @@ func compileMacro(s string) (macro, error) {
 		}
 		inner := s[start+2 : start+2+end]
 		s = s[start+2+end+1:]
-		selector, err := parseMacroSelector(inner)
+		selector, known, err := parseMacroSelector(inner)
 		if err != nil {
 			return macro{}, err
+		}
+		if !known {
+			if warn != nil {
+				warn("unknown macro variable " + strings.TrimSpace(inner) +
+					" | 未知宏变量 " + strings.TrimSpace(inner))
+			}
+			parts = append(parts, macroPart{isVar: true, unknown: true})
+			continue
 		}
 		parts = append(parts, macroPart{selector: selector, isVar: true})
 	}
 	return macro{parts: parts}, nil
 }
 
-// parseMacroSelector parses the inside of a %{...} reference. | parseMacroSelector 解析 %{...} 引用内部。
-func parseMacroSelector(inner string) (varSelector, error) {
+// parseMacroSelector parses the inside of a %{...} reference. The boolean result reports whether
+// the variable is known. | parseMacroSelector 解析 %{...} 引用内部；布尔结果表示变量是否已知。
+func parseMacroSelector(inner string) (varSelector, bool, error) {
 	inner = strings.TrimSpace(inner)
 	if inner == "" {
-		return varSelector{}, errs.Detail(ErrParse, "empty macro selector | 空宏选择器")
+		return varSelector{}, false, errs.Detail(ErrParse, "empty macro selector | 空宏选择器")
 	}
 	name := inner
 	key := ""
@@ -66,17 +86,17 @@ func parseMacroSelector(inner string) (varSelector, error) {
 	}
 	name = strings.ToUpper(name)
 	if _, ok := knownVariables[name]; !ok {
-		return varSelector{}, errs.Detail(ErrUnsupported, "unknown macro variable %q | 未知宏变量 %q", name, name)
+		return varSelector{}, false, nil
 	}
 	selector := varSelector{Name: name, Key: key}
 	if len(key) >= 2 && key[0] == '/' && key[len(key)-1] == '/' {
 		parsed, _, err := parseVarSelector(name + ":" + key)
 		if err != nil {
-			return varSelector{}, err
+			return varSelector{}, false, err
 		}
-		return parsed, nil
+		return parsed, true, nil
 	}
-	return finishSelector(selector), nil
+	return finishSelector(selector), true, nil
 }
 
 // expand renders the macro for one transaction. | expand 为一个事务渲染宏。
@@ -88,6 +108,9 @@ func (m macro) expand(tx *transaction) string {
 	// avoid a Builder allocation. | 单个变量引用是 setvar 的常见形态，直接返回其值以避免 Builder
 	// 分配。
 	if len(m.parts) == 1 && m.parts[0].isVar {
+		if m.parts[0].unknown {
+			return ""
+		}
 		selector := m.parts[0].selector
 		if selector.Name == "RULE" && selector.Key != "" {
 			return tx.ruleField(selector.Key)
@@ -109,6 +132,9 @@ func (m macro) expand(tx *transaction) string {
 	for _, part := range m.parts {
 		if !part.isVar {
 			b.WriteString(part.literal)
+			continue
+		}
+		if part.unknown {
 			continue
 		}
 		if part.selector.Name == "RULE" && part.selector.Key != "" {

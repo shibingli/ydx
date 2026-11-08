@@ -5,6 +5,7 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -55,6 +56,22 @@ func awaitAlert(t *testing.T, alerts <-chan Alert) Alert {
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for alert")
 		return Alert{}
+	}
+}
+
+func TestAlertingEnabledRequiresSink(t *testing.T) {
+	for _, config := range []AlertConfig{
+		{Enabled: true},
+		{Enabled: true, Sinks: []AlertSink{nil}},
+	} {
+		_, err := New(Options{
+			Directives: []string{`SecRule REQUEST_URI "@contains x" "id:9170,phase:1,pass"`},
+			Logger:     log.New(log.Options{Writer: io.Discard, Level: log.ErrorLevel}),
+			Alerting:   config,
+		})
+		if !errors.Is(err, ErrInvalidOption) {
+			t.Fatalf("error = %v, want ErrInvalidOption", err)
+		}
 	}
 }
 

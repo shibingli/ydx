@@ -69,6 +69,13 @@ defer cancel()
 _ = engine.Shutdown(ctx)
 ```
 
+### 失败策略
+
+引擎关闭或请求正文读取失败时，`Options.FailOpen` 决定是否放行：`false`（默认）返回 503/400，
+`true` 跳过本次检测并继续业务处理。钩子、原生插件与 WASM 插件失败相互隔离：钩子/原生插件错误计入
+`Stats.Errors` 并放行，WASM 插件按各自 `FailClosed` 与熔断策略处理。规则判定与
+`SecRequestBodyLimitAction` 不受 `FailOpen` 影响。
+
 ## 规则兼容
 
 | 类别 | 支持 |
@@ -146,6 +153,9 @@ engine, err := waf.New(waf.Options{
 2. 来源失败时按退避重试；仍失败则使用 last-known-good（单文件原子替换）。
 3. 轮询发现 digest 未变化时不重建引擎。
 4. 推送场景调用 `engine.ApplyBundle(bundle)`；旧快照在最后一个在途请求结束后释放。
+
+`New` 在 `WatchInterval > 0` 且配置了 `Source` 时自动启动后台轮询；希望自行管理协程的调用方可改为
+运行 `engine.Watch(ctx)`。`Close`/`Shutdown` 会停止两者，并等待内部 watcher 退出。
 
 多机部署建议：所有实例使用同一 `HTTPSource` URL 与验签密钥；规则服务器返回 `ETag`、
 `X-YDX-WAF-Version`、`X-YDX-WAF-Digest`，可选 `X-YDX-WAF-Signature`。`ApplyBundle` 亦可由
@@ -326,4 +336,6 @@ cd ../repotest && GOWORK=off go test ./...
 - `MULTIPART_PART_HEADERS` 按部件头名称/值尽力提供；`initcol`/`setsid`/`setuid`/`setrsc`/`setenv`
   被接受但不持久化 IP/SESSION/USER 集合。
 - 响应经 `Flush`/`Hijack` 后只能检测已缓冲前缀；流式剩余部分不再检测。
+- 响应未设置 `Content-Type` 时，按 net/http 对首批正文字节的嗅探结果匹配 MIME 列表；嗅探为
+  二进制类型的正文不暴露给 `RESPONSE_BODY`。
 - 规则正则基于 `ydx/regexpx`；PCRE 专有构造若无法编译会在严格模式下拒绝该规则。

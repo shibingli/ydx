@@ -2,7 +2,6 @@ package waf
 
 import (
 	"bytes"
-	"github.com/shibingli/ydx/xml"
 	"io"
 	"mime"
 	"mime/multipart"
@@ -15,6 +14,7 @@ import (
 	"time"
 
 	"github.com/shibingli/ydx/json"
+	"github.com/shibingli/ydx/xml"
 )
 
 // Collection mask bits used to prewarm caches before parallel rule evaluation.
@@ -63,6 +63,12 @@ func (tx *transaction) prewarm(mask uint8) {
 	if mask&collectXML != 0 {
 		tx.collectXML()
 	}
+	if mask&(collectQuery|collectPost) != 0 {
+		// ARGS_COMBINED_SIZE memoizes a lazy value; compute it before workers start so concurrent
+		// selectors only read the cache. | ARGS_COMBINED_SIZE 会缓存惰性取值；在工作协程启动前计算，
+		// 使并发选择器只读取缓存。
+		tx.argsCombinedSize()
+	}
 }
 
 // timeNow is replaceable in tests that need a stable clock. | timeNow 可由需要稳定时钟的测试替换。
@@ -81,6 +87,7 @@ func (tx *transaction) initRequest() {
 		tx.uriRaw = r.URL.RequestURI()
 	}
 	tx.uriDecoded = tx.uriRaw
+	tx.requestLine = r.Method + " " + tx.uriRaw + " " + r.Proto
 	if host, port, err := net.SplitHostPort(r.RemoteAddr); err == nil {
 		tx.remoteHost = host
 		tx.remotePort = port
@@ -253,9 +260,15 @@ func (tx *transaction) parseMultipart() {
 		for headerName, headerValues := range part.Header {
 			key := strings.ToLower(headerName)
 			for _, headerValue := range headerValues {
+				if len(tx.multipartPartHeaders) >= tx.argLimit {
+					break
+				}
 				tx.multipartPartHeaders = append(tx.multipartPartHeaders, varValue{
 					Name: "MULTIPART_PART_HEADERS", Key: key, Value: headerValue,
 				})
+			}
+			if len(tx.multipartPartHeaderNames) >= tx.argLimit {
+				continue
 			}
 			if !containsFold(tx.multipartPartHeaderNames, key) {
 				tx.multipartPartHeaderNames = append(tx.multipartPartHeaderNames, varValue{
@@ -274,11 +287,16 @@ func (tx *transaction) parseMultipart() {
 			if copyErr != nil {
 				tx.multipartError = true
 			}
-			tx.files = append(tx.files, varValue{Name: "FILES", Key: name, Value: filename, Size: size})
-			tx.fileSizes = append(tx.fileSizes, varValue{Name: "FILES_SIZES", Key: name, Value: strconv.FormatInt(size, 10), Size: size})
+			if len(tx.files) < tx.argLimit {
+				tx.files = append(tx.files, varValue{Name: "FILES", Key: name, Value: filename, Size: size})
+				tx.fileSizes = append(tx.fileSizes, varValue{Name: "FILES_SIZES", Key: name, Value: strconv.FormatInt(size, 10), Size: size})
+			}
 			continue
 		}
-		value, readErr := io.ReadAll(io.LimitReader(part, 1<<20))
+		// Read the whole field. The request body is already bounded by the configured body limit,
+		// so truncating here would only hide payload tails from inspection. | 读取完整字段。请求正文
+		// 已受配置的正文上限约束，在此截断只会让检测看不到载荷尾部。
+		value, readErr := io.ReadAll(part)
 		_ = part.Close()
 		if readErr != nil {
 			tx.multipartError = true
@@ -371,6 +389,9 @@ func (tx *transaction) parseXML() {
 		case xml.StartElement:
 			stack = append(stack, t.Name.Local)
 			for _, attr := range t.Attr {
+				if len(tx.xmlValues) >= tx.argLimit {
+					break
+				}
 				key := joinPath(strings.Join(stack, "."), "@"+attr.Name.Local)
 				tx.xmlValues = append(tx.xmlValues, varValue{Name: "XML", Key: key, Value: attr.Value})
 			}
@@ -380,7 +401,7 @@ func (tx *transaction) parseXML() {
 			}
 		case xml.CharData:
 			value := strings.TrimSpace(string(t))
-			if value == "" || len(stack) == 0 {
+			if value == "" || len(stack) == 0 || len(tx.xmlValues) >= tx.argLimit {
 				continue
 			}
 			tx.xmlValues = append(tx.xmlValues, varValue{Name: "XML", Key: strings.Join(stack, "."), Value: value})

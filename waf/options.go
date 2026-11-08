@@ -188,8 +188,12 @@ type Options struct {
 	TrustedProxies []string
 	// Hooks are lifecycle hooks registered with the instance. | Hooks 是注册到实例的生命周期钩子。
 	Hooks []Hook
-	// Plugins are native plugins initialized with each engine snapshot. | Plugins 是随每个引擎
-	// 快照初始化的原生插件。
+	// Plugins are native plugins. They are initialized once when the instance is created and
+	// closed after every engine using them has drained. ReloadWith reuses plugins with the same
+	// names and initializes a new generation when the name list changes; plugins observe rule
+	// reloads through HookReload. | Plugins 是原生插件。它们在实例创建时初始化一次，并在所有使用
+	// 它们的引擎排空后关闭。ReloadWith 复用名称相同的插件，在名称列表变化时初始化新代际；插件通过
+	// HookReload 观察规则重载。
 	Plugins []Plugin
 	// WASMPlugins are WebAssembly plugins initialized with each engine snapshot. | WASMPlugins
 	// 是随每个引擎快照初始化的 WebAssembly 插件。
@@ -244,6 +248,12 @@ type Options struct {
 	// Keep it false in production. | Lenient 跳过不支持或无效的规则并记录警告，而不是让构建失败。
 	// 生产环境保持 false。
 	Lenient bool
+	// FailOpen lets a request continue when an internal failure prevents inspection: the engine
+	// is shutting down or the request body cannot be read. Rule decisions and configured body
+	// limit actions are unaffected. The zero value fails closed with 503 or 400 responses.
+	// | FailOpen 在内部失败导致无法检测时放行请求：引擎正在关闭或请求正文无法读取。规则判定与
+	// 显式正文上限动作不受影响。零值以 503 或 400 响应失败关闭。
+	FailOpen bool
 	// ResponseBodyAccess enables response body buffering and phase 4 rules. It is off by default.
 	// | ResponseBodyAccess 开启响应正文缓冲与 phase 4 规则，默认关闭。
 	ResponseBodyAccess bool

@@ -126,6 +126,9 @@ func TestLastKnownGoodFallback(t *testing.T) {
 	if second.RuleVersion() != "v1" {
 		t.Fatalf("version = %q", second.RuleVersion())
 	}
+	if stats := second.Stats(); stats.Errors == 0 {
+		t.Fatal("source failure before last-known-good fallback not counted")
+	}
 	if response := serveTest(t, second, httptestNewRequest("/cached")); response.Code != 403 {
 		t.Fatalf("cached rule did not block: %d", response.Code)
 	}
@@ -170,6 +173,70 @@ func TestWatcherReloads(t *testing.T) {
 	}
 	if instance.RuleVersion() != "v2" {
 		t.Fatalf("watcher did not reload, version = %q", instance.RuleVersion())
+	}
+}
+
+func TestWatchReturnsWhenContextCancelled(t *testing.T) {
+	source := &sourceState{bundle: testBundle(t, "v1",
+		`SecRule REQUEST_URI "@contains first" "id:1,phase:1,pass,nolog"`)}
+	instance, err := New(Options{
+		Source:        source,
+		WatchInterval: 10 * time.Millisecond,
+		Retry:         RetryPolicy{MaxAttempts: 1},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer func() { _ = instance.Close() }()
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- instance.Watch(ctx) }()
+	time.Sleep(20 * time.Millisecond)
+	cancel()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("Watch error = %v, want context.Canceled", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Watch did not stop after context cancellation")
+	}
+}
+
+func TestWatchReturnsWhenClosed(t *testing.T) {
+	source := &sourceState{bundle: testBundle(t, "v1",
+		`SecRule REQUEST_URI "@contains first" "id:1,phase:1,pass,nolog"`)}
+	instance, err := New(Options{
+		Source:        source,
+		WatchInterval: 10 * time.Millisecond,
+		Retry:         RetryPolicy{MaxAttempts: 1},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- instance.Watch(context.Background()) }()
+	time.Sleep(20 * time.Millisecond)
+	if err := instance.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	select {
+	case err := <-done:
+		if !errors.Is(err, ErrClosed) {
+			t.Fatalf("Watch error = %v, want ErrClosed", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Watch did not stop after Close")
+	}
+}
+
+func TestWatchRequiresConfiguredSource(t *testing.T) {
+	instance := newTestWAF(t, []string{
+		`SecRule REQUEST_URI "@contains first" "id:1,phase:1,pass,nolog"`,
+	}, nil)
+	defer func() { _ = instance.Close() }()
+	if err := instance.Watch(context.Background()); !errors.Is(err, ErrInvalidOption) {
+		t.Fatalf("Watch error = %v, want ErrInvalidOption", err)
 	}
 }
 
@@ -261,6 +328,27 @@ func TestJSONBundleFormat(t *testing.T) {
 	defer func() { _ = instance.Close() }()
 	if response := serveTest(t, instance, httptestNewRequest("/json-block")); response.Code != 403 {
 		t.Fatalf("json rule did not block: %d", response.Code)
+	}
+}
+
+// TestBundleDigestDeterministic pins the multi-machine guarantee that identical rule bytes produce
+// the same digest and default version. | TestBundleDigestDeterministic 固定多机一致性保证：相同
+// 规则字节能得到相同摘要与默认版本。
+func TestBundleDigestDeterministic(t *testing.T) {
+	data := []byte("SecAction \"id:1,phase:1,pass\"\n")
+	first := &Bundle{Format: FormatSecLang, Data: append([]byte(nil), data...)}
+	second := &Bundle{Format: FormatSecLang, Data: append([]byte(nil), data...)}
+	if err := first.seal(); err != nil {
+		t.Fatalf("seal first: %v", err)
+	}
+	if err := second.seal(); err != nil {
+		t.Fatalf("seal second: %v", err)
+	}
+	if first.Digest != second.Digest {
+		t.Fatalf("digests differ: %s vs %s", first.Digest, second.Digest)
+	}
+	if first.Version != second.Version || first.Version != first.Digest[:16] {
+		t.Fatalf("versions = %q, %q", first.Version, second.Version)
 	}
 }
 
