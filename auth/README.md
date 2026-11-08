@@ -336,6 +336,11 @@ JWK/PKCS#8/PKIX 导出策略；OIDC 的 `SigningKey`、SAML 的 `XMLDSigSigner` 
   oauth2/oidc/saml/cas/scim/rbac/kms/kmip/wsfed/otp/webauthn 的全部 Store/Registry/Replay/
   Challenge/State 接口提供 Redis 实现（Lua 原子性、Cluster 哈希槽、miniredis 多实例测试）。
 
+## 第五轮需求对账修复（v0.1.4）
+
+- **Kerberos/GSSAPI**：按 RFC 4121 校验 acceptor 校验和的绑定长度字段（`Lgth` 必须为 16），
+  拒绝绑定长度不符的令牌，避免接受截断或伪造的通道绑定数据。
+
 ## 与主流实现的对比
 
 `benchmarks/auth` 对 JOSE/JWS、JWE、OTP、RBAC、LDAP 过滤器与 XMLDSig 做主流程同进程对比，
