@@ -6,10 +6,6 @@ github.com/pmezard/go-difflib v1.0.0 h1:4DBwDE0NGyQoBHbLQYPwSUPoCMWR5BEzIk/f1lZb
 github.com/pmezard/go-difflib v1.0.0/go.mod h1:iKH77koFhYxTK1pcRnkKkqfTogsbg7gZNVY4sRDYZ/4=
 github.com/rosedblabs/wal v1.3.8 h1:tErpD9JT/ICiyV3mv5l7qUH6lybn5XF1TbI0e8kvH8M=
 github.com/rosedblabs/wal v1.3.8/go.mod h1:DFvhrmTTeiXvn2btXXT2MW9Nvu99PU0g/pKGgh0+T+o=
-github.com/shibingli/ydx/base64 v0.1.12 h1:xUjtX6yZ/UMDb5DBwvE1a70FVZnX9gQVBgdlEzQ45KY=
-github.com/shibingli/ydx/base64 v0.1.12/go.mod h1:PaROcW7ashuUWtpu30D3TfA28lDCBop8D39ZrHuK/eE=
-github.com/shibingli/ydx/base64 v0.1.13 h1:S6yBxXASJsPoABqHrz9fkgj7deJYdVYws4Fen83dcEU=
-github.com/shibingli/ydx/base64 v0.1.13/go.mod h1:PaROcW7ashuUWtpu30D3TfA28lDCBop8D39ZrHuK/eE=
 github.com/shibingli/ydx/base64 v0.1.14 h1:uDqr0ZW5kkmuHDjV74UrCtFm5NNC/7ZJLtzGCO5r0IM=
 github.com/shibingli/ydx/base64 v0.1.14/go.mod h1:PaROcW7ashuUWtpu30D3TfA28lDCBop8D39ZrHuK/eE=
 github.com/shibingli/ydx/buffpool v0.1.5 h1:aKmsDwLkYoZKRPi1ZkuyvPFrsfdFaK7I1cd5nvGXBLs=
@@ -20,10 +16,8 @@ github.com/shibingli/ydx/guomi v0.1.2 h1:3oOMJ2poGpqBMgTk5tlaIdSRQuXBeRrjDEJSL2D
 github.com/shibingli/ydx/guomi v0.1.2/go.mod h1:4jBKXYmM3vkchqfvyEKVa1O/hc6olEzEsRJc/ZCeoiw=
 github.com/shibingli/ydx/sysinfo v0.1.4 h1:tskX01rpXsDkEmCCz+2s7FnSQqrQCY8SQUeWstPQhMk=
 github.com/shibingli/ydx/sysinfo v0.1.4/go.mod h1:31V/9KavYTLUNJwAsgCHuN6z2wvRpS20En5em99nmqE=
-github.com/shibingli/ydx/wal v0.2.0 h1:AYXox6mUnUE+pU7r9FDH3h3Yl18xxt/yRewUwwzbaeA=
-github.com/shibingli/ydx/wal v0.2.0/go.mod h1:+iIFvKPcfRK+DtzJinA4mUK+m78glNLO9H1RcgBqdj4=
-github.com/shibingli/ydx/wal v0.3.2 h1:QsWcYI6qcFbmtJzEXl1yoVQNsw9Hkk8GIKUcmr0r/Rw=
-github.com/shibingli/ydx/wal v0.3.2/go.mod h1:JyRYyED0VKMrKiWraG2CAszBSTWxcSjRDE4EYbS/OnE=
+github.com/shibingli/ydx/wal v0.3.4 h1:MvYZHmHsLJeVh2hg3gUpwbiHkjLzAV/Vg4hVLX2p+Xg=
+github.com/shibingli/ydx/wal v0.3.4/go.mod h1:U6WwdtSeAk7mXppVNKC4W4inld78OI+Coxem+W8L8ps=
 github.com/stretchr/testify v1.9.0 h1:HtqpIVDClZ4nwg75+f6Lvsy/wHu+3BoSGCbBAcpTsTg=
 github.com/stretchr/testify v1.9.0/go.mod h1:r2ic/lqez/lEtzL7wO/rwa5dbSLXVDPFyf8C91i36aY=
 github.com/tidwall/gjson v1.10.2 h1:APbLGOM0rrEkd8WBw9C24nllro4ajFuJu0Sc9hRz8Bo=

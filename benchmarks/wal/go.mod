@@ -4,7 +4,7 @@ go 1.27.3
 
 require (
 	github.com/rosedblabs/wal v1.3.8
-	github.com/shibingli/ydx/wal v0.3.2
+	github.com/shibingli/ydx/wal v0.3.4
 	github.com/tidwall/wal v1.2.1
 )
 

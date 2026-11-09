@@ -7,7 +7,7 @@ require (
 	github.com/shibingli/ydx/json v0.1.18
 	github.com/shibingli/ydx/log v0.1.12
 	github.com/shibingli/ydx/rdma v0.1.6
-	github.com/shibingli/ydx/wal v0.3.2
+	github.com/shibingli/ydx/wal v0.3.4
 )
 
 require (

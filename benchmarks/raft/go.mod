@@ -58,7 +58,7 @@ require (
 	github.com/shibingli/ydx/log v0.1.12 // indirect
 	github.com/shibingli/ydx/rdma v0.1.6 // indirect
 	github.com/shibingli/ydx/sysinfo v0.1.4 // indirect
-	github.com/shibingli/ydx/wal v0.3.2 // indirect
+	github.com/shibingli/ydx/wal v0.3.4 // indirect
 	github.com/valyala/fastrand v1.1.0 // indirect
 	github.com/valyala/histogram v1.2.0 // indirect
 	golang.org/x/crypto v0.58.0 // indirect
