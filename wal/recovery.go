@@ -508,6 +508,10 @@ func (w *WAL) recover() error {
 		firstLSN = 1
 	}
 	seqs := sortedSeqs(segs)
+	lastSeq := uint64(0)
+	if len(seqs) > 0 {
+		lastSeq = seqs[len(seqs)-1]
+	}
 	for _, seq := range seqs {
 		seg := segs[seq]
 		seg.metaMu.RLock()
@@ -518,6 +522,17 @@ func (w *WAL) recover() error {
 				delete(segs, seq)
 				continue
 			}
+			continue
+		}
+		// Only a complete seal proves a segment's full tail. A created or
+		// checkpoint summary is a placeholder/prefix, and the highest sequence is
+		// the unsealed active segment until rotation. Retiring from such a
+		// summary can unlink a segment that still holds live records; leave it
+		// for openLastSegment or the non-last scan pass to establish the real tail.
+		// 只有完整封存摘要才能证明分段的真实尾部。创建/检查点摘要只是占位或前缀，
+		// 最高序号在轮转前是未封存的活跃段；据此退休会删除仍含存活记录的分段。交由
+		// openLastSegment 或非末段扫描确定真实尾部。
+		if seq == lastSeq || seg.currentState() != segmentSealed {
 			continue
 		}
 		if last != 0 && last < firstLSN && !(seg.size <= int64(segmentHeaderSize) && seg.baseLSN == firstLSN) {
@@ -1182,11 +1197,17 @@ func (w *WAL) validateContinuity(live []*segment, firstLSN *uint64, state *metaS
 		return live, nil
 	}
 	filtered := live[:0]
-	for _, seg := range live {
+	for i, seg := range live {
 		seg.metaMu.RLock()
 		base, last := seg.baseLSN, seg.lastLSN
 		seg.metaMu.RUnlock()
-		if last < *firstLSN && !(last == base-1 && *firstLSN == base) {
+		// Keep the highest-sequence segment even when all of its records are
+		// below firstLSN: it is the active tail segment and appends continue at
+		// firstLSN. Dropping it while w.active still points at it would leave the
+		// segment outside w.segments.
+		// 最高序号段即使全部记录都低于 firstLSN 也必须保留：它是活跃尾段，后续追加
+		// 从 firstLSN 继续；若在此丢弃而 w.active 仍指向它，会使其脱离 w.segments。
+		if i != len(live)-1 && last < *firstLSN && !(last == base-1 && *firstLSN == base) {
 			seg.retired = true
 			continue
 		}
