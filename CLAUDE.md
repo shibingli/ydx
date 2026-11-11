@@ -177,13 +177,17 @@ GOWORK=off CGO_ENABLED=1 CC=clang go test ./... -race
 ```
 
 - 全仓验证：`scripts/test-all.sh` / `scripts/test-all.ps1`。
+- CI 分层：`ci.yml` 是发布主线，在 Linux 上并行运行产品模块的 `go vet` / `go test`
+  并对基准模块做编译检查；`ci-extra.yml` 异步运行 Windows/macOS 测试、六目标交叉编译、
+  基准测试与手动 arm64，不阻塞主线。
 - 基准只在 `benchmarks/*` 运行；性能门禁为 benchstat 无统计显著回退、`allocs/op` 不增加。
 - 不得通过删除/注释测试、放宽断言、`t.Skip` 让流水线变绿。
 
 ## 7. 发布与标签
 
 - 每个模块独立打子目录标签，例如 `errs/v0.1.0`、`middleware/cors/v0.1.0`。
-- 发布前必须：所有模块测试通过 → `repotest` 通过 → 打标签 → 推送 `main` 与标签。
+- 发布前必须：所有模块测试通过 → `repotest` 通过 → `ci` 主线全绿 → 打标签 →
+  推送 `main` 与标签。`ci-extra` 异步结果单独核验，不作为发布阻塞条件。
 - 标签提交中的 `go.sum` 由本地标签引导生成；改动模块内容后必须重新生成并验证各模块，
   不得让兄弟模块解析到旧内容。
 - 消费方用版本号引用；不得把本地 `replace` 带入发布。

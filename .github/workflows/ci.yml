@@ -9,92 +9,18 @@ on:
 permissions:
   contents: read
 
-# Superseded pull-request runs are cancelled; main pushes keep their own runs
-# so every commit retains a complete result. | 被取代的 PR 运行会被取消；main
-# 推送保留各自运行，使每个提交都有完整结果。
+# Mainline gate: Linux product-module tests, parallelized across modules.
+# Superseded runs are cancelled so the newest commit gets the fastest feedback.
+# | 主线门禁：Linux 产品模块测试，按模块并行；旧运行会被取消，让最新提交最快得到结果。
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  cancel-in-progress: true
 
 jobs:
   test:
-    name: test (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 45
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: ubuntu-latest
-          - os: windows-latest
-          # macos-latest currently targets arm64 runners whose capacity causes
-          # long queues/cancellation. Native x86_64 macOS tests remain on the
-          # supported Intel image; Darwin arm64 is cross-built and optionally
-          # tested by the manual arm64 job below.
-          # | macos-latest 当前指向 arm64 runner，容量不足会长时间排队甚至取消。
-          # 原生 x86_64 macOS 测试使用仍受支持的 Intel 镜像；arm64 由交叉编译与下方
-          # 手动 arm64 任务覆盖。
-          - os: macos-15-intel
-    steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
-        with:
-          go-version: '1.27.4'
-          cache: true
-          cache-dependency-path: '**/go.sum'
-      - name: Build, vet and test modules
-        shell: bash
-        env:
-          GOWORK: 'off'
-          CGO_ENABLED: '0'
-        run: |
-          set -euo pipefail
-          while IFS= read -r gomod; do
-            dir=$(dirname "$gomod")
-            echo "==> $dir"
-            (cd "$dir" && go build ./... && go vet ./...)
-            if [ "$RUNNER_OS" != "Linux" ] && [[ "$dir" == ./benchmarks/* ]]; then
-              echo "skip benchmark tests on $RUNNER_OS (third-party codecs)"
-              continue
-            fi
-            (cd "$dir" && go test ./... -count=1 -timeout=10m)
-          done < <(find . -name go.mod -not -path './.git/*' | sort)
-
-  # Native Apple Silicon coverage is opt-in: hosted arm64 runners are capacity
-  # constrained, so a required push job would repeatedly queue or cancel. The
-  # default cross-build links both Darwin instruction sets, and this job runs
-  # the SIMD-heavy modules natively when dispatched manually. | 原生 Apple Silicon
-  # 覆盖为手动触发：托管 arm64 runner 容量受限，若作为推送必跑任务会反复排队甚至
-  # 取消。默认交叉编译会链接两种 Darwin 指令集；本任务在手动触发时原生运行包含
-  # SIMD 的模块。
-  test-macos-arm64:
-    name: test (macos-15 arm64, manual)
-    if: github.event_name == 'workflow_dispatch'
-    runs-on: macos-15
-    timeout-minutes: 45
-    steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
-        with:
-          go-version: '1.27.4'
-          cache: true
-          cache-dependency-path: '**/go.sum'
-      - name: Build, vet and test instruction-set modules
-        shell: bash
-        env:
-          GOWORK: 'off'
-          CGO_ENABLED: '0'
-        run: |
-          set -euo pipefail
-          for dir in base64 json xml regexpx raft rdma; do
-            echo "==> $dir"
-            (cd "$dir" && go build ./... && go vet ./... && go test ./... -count=1 -timeout=10m)
-          done
-
-  cross-build:
-    name: cross-build
+    name: test (ubuntu-latest)
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
@@ -102,31 +28,43 @@ jobs:
           go-version: '1.27.4'
           cache: true
           cache-dependency-path: '**/go.sum'
-      - name: Cross-build linux/windows/darwin amd64+arm64
-        run: bash scripts/cross-build.sh
-      # Link the assembly-heavy test binaries for both macOS instruction sets.
-      # A library cross-build does not link, so an undefined arm64/amd64 assembly
-      # symbol or an incompatible relocation would otherwise reach the macOS
-      # runner undetected. Darwin arm64 runners are currently capacity-limited,
-      # so this is the deterministic instruction-set check in CI. | 链接两种 macOS
-      # 指令集下包含汇编的测试二进制。库交叉编译不执行链接，否则未定义的
-      # arm64/amd64 汇编符号或重定位问题只能在 macOS runner 上暴露。当前 Darwin
-      # arm64 runner 容量受限，因此以该步骤作为确定性的指令集检查。
-      - name: Cross-link macOS test binaries and vet
+      # `go test` compiles every package, so a separate `go build` is redundant.
+      # Four modules run at a time; Go's test cache and build cache are safe under
+      # concurrent invocations. | `go test` 会编译全部包，无需再单独 `go build`；
+      # 每次并行 4 个模块，Go 的测试与构建缓存在并发下是安全的。
+      - name: Vet and test product modules
         shell: bash
         env:
           GOWORK: 'off'
           CGO_ENABLED: '0'
         run: |
           set -euo pipefail
-          tmp="$(mktemp -d)"
-          trap 'rm -rf "$tmp"' EXIT
-          for arch in amd64 arm64; do
-            for module in base64 json xml regexpx raft rdma; do
-              echo "==> $module darwin/$arch"
-              (cd "$module" && GOOS=darwin GOARCH="$arch" go vet ./...)
-              out="$tmp/$module-$arch"
-              mkdir -p "$out"
-              (cd "$module" && GOOS=darwin GOARCH="$arch" go test -c -o "$out" ./...)
-            done
-          done
+          find . -name go.mod -not -path './.git/*' -not -path './benchmarks/*' -print0 |
+            xargs -0 -n1 -P 4 bash -c '
+              set -e
+              dir=$(dirname "$1")
+              echo "==> $dir"
+              cd "$dir"
+              go vet ./...
+              go test ./... -count=1 -timeout=10m
+            ' _
+      # Benchmark modules are compile-checked on the mainline; their actual tests
+      # run asynchronously in ci-extra. `-run "^$"` still links test binaries, which
+      # catches missing assembly symbols without paying the benchmark runtime cost.
+      # | 主线只对基准模块做编译检查（含测试二进制链接），实际测试在 ci-extra 异步运行。
+      - name: Vet and compile benchmark modules
+        shell: bash
+        env:
+          GOWORK: 'off'
+          CGO_ENABLED: '0'
+        run: |
+          set -euo pipefail
+          find ./benchmarks -name go.mod -print0 |
+            xargs -0 -n1 -P 4 bash -c '
+              set -e
+              dir=$(dirname "$1")
+              echo "==> $dir"
+              cd "$dir"
+              go vet ./...
+              go test ./... -run "^$" -count=1 -timeout=10m
+            ' _

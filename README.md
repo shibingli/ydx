@@ -280,8 +280,9 @@ pwsh ./scripts/test-all.ps1
 pwsh ./scripts/cross-build.ps1
 ```
 
-`.github/workflows/ci.yml` 在 ubuntu、windows、macos 上运行模块的 `go build`、
-`go vet` 与 `go test`，并额外执行六目标交叉编译。平台相关实现集中在 `nodeid`、
+`.github/workflows/ci.yml` 是发布主线：在 ubuntu 上并行运行产品模块的 `go vet` 与
+`go test`，并对基准模块做编译检查。Windows/macOS 测试、六目标交叉编译与基准测试在
+`.github/workflows/ci-extra.yml` 异步运行，不阻塞主线。平台相关实现集中在 `nodeid`、
 `sysinfo` 与 `websocket`；macOS 上无法获取的内存/CPU 指标返回 0 或 `false`，调用方
 按保守默认回退。
 

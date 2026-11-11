@@ -90,15 +90,17 @@ pwsh ./scripts/test-all.ps1    # Windows
 1. 全模块 `build` / `vet` / `test -race` 通过。
 2. `cd repotest && GOWORK=off go test ./...` 通过。
 3. 提交所有源码、`go.mod`、`go.sum`、`docs.go` 与文档。
-4. 为每个模块打子目录标签：`<module>/vX.Y.Z`（如 `errs/v0.1.0`）。
-5. 推送 `main` 与全部标签：
+4. 推送 `main`，等待 `ci` 主线（Linux 产品模块）全绿；`ci-extra` 的
+   Windows/macOS、交叉编译与基准测试异步运行，不作为发布阻塞条件。
+5. 为每个模块打子目录标签：`<module>/vX.Y.Z`（如 `errs/v0.1.0`）。
+6. 推送 `main` 与全部标签：
 
 ```bash
 git push origin main
 git push origin --tags
 ```
 
-6. 发布后由 yd 主仓按版本号引用；不得在 yd 中保留本地 `replace`。
+7. 发布后由 yd 主仓按版本号引用；不得在 yd 中保留本地 `replace`。
 
 **go.sum 说明**：多模块仓库同时打锁步标签时，`go.sum` 中的兄弟模块校验和由本地标签引导
 生成；模块 zip 包含 `go.sum`，因此标签与校验和更新通常分属相邻提交。消费方使用自己的
