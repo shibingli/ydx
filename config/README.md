@@ -8,7 +8,7 @@
 |---|---|
 | 模块路径 | `github.com/shibingli/ydx/config` |
 | 包名 | `config` |
-| Go 版本 | 1.27.3 |
+| Go 版本 | 1.27.4 |
 | 许可证 | Apache-2.0 |
 | 默认前缀 | `YD`（`YD_DB_MAXCONN` → `db.maxconn`） |
 

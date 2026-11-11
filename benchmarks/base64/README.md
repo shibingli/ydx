@@ -313,7 +313,7 @@ YD_BENCH_ONLY=cloudwego/base64x GOWORK=off go test -run '^$' \
 > 在发布前联调本地改动。示例：
 >
 > ```text
-> go 1.27.3
+> go 1.27.4
 >
 > use (
 >     <path-to-ydx>/base64

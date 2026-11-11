@@ -7,7 +7,7 @@ RoCE v1/v2 与 InfiniBand 能力。
 
 - 源码：<https://github.com/shibingli/ydx/tree/main/rdma>
 - 协议：Apache-2.0
-- Go 版本：1.27.3
+- Go 版本：1.27.4
 - 运行时依赖：`libibverbs.so.1`（RDMA 设备驱动，如 `rdma-core` / MLNX OFED）
 
 ## 为什么不是 gordma

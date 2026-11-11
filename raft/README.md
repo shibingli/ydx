@@ -6,7 +6,7 @@
 
 - 源码：<https://github.com/shibingli/ydx/tree/main/raft>
 - 协议：Apache-2.0
-- Go 版本：1.27.3
+- Go 版本：1.27.4
 - 发布标签：`raft/v0.1.0`
 
 ## 功能与特性

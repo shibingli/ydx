@@ -171,7 +171,7 @@ GOWORK=off go test -run TestNextAgreesWithRobfig ./...
 ```bash
 workdir=$(mktemp -d)
 cat > "$workdir/go.work" <<EOF
-go 1.27.3
+go 1.27.4
 use (
 	$(pwd)/../..
 	$(pwd)

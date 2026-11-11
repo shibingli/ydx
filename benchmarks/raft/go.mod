@@ -1,11 +1,11 @@
 module github.com/shibingli/ydx/benchmarks/raft
 
-go 1.27.3
+go 1.27.4
 
 require (
 	github.com/hashicorp/raft v1.8.0
 	github.com/lni/dragonboat/v4 v4.0.0-20250723143628-076c7f6497dc
-	github.com/shibingli/ydx/raft v0.1.12
+	github.com/shibingli/ydx/raft v0.1.13
 	go.etcd.io/raft/v3 v3.7.0
 	google.golang.org/protobuf v1.36.12
 )
@@ -52,12 +52,12 @@ require (
 	github.com/sean-/seed v0.0.0-20170313163322-e2103e2c3529 // indirect
 	github.com/shibingli/ydx/base64 v0.1.14 // indirect
 	github.com/shibingli/ydx/buffpool v0.1.5 // indirect
-	github.com/shibingli/ydx/errs v0.1.4 // indirect
-	github.com/shibingli/ydx/guomi v0.1.2 // indirect
-	github.com/shibingli/ydx/json v0.1.18 // indirect
-	github.com/shibingli/ydx/log v0.1.12 // indirect
-	github.com/shibingli/ydx/rdma v0.1.6 // indirect
-	github.com/shibingli/ydx/sysinfo v0.1.4 // indirect
+	github.com/shibingli/ydx/errs v0.1.5 // indirect
+	github.com/shibingli/ydx/guomi v0.1.3 // indirect
+	github.com/shibingli/ydx/json v0.1.19 // indirect
+	github.com/shibingli/ydx/log v0.1.13 // indirect
+	github.com/shibingli/ydx/rdma v0.1.7 // indirect
+	github.com/shibingli/ydx/sysinfo v0.1.5 // indirect
 	github.com/shibingli/ydx/wal v0.3.4 // indirect
 	github.com/valyala/fastrand v1.1.0 // indirect
 	github.com/valyala/histogram v1.2.0 // indirect

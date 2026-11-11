@@ -1,6 +1,6 @@
 module github.com/shibingli/ydx/benchmarks/json
 
-go 1.27.3
+go 1.27.4
 
 require (
 	github.com/bytedance/sonic v1.15.4
@@ -8,7 +8,7 @@ require (
 	github.com/goccy/go-json v0.11.2
 	github.com/json-iterator/go v1.1.12
 	github.com/segmentio/encoding v0.5.4
-	github.com/shibingli/ydx/json v0.1.18
+	github.com/shibingli/ydx/json v0.1.19
 )
 
 require (
@@ -20,8 +20,8 @@ require (
 	github.com/modern-go/reflect2 v1.0.2 // indirect
 	github.com/segmentio/asm v1.1.3 // indirect
 	github.com/shibingli/ydx/base64 v0.1.14 // indirect
-	github.com/shibingli/ydx/errs v0.1.4 // indirect
-	github.com/shibingli/ydx/sysinfo v0.1.4 // indirect
+	github.com/shibingli/ydx/errs v0.1.5 // indirect
+	github.com/shibingli/ydx/sysinfo v0.1.5 // indirect
 	github.com/twitchyliquid64/golang-asm v0.15.1 // indirect
 	golang.org/x/arch v0.0.0-20210923205945-b76863e36670 // indirect
 	golang.org/x/sys v0.22.0 // indirect

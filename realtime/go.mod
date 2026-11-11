@@ -1,48 +1,50 @@
 module github.com/shibingli/ydx/realtime
 
-go 1.27.3
+go 1.27.4
 
 require (
 	github.com/alicebob/miniredis/v2 v2.40.0
 	github.com/redis/go-redis/v9 v9.23.0
-	github.com/shibingli/ydx/afs v0.1.6
-	github.com/shibingli/ydx/config v0.1.8
-	github.com/shibingli/ydx/errs v0.1.4
-	github.com/shibingli/ydx/nodeid v0.1.4
-	github.com/shibingli/ydx/sse v0.1.11
-	github.com/shibingli/ydx/websocket v0.1.16
-	github.com/shibingli/ydx/webtransport v0.1.0
+	github.com/shibingli/ydx/afs v0.1.7
+	github.com/shibingli/ydx/config v0.1.9
+	github.com/shibingli/ydx/errs v0.1.5
+	github.com/shibingli/ydx/nodeid v0.1.5
+	github.com/shibingli/ydx/sse v0.1.12
+	github.com/shibingli/ydx/websocket v0.1.17
+	github.com/shibingli/ydx/webtransport v0.1.1
 	github.com/spf13/afero v1.15.0
 )
 
 require (
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
-	github.com/dunglas/httpsfv v1.1.1 // indirect
+	github.com/dunglas/httpsfv v1.1.2 // indirect
 	github.com/fsnotify/fsnotify v1.10.1 // indirect
 	github.com/go-viper/mapstructure/v2 v2.5.0 // indirect
-	github.com/klauspost/compress v1.20.3 // indirect
+	github.com/klauspost/compress v1.20.4 // indirect
 	github.com/pelletier/go-toml/v2 v2.4.3 // indirect
 	github.com/quic-go/qpack v0.6.0 // indirect
+	// Keep v0.64.1: webtransport-go v0.13.0 does not support quic-go v0.65.0's
+	// http3.HTTPStreamer.HTTPStream signature. | webtransport-go v0.13.0 尚不兼容
+	// quic-go v0.65.0 的 http3.HTTPStreamer.HTTPStream 签名，保持 v0.64.1。
 	github.com/quic-go/quic-go v0.64.1 // indirect
 	github.com/quic-go/webtransport-go v0.13.0 // indirect
 	github.com/sagikazarmark/locafero v0.12.0 // indirect
 	github.com/shibingli/ydx/base64 v0.1.14 // indirect
-	github.com/shibingli/ydx/json v0.1.18 // indirect
-	github.com/shibingli/ydx/log v0.1.12 // indirect
-	github.com/shibingli/ydx/protocol v0.1.5 // indirect
-	github.com/shibingli/ydx/regexpx v0.1.13 // indirect
-	github.com/shibingli/ydx/router v0.1.14 // indirect
-	github.com/shibingli/ydx/sysinfo v0.1.4 // indirect
+	github.com/shibingli/ydx/json v0.1.19 // indirect
+	github.com/shibingli/ydx/log v0.1.13 // indirect
+	github.com/shibingli/ydx/protocol v0.1.6 // indirect
+	github.com/shibingli/ydx/router v0.1.15 // indirect
+	github.com/shibingli/ydx/sysinfo v0.1.5 // indirect
 	github.com/shibingli/ydx/xml v0.1.2 // indirect
 	github.com/spf13/cast v1.10.0 // indirect
-	github.com/spf13/pflag v1.0.10 // indirect
+	github.com/spf13/pflag v1.1.0 // indirect
 	github.com/spf13/viper v1.21.0 // indirect
 	github.com/subosito/gotenv v1.6.0 // indirect
 	github.com/yuin/gopher-lua v1.1.1 // indirect
 	go.uber.org/atomic v1.12.0 // indirect
-	go.yaml.in/yaml/v3 v3.0.5 // indirect
+	go.yaml.in/yaml/v3 v3.0.6 // indirect
 	golang.org/x/crypto v0.58.0 // indirect
-	golang.org/x/net v0.61.0 // indirect
-	golang.org/x/sys v0.49.0 // indirect
-	golang.org/x/text v0.43.0 // indirect
+	golang.org/x/net v0.62.0 // indirect
+	golang.org/x/sys v0.50.0 // indirect
+	golang.org/x/text v0.44.0 // indirect
 )

@@ -8,7 +8,7 @@
 |---|---|
 | 模块路径 | `github.com/shibingli/ydx/gorm` |
 | 包名 | `gorm` |
-| Go 版本 | 1.27.3 |
+| Go 版本 | 1.27.4 |
 | 许可证 | Apache-2.0 |
 | 支持驱动 | `mysql`、`postgres`、`sqlite`、`dm` |
 

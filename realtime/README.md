@@ -8,7 +8,7 @@ SSE 或 WebTransport；传输用 `Sink` 自行适配，依赖方向保持单向�
 |---|---|
 | 模块路径 | `github.com/shibingli/ydx/realtime` |
 | 包名 | `realtime` |
-| Go 版本 | 1.27.3 |
+| Go 版本 | 1.27.4 |
 | 许可证 | Apache-2.0 |
 | 默认队列 | 256（`DefaultQueueSize`） |
 

@@ -1,6 +1,6 @@
 module github.com/shibingli/ydx/benchmarks/xml
 
-go 1.27.3
+go 1.27.4
 
 require (
 	github.com/antchfx/xmlquery v1.4.4
@@ -12,7 +12,7 @@ require (
 
 require (
 	github.com/golang/groupcache v0.0.0-20210331224755-41bb18bfe9da // indirect
-	github.com/shibingli/ydx/errs v0.1.4 // indirect
+	github.com/shibingli/ydx/errs v0.1.5 // indirect
 	golang.org/x/net v0.33.0 // indirect
 	golang.org/x/text v0.21.0 // indirect
 )

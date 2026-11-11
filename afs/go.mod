@@ -1,10 +1,10 @@
 module github.com/shibingli/ydx/afs
 
-go 1.27.3
+go 1.27.4
 
 require (
-	github.com/shibingli/ydx/errs v0.1.4
+	github.com/shibingli/ydx/errs v0.1.5
 	github.com/spf13/afero v1.15.0
 )
 
-require golang.org/x/text v0.43.0 // indirect
+require golang.org/x/text v0.44.0 // indirect

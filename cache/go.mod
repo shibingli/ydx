@@ -1,20 +1,20 @@
 module github.com/shibingli/ydx/cache
 
-go 1.27.3
+go 1.27.4
 
 require (
 	github.com/alicebob/miniredis/v2 v2.40.0
 	github.com/glebarez/sqlite v1.11.0
 	github.com/redis/go-redis/v9 v9.23.0
-	github.com/shibingli/ydx/afs v0.1.6
-	github.com/shibingli/ydx/config v0.1.8
-	github.com/shibingli/ydx/errs v0.1.4
-	github.com/shibingli/ydx/json v0.1.18
-	github.com/shibingli/ydx/log v0.1.12
-	github.com/shibingli/ydx/nodeid v0.1.4
-	github.com/shibingli/ydx/sysinfo v0.1.4
+	github.com/shibingli/ydx/afs v0.1.7
+	github.com/shibingli/ydx/config v0.1.9
+	github.com/shibingli/ydx/errs v0.1.5
+	github.com/shibingli/ydx/json v0.1.19
+	github.com/shibingli/ydx/log v0.1.13
+	github.com/shibingli/ydx/nodeid v0.1.5
+	github.com/shibingli/ydx/sysinfo v0.1.5
 	github.com/spf13/afero v1.15.0
-	golang.org/x/sync v0.24.0
+	golang.org/x/sync v0.25.0
 	gorm.io/gorm v1.31.2
 )
 
@@ -35,14 +35,14 @@ require (
 	github.com/sagikazarmark/locafero v0.12.0 // indirect
 	github.com/shibingli/ydx/base64 v0.1.14 // indirect
 	github.com/spf13/cast v1.10.0 // indirect
-	github.com/spf13/pflag v1.0.10 // indirect
+	github.com/spf13/pflag v1.1.0 // indirect
 	github.com/spf13/viper v1.21.0 // indirect
 	github.com/subosito/gotenv v1.6.0 // indirect
 	github.com/yuin/gopher-lua v1.1.2 // indirect
 	go.uber.org/atomic v1.12.0 // indirect
-	go.yaml.in/yaml/v3 v3.0.5 // indirect
-	golang.org/x/sys v0.49.0 // indirect
-	golang.org/x/text v0.43.0 // indirect
+	go.yaml.in/yaml/v3 v3.0.6 // indirect
+	golang.org/x/sys v0.50.0 // indirect
+	golang.org/x/text v0.44.0 // indirect
 	modernc.org/libc v1.79.0 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.12.1 // indirect

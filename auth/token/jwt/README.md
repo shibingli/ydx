@@ -8,7 +8,7 @@
 |---|---|
 | 导入路径 | `github.com/shibingli/ydx/auth/token/jwt`（所属模块 `github.com/shibingli/ydx/auth`） |
 | 包名 | `jwt` |
-| Go 版本 | 1.27.3 |
+| Go 版本 | 1.27.4 |
 | 许可证 | Apache-2.0 |
 | 默认 token 来源 | `header:Authorization:Bearer ` |
 

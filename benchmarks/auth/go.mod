@@ -1,6 +1,6 @@
 module github.com/shibingli/ydx/benchmarks/auth
 
-go 1.27.3
+go 1.27.4
 
 require (
 	github.com/beevik/etree v1.8.1
@@ -11,10 +11,10 @@ require (
 	github.com/lestrrat-go/jwx/v4 v4.5.0
 	github.com/pquerna/otp v1.5.0
 	github.com/russellhaering/goxmldsig v1.6.1
-	github.com/shibingli/ydx/auth v0.1.4
+	github.com/shibingli/ydx/auth v0.1.5
 	github.com/shibingli/ydx/base64 v0.1.14
-	github.com/shibingli/ydx/json v0.1.18
-	github.com/shibingli/ydx/router v0.1.14
+	github.com/shibingli/ydx/json v0.1.19
+	github.com/shibingli/ydx/router v0.1.15
 	golang.org/x/oauth2 v0.37.0
 )
 
@@ -29,12 +29,12 @@ require (
 	github.com/jonboulle/clockwork v0.5.0 // indirect
 	github.com/lestrrat-go/dsig v1.4.0 // indirect
 	github.com/lestrrat-go/option/v3 v3.0.0-alpha1 // indirect
-	github.com/shibingli/ydx/afs v0.1.6 // indirect
-	github.com/shibingli/ydx/errs v0.1.4 // indirect
-	github.com/shibingli/ydx/guomi v0.1.2 // indirect
-	github.com/shibingli/ydx/log v0.1.12 // indirect
-	github.com/shibingli/ydx/protocol v0.1.5 // indirect
-	github.com/shibingli/ydx/sysinfo v0.1.4 // indirect
+	github.com/shibingli/ydx/afs v0.1.7 // indirect
+	github.com/shibingli/ydx/errs v0.1.5 // indirect
+	github.com/shibingli/ydx/guomi v0.1.3 // indirect
+	github.com/shibingli/ydx/log v0.1.13 // indirect
+	github.com/shibingli/ydx/protocol v0.1.6 // indirect
+	github.com/shibingli/ydx/sysinfo v0.1.5 // indirect
 	github.com/shibingli/ydx/xml v0.1.2 // indirect
 	github.com/spf13/afero v1.15.0 // indirect
 	github.com/valyala/fastjson v1.6.10 // indirect

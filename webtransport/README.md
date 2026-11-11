@@ -9,7 +9,7 @@ WebTransport 会话。
 |---|---|
 | 模块路径 | `github.com/shibingli/ydx/webtransport` |
 | 包名 | `webtransport` |
-| Go 版本 | 1.27.3 |
+| Go 版本 | 1.27.4 |
 | 许可证 | Apache-2.0 |
 | 默认消息上限 | 1 MiB（`DefaultMaxMessageSize`） |
 
@@ -37,6 +37,15 @@ WebTransport 会话。
 - **职责边界**：不实现 HTTP/3 本身、不拥有 TLS 证书、不决定路由；应用注册普通处理器，
   在请求为 WebTransport CONNECT 时调用 `Upgrade`。
 - **优雅关闭**：`Server.Close` 关闭监听与会话；`SessionSet` 负责业务侧生命周期。
+
+## 依赖兼容性
+
+`github.com/quic-go/webtransport-go v0.13.0`（当前最新）尚不兼容
+`github.com/quic-go/quic-go v0.65.0`：后者把 `http3.HTTPStreamer.HTTPStream` 从
+`HTTPStream() *Stream` 改为 `HTTPStream() (*Stream, error)`，webtransport-go v0.13.0
+仍按单返回值调用，编译会失败。因此本模块固定 `quic-go v0.64.1`，待 webtransport-go
+发布兼容版本后再解除；`realtime` 通过 webtransport-go 间接依赖 quic-go，同样保持
+v0.64.1。`websocket` 模块不依赖 webtransport-go，可直接使用 quic-go v0.65.0。
 
 ## 快速开始
 

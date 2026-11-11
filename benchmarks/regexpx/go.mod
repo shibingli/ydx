@@ -1,6 +1,6 @@
 module github.com/shibingli/ydx/benchmarks/regexpx
 
-go 1.27.3
+go 1.27.4
 
 require (
 	github.com/dlclark/regexp2 v1.12.0
@@ -10,6 +10,6 @@ require (
 )
 
 require (
-	github.com/shibingli/ydx/errs v0.1.4 // indirect
+	github.com/shibingli/ydx/errs v0.1.5 // indirect
 	golang.org/x/sys v0.48.0 // indirect
 )

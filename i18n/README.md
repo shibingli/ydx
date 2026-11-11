@@ -8,7 +8,7 @@
 |---|---|
 | 模块路径 | `github.com/shibingli/ydx/i18n` |
 | 包名 | `i18n` |
-| Go 版本 | 1.27.3 |
+| Go 版本 | 1.27.4 |
 | 许可证 | Apache-2.0 |
 | 默认查询参数 | `lang`（`DefaultQueryParam`） |
 | 默认请求头 | `X-Lang`（`HeaderName`） |

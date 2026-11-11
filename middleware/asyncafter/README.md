@@ -8,7 +8,7 @@
 |---|---|
 | 模块路径 | `github.com/shibingli/ydx/middleware/asyncafter` |
 | 包名 | `asyncafter` |
-| Go 版本 | 1.27.3 |
+| Go 版本 | 1.27.4 |
 | 许可证 | Apache-2.0 |
 | 默认队列 | 1024（`QueueSize <= 0`） |
 | 默认 worker | `GOMAXPROCS`（`Workers <= 0`） |

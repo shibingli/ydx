@@ -9,7 +9,7 @@ zstd 或 gzip 响应压缩。编码只在响应确实大到值得压缩时才协
 |---|---|
 | 模块路径 | `github.com/shibingli/ydx/middleware/compress` |
 | 包名 | `compress` |
-| Go 版本 | 1.27.3 |
+| Go 版本 | 1.27.4 |
 | 许可证 | Apache-2.0 |
 | 默认最小压缩 | 1024 B |
 | 默认优先级 | zstd > brotli > gzip |

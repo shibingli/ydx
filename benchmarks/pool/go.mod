@@ -1,6 +1,6 @@
 module github.com/shibingli/ydx/benchmarks/pool
 
-go 1.27.3
+go 1.27.4
 
 require (
 	github.com/alitto/pond/v2 v2.7.3
@@ -12,7 +12,7 @@ require (
 
 require (
 	github.com/gammazero/deque v1.2.2 // indirect
-	github.com/shibingli/ydx/errs v0.1.4 // indirect
+	github.com/shibingli/ydx/errs v0.1.5 // indirect
 	go.uber.org/atomic v1.7.0 // indirect
 	go.uber.org/multierr v1.9.0 // indirect
 	golang.org/x/sync v0.11.0 // indirect

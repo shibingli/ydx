@@ -8,7 +8,7 @@ YD 路由与原生 `net/http`。
 |---|---|
 | 模块路径 | `github.com/shibingli/ydx/router` |
 | 包名 | `router` |
-| Go 版本 | 1.27.3 |
+| Go 版本 | 1.27.4 |
 | 许可证 | Apache-2.0 |
 
 ## 功能

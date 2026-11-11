@@ -8,7 +8,7 @@
 |---|---|
 | 模块路径 | `github.com/shibingli/ydx/nodeid` |
 | 包名 | `nodeid` |
-| Go 版本 | 1.27.3 |
+| Go 版本 | 1.27.4 |
 | 许可证 | Apache-2.0 |
 | 最大 ID 长度 | 64 字节（`MaxIDLength`） |
 

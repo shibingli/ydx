@@ -7,7 +7,7 @@
 
 - 源码仓库：<https://github.com/shibingli/ydx>
 - 开源协议：Apache-2.0（见 `LICENSE`）
-- Go 版本：1.27.3
+- Go 版本：1.27.4
 - 仓库根目录**不是** Go 模块，也没有 `go.work`；组件按子目录标签单独发布，例如
   `errs/v0.1.0`、`middleware/cors/v0.1.0`。根目录的 `docs.go` 只是文档锚点，不是
   可导入模块。

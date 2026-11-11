@@ -11,7 +11,7 @@ SEND 吞吐，并与 gordma v0.3.0、perftest 对照。
 ```bash
 # 构建（rdma 模块尚未发布标签时，在仓库外创建临时 go.work）
 cat > /tmp/ydx-go.work <<'EOF'
-go 1.27.3
+go 1.27.4
 use (
     /path/to/ydx/rdma
     /path/to/ydx/benchmarks/rdma

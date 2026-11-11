@@ -8,7 +8,7 @@
 |---|---|
 | 模块路径 | `github.com/shibingli/ydx/regexpx` |
 | 包名 | `regexpx` |
-| Go 版本 | 1.27.3 |
+| Go 版本 | 1.27.4 |
 | 许可证 | Apache-2.0 |
 | 默认超时 | 100 ms（`MatchTimeout`） |
 | 性能数据 | [`PERFORMANCE.md`](PERFORMANCE.md) |

@@ -8,7 +8,7 @@ goroutine 调用栈，终止链上剩余处理器，并写出一个不含内部�
 |---|---|
 | 模块路径 | `github.com/shibingli/ydx/middleware/recovery` |
 | 包名 | `recovery` |
-| Go 版本 | 1.27.3 |
+| Go 版本 | 1.27.4 |
 | 许可证 | Apache-2.0 |
 
 ## 功能

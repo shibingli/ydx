@@ -1,6 +1,6 @@
 module github.com/shibingli/ydx/benchmarks/base64
 
-go 1.27.3
+go 1.27.4
 
 require (
 	github.com/cloudwego/base64x v0.1.7
@@ -13,7 +13,7 @@ require (
 require (
 	github.com/bytedance/sonic/loader v0.5.2 // indirect
 	github.com/klauspost/cpuid/v2 v2.2.9 // indirect
-	github.com/shibingli/ydx/errs v0.1.4 // indirect
-	github.com/shibingli/ydx/sysinfo v0.1.4 // indirect
+	github.com/shibingli/ydx/errs v0.1.5 // indirect
+	github.com/shibingli/ydx/sysinfo v0.1.5 // indirect
 	golang.org/x/sys v0.22.0 // indirect
 )

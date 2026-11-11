@@ -8,7 +8,7 @@ RFC 9220 HTTP/3 Extended CONNECT。升级核心本身是原生 `net/http`，YD �
 |---|---|
 | 模块路径 | `github.com/shibingli/ydx/websocket` |
 | 包名 | `websocket` |
-| Go 版本 | 1.27.3 |
+| Go 版本 | 1.27.4 |
 | 许可证 | Apache-2.0 |
 
 ## 功能

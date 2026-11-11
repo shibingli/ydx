@@ -23,7 +23,7 @@
 | 项 | 值 |
 |---|---|
 | 模块路径 | `github.com/shibingli/ydx/authstore` |
-| Go 版本 | 1.27.3 |
+| Go 版本 | 1.27.4 |
 | 许可证 | Apache-2.0 |
 | 默认键前缀 | `ydx:authstore:<子包>:` |
 | 依赖方向 | authstore → auth，auth 不反向依赖 authstore |
