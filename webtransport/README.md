@@ -45,7 +45,9 @@ WebTransport 会话。
 `HTTPStream() *Stream` 改为 `HTTPStream() (*Stream, error)`，webtransport-go v0.13.0
 仍按单返回值调用，编译会失败。因此本模块固定 `quic-go v0.64.1`，待 webtransport-go
 发布兼容版本后再解除；`realtime` 通过 webtransport-go 间接依赖 quic-go，同样保持
-v0.64.1。`websocket` 模块不依赖 webtransport-go，可直接使用 quic-go v0.65.0。
+v0.64.1。`websocket` 虽不依赖 webtransport-go，但消费方同时引用 `websocket` 与
+`realtime`/本模块时，MVS 仍会选到 quic-go v0.65.0 并导致编译失败，因此 `websocket`
+也固定 v0.64.1。
 
 ## 快速开始
 

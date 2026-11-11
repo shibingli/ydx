@@ -70,11 +70,12 @@ ydx 是 yd 全栈框架的可复用组件仓库；组件源码以本仓库为唯
   已发布标签不可移动：组件变更时先提升版本（本次由 `v0.1.0` 提升到 `v0.1.1`），
   再让 yd 同步新版本，禁止用 `-f` 改写已推送的标签。
 - 外部依赖版本以 yd 根 `go.mod` 为准，不得在迁移或常规修改中擅自升级。
-- `webtransport` 固定 `github.com/quic-go/quic-go v0.64.1`：最新的
+- 全仓固定 `github.com/quic-go/quic-go v0.64.1`：最新的
   `github.com/quic-go/webtransport-go v0.13.0` 尚不兼容 quic-go v0.65.0（后者把
-  `http3.HTTPStreamer.HTTPStream` 改为返回 `(*Stream, error)`）；`realtime` 通过
-  webtransport-go 间接依赖 quic-go，同样固定 v0.64.1。`websocket` 不依赖
-  webtransport-go，可使用 quic-go v0.65.0；待 webtransport-go 发布兼容版本后解除固定。
+  `http3.HTTPStreamer.HTTPStream` 改为返回 `(*Stream, error)`）。`webtransport` 与
+  `realtime` 直接/间接依赖 webtransport-go；`websocket` 虽不依赖 webtransport-go，
+  但消费方同时引用两者时 MVS 会选到 v0.65.0 并破坏 webtransport-go，因此也固定
+  v0.64.1。待 webtransport-go 发布兼容版本后统一解除固定。
 - `auth` 不引入任何第三方认证框架。密码哈希使用 `golang.org/x/crypto`（Argon2id/bcrypt/
   scrypt，仅 KDF）；国密 SM2/SM3/SM4 使用本仓 `github.com/shibingli/ydx/guomi`；
   JSON/Base64/XML/JWT 分别使用 `ydx/json`、`ydx/base64`、`ydx/xml` 与模块内 `auth/token/jwt`。

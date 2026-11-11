@@ -11,6 +11,14 @@ RFC 9220 HTTP/3 Extended CONNECT。升级核心本身是原生 `net/http`，YD �
 | Go 版本 | 1.27.4 |
 | 许可证 | Apache-2.0 |
 
+## 依赖兼容性
+
+HTTP/3 支持固定 `github.com/quic-go/quic-go v0.64.1`。当前最新的
+`webtransport-go v0.13.0` 尚不兼容 quic-go v0.65.0（`HTTPStream` 签名变更）；
+消费方同时引用本模块与 `ydx/realtime` / `ydx/webtransport` 时，MVS 会选择最高
+版本并导致编译失败，因此本模块也保持 v0.64.1，待 webtransport-go 发布兼容版本
+后统一升级。
+
 ## 功能
 
 - `Upgrade(w, r, Options)` / `Dial(ctx, url, DialOptions)`：服务端与客户端握手。
