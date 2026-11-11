@@ -9,7 +9,7 @@ require (
 	github.com/cbroglie/mustache v1.4.2
 	github.com/flosch/pongo2/v6 v6.1.0
 	github.com/osteele/liquid v1.9.2
-	github.com/shibingli/ydx/render v0.1.12
+	github.com/shibingli/ydx/render v0.1.13
 	github.com/spf13/afero v1.15.0
 	github.com/valyala/quicktemplate v1.8.0
 )
@@ -17,16 +17,16 @@ require (
 require (
 	github.com/CloudyKit/fastprinter v0.0.0-20200109182630-33d98a066a53 // indirect
 	github.com/osteele/tuesday v1.1.1 // indirect
-	github.com/shibingli/ydx/afs v0.1.7 // indirect
-	github.com/shibingli/ydx/base64 v0.1.14 // indirect
-	github.com/shibingli/ydx/errs v0.1.5 // indirect
-	github.com/shibingli/ydx/json v0.1.19 // indirect
-	github.com/shibingli/ydx/log v0.1.13 // indirect
-	github.com/shibingli/ydx/sysinfo v0.1.5 // indirect
+	github.com/shibingli/ydx/afs v0.1.8 // indirect
+	github.com/shibingli/ydx/base64 v0.1.15 // indirect
+	github.com/shibingli/ydx/errs v0.1.6 // indirect
+	github.com/shibingli/ydx/json v0.1.20 // indirect
+	github.com/shibingli/ydx/log v0.1.14 // indirect
+	github.com/shibingli/ydx/sysinfo v0.1.6 // indirect
 	github.com/valyala/bytebufferpool v1.0.0 // indirect
-	golang.org/x/mod v0.41.0 // indirect
-	golang.org/x/sync v0.24.0 // indirect
-	golang.org/x/text v0.43.0 // indirect
-	golang.org/x/tools v0.51.0 // indirect
+	golang.org/x/mod v0.42.0 // indirect
+	golang.org/x/sync v0.25.0 // indirect
+	golang.org/x/text v0.44.0 // indirect
+	golang.org/x/tools v0.52.0 // indirect
 	gopkg.in/yaml.v2 v2.4.0 // indirect
 )

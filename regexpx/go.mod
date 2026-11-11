@@ -2,4 +2,4 @@ module github.com/shibingli/ydx/regexpx
 
 go 1.27.4
 
-require github.com/shibingli/ydx/errs v0.1.5
+require github.com/shibingli/ydx/errs v0.1.6

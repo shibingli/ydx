@@ -10,7 +10,7 @@ require (
 	// 尚不兼容；在有兼容版本前固定 v0.64.1。
 	github.com/quic-go/quic-go v0.64.1
 	github.com/quic-go/webtransport-go v0.13.0
-	github.com/shibingli/ydx/errs v0.1.5
+	github.com/shibingli/ydx/errs v0.1.6
 )
 
 require (

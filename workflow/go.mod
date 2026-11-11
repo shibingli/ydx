@@ -4,14 +4,14 @@ go 1.27.4
 
 require (
 	github.com/glebarez/sqlite v1.11.0
-	github.com/shibingli/ydx/base64 v0.1.14
-	github.com/shibingli/ydx/cron v0.1.4
-	github.com/shibingli/ydx/errs v0.1.5
-	github.com/shibingli/ydx/gorm v0.1.15
-	github.com/shibingli/ydx/json v0.1.19
-	github.com/shibingli/ydx/log v0.1.13
-	github.com/shibingli/ydx/regexpx v0.1.13
-	github.com/shibingli/ydx/xml v0.1.2
+	github.com/shibingli/ydx/base64 v0.1.15
+	github.com/shibingli/ydx/cron v0.1.5
+	github.com/shibingli/ydx/errs v0.1.6
+	github.com/shibingli/ydx/gorm v0.1.16
+	github.com/shibingli/ydx/json v0.1.20
+	github.com/shibingli/ydx/log v0.1.14
+	github.com/shibingli/ydx/regexpx v0.1.14
+	github.com/shibingli/ydx/xml v0.1.3
 	gorm.io/gorm v1.31.2
 )
 
@@ -36,11 +36,11 @@ require (
 	github.com/pelletier/go-toml/v2 v2.4.3 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
 	github.com/sagikazarmark/locafero v0.12.0 // indirect
-	github.com/shibingli/ydx/afs v0.1.7 // indirect
-	github.com/shibingli/ydx/config v0.1.9 // indirect
-	github.com/shibingli/ydx/protocol v0.1.6 // indirect
-	github.com/shibingli/ydx/router v0.1.15 // indirect
-	github.com/shibingli/ydx/sysinfo v0.1.5 // indirect
+	github.com/shibingli/ydx/afs v0.1.8 // indirect
+	github.com/shibingli/ydx/config v0.1.10 // indirect
+	github.com/shibingli/ydx/protocol v0.1.7 // indirect
+	github.com/shibingli/ydx/router v0.1.16 // indirect
+	github.com/shibingli/ydx/sysinfo v0.1.6 // indirect
 	github.com/spf13/afero v1.15.0 // indirect
 	github.com/spf13/cast v1.10.0 // indirect
 	github.com/spf13/pflag v1.1.0 // indirect
