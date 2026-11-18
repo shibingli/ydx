@@ -29,6 +29,20 @@ type HopMeta struct {
 	Duration time.Duration
 }
 
+// Timings carries optional httptrace phase durations. | Timings 携带可选的 httptrace 阶段耗时。
+type Timings struct {
+	// DNS is name resolution time. | DNS 是域名解析耗时。
+	DNS time.Duration
+	// Connect is TCP connect time. | Connect 是 TCP 连接耗时。
+	Connect time.Duration
+	// TLSHandshake is TLS handshake time. | TLSHandshake 是 TLS 握手耗时。
+	TLSHandshake time.Duration
+	// TTFB is time to first response byte. | TTFB 是首字节响应耗时。
+	TTFB time.Duration
+	// Total is the total RoundTrip time. | Total 是 RoundTrip 总耗时。
+	Total time.Duration
+}
+
 // Meta carries client-side request metadata alongside a response. | Meta 随响应携带客户端侧请求元数据。
 type Meta struct {
 	// Rule is the matched rule, when any. | Rule 是命中的规则（如有）。
@@ -37,6 +51,10 @@ type Meta struct {
 	Host *Host
 	// Guard is the guard decision, when a guard ran. | Guard 是守卫决策（如执行过）。
 	Guard *GuardDecision
+	// Timings carries optional phase timings. | Timings 携带可选的阶段耗时。
+	Timings Timings
+	// Mirrors records shadow request results. | Mirrors 记录影子请求结果。
+	Mirrors []MirrorResult
 	// Hops records the redirect chain in order. | Hops 按顺序记录重定向链。
 	Hops []HopMeta
 	// Params are the captured path parameters. | Params 是路径参数捕获。

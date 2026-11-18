@@ -2,9 +2,11 @@ package client
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -102,7 +104,7 @@ func TestMirrorCloseRace(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			m.submit(context.Background(), req, req.URL, nil, policy)
+			m.submit(context.Background(), req, req.URL, nil, policy, nil)
 		}()
 	}
 	m.Close()
@@ -144,6 +146,10 @@ func TestMirrorSync(t *testing.T) {
 	if mirrorHits.Load() != 1 {
 		t.Fatalf("sync mirror hits %d", mirrorHits.Load())
 	}
+	if len(resp.Meta.Mirrors) != 1 || resp.Meta.Mirrors[0].Status != http.StatusOK ||
+		resp.Meta.Mirrors[0].Target != mirror.URL {
+		t.Fatalf("mirror results %+v", resp.Meta.Mirrors)
+	}
 }
 
 func TestMirrorStripsSensitiveHeaders(t *testing.T) {
@@ -184,5 +190,44 @@ func TestMirrorStripsSensitiveHeaders(t *testing.T) {
 	resp.Body.Close()
 	if gotAuth.Load() != "" || gotCookie.Load() != "" {
 		t.Fatalf("sensitive headers mirrored: auth=%q cookie=%q", gotAuth.Load(), gotCookie.Load())
+	}
+}
+
+func TestMirrorSpoolsNonReplayableBody(t *testing.T) {
+	var primaryBody, mirrorBody string
+	primary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		data, _ := io.ReadAll(r.Body)
+		primaryBody = string(data)
+	}))
+	defer primary.Close()
+	mirror := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		data, _ := io.ReadAll(r.Body)
+		mirrorBody = string(data)
+	}))
+	defer mirror.Close()
+	c, err := New(WithRule(Rule{
+		Name:    "mirror",
+		Pattern: "/x",
+		Mirror: &MirrorPolicy{
+			Targets: []string{mirror.URL},
+			Percent: 100,
+			Sync:    true,
+			Wait:    time.Second,
+			Timeout: time.Second,
+		},
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	req, _ := http.NewRequest(http.MethodPost, primary.URL+"/x", io.NopCloser(strings.NewReader("payload")))
+	req.ContentLength = 7
+	resp, err := c.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if primaryBody != "payload" || mirrorBody != "payload" {
+		t.Fatalf("primary %q mirror %q", primaryBody, mirrorBody)
 	}
 }

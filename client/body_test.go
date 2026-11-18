@@ -2,12 +2,17 @@ package client
 
 import (
 	"bytes"
+	"context"
+	"errors"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"os"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/shibingli/ydx/json"
 )
@@ -234,5 +239,25 @@ func TestPrepareBodyRawMessage(t *testing.T) {
 	got, _ := io.ReadAll(body)
 	if string(got) != `{"a":1}` {
 		t.Fatalf("json raw body %q", got)
+	}
+}
+
+func TestSpoolMaxBytes(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+	}))
+	defer srv.Close()
+	c, err := New(
+		WithHosts(srv.URL),
+		WithRetry(RetryPolicy{MaxAttempts: 2, Backoff: func(int) time.Duration { return time.Millisecond }}),
+		WithSpoolMaxBytes(5),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	_, err = c.Put(context.Background(), srv.URL+"/x", io.NopCloser(strings.NewReader("0123456789")))
+	if !errors.Is(err, ErrRequestTooLarge) {
+		t.Fatalf("want ErrRequestTooLarge, got %v", err)
 	}
 }

@@ -61,7 +61,8 @@ POST 约慢 3%，TLS 约慢 4%；分配比 native 多 5–7 次/请求，仍显�
 
 “功能全开”（规则 + 缓存 + 合并 + 镜像）没有跨库可比对象，其正确性由 `client` 包测试覆盖；
 本表只测直通热路径，避免把不同语义的实现放在一起比较。基准中的 ydx 客户端使用
-`WithoutCookieJar()`，避免默认 Cookie Jar 的额外语义影响直通对比。
+`WithoutCookieJar()`，避免默认 Cookie Jar 的额外语义影响直通对比；并显式
+`WithRewriteAll(true)`，让绝对 URL 仍走 Host 池，以覆盖 Host 选择快路径。
 
 结论：
 

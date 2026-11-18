@@ -34,11 +34,14 @@ type options struct {
 	Timeout           time.Duration
 	MaxParallel       int
 	SpoolLimit        int64
+	SpoolMaxBytes     int64
 	MaxMirrorInflight int
 	MaxAsync          int
 	SpoolToDisk       bool
 	H2C               bool
 	DisableCookieJar  bool
+	Trace             bool
+	RewriteAll        bool
 }
 
 // Option mutates the client configuration during New. | Option 在 New 期间修改客户端配置。
@@ -47,10 +50,11 @@ type Option func(*options) error
 // defaultOptions returns the defaults used when New receives no option. | defaultOptions 返回 New 未收到选项时使用的默认值。
 func defaultOptions() options {
 	return options{
-		MaxParallel: 32,
-		SpoolLimit:  1 << 20,
-		MaxAsync:    1024,
-		ConnMode:    ConnLong,
+		MaxParallel:   32,
+		SpoolLimit:    1 << 20,
+		SpoolMaxBytes: 64 << 20,
+		MaxAsync:      1024,
+		ConnMode:      ConnLong,
 	}
 }
 
@@ -103,6 +107,14 @@ func WithSpoolLimit(n int64) Option {
 	}
 }
 
+// WithSpoolMaxBytes caps the total spooled body (memory or disk); <=0 means unlimited. | WithSpoolMaxBytes 限制暂存正文总量（内存或磁盘）；<=0 表示不限制。
+func WithSpoolMaxBytes(n int64) Option {
+	return func(o *options) error {
+		o.SpoolMaxBytes = n
+		return nil
+	}
+}
+
 // WithSpoolToDisk allows oversized replay bodies to spill to a temporary file. | WithSpoolToDisk 允许超大重放正文落到临时文件。
 func WithSpoolToDisk(ok bool) Option {
 	return func(o *options) error {
@@ -126,6 +138,22 @@ func WithoutCookieJar() Option {
 	return func(o *options) error {
 		o.Jar = nil
 		o.DisableCookieJar = true
+		return nil
+	}
+}
+
+// WithRewriteAll routes absolute URLs through the default host pool. | WithRewriteAll 让绝对 URL 也走默认 Host 池。
+func WithRewriteAll(enabled bool) Option {
+	return func(o *options) error {
+		o.RewriteAll = enabled
+		return nil
+	}
+}
+
+// WithTrace enables httptrace timings in Meta.Timings. | WithTrace 启用 Meta.Timings 的 httptrace 计时。
+func WithTrace(enabled bool) Option {
+	return func(o *options) error {
+		o.Trace = enabled
 		return nil
 	}
 }

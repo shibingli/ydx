@@ -121,6 +121,9 @@ func newTLSState(cfg TLSConfig, base *http.Transport) (*tlsState, error) {
 	if err != nil {
 		return nil, err
 	}
+	if tlsCfg.ClientSessionCache == nil {
+		tlsCfg.ClientSessionCache = tls.NewLRUClientSessionCache(64)
+	}
 	state := &tlsState{cfg: cfg, base: base}
 	state.transport.Store(cloneTransport(base, tlsCfg))
 	return state, nil
@@ -294,6 +297,17 @@ func pinMatches(cert *x509.Certificate, pins [][]byte) bool {
 	return false
 }
 
+// noteInsecure records and warns about an insecure TLS configuration. | noteInsecure 记录并告警不安全的 TLS 配置。
+func (e *engine) noteInsecure(cfg *TLSConfig) {
+	if e == nil || cfg == nil || !cfg.InsecureSkipVerify {
+		return
+	}
+	e.counters.tlsInsecure.Add(1)
+	if e.opts.Logger != nil {
+		e.opts.Logger.Warn("client: TLS InsecureSkipVerify enabled | client：TLS 已启用 InsecureSkipVerify")
+	}
+}
+
 // stateFor returns or lazily creates the state for a host TLS config. | stateFor 返回或惰性创建 Host TLS 配置的状态。
 func (e *engine) stateFor(cfg *TLSConfig) (*tlsState, error) {
 	if cfg == nil {
@@ -304,6 +318,7 @@ func (e *engine) stateFor(cfg *TLSConfig) (*tlsState, error) {
 	if state := e.tlsByConfig[cfg]; state != nil {
 		return state, nil
 	}
+	e.noteInsecure(cfg)
 	if e.baseTransport == nil {
 		return nil, errs.Detail(ErrTLSConfig, "host TLS needs an *http.Transport | Host TLS 需要 *http.Transport")
 	}
@@ -350,6 +365,64 @@ func (e *engine) transportForURL(u *url.URL) http.RoundTripper {
 		}
 	}
 	return e.defaultTransport()
+}
+
+// pruneTLS closes and forgets TLS states no longer referenced by a host set. | pruneTLS 关闭并遗忘不再被 Host 池引用的 TLS 状态。
+func (e *engine) pruneTLS() {
+	if e == nil {
+		return
+	}
+	active := make(map[*TLSConfig]struct{})
+	addSet := func(hs *HostSet) {
+		if hs == nil {
+			return
+		}
+		for _, entry := range hs.entries {
+			if entry.host.TLS != nil {
+				active[entry.host.TLS] = struct{}{}
+			}
+		}
+	}
+	addSet(e.hosts.Load())
+	if rules := e.rules.Load(); rules != nil {
+		for i := range rules.entries {
+			addSet(rules.entries[i].rule.HostSet)
+		}
+	}
+	e.tlsMu.Lock()
+	defer e.tlsMu.Unlock()
+	removed := false
+	for cfg, state := range e.tlsByConfig {
+		if _, ok := active[cfg]; ok {
+			continue
+		}
+		state.current().CloseIdleConnections()
+		delete(e.tlsByConfig, cfg)
+		removed = true
+	}
+	if !removed {
+		return
+	}
+	states := make([]*tlsState, 0, len(e.hostTLS)+len(e.tlsByConfig)+1)
+	seen := make(map[*tlsState]struct{})
+	appendState := func(state *tlsState) {
+		if state == nil {
+			return
+		}
+		if _, ok := seen[state]; ok {
+			return
+		}
+		seen[state] = struct{}{}
+		states = append(states, state)
+	}
+	appendState(e.defaultTLS)
+	for _, state := range e.hostTLS {
+		appendState(state)
+	}
+	for _, state := range e.tlsByConfig {
+		appendState(state)
+	}
+	e.tlsStates = states
 }
 
 // healthTransport returns the per-host transport for active health checks. | healthTransport 返回主动健康检查使用的逐 Host 传输。

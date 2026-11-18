@@ -263,6 +263,7 @@ func TestTLSHostField(t *testing.T) {
 	}
 	c, err := New(
 		WithHostSet(hs),
+		WithRewriteAll(true),
 		WithTLS(TLSConfig{RootCAs: testCertPool(certA), DisableSystemRoots: true}),
 	)
 	if err != nil {
@@ -282,5 +283,41 @@ func TestReloadTLSWithoutConfig(t *testing.T) {
 	defer c.Close()
 	if err := c.ReloadTLS(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestTLSInsecureCounter(t *testing.T) {
+	c, err := New(WithTLS(TLSConfig{InsecureSkipVerify: true, DisableSystemRoots: true}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	if c.Stats().TLSInsecure != 1 {
+		t.Fatalf("tls insecure %d", c.Stats().TLSInsecure)
+	}
+}
+
+func TestPruneTLSOnUpdateHosts(t *testing.T) {
+	cfg := &TLSConfig{InsecureSkipVerify: true, DisableSystemRoots: true}
+	hs, err := NewHostSet(Host{Name: "a", URL: mustURL("https://a.example"), TLS: cfg})
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, err := New(WithHostSet(hs), WithRewriteAll(true))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	if _, err := c.engine.stateFor(cfg); err != nil {
+		t.Fatal(err)
+	}
+	if len(c.engine.tlsByConfig) != 1 {
+		t.Fatalf("tls states %d", len(c.engine.tlsByConfig))
+	}
+	if err := c.UpdateHosts(Host{Name: "b", URL: mustURL("http://b.example")}); err != nil {
+		t.Fatal(err)
+	}
+	if len(c.engine.tlsByConfig) != 0 {
+		t.Fatalf("tls state was not reclaimed: %d", len(c.engine.tlsByConfig))
 	}
 }

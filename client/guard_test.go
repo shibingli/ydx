@@ -3,8 +3,10 @@ package client
 import (
 	"context"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -14,7 +16,6 @@ func TestAccessPolicy(t *testing.T) {
 	p := &AccessPolicy{
 		AllowSchemes: []string{"https"},
 		AllowHosts:   []string{"*.example.com"},
-		DenyCIDRs:    []string{"10.0.0.0/8"},
 		AllowMethods: []string{"GET"},
 	}
 	cases := []struct {
@@ -26,7 +27,6 @@ func TestAccessPolicy(t *testing.T) {
 		{http.MethodPost, "https://api.example.com/x", false},
 		{http.MethodGet, "http://api.example.com/x", false},
 		{http.MethodGet, "https://evil.com/x", false},
-		{http.MethodGet, "https://10.0.0.1/x", false},
 	}
 	for _, tc := range cases {
 		req := mustRequest(t, tc.method, tc.rawURL, "")
@@ -37,6 +37,18 @@ func TestAccessPolicy(t *testing.T) {
 		if decision.Allowed != tc.allowed {
 			t.Fatalf("%s %s = %v", tc.method, tc.rawURL, decision.Allowed)
 		}
+	}
+}
+
+func TestAccessPolicyDenyCIDR(t *testing.T) {
+	p := &AccessPolicy{AllowSchemes: []string{"https"}, DenyCIDRs: []string{"10.0.0.0/8"}}
+	decision, err := p.Check(context.Background(), mustRequest(t, http.MethodGet, "https://10.0.0.1/x", ""))
+	if err != nil || decision.Allowed {
+		t.Fatalf("deny cidr: decision=%+v err=%v", decision, err)
+	}
+	decision, err = p.Check(context.Background(), mustRequest(t, http.MethodGet, "https://8.8.8.8/x", ""))
+	if err != nil || !decision.Allowed {
+		t.Fatalf("allow public: decision=%+v err=%v", decision, err)
 	}
 }
 
@@ -159,5 +171,22 @@ func TestForwardGuard403(t *testing.T) {
 	c.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "http://svc/x", nil))
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("code %d", rec.Code)
+	}
+}
+
+func TestAccessPolicyCapsUnknownBody(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+	}))
+	defer srv.Close()
+	c, err := New(WithAccessPolicy(&AccessPolicy{MaxRequestBytes: 5}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/x", io.NopCloser(strings.NewReader("0123456789")))
+	req.ContentLength = -1
+	if _, err := c.Do(req); !errors.Is(err, ErrRequestTooLarge) {
+		t.Fatalf("want ErrRequestTooLarge, got %v", err)
 	}
 }

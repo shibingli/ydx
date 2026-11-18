@@ -3,9 +3,11 @@ package client
 import (
 	"bufio"
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/url"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -97,6 +99,9 @@ func (c *Client) OpenStream(ctx context.Context, req *http.Request, opts ...Stre
 		return nil, errs.Wrap(err, ErrInvalidRequest)
 	}
 	template := req.Clone(ctx)
+	if !strings.Contains(req.URL.String(), "://") {
+		template = template.WithContext(context.WithValue(template.Context(), useDefaultHostsKey{}, true))
+	}
 	template.URL = parsed
 	if template.Header == nil {
 		template.Header = make(http.Header)
@@ -197,7 +202,7 @@ func (s *Stream) Next(ctx context.Context) (Event, error) {
 		}
 		event, err := s.readEvent(ctx, reader, body)
 		if err == nil {
-			if event.ID != "" {
+			if event.IDSet {
 				s.lastID = event.ID
 			}
 			if event.Retry > 0 {
@@ -219,6 +224,10 @@ func (s *Stream) Next(ctx context.Context) (Event, error) {
 		if s.closed.Load() {
 			s.closeBody()
 			return Event{}, ErrClosed
+		}
+		if errors.Is(err, ErrSSETooLarge) || errors.Is(err, ErrSSEProtocol) {
+			s.closeBody()
+			return Event{}, err
 		}
 		if s.opts.MaxReconnects <= 0 || s.reconnects >= s.opts.MaxReconnects {
 			s.closeBody()

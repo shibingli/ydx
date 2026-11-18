@@ -197,3 +197,32 @@ func TestUAInvalidWeights(t *testing.T) {
 		t.Fatal("expected invalid weights error")
 	}
 }
+
+func TestRuleUAOverride(t *testing.T) {
+	var got atomic.Value
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got.Store(r.Header.Get("User-Agent"))
+	}))
+	defer srv.Close()
+	c, err := New(
+		WithHosts(srv.URL),
+		WithUserAgent(UAPolicy{Mode: UAFixed, List: []string{"global"}, Force: true}),
+		WithRule(Rule{
+			Name:    "ua",
+			Pattern: "/x",
+			UA:      &UAPolicy{Mode: UAFixed, List: []string{"rule"}, Force: true},
+		}),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	resp, err := c.Get(context.Background(), srv.URL+"/x")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if got.Load() != "rule" {
+		t.Fatalf("ua %v", got.Load())
+	}
+}

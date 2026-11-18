@@ -12,6 +12,8 @@ import (
 type Event struct {
 	// ID is the event id, used for Last-Event-ID reconnects. | ID 是事件 id，用于 Last-Event-ID 重连。
 	ID string
+	// IDSet reports whether the event carried an id field, including empty. | IDSet 报告事件是否携带 id 字段（含空值）。
+	IDSet bool
 	// Name is the event type; empty means the default message event. | Name 是事件类型；为空表示默认消息事件。
 	Name string
 	// Comment carries the last comment line seen before the event. | Comment 携带事件前最后一条注释行。
@@ -72,6 +74,7 @@ func (r *EventReader) Next() (Event, error) {
 	}
 	var data []byte
 	var id, name, comment string
+	var idSet bool
 	var retry time.Duration
 	for {
 		line, err := r.readLine()
@@ -86,7 +89,7 @@ func (r *EventReader) Next() (Event, error) {
 			if data[len(data)-1] == '\n' {
 				data = data[:len(data)-1]
 			}
-			return Event{ID: id, Name: name, Comment: comment, Data: data, Retry: retry}, nil
+			return Event{ID: id, IDSet: idSet, Name: name, Comment: comment, Data: data, Retry: retry}, nil
 		}
 		if line[0] == ':' {
 			comment = strings.TrimPrefix(line[1:], " ")
@@ -106,6 +109,7 @@ func (r *EventReader) Next() (Event, error) {
 		case "id":
 			if !strings.ContainsRune(value, 0) {
 				id = value
+				idSet = true
 			}
 		case "retry":
 			if isDigits(value) {

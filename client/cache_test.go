@@ -144,7 +144,7 @@ func TestCacheSkipsConditionalRequests(t *testing.T) {
 	for _, header := range []string{"Range", "If-Range", "If-None-Match", "If-Modified-Since", "If-Match", "If-Unmodified-Since"} {
 		req := httptest.NewRequest(http.MethodGet, "http://svc/x", nil)
 		req.Header.Set(header, "value")
-		if cacheableRequest(req, policy) {
+		if cacheReadable(req, policy) {
 			t.Fatalf("%s request must not use the cache", header)
 		}
 	}
@@ -350,5 +350,32 @@ func TestCacheVaryStarAndNoCacheRequest(t *testing.T) {
 	}
 	if hits.Load() != 3 {
 		t.Fatalf("no-cache request hit cache: %d", hits.Load())
+	}
+}
+
+func TestCacheNoCacheRequestStillWrites(t *testing.T) {
+	var hits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		_, _ = w.Write([]byte("cached"))
+	}))
+	defer srv.Close()
+	c, err := New(WithHosts(srv.URL), WithCache(CachePolicy{TTL: time.Minute}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	resp, err := c.Get(context.Background(), srv.URL+"/x", WithRequestHeader("Cache-Control", "no-cache"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	resp, err = c.Get(context.Background(), srv.URL+"/x")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if hits.Load() != 1 || c.Stats().CacheHits != 1 {
+		t.Fatalf("hits %d cacheHits %d", hits.Load(), c.Stats().CacheHits)
 	}
 }

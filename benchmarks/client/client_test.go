@@ -59,7 +59,7 @@ func implementations(b *testing.B, base string) []implementation {
 	native := &http.Client{Transport: nativeTransport}
 	b.Cleanup(nativeTransport.CloseIdleConnections)
 
-	ydx, err := ydxclient.New(ydxclient.WithHosts(base), ydxclient.WithoutCookieJar())
+	ydx, err := ydxclient.New(ydxclient.WithHosts(base), ydxclient.WithoutCookieJar(), ydxclient.WithRewriteAll(true))
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -74,6 +74,7 @@ func implementations(b *testing.B, base string) []implementation {
 	ydxShort, err := ydxclient.New(
 		ydxclient.WithHosts(base),
 		ydxclient.WithConnectionMode(ydxclient.ConnShort),
+		ydxclient.WithRewriteAll(true),
 		ydxclient.WithoutCookieJar(),
 	)
 	if err != nil {
@@ -310,6 +311,7 @@ func BenchmarkGET_TLS(b *testing.B) {
 	defer nativeTransport.CloseIdleConnections()
 	ydx, err := ydxclient.New(
 		ydxclient.WithHosts(url),
+		ydxclient.WithRewriteAll(true),
 		ydxclient.WithTLS(ydxclient.TLSConfig{InsecureSkipVerify: true, DisableSystemRoots: true}),
 		ydxclient.WithoutCookieJar(),
 	)

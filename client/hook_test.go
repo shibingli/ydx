@@ -24,6 +24,7 @@ func TestHooksOrderAndStats(t *testing.T) {
 
 	c, err := New(
 		WithHosts(srv.URL),
+		WithRewriteAll(true),
 		WithRule(Rule{Name: "r", Pattern: "/x"}),
 		WithHooks(Hooks{
 			OnRequest: func(context.Context, *http.Request) error {

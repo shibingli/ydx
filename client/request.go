@@ -74,6 +74,10 @@ func (c *Client) Send(ctx context.Context, method, rawURL string, body any, opts
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	relative := !strings.Contains(rawURL, "://")
+	if relative {
+		ctx = context.WithValue(ctx, useDefaultHostsKey{}, true)
+	}
 	meta := &Meta{}
 	meta.Hops = meta.hopInline[:0]
 	ctx = context.WithValue(ctx, metaKey{}, meta)

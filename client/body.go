@@ -7,6 +7,8 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"sync"
+	"sync/atomic"
 
 	"github.com/shibingli/ydx/errs"
 	"github.com/shibingli/ydx/json"
@@ -108,6 +110,25 @@ type spool struct {
 	getBody func() (io.ReadCloser, error)
 	cleanup func()
 	length  int64
+	refs    atomic.Int32
+	once    sync.Once
+}
+
+// retain adds one user of the spool. | retain 增加一个 spool 使用者。
+func (s *spool) retain() {
+	if s != nil {
+		s.refs.Add(1)
+	}
+}
+
+// release drops one user and cleans up at zero. | release 释放一个使用者，归零时清理。
+func (s *spool) release() {
+	if s == nil {
+		return
+	}
+	if s.refs.Add(-1) == 0 {
+		s.once.Do(s.cleanup)
+	}
 }
 
 // spoolBody snapshots a non-replayable request body into memory or a temp file. | spoolBody 把不可重放正文暂存到内存或临时文件。
@@ -117,33 +138,47 @@ func (e *engine) spoolBody(req *http.Request) (*spool, error) {
 	}
 	limit := e.opts.SpoolLimit
 	toDisk := e.opts.SpoolToDisk
+	max := e.opts.SpoolMaxBytes
+	if ap := e.opts.AccessPolicy; ap != nil && ap.MaxRequestBytes > 0 && (max <= 0 || ap.MaxRequestBytes < max) {
+		max = ap.MaxRequestBytes
+	}
 	if limit <= 0 && !toDisk {
 		return nil, ErrBodyNotReplayable
 	}
 	if limit > 0 {
-		data, err := io.ReadAll(io.LimitReader(req.Body, limit+1))
+		readLimit := limit
+		if max > 0 && max < readLimit {
+			readLimit = max
+		}
+		data, err := io.ReadAll(io.LimitReader(req.Body, readLimit+1))
 		if err != nil {
 			_ = req.Body.Close()
 			return nil, err
+		}
+		if max > 0 && int64(len(data)) > max {
+			_ = req.Body.Close()
+			return nil, errs.Detail(ErrRequestTooLarge, "request body exceeds %d bytes | 请求正文超过 %d 字节", max, max)
 		}
 		if int64(len(data)) <= limit {
 			_ = req.Body.Close()
 			getBody := func() (io.ReadCloser, error) {
 				return io.NopCloser(bytes.NewReader(data)), nil
 			}
-			return &spool{getBody: getBody, cleanup: func() {}, length: int64(len(data))}, nil
+			sp := &spool{getBody: getBody, cleanup: func() {}, length: int64(len(data))}
+			sp.refs.Store(1)
+			return sp, nil
 		}
 		if !toDisk {
 			_ = req.Body.Close()
 			return nil, ErrBodyNotReplayable
 		}
-		return spoolToFile(data, req.Body)
+		return spoolToFile(data, req.Body, max)
 	}
-	return spoolToFile(nil, req.Body)
+	return spoolToFile(nil, req.Body, max)
 }
 
 // spoolToFile writes the prefix and remaining body into a temp file. | spoolToFile 把前缀与剩余正文写入临时文件。
-func spoolToFile(prefix []byte, rest io.ReadCloser) (*spool, error) {
+func spoolToFile(prefix []byte, rest io.ReadCloser, max int64) (*spool, error) {
 	if rest == nil {
 		return nil, ErrBodyNotReplayable
 	}
@@ -162,11 +197,32 @@ func spoolToFile(prefix []byte, rest io.ReadCloser) (*spool, error) {
 			return nil, err
 		}
 	}
-	if _, err := io.Copy(file, rest); err != nil {
+	remaining := int64(-1)
+	if max > 0 {
+		remaining = max - int64(len(prefix))
+		if remaining < 0 {
+			_ = file.Close()
+			_ = rest.Close()
+			cleanup()
+			return nil, errs.Detail(ErrRequestTooLarge, "request body exceeds %d bytes | 请求正文超过 %d 字节", max, max)
+		}
+	}
+	var source io.Reader = rest
+	if remaining >= 0 {
+		source = io.LimitReader(rest, remaining+1)
+	}
+	copied, err := io.Copy(file, source)
+	if err != nil {
 		_ = file.Close()
 		_ = rest.Close()
 		cleanup()
 		return nil, err
+	}
+	if remaining >= 0 && copied > remaining {
+		_ = file.Close()
+		_ = rest.Close()
+		cleanup()
+		return nil, errs.Detail(ErrRequestTooLarge, "request body exceeds %d bytes | 请求正文超过 %d 字节", max, max)
 	}
 	_ = rest.Close()
 	info, statErr := file.Stat()
@@ -182,7 +238,9 @@ func spoolToFile(prefix []byte, rest io.ReadCloser) (*spool, error) {
 	getBody := func() (io.ReadCloser, error) {
 		return os.Open(name)
 	}
-	return &spool{getBody: getBody, cleanup: cleanup, length: info.Size()}, nil
+	sp := &spool{getBody: getBody, cleanup: cleanup, length: info.Size()}
+	sp.refs.Store(1)
+	return sp, nil
 }
 
 // prepareFileBody keeps the original file as the primary body and reopens its path

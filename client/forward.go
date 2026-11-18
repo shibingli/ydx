@@ -20,6 +20,18 @@ type forwardNoRetryKey struct{}
 // forwardPreserveHostKey carries the PreserveHost decision into the engine. | forwardPreserveHostKey 把 PreserveHost 决策传入引擎。
 type forwardPreserveHostKey struct{}
 
+// forwardCopySSEKey marks a Handler request whose SSE tee is owned by copySSE. | forwardCopySSEKey 标记由 copySSE 接管 SSE tee 的 Handler 请求。
+type forwardCopySSEKey struct{}
+
+// forwardCopySSE reports whether copySSE owns the response tee. | forwardCopySSE 报告响应 tee 是否由 copySSE 接管。
+func forwardCopySSE(ctx context.Context) bool {
+	if ctx == nil {
+		return false
+	}
+	value, _ := ctx.Value(forwardCopySSEKey{}).(bool)
+	return value
+}
+
 // forwardNoDefaultRetry reports whether the default retry policy must be disabled. | forwardNoDefaultRetry 报告是否必须禁用默认重试。
 func forwardNoDefaultRetry(ctx context.Context) bool {
 	if ctx == nil {
@@ -189,6 +201,7 @@ func (c *Client) forwardRequest(ctx context.Context, r *http.Request, cfg Forwar
 	if cfg.AddForwardedFor {
 		addForwardedHeaders(out, r, scheme)
 	}
+	out = out.WithContext(context.WithValue(out.Context(), useDefaultHostsKey{}, true))
 	out = out.WithContext(context.WithValue(out.Context(), forwardNoRetryKey{}, true))
 	out = out.WithContext(context.WithValue(out.Context(), forwardPreserveHostKey{}, cfg.PreserveHost))
 	resp, err := c.engine.RoundTrip(out)
@@ -264,7 +277,7 @@ func (c *Client) Handler(opts ...ForwardOption) http.Handler {
 			http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
 			return
 		}
-		resp, err := c.forwardRequest(r.Context(), r, cfg)
+		resp, err := c.forwardRequest(context.WithValue(r.Context(), forwardCopySSEKey{}, true), r, cfg)
 		if err != nil {
 			writeForwardError(w, err)
 			return
@@ -345,6 +358,8 @@ func writeForwardError(w http.ResponseWriter, err error) {
 		if errors.As(err, &clientErr) && clientErr.Status > 0 {
 			status = clientErr.Status
 		}
+	case errors.Is(err, ErrRequestTooLarge):
+		status = http.StatusRequestEntityTooLarge
 	case errors.Is(err, ErrClosed):
 		status = http.StatusServiceUnavailable
 	case errors.Is(err, ErrUpgradeUnsupported):

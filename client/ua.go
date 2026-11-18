@@ -93,11 +93,10 @@ func prepareUA(policy *UAPolicy) (*UAPolicy, error) {
 }
 
 // applyUA sets the User-Agent on a request clone. | applyUA 在请求克隆上设置 User-Agent。
-func (e *engine) applyUA(req *http.Request) {
-	if req == nil || e.ua == nil {
+func (e *engine) applyUA(req *http.Request, policy *UAPolicy) {
+	if req == nil || policy == nil {
 		return
 	}
-	policy := e.ua
 	if req.Header == nil {
 		req.Header = make(http.Header)
 	}

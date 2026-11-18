@@ -225,11 +225,11 @@ func (c *Client) mirrorSSE(ctx context.Context, req *http.Request, logical *url.
 	if rules := c.engine.rules.Load(); rules != nil {
 		rule, _, _ = rules.MatchRequest(req)
 	}
-	c.engine.mirrors.submitSSE(ctx, req, logical, rule, prepared)
+	c.engine.mirrors.submitSSE(ctx, req, logical, rule, prepared, nil)
 }
 
 // submitSSE runs shadow SSE streams under the mirrorer's concurrency limit. | submitSSE 在 mirrorer 并发限制下运行影子 SSE 流。
-func (m *mirrorer) submitSSE(parent context.Context, req *http.Request, logical *url.URL, rule *Rule, policy *MirrorPolicy) {
+func (m *mirrorer) submitSSE(parent context.Context, req *http.Request, logical *url.URL, rule *Rule, policy *MirrorPolicy, sp *spool) {
 	if m == nil || policy == nil || len(policy.targets) == 0 || !m.active() {
 		return
 	}
@@ -270,11 +270,17 @@ func (m *mirrorer) submitSSE(parent context.Context, req *http.Request, logical 
 			<-m.sem
 			return
 		}
+		if sp != nil {
+			sp.retain()
+		}
 		local.Add(1)
 		go func(target *url.URL) {
 			defer m.wg.Done()
 			defer local.Done()
 			defer func() { <-m.sem }()
+			if sp != nil {
+				defer sp.release()
+			}
 			m.runSSE(parent, req, logical, rule, policy, target, getBody)
 		}(target)
 	}
@@ -285,6 +291,12 @@ func (m *mirrorer) submitSSE(parent context.Context, req *http.Request, logical 
 
 // runSSE consumes one shadow SSE stream to EOF or timeout. | runSSE 消费一条影子 SSE 流直到 EOF 或超时。
 func (m *mirrorer) runSSE(parent context.Context, req *http.Request, logical *url.URL, rule *Rule, policy *MirrorPolicy, target *url.URL, getBody func() (io.ReadCloser, error)) {
+	start := time.Now()
+	result := MirrorResult{Target: target.String()}
+	defer func() {
+		result.Duration = time.Since(start)
+		recordMirror(req.Context(), result)
+	}()
 	if m.engine != nil {
 		defer func() {
 			if m.engine.hooks.OnMirrorDone != nil {
@@ -327,6 +339,7 @@ func (m *mirrorer) runSSE(parent context.Context, req *http.Request, logical *ur
 	if getBody != nil {
 		body, err := getBody()
 		if err != nil {
+			result.Err = err
 			return
 		}
 		out.Body = body
@@ -338,11 +351,13 @@ func (m *mirrorer) runSSE(parent context.Context, req *http.Request, logical *ur
 	}
 	resp, err := base.RoundTrip(out)
 	if err != nil {
+		result.Err = err
 		if m.engine != nil {
 			m.engine.counters.mirrorErrors.Add(1)
 		}
 		return
 	}
+	result.Status = resp.StatusCode
 	defer resp.Body.Close()
 	if !isEventStream(resp.Header) {
 		drainAndClose(resp.Body, policy.MaxBodyBytes)

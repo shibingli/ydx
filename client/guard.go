@@ -2,6 +2,7 @@ package client
 
 import (
 	"context"
+	"io"
 	"net"
 	"net/http"
 	"net/netip"
@@ -196,6 +197,9 @@ func (p *AccessPolicy) Check(ctx context.Context, req *http.Request) (GuardDecis
 	if p.MaxRequestBytes > 0 && req.ContentLength > p.MaxRequestBytes {
 		return denyDecision(http.StatusRequestEntityTooLarge, "request body too large"), nil
 	}
+	if p.MaxRequestBytes > 0 && req.ContentLength <= 0 && req.Body != nil && req.Body != http.NoBody {
+		req.Body = &maxBytesBody{body: req.Body, remaining: p.MaxRequestBytes}
+	}
 	port := urlPort(req.URL)
 	if len(p.allowPorts) > 0 && !p.allowPorts[port] {
 		return denyDecision(http.StatusForbidden, "port "+strconv.Itoa(port)+" not allowed"), nil
@@ -210,6 +214,36 @@ func (p *AccessPolicy) Check(ctx context.Context, req *http.Request) (GuardDecis
 	}
 	return GuardDecision{Allowed: true}, nil
 }
+
+// maxBytesBody enforces an unknown-length request body cap while reading. | maxBytesBody 在读取时限制未知长度的请求正文。
+type maxBytesBody struct {
+	body      io.ReadCloser
+	remaining int64
+	tooLarge  bool
+}
+
+// Read reads at most the remaining cap plus one byte. | Read 最多读取剩余上限加一字节。
+func (b *maxBytesBody) Read(p []byte) (int, error) {
+	if b.tooLarge {
+		return 0, errs.Detail(ErrRequestTooLarge, "request body exceeds %d bytes | 请求正文超过 %d 字节", b.remaining, b.remaining)
+	}
+	if len(p) == 0 {
+		return 0, nil
+	}
+	if b.remaining < int64(len(p)) {
+		p = p[:b.remaining+1]
+	}
+	n, err := b.body.Read(p)
+	b.remaining -= int64(n)
+	if b.remaining < 0 {
+		b.tooLarge = true
+		return n, errs.Detail(ErrRequestTooLarge, "request body too large | 请求正文过大")
+	}
+	return n, err
+}
+
+// Close closes the wrapped body. | Close 关闭被包装的正文。
+func (b *maxBytesBody) Close() error { return b.body.Close() }
 
 // guardFor resolves the access policy, rule guard and client guard chain. | guardFor 解析访问策略、规则守卫与客户端守卫链。
 func (e *engine) guardFor(rule *Rule) Guard {

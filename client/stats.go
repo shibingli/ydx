@@ -19,6 +19,7 @@ type counters struct {
 	sseEvents     atomic.Uint64
 	bytesSent     atomic.Uint64
 	bytesReceived atomic.Uint64
+	tlsInsecure   atomic.Uint64
 	inflight      atomic.Int64
 }
 
@@ -46,6 +47,7 @@ func (c *Client) Stats() Stats {
 		BytesSent:     e.counters.bytesSent.Load(),
 		BytesReceived: e.counters.bytesReceived.Load(),
 		Inflight:      uint64(e.counters.inflight.Load()),
+		TLSInsecure:   e.counters.tlsInsecure.Load(),
 	}
 	e.cacheMu.Lock()
 	store := e.cacheStore
@@ -111,4 +113,6 @@ type Stats struct {
 	Inflight uint64
 	// FailOpen is the number of host selections that fell back to unhealthy hosts. | FailOpen 是回退到不健康 Host 的次数。
 	FailOpen uint64
+	// TLSInsecure is the number of TLS states built with InsecureSkipVerify. | TLSInsecure 是以 InsecureSkipVerify 构建的 TLS 状态数。
+	TLSInsecure uint64
 }

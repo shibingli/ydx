@@ -29,6 +29,7 @@ func TestRetryFailover(t *testing.T) {
 
 	c, err := New(
 		WithHosts(a.URL, b.URL),
+		WithRewriteAll(true),
 		WithRetry(RetryPolicy{
 			MaxAttempts: 2,
 			StatusCodes: []int{http.StatusServiceUnavailable},

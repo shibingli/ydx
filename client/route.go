@@ -51,6 +51,8 @@ type Rule struct {
 	Hosts []string
 	// Timeout bounds the request, including its response body. | Timeout 限制请求（含响应正文）的总时长。
 	Timeout time.Duration
+	// UA overrides the client User-Agent policy for this rule. | UA 为该规则覆盖客户端 User-Agent 策略。
+	UA *UAPolicy
 	// PreserveHost keeps the inbound Host header instead of the selected target. | PreserveHost 保留入站 Host 头而非目标 Host。
 	PreserveHost bool
 }
@@ -124,6 +126,13 @@ func CompileRules(rules ...Rule) (*RuleSet, error) {
 	rs := &RuleSet{entries: make([]ruleEntry, 0, len(rules))}
 	for i := range rules {
 		rule := rules[i]
+		if rule.UA != nil {
+			prepared, err := prepareUA(rule.UA)
+			if err != nil {
+				return nil, err
+			}
+			rule.UA = prepared
+		}
 		if rule.Pattern == "" {
 			return nil, errs.Detail(ErrBadPattern, "empty rule pattern | 空规则模式")
 		}
@@ -381,6 +390,7 @@ func (c *Client) UpdateRules(rules ...Rule) error {
 	}
 	c.engine.rules.Store(rs)
 	c.engine.registerRuleHosts(rs)
+	c.engine.pruneTLS()
 	return nil
 }
 
@@ -406,7 +416,7 @@ func (e *engine) registerRuleHosts(rs *RuleSet) {
 }
 
 // closeRuleHosts closes every rule-owned host pool. | closeRuleHosts 关闭全部规则持有的 Host 池。
-func (e *engine) closeRuleHosts() {
+func (e *engine) closeRuleHosts(ctx context.Context) {
 	if e == nil {
 		return
 	}
@@ -418,6 +428,6 @@ func (e *engine) closeRuleHosts() {
 	e.ruleHosts = make(map[*HostSet]struct{})
 	e.ruleHostsMu.Unlock()
 	for _, hs := range sets {
-		_ = hs.Close()
+		_ = hs.CloseContext(ctx)
 	}
 }

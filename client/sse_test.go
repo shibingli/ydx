@@ -187,3 +187,52 @@ func TestStreamClose(t *testing.T) {
 		t.Fatalf("want ErrClosed, got %v", err)
 	}
 }
+
+func TestEventEmptyIDSet(t *testing.T) {
+	reader := NewEventReader(strings.NewReader("id:\ndata: x\n\n"))
+	event, err := reader.Next()
+	if err != nil || !event.IDSet || event.ID != "" || string(event.Data) != "x" {
+		t.Fatalf("event %+v err %v", event, err)
+	}
+}
+
+func TestStreamEmptyIDResetsLastEventID(t *testing.T) {
+	var hits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		switch hits.Add(1) {
+		case 1:
+			fmt.Fprint(w, "id: 7\ndata: one\n\n")
+		case 2:
+			if r.Header.Get("Last-Event-ID") != "7" {
+				t.Errorf("second Last-Event-ID %q", r.Header.Get("Last-Event-ID"))
+			}
+			fmt.Fprint(w, "id:\ndata: two\n\n")
+		default:
+			if r.Header.Get("Last-Event-ID") != "" {
+				t.Errorf("third Last-Event-ID %q", r.Header.Get("Last-Event-ID"))
+			}
+			fmt.Fprint(w, "data: three\n\n")
+		}
+	}))
+	defer srv.Close()
+	c, err := New(WithHosts(srv.URL))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	req, _ := http.NewRequest(http.MethodGet, srv.URL+"/events", nil)
+	stream, err := c.OpenStream(context.Background(), req, WithStreamReconnect(3, time.Millisecond))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stream.Close()
+	for i := 0; i < 3; i++ {
+		if _, err := stream.Next(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if hits.Load() != 3 {
+		t.Fatalf("hits %d", hits.Load())
+	}
+}

@@ -20,6 +20,8 @@ var (
 	ErrEncodeBody = errs.New("client: encode request body | client：编码请求正文失败")
 	// ErrBodyNotReplayable indicates a request body that cannot be replayed. | ErrBodyNotReplayable 表示无法重放的请求正文。
 	ErrBodyNotReplayable = errs.New("client: request body is not replayable | client：请求正文不可重放")
+	// ErrRequestTooLarge indicates a request body exceeded its configured cap. | ErrRequestTooLarge 表示请求正文超过配置上限。
+	ErrRequestTooLarge = errs.New("client: request body too large | client：请求正文过大")
 	// ErrBodyConsumed indicates the response body was already read or closed. | ErrBodyConsumed 表示响应正文已被读取或关闭。
 	ErrBodyConsumed = errs.New("client: response body already consumed | client：响应正文已被消费")
 	// ErrResponseTooLarge indicates a response body exceeded its configured cap. | ErrResponseTooLarge 表示响应正文超过配置上限。

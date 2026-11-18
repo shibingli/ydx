@@ -106,6 +106,10 @@ type HostSetOptions struct {
 	HashKey func(*http.Request) string
 	// Balance is the selection strategy; empty means weighted. | Balance 是选择策略；为空表示加权。
 	Balance Balance
+	// Wait bounds waiting for a full MaxInflight slot; 0 waits for the request
+	// context, <0 disables waiting. | Wait 限制等待 MaxInflight 空位；0 等待请求
+	// context，<0 禁用等待。
+	Wait time.Duration
 }
 
 // HostSet is a mutable-health, immutable-membership host pool. | HostSet 是成员不可变、健康状态可变的 Host 池。
@@ -124,8 +128,12 @@ type HostSet struct {
 	failOpen atomic.Uint64
 
 	healthMu sync.Mutex
+	waitMu   sync.Mutex
+	waitCh   chan struct{}
+	waiters  atomic.Int32
 	closed   atomic.Bool
 
+	wait          time.Duration
 	healthStarted bool
 }
 
@@ -150,7 +158,7 @@ func NewHostSetWithOptions(opts HostSetOptions, hosts ...Host) (*HostSet, error)
 			return req.URL.Path
 		}
 	}
-	hs := &HostSet{balance: opts.Balance, hashKey: opts.HashKey, now: time.Now}
+	hs := &HostSet{balance: opts.Balance, hashKey: opts.HashKey, now: time.Now, wait: opts.Wait, waitCh: make(chan struct{})}
 	seen := make(map[string]struct{}, len(hosts))
 	totalWeight := 0
 	for i := range hosts {
@@ -275,6 +283,96 @@ func (hs *HostSet) Pick(req *http.Request, exclude map[string]struct{}) (*Host, 
 	if len(hs.entries) == 0 {
 		return nil, ErrNoHosts
 	}
+	var deadline time.Time
+	if hs.wait > 0 {
+		deadline = time.Now().Add(hs.wait)
+	}
+	host, err := hs.pickOnce(req, exclude)
+	if err != ErrNoHealthyHosts || hs.wait < 0 || !hs.capacityLimited(exclude) {
+		return host, err
+	}
+	for {
+		hs.waiters.Add(1)
+		signal := hs.waitSignal()
+		host, err = hs.pickOnce(req, exclude)
+		if err != ErrNoHealthyHosts || hs.wait < 0 || !hs.capacityLimited(exclude) {
+			hs.waiters.Add(-1)
+			return host, err
+		}
+		ctx := context.Background()
+		if req != nil && req.Context() != nil {
+			ctx = req.Context()
+		}
+		var timer *time.Timer
+		var timerC <-chan time.Time
+		if !deadline.IsZero() {
+			timer = time.NewTimer(time.Until(deadline))
+			timerC = timer.C
+		}
+		select {
+		case <-ctx.Done():
+			if timer != nil {
+				timer.Stop()
+			}
+			hs.waiters.Add(-1)
+			return nil, ctx.Err()
+		case <-signal:
+			if timer != nil {
+				timer.Stop()
+			}
+			hs.waiters.Add(-1)
+		case <-timerC:
+			hs.waiters.Add(-1)
+			return nil, ErrNoHealthyHosts
+		}
+	}
+}
+
+// capacityLimited reports whether a host was excluded only by MaxInflight. | capacityLimited 报告 Host 是否仅因 MaxInflight 被排除。
+func (hs *HostSet) capacityLimited(exclude map[string]struct{}) bool {
+	for _, entry := range hs.entries {
+		if entry.host.MaxInflight <= 0 {
+			continue
+		}
+		if _, skipped := exclude[entry.host.Name]; skipped {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
+// waitSignal returns the channel closed on the next release. | waitSignal 返回下一次释放时关闭的通道。
+func (hs *HostSet) waitSignal() <-chan struct{} {
+	hs.waitMu.Lock()
+	defer hs.waitMu.Unlock()
+	if hs.waitCh == nil {
+		hs.waitCh = make(chan struct{})
+	}
+	return hs.waitCh
+}
+
+// signalWait wakes every waiter after a slot is released. | signalWait 在释放名额后唤醒全部等待者。
+func (hs *HostSet) signalWait() {
+	if hs.waiters.Load() == 0 {
+		return
+	}
+	hs.waitMu.Lock()
+	if hs.waitCh != nil {
+		close(hs.waitCh)
+	}
+	hs.waitCh = make(chan struct{})
+	hs.waitMu.Unlock()
+}
+
+// pickOnce makes one host selection without waiting. | pickOnce 执行一次不等待的 Host 选择。
+func (hs *HostSet) pickOnce(req *http.Request, exclude map[string]struct{}) (*Host, error) {
+	if hs == nil || hs.closed.Load() {
+		return nil, ErrClosed
+	}
+	if len(hs.entries) == 0 {
+		return nil, ErrNoHosts
+	}
 	if len(hs.entries) == 1 {
 		entry := hs.entries[0]
 		_, excluded := exclude[entry.host.Name]
@@ -375,6 +473,7 @@ func (hs *HostSet) Release(host *Host) {
 	}
 	if entry.inflight.Load() > 0 {
 		entry.inflight.Add(-1)
+		hs.signalWait()
 	}
 	// A released half-open probe must not leave the host permanently
 	// unselectable. | 释放半开探测后不能让 Host 永久不可选。
@@ -391,6 +490,7 @@ func (hs *HostSet) finish(host *Host, err error) {
 	}
 	if entry.inflight.Load() > 0 {
 		entry.inflight.Add(-1)
+		hs.signalWait()
 	}
 	if err == nil {
 		hs.recordSuccess(entry)
@@ -471,6 +571,11 @@ func (hs *HostSet) Stats() []HostStats {
 
 // Close stops active health checks and rejects future picks. | Close 停止主动健康检查并拒绝后续选择。
 func (hs *HostSet) Close() error {
+	return hs.CloseContext(context.Background())
+}
+
+// CloseContext stops health checks and bounds the wait by ctx. | CloseContext 停止健康检查并以 ctx 限制等待。
+func (hs *HostSet) CloseContext(ctx context.Context) error {
 	if hs == nil || !hs.closed.CompareAndSwap(false, true) {
 		return nil
 	}
@@ -480,8 +585,21 @@ func (hs *HostSet) Close() error {
 	if cancel != nil {
 		cancel()
 	}
-	hs.healthWG.Wait()
-	return nil
+	hs.signalWait()
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	done := make(chan struct{})
+	go func() {
+		hs.healthWG.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 // WithHosts sets the default host pool from base URLs. | WithHosts 从 base URL 设置默认 Host 池。
@@ -521,6 +639,7 @@ func (c *Client) UpdateHosts(hosts ...Host) error {
 	}
 	old := c.engine.hosts.Swap(hs)
 	hs.startHealth(context.Background(), c.engine.healthTransport, c.opts.Logger)
+	c.engine.pruneTLS()
 	if old != nil {
 		_ = old.Close()
 	}

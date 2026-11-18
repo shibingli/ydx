@@ -146,11 +146,14 @@ func (c *Client) CloseContext(ctx context.Context) error {
 	c.engine.closed.Store(true)
 	c.asyncMu.Lock()
 	c.asyncMu.Unlock()
-	if hs := c.engine.hosts.Load(); hs != nil {
-		_ = hs.Close()
+	if ctx == nil {
+		ctx = context.Background()
 	}
-	c.engine.mirrors.Close()
-	c.engine.closeRuleHosts()
+	if hs := c.engine.hosts.Load(); hs != nil {
+		_ = hs.CloseContext(ctx)
+	}
+	_ = c.engine.mirrors.CloseContext(ctx)
+	c.engine.closeRuleHosts(ctx)
 	c.engine.closeTLSIdle()
 	c.engine.cacheMu.Lock()
 	store := c.engine.cacheStore

@@ -176,6 +176,45 @@ func WithMaxMirrorInflight(n int) Option {
 	}
 }
 
+// mirrorTrackKey carries a per-request mirror result collector. | mirrorTrackKey 携带逐请求的镜像结果收集器。
+type mirrorTrackKey struct{}
+
+// mirrorTracker collects shadow results for Meta.Mirrors. | mirrorTracker 为 Meta.Mirrors 收集影子结果。
+type mirrorTracker struct {
+	mu      sync.Mutex
+	results []MirrorResult
+}
+
+// add appends one result. | add 追加一个结果。
+func (t *mirrorTracker) add(result MirrorResult) {
+	if t == nil {
+		return
+	}
+	t.mu.Lock()
+	t.results = append(t.results, result)
+	t.mu.Unlock()
+}
+
+// snapshot returns a copy of the collected results. | snapshot 返回已收集结果的副本。
+func (t *mirrorTracker) snapshot() []MirrorResult {
+	if t == nil {
+		return nil
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return append([]MirrorResult(nil), t.results...)
+}
+
+// recordMirror appends a shadow result to the request tracker. | recordMirror 把影子结果追加到请求收集器。
+func recordMirror(ctx context.Context, result MirrorResult) {
+	if ctx == nil {
+		return
+	}
+	if tracker, ok := ctx.Value(mirrorTrackKey{}).(*mirrorTracker); ok {
+		tracker.add(result)
+	}
+}
+
 // mirrorer runs shadow upstream requests with bounded concurrency. | mirrorer 以有界并发运行影子上游请求。
 type mirrorer struct {
 	base   http.RoundTripper
@@ -204,14 +243,32 @@ func newMirrorer(base http.RoundTripper, max int) *mirrorer {
 
 // Close cancels and waits for every shadow request. | Close 取消并等待全部影子请求。
 func (m *mirrorer) Close() {
+	_ = m.CloseContext(context.Background())
+}
+
+// CloseContext cancels shadows and bounds the wait by ctx. | CloseContext 取消影子请求并以 ctx 限制等待。
+func (m *mirrorer) CloseContext(ctx context.Context) error {
 	if m == nil {
-		return
+		return nil
 	}
 	m.mu.Lock()
 	m.closed = true
 	m.cancel()
 	m.mu.Unlock()
-	m.wg.Wait()
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	done := make(chan struct{})
+	go func() {
+		m.wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 // active reports whether new shadows may be reserved. | active 报告是否还能预留新影子请求。
@@ -233,7 +290,7 @@ func (m *mirrorer) reserve() bool {
 }
 
 // submit samples and schedules shadow replays. | submit 抽样并调度影子重放。
-func (m *mirrorer) submit(parent context.Context, req *http.Request, logical *url.URL, rule *Rule, policy *MirrorPolicy) {
+func (m *mirrorer) submit(parent context.Context, req *http.Request, logical *url.URL, rule *Rule, policy *MirrorPolicy, sp *spool) {
 	if m == nil || policy == nil || policy.Mode != MirrorUpstream || len(policy.targets) == 0 || !m.active() {
 		return
 	}
@@ -274,11 +331,17 @@ func (m *mirrorer) submit(parent context.Context, req *http.Request, logical *ur
 			<-m.sem
 			return
 		}
+		if sp != nil {
+			sp.retain()
+		}
 		local.Add(1)
 		go func(target *url.URL) {
 			defer m.wg.Done()
 			defer local.Done()
 			defer func() { <-m.sem }()
+			if sp != nil {
+				defer sp.release()
+			}
 			m.run(parent, req, logical, rule, policy, target, getBody)
 		}(target)
 	}
@@ -289,6 +352,12 @@ func (m *mirrorer) submit(parent context.Context, req *http.Request, logical *ur
 
 // run executes one shadow request against target. | run 对一个目标执行影子请求。
 func (m *mirrorer) run(parent context.Context, req *http.Request, logical *url.URL, rule *Rule, policy *MirrorPolicy, target *url.URL, getBody func() (io.ReadCloser, error)) {
+	start := time.Now()
+	result := MirrorResult{Target: target.String()}
+	defer func() {
+		result.Duration = time.Since(start)
+		recordMirror(req.Context(), result)
+	}()
 	if m.engine != nil {
 		defer func() {
 			if m.engine.hooks.OnMirrorDone != nil {
@@ -329,6 +398,7 @@ func (m *mirrorer) run(parent context.Context, req *http.Request, logical *url.U
 	if getBody != nil {
 		body, err := getBody()
 		if err != nil {
+			result.Err = err
 			return
 		}
 		out.Body = body
@@ -340,11 +410,13 @@ func (m *mirrorer) run(parent context.Context, req *http.Request, logical *url.U
 	}
 	resp, err := base.RoundTrip(out)
 	if err != nil {
+		result.Err = err
 		if m.engine != nil {
 			m.engine.counters.mirrorErrors.Add(1)
 		}
 		return
 	}
+	result.Status = resp.StatusCode
 	drainAndClose(resp.Body, policy.MaxBodyBytes)
 }
 

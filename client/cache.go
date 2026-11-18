@@ -543,8 +543,8 @@ func (e *engine) cacheFor(rule *Rule) (CachePolicy, Store, bool) {
 	return resolved, store, true
 }
 
-// cacheableRequest reports whether a request may read or write the cache. | cacheableRequest 报告请求是否可读写缓存。
-func cacheableRequest(req *http.Request, policy CachePolicy) bool {
+// cacheReadable reports whether a request may read the cache. | cacheReadable 报告请求是否可读缓存。
+func cacheReadable(req *http.Request, policy CachePolicy) bool {
 	if req == nil || req.URL == nil || cacheBypassed(req.Context()) {
 		return false
 	}
@@ -576,6 +576,31 @@ func cacheableRequest(req *http.Request, policy CachePolicy) bool {
 	return true
 }
 
+// cacheWritable reports whether a response may be stored for this request. | cacheWritable 报告该请求的响应是否可写入缓存。
+func cacheWritable(req *http.Request, policy CachePolicy) bool {
+	if req == nil || req.URL == nil || cacheBypassed(req.Context()) {
+		return false
+	}
+	allowed := false
+	for _, method := range policy.Methods {
+		if method == req.Method {
+			allowed = true
+			break
+		}
+	}
+	if !allowed || strings.Contains(strings.ToLower(req.Header.Get("Cache-Control")), "no-store") ||
+		strings.Contains(strings.ToLower(req.Header.Get("Accept")), "text/event-stream") ||
+		conditionalRequest(req) {
+		return false
+	}
+	if !policy.AllowSensitive {
+		if req.Header.Get("Authorization") != "" || req.Header.Get("Cookie") != "" {
+			return false
+		}
+	}
+	return true
+}
+
 // cacheableStatus reports whether status is listed by the policy. | cacheableStatus 报告状态码是否在策略列表中。
 func cacheableStatus(policy CachePolicy, status int) bool {
 	for _, candidate := range policy.StatusCodes {
@@ -590,7 +615,7 @@ func cacheableStatus(policy CachePolicy, status int) bool {
 // errored bodies are restored as a stream. | storeCacheResponse 缓冲并存储可缓存响应；超限或
 // 出错的正文会还原为流。
 func (e *engine) storeCacheResponse(resp *http.Response, req *http.Request, key string, policy CachePolicy, store Store) {
-	if resp == nil || resp.Body == nil || isEventStream(resp.Header) {
+	if resp == nil || resp.Body == nil || isEventStream(resp.Header) || !cacheWritable(req, policy) {
 		return
 	}
 	if !policy.AllowSensitive && resp.Header.Get("Set-Cookie") != "" {

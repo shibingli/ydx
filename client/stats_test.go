@@ -12,7 +12,7 @@ import (
 func TestStatsBasicAndHost(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
 	defer srv.Close()
-	c, err := New(WithHosts(srv.URL))
+	c, err := New(WithHosts(srv.URL), WithRewriteAll(true))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -75,5 +75,25 @@ func TestStatsSSE(t *testing.T) {
 	stats := c.Stats()
 	if stats.SSESessions != 1 || stats.SSEEvents != 1 {
 		t.Fatalf("sse stats %+v", stats)
+	}
+}
+
+func TestMetaTimings(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer srv.Close()
+	c, err := New(WithHosts(srv.URL), WithTrace(true))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	resp, err := c.Get(context.Background(), srv.URL+"/x")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.Meta.Timings.Total <= 0 || resp.Meta.Timings.TTFB <= 0 {
+		t.Fatalf("timings %+v", resp.Meta.Timings)
 	}
 }

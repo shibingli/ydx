@@ -2,6 +2,7 @@ package client
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"sync/atomic"
@@ -94,5 +95,43 @@ func TestStartHealthNoActive(t *testing.T) {
 	hs.StartHealth(context.Background(), &http.Transport{}, nil)
 	if err := hs.Close(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+type blockingTransport struct {
+	release chan struct{}
+}
+
+func (b *blockingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	<-b.release
+	return nil, context.Canceled
+}
+
+func TestCloseContextBoundsHealthWait(t *testing.T) {
+	release := make(chan struct{})
+	rt := &blockingTransport{release: release}
+	hs, err := NewHostSet(Host{
+		Name: "a",
+		URL:  mustURL("http://127.0.0.1:1"),
+		Health: HealthPolicy{
+			Active:   true,
+			Interval: 10 * time.Millisecond,
+			Timeout:  time.Hour,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, err := New(WithHostSet(hs), WithTransport(rt))
+	if err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(20 * time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	err = c.CloseContext(ctx)
+	close(release)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("want deadline, got %v", err)
 	}
 }

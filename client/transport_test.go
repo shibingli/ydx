@@ -22,6 +22,7 @@ func TestRuleRewriteAndHostBasePath(t *testing.T) {
 
 	c, err := New(
 		WithHosts(srv.URL+"/v1"),
+		WithRewriteAll(true),
 		WithRule(Rule{
 			Name:    "user",
 			Pattern: "/api/user/{id}",
@@ -59,6 +60,7 @@ func TestHostRewriteAndPreserveHost(t *testing.T) {
 
 	c, err := New(
 		WithHosts(srv.URL),
+		WithRewriteAll(true),
 		WithRule(Rule{Name: "target", Pattern: "/target"}),
 		WithRule(Rule{Name: "preserve", Pattern: "/preserve", PreserveHost: true}),
 	)
@@ -82,6 +84,7 @@ func TestDoWithMeta(t *testing.T) {
 
 	c, err := New(
 		WithHosts(srv.URL),
+		WithRewriteAll(true),
 		WithRule(Rule{Name: "user", Pattern: "/api/user/{id}"}),
 	)
 	if err != nil {
@@ -244,5 +247,85 @@ func TestSendClosesBodyOnResolveError(t *testing.T) {
 	}
 	if !body.closed.Load() {
 		t.Fatal("request body was not closed on resolve error")
+	}
+}
+
+func TestAbsoluteURLBypassesDefaultHosts(t *testing.T) {
+	var poolHits, directHits atomic.Int32
+	pool := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		poolHits.Add(1)
+		_, _ = w.Write([]byte("pool"))
+	}))
+	defer pool.Close()
+	direct := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		directHits.Add(1)
+		_, _ = w.Write([]byte("direct"))
+	}))
+	defer direct.Close()
+	c, err := New(WithHosts(pool.URL))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	resp, err := c.Get(context.Background(), direct.URL+"/x")
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if string(data) != "direct" || poolHits.Load() != 0 || directHits.Load() != 1 {
+		t.Fatalf("body %q pool=%d direct=%d", data, poolHits.Load(), directHits.Load())
+	}
+
+	forced, err := New(WithHosts(pool.URL), WithRewriteAll(true))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer forced.Close()
+	resp, err = forced.Get(context.Background(), direct.URL+"/x")
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if string(data) != "pool" || poolHits.Load() != 1 {
+		t.Fatalf("rewrite-all body %q pool=%d", data, poolHits.Load())
+	}
+}
+
+func TestHostBasePathRedirectMapping(t *testing.T) {
+	var mu sync.Mutex
+	var paths []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		paths = append(paths, r.URL.Path)
+		mu.Unlock()
+		if r.URL.Path == "/base/start" {
+			http.Redirect(w, r, "next", http.StatusFound)
+			return
+		}
+		if r.URL.Path == "/base/next" {
+			_, _ = w.Write([]byte("ok"))
+		}
+	}))
+	defer srv.Close()
+	c, err := New(WithHosts(srv.URL + "/base"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	resp, err := c.Get(context.Background(), "/start")
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if string(data) != "ok" {
+		t.Fatalf("body %q", data)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(paths) != 2 || paths[0] != "/base/start" || paths[1] != "/base/next" {
+		t.Fatalf("paths %v", paths)
 	}
 }

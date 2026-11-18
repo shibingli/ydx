@@ -201,3 +201,48 @@ func TestUpdateHosts(t *testing.T) {
 		t.Fatalf("old set not closed: %v", err)
 	}
 }
+
+func TestMaxInflightWaitsForSlot(t *testing.T) {
+	hs, err := NewHostSetWithOptions(HostSetOptions{Wait: time.Second},
+		Host{Name: "a", URL: mustURL("http://a"), MaxInflight: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer hs.Close()
+	req := httptest.NewRequest(http.MethodGet, "http://svc/x", nil)
+	first, err := hs.Pick(req, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	type result struct {
+		host *Host
+		err  error
+	}
+	done := make(chan result, 1)
+	go func() {
+		host, err := hs.Pick(req, nil)
+		done <- result{host: host, err: err}
+	}()
+	time.Sleep(10 * time.Millisecond)
+	hs.Release(first)
+	select {
+	case got := <-done:
+		if got.err != nil || got.host == nil {
+			t.Fatalf("waiting pick: host=%v err=%v", got.host, got.err)
+		}
+		hs.Release(got.host)
+	case <-time.After(time.Second):
+		t.Fatal("Pick did not wake after release")
+	}
+
+	held, err := hs.Pick(req, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	if _, err := hs.Pick(req.WithContext(ctx), nil); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("want deadline, got %v", err)
+	}
+	hs.Release(held)
+}

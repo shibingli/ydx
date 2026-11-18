@@ -239,11 +239,15 @@ func TestCoalesceLeaderCancelFallback(t *testing.T) {
 	}()
 	time.Sleep(20 * time.Millisecond)
 	cancel()
-	close(release)
-
-	if err := <-leaderDone; !errors.Is(err, context.Canceled) {
-		t.Fatalf("leader error %v", err)
+	select {
+	case err := <-leaderDone:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("leader error %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("leader did not return after cancel")
 	}
+	close(release)
 	if err := <-followerDone; err != nil {
 		t.Fatalf("follower error %v", err)
 	}
