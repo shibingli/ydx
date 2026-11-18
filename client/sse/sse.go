@@ -30,7 +30,7 @@ type Options struct {
 // Fanout broadcasts parsed SSE events to independent sse.Writer subscribers. | Fanout 把解析后的 SSE 事件广播给独立的 sse.Writer 订阅者。
 type Fanout struct {
 	opts   Options
-	mu     sync.Mutex
+	mu     sync.RWMutex
 	subs   map[*Subscription]struct{}
 	closed bool
 	drops  atomic.Uint64
@@ -139,19 +139,15 @@ func (f *Fanout) broadcast(event client.Event) error {
 	if f == nil {
 		return ErrClosed
 	}
-	f.mu.Lock()
+	f.mu.RLock()
 	if f.closed {
-		f.mu.Unlock()
+		f.mu.RUnlock()
 		return ErrClosed
 	}
-	subs := make([]*Subscription, 0, len(f.subs))
 	for sub := range f.subs {
-		subs = append(subs, sub)
-	}
-	f.mu.Unlock()
-	for _, sub := range subs {
 		sub.enqueue(event)
 	}
+	f.mu.RUnlock()
 	return nil
 }
 

@@ -44,8 +44,17 @@ func (g *Guard) Check(ctx context.Context, req *http.Request) (client.GuardDecis
 	if g == nil || g.engine == nil {
 		return client.GuardDecision{Allowed: false, Status: http.StatusServiceUnavailable, Message: "nil WAF guard"}, ErrNilEngine
 	}
+	inspectBody := g.inspectBody
+	if inspectBody && req != nil {
+		if _, capped := req.Body.(interface{ LimitedBody() }); capped {
+			// Let the access policy enforce its streaming cap; consuming the
+			// capped body here would turn a 413 into a body-loss fail-open. | 让访问
+			// 策略执行流式上限；此处消费带限正文会把 413 变成丢失正文的放行。
+			inspectBody = false
+		}
+	}
 	var restore func()
-	if !g.inspectBody && req != nil && req.Body != nil && req.Body != http.NoBody {
+	if !inspectBody && req != nil && req.Body != nil && req.Body != http.NoBody {
 		original := req.Body
 		req.Body = http.NoBody
 		restore = func() { req.Body = original }

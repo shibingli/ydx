@@ -5,6 +5,8 @@ import (
 	"context"
 	"errors"
 	"io"
+	"mime"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -259,5 +261,61 @@ func TestSpoolMaxBytes(t *testing.T) {
 	_, err = c.Put(context.Background(), srv.URL+"/x", io.NopCloser(strings.NewReader("0123456789")))
 	if !errors.Is(err, ErrRequestTooLarge) {
 		t.Fatalf("want ErrRequestTooLarge, got %v", err)
+	}
+}
+
+func TestPrepareBodyJSONWrapper(t *testing.T) {
+	body, getBody, contentType, length, err := prepareBodyInfo(JSON(map[string]string{"a": "b"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer body.Close()
+	if contentType != "application/json" || length <= 0 || getBody == nil {
+		t.Fatalf("content type %q length %d getBody %t", contentType, length, getBody != nil)
+	}
+	data, _ := io.ReadAll(body)
+	if string(data) != `{"a":"b"}` {
+		t.Fatalf("body %q", data)
+	}
+}
+
+func TestPrepareBodyMultipart(t *testing.T) {
+	fields := url.Values{"field": {"value"}}
+	body, getBody, contentType, length, err := prepareBodyInfo(Multipart(fields,
+		MultipartFile{Field: "file", FileName: "a.txt", ContentType: "text/plain", Reader: strings.NewReader("content")},
+	))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer body.Close()
+	if getBody == nil || length <= 0 || !strings.HasPrefix(contentType, "multipart/form-data; boundary=") {
+		t.Fatalf("content type %q length %d getBody %t", contentType, length, getBody != nil)
+	}
+	mediaType, params, err := mime.ParseMediaType(contentType)
+	if err != nil || mediaType != "multipart/form-data" {
+		t.Fatalf("media type %q params %v err %v", mediaType, params, err)
+	}
+	reader := multipart.NewReader(body, params["boundary"])
+	part, err := reader.NextPart()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if part.FormName() != "field" {
+		t.Fatalf("field %q", part.FormName())
+	}
+	value, _ := io.ReadAll(part)
+	if string(value) != "value" {
+		t.Fatalf("field value %q", value)
+	}
+	part, err = reader.NextPart()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if part.FormName() != "file" || part.FileName() != "a.txt" || part.Header.Get("Content-Type") != "text/plain" {
+		t.Fatalf("file part %q %q %q", part.FormName(), part.FileName(), part.Header.Get("Content-Type"))
+	}
+	value, _ = io.ReadAll(part)
+	if string(value) != "content" {
+		t.Fatalf("file value %q", value)
 	}
 }

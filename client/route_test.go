@@ -196,3 +196,18 @@ func TestUpdateRules(t *testing.T) {
 		t.Fatalf("new rule %v %v", r, ok)
 	}
 }
+
+func TestRuleConditionPanicFailsClosed(t *testing.T) {
+	c, err := New(WithRule(Rule{
+		Name: "panic", Pattern: "/**",
+		Condition: func(*http.Request) bool { panic("boom") },
+	}), WithoutCookieJar())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	_, err = c.Get(context.Background(), "http://127.0.0.1:1/x")
+	if !errors.Is(err, ErrHookPanic) {
+		t.Fatalf("error %v", err)
+	}
+}

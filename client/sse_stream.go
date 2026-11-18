@@ -144,6 +144,16 @@ func (c *Client) OpenStream(ctx context.Context, req *http.Request, opts ...Stre
 // open issues one SSE request and validates the response. | open 发起一次 SSE 请求并校验响应。
 func (s *Stream) open(ctx context.Context) error {
 	req := s.template.Clone(ctx)
+	if s.reconnects > 0 && req.Body != nil && req.Body != http.NoBody {
+		if req.GetBody == nil {
+			return ErrBodyNotReplayable
+		}
+		body, err := req.GetBody()
+		if err != nil {
+			return errs.Wrap(err, ErrBodyNotReplayable)
+		}
+		req.Body = body
+	}
 	if s.lastID != "" {
 		req.Header.Set("Last-Event-ID", s.lastID)
 	}
@@ -153,6 +163,12 @@ func (s *Stream) open(ctx context.Context) error {
 	resp, err := s.client.engine.RoundTrip(req)
 	if err != nil {
 		return err
+	}
+	if s.closed.Load() {
+		if resp.Body != nil {
+			_ = resp.Body.Close()
+		}
+		return ErrClosed
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		drainAndClose(resp.Body, 64<<10)
@@ -169,6 +185,11 @@ func (s *Stream) open(ctx context.Context) error {
 		return errs.Detail(ErrSSEProtocol, "content type %q", resp.Header.Get("Content-Type"))
 	}
 	s.mu.Lock()
+	if s.closed.Load() {
+		s.mu.Unlock()
+		_ = resp.Body.Close()
+		return ErrClosed
+	}
 	s.body = resp.Body
 	s.reader = nil
 	s.meta = meta
@@ -186,6 +207,7 @@ func (s *Stream) Next(ctx context.Context) (Event, error) {
 	}
 	for {
 		if s.closed.Load() {
+			s.closeBody()
 			return Event{}, ErrClosed
 		}
 		s.mu.Lock()
@@ -244,6 +266,9 @@ func (s *Stream) Next(ctx context.Context) (Event, error) {
 		}
 		if err := sleepContext(ctx, delay); err != nil {
 			return Event{}, err
+		}
+		if s.closed.Load() {
+			return Event{}, ErrClosed
 		}
 		if err := s.open(ctx); err != nil {
 			return Event{}, err

@@ -143,15 +143,6 @@ func useDefaultHosts(ctx context.Context) bool {
 	return value
 }
 
-// singleHost returns the only host when the pool has exactly one. | singleHost 在池仅有一个 Host 时返回它。
-func (e *engine) singleHost() *Host {
-	hosts := e.hosts.Load()
-	if hosts == nil || hosts.Len() != 1 {
-		return nil
-	}
-	return hosts.entries[0].host
-}
-
 // tryBare executes a request without policy layers when possible. | tryBare 在可能时绕过策略层执行请求。
 func (e *engine) tryBare(req *http.Request) (*http.Response, error, bool) {
 	meta := metaFromContext(req.Context())
@@ -159,6 +150,9 @@ func (e *engine) tryBare(req *http.Request) (*http.Response, error, bool) {
 	if hosts == nil {
 		e.counters.requests.Add(1)
 		e.counters.inflight.Add(1)
+		if req.ContentLength > 0 {
+			e.counters.bytesSent.Add(uint64(req.ContentLength))
+		}
 		start := time.Now()
 		resp, err := e.defaultTransport().RoundTrip(req)
 		e.counters.inflight.Add(-1)
@@ -166,20 +160,22 @@ func (e *engine) tryBare(req *http.Request) (*http.Response, error, bool) {
 			e.counters.errors.Add(1)
 			return nil, e.wrapError("roundtrip", req, "", 1, err), true
 		}
+		if resp.ContentLength > 0 {
+			e.counters.bytesReceived.Add(uint64(resp.ContentLength))
+		}
 		e.counters.responses.Add(1)
 		return e.finishResponse(resp, req, meta, nil, 1, start), nil, true
 	}
 	if hosts.Len() != 1 {
 		return nil, nil, false
 	}
+	if !canPassThroughHost(hosts.entries[0].host, nil, req.URL, req) {
+		return nil, nil, false
+	}
 	host, err := hosts.Pick(req, nil)
 	if err != nil {
 		e.counters.errors.Add(1)
 		return nil, e.wrapError("roundtrip", req, "", 0, err), true
-	}
-	if !canPassThroughHost(host, nil, req.URL, req) {
-		hosts.Release(host)
-		return nil, nil, false
 	}
 	transport, err := e.transportFor(host)
 	if err != nil {
@@ -189,6 +185,9 @@ func (e *engine) tryBare(req *http.Request) (*http.Response, error, bool) {
 	}
 	e.counters.requests.Add(1)
 	e.counters.inflight.Add(1)
+	if req.ContentLength > 0 {
+		e.counters.bytesSent.Add(uint64(req.ContentLength))
+	}
 	start := time.Now()
 	resp, err := transport.RoundTrip(req)
 	e.counters.inflight.Add(-1)
@@ -201,6 +200,9 @@ func (e *engine) tryBare(req *http.Request) (*http.Response, error, bool) {
 		e.counters.errors.Add(1)
 		return nil, e.wrapError("roundtrip", req, host.Name, 1, err), true
 	}
+	if resp.ContentLength > 0 {
+		e.counters.bytesReceived.Add(uint64(resp.ContentLength))
+	}
 	if host.IsFailureStatus(resp.StatusCode) {
 		hosts.MarkFailure(host, errs.Detail(ErrUpstreamStatus, "status %d", resp.StatusCode))
 	} else {
@@ -212,7 +214,18 @@ func (e *engine) tryBare(req *http.Request) (*http.Response, error, bool) {
 
 // isBareEngine reports whether the engine can bypass all policy layers. | isBareEngine 报告引擎是否可绕过全部策略层。
 func isBareEngine(o options, rules *RuleSet, hosts *HostSet) bool {
-	return (rules == nil || rules.Len() == 0) && (hosts == nil || hosts.Len() == 1) && o.Hooks.empty() &&
+	if hosts != nil {
+		if hosts.Len() != 1 {
+			return false
+		}
+		host := hosts.entries[0].host
+		if len(host.Headers) > 0 || host.URL.RawPath != "" || host.URL.RawQuery != "" || host.URL.ForceQuery ||
+			host.URL.Fragment != "" || host.URL.User != nil || host.URL.Opaque != "" ||
+			(host.URL.Path != "" && host.URL.Path != "/") {
+			return false
+		}
+	}
+	return (rules == nil || rules.Len() == 0) && o.Hooks.empty() &&
 		o.Cache == nil && o.Coalesce == nil && o.Mirror == nil && o.Guard == nil &&
 		o.AccessPolicy == nil && o.Retry == nil && o.UserAgent == nil && !o.Trace &&
 		len(o.HostTLS) == 0 && o.ConnMode != ConnShort
@@ -276,6 +289,7 @@ func (e *engine) RoundTrip(req *http.Request) (resp *http.Response, err error) {
 		meta.BytesRead = 0
 		meta.Timings = Timings{}
 		meta.Mirrors = nil
+		meta.MirrorResults = nil
 	}
 	if meta != nil && e.opts.Trace {
 		hopStart := time.Now()
@@ -296,7 +310,11 @@ func (e *engine) RoundTrip(req *http.Request) (resp *http.Response, err error) {
 	var rule *Rule
 	var params Params
 	if rules != nil {
-		rule, params, _ = rules.MatchRequest(req)
+		var matchErr error
+		rule, params, _, matchErr = rules.matchRequest(req)
+		if matchErr != nil {
+			return nil, e.wrapError("route", req, "", 0, matchErr)
+		}
 	}
 	if meta != nil {
 		meta.Rule = rule
@@ -313,7 +331,7 @@ func (e *engine) RoundTrip(req *http.Request) (resp *http.Response, err error) {
 		req = req.WithContext(context.WithValue(req.Context(), connModeKey{}, mode))
 	}
 	if guard := e.guardFor(rule); guard != nil {
-		decision, guardErr := guard.Check(req.Context(), req)
+		decision, guardErr := callGuard(guard, req.Context(), req)
 		if guardErr != nil {
 			return nil, e.wrapError("guard", req, "", 0, errs.Wrap(guardErr, ErrGuard))
 		}
@@ -338,9 +356,15 @@ func (e *engine) RoundTrip(req *http.Request) (resp *http.Response, err error) {
 		}
 	}
 	hosts := e.hosts.Load()
+	useDefault := useDefaultHosts(req.Context())
+	if useDefault && !e.opts.RewriteAll {
+		if expected := defaultHostFrom(req.Context()); expected != "" && !strings.EqualFold(req.URL.Host, expected) {
+			useDefault = false
+		}
+	}
 	if rule != nil && rule.HostSet != nil {
 		hosts = rule.HostSet
-	} else if !e.opts.RewriteAll && !useDefaultHosts(req.Context()) {
+	} else if !e.opts.RewriteAll && !useDefault {
 		hosts = nil
 	}
 	policy, store, caching := e.cacheFor(rule)
@@ -388,14 +412,35 @@ func (e *engine) RoundTrip(req *http.Request) (resp *http.Response, err error) {
 		}
 	}
 	var ruleCancel context.CancelFunc
-	if rule != nil && rule.Timeout > 0 && !forwardNoDefaultRetry(req.Context()) && !streamingRequest(req.Context()) {
-		ctx, cancel := context.WithTimeout(req.Context(), rule.Timeout)
-		req = req.WithContext(ctx)
-		ruleCancel = cancel
+	var forwardHeaderTimer *time.Timer
+	var forwardHeaderDone chan struct{}
+	var forwardTimedOut atomic.Bool
+	if rule != nil && rule.Timeout > 0 && !streamingRequest(req.Context()) {
+		if forwardNoDefaultRetry(req.Context()) {
+			// Forward applies the rule timeout to upstream response headers only;
+			// the body remains governed by the inbound context and BodyTimeout. | Forward
+			// 的规则超时只覆盖上游响应头；正文由入站 ctx 与 BodyTimeout 控制。
+			ctx, cancel := context.WithCancel(req.Context())
+			req = req.WithContext(ctx)
+			ruleCancel = cancel
+			forwardHeaderDone = make(chan struct{})
+			forwardHeaderTimer = time.AfterFunc(rule.Timeout, func() {
+				forwardTimedOut.Store(true)
+				cancel()
+				close(forwardHeaderDone)
+			})
+		} else {
+			ctx, cancel := context.WithTimeout(req.Context(), rule.Timeout)
+			req = req.WithContext(ctx)
+			ruleCancel = cancel
+		}
 	}
 	mirrorPolicy, mirroring := e.mirrorFor(rule)
 	var mirrorResults *MirrorResults
-	if mirroring {
+	if mirroring && !mirrorSampled(req.URL, rule, mirrorPolicy.Percent) {
+		mirroring = false
+	}
+	if mirroring && mirrorPolicy.Mode == MirrorUpstream {
 		mirrorResults = &MirrorResults{}
 		req = req.WithContext(context.WithValue(req.Context(), mirrorTrackKey{}, mirrorResults))
 	}
@@ -428,11 +473,28 @@ func (e *engine) RoundTrip(req *http.Request) (resp *http.Response, err error) {
 	} else {
 		resp, err = e.execute(req, rule, meta, hosts, key, policy, store, postMirror, mirrorSpool)
 	}
+	if forwardHeaderTimer != nil {
+		if !forwardHeaderTimer.Stop() {
+			<-forwardHeaderDone
+		}
+	}
 	if err != nil {
 		if ruleCancel != nil {
 			ruleCancel()
 		}
+		if forwardTimedOut.Load() {
+			err = errs.Wrap(err, ErrForwardTimeout)
+		}
 		return nil, err
+	}
+	if forwardTimedOut.Load() {
+		if resp.Body != nil {
+			_ = resp.Body.Close()
+		}
+		if ruleCancel != nil {
+			ruleCancel()
+		}
+		return nil, errs.Detail(ErrForwardTimeout, "upstream response headers timed out | 上游响应头超时")
 	}
 	if meta != nil && mirrorResults != nil {
 		meta.MirrorResults = mirrorResults
@@ -456,7 +518,7 @@ func (e *engine) finalizeResponse(req *http.Request, rule *Rule, meta *Meta, res
 	// Forward's SSE path applies its own tee while copying; wrapping here would
 	// deliver every chunk twice. | Forward 的 SSE 路径在复制时自行 tee；此处再包装会导致每个分块重复投递。
 	if !(forwardCopySSE(req.Context()) && isEventStream(resp.Header)) {
-		resp = e.applyTee(rule, resp)
+		resp = e.applyTee(req, rule, resp)
 	}
 	if e.hooks.OnResponse != nil {
 		metaValue := Meta{}
@@ -798,7 +860,8 @@ func (e *engine) cloneAttempt(req *http.Request, attempt int, target *url.URL, o
 		out.Trailer = req.Trailer
 	}
 	if host != nil {
-		preserve := rule != nil && rule.PreserveHost
+		explicitHost := req.Host != "" && (!strings.EqualFold(req.Host, req.URL.Host) || explicitHostFrom(req.Context()))
+		preserve := (rule != nil && rule.PreserveHost) || explicitHost
 		if forwardPreserveHost(out.Context()) {
 			preserve = true
 		}
@@ -815,15 +878,35 @@ func (e *engine) cloneAttempt(req *http.Request, attempt int, target *url.URL, o
 	}
 	if rule != nil {
 		for key, values := range rule.Headers {
+			if strings.EqualFold(key, "Host") {
+				if len(values) > 0 {
+					out.Host = values[len(values)-1]
+				}
+				continue
+			}
 			for _, value := range values {
-				out.Header.Add(key, value)
+				if strings.EqualFold(key, "Content-Type") {
+					out.Header.Set(key, value)
+				} else {
+					out.Header.Add(key, value)
+				}
 			}
 		}
 	}
 	if host != nil {
 		for key, values := range host.Headers {
+			if strings.EqualFold(key, "Host") {
+				if len(values) > 0 {
+					out.Host = values[len(values)-1]
+				}
+				continue
+			}
 			for _, value := range values {
-				out.Header.Add(key, value)
+				if strings.EqualFold(key, "Content-Type") {
+					out.Header.Set(key, value)
+				} else {
+					out.Header.Add(key, value)
+				}
 			}
 		}
 	}
@@ -865,7 +948,7 @@ func canPassThroughHost(host *Host, rule *Rule, logical *url.URL, req *http.Requ
 	if rule != nil && (len(rule.Headers) > 0 || rule.Rewrite != nil || rule.PreserveHost) {
 		return false
 	}
-	if len(host.Headers) > 0 || host.URL.RawPath != "" || host.URL.RawQuery != "" ||
+	if len(host.Headers) > 0 || host.URL.RawPath != "" || host.URL.RawQuery != "" || host.URL.ForceQuery ||
 		host.URL.Fragment != "" || host.URL.User != nil || host.URL.Opaque != "" {
 		return false
 	}
@@ -916,6 +999,9 @@ func rewriteRedirectLocation(resp *http.Response, wire *url.URL, host *Host, rul
 	if resolved.RawQuery != "" {
 		trimmed += "?" + resolved.RawQuery
 	}
+	if resolved.Fragment != "" {
+		trimmed += "#" + resolved.EscapedFragment()
+	}
 	resp.Header.Set("Location", trimmed)
 }
 
@@ -965,6 +1051,8 @@ func directTarget(logical *url.URL, rule *Rule) *url.URL {
 // targetURL builds the wire URL from the logical URL, the rule rewrite and the host base path. | targetURL 由逻辑 URL、规则重写与 Host base path 构造连接 URL。
 func targetURL(logical *url.URL, host *Host, rule *Rule) *url.URL {
 	target := *host.URL
+	basePath := target.Path
+	baseEscaped := target.EscapedPath()
 	escaped := logical.EscapedPath()
 	if escaped == "" {
 		escaped = "/"
@@ -976,9 +1064,10 @@ func targetURL(logical *url.URL, host *Host, rule *Rule) *url.URL {
 	if err != nil {
 		decoded = escaped
 	}
-	target.RawPath = joinBasePath(target.Path, escaped)
-	target.Path = joinBasePath(target.Path, decoded)
+	target.RawPath = joinBasePath(baseEscaped, escaped)
+	target.Path = joinBasePath(basePath, decoded)
 	target.RawQuery = logical.RawQuery
+	target.ForceQuery = logical.ForceQuery
 	target.Fragment = ""
 	return &target
 }
@@ -1008,6 +1097,9 @@ func joinBasePath(base, path string) string {
 func (e *engine) finishResponse(resp *http.Response, req *http.Request, meta *Meta, host *Host, attempt int, start time.Time) *http.Response {
 	if resp == nil {
 		return nil
+	}
+	if resp.Body == nil {
+		resp.Body = http.NoBody
 	}
 	resp.Request = req
 	if meta != nil {
@@ -1062,6 +1154,15 @@ func (e *engine) wrapError(op string, req *http.Request, host string, attempts i
 		Attempts: attempts,
 		Err:      err,
 	}
+}
+
+// CloseIdleConnections closes idle connections for base and TLS transports. | CloseIdleConnections 关闭基础与 TLS 传输的空闲连接。
+func (e *engine) CloseIdleConnections() {
+	if e == nil {
+		return
+	}
+	e.closeIdleConnections()
+	e.closeTLSIdle()
 }
 
 // closeIdleConnections releases idle connections held by the base transport. | closeIdleConnections 释放底层传输持有的空闲连接。

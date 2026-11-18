@@ -190,3 +190,17 @@ func TestAccessPolicyCapsUnknownBody(t *testing.T) {
 		t.Fatalf("want ErrRequestTooLarge, got %v", err)
 	}
 }
+
+func TestGuardPanicFailsClosed(t *testing.T) {
+	c, err := New(WithGuard(GuardFunc(func(context.Context, *http.Request) (GuardDecision, error) {
+		panic("boom")
+	})), WithoutCookieJar())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	_, err = c.Get(context.Background(), "http://127.0.0.1:1/")
+	if !errors.Is(err, ErrGuard) || !errors.Is(err, ErrHookPanic) {
+		t.Fatalf("error %v", err)
+	}
+}

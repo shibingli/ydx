@@ -195,7 +195,12 @@ func NewHostSetWithOptions(opts HostSetOptions, hosts ...Host) (*HostSet, error)
 		if host.Headers != nil {
 			host.Headers = host.Headers.Clone()
 		}
+		if host.TLS != nil {
+			tlsCfg := cloneTLSConfig(*host.TLS)
+			host.TLS = &tlsCfg
+		}
 		host.Health = normalizeHealth(host.Health)
+		host.Health.FailStatus = append([]int(nil), host.Health.FailStatus...)
 		entry := &hostEntry{host: &host, set: hs}
 		entry.healthy.Store(true)
 		host.entry = entry
@@ -656,19 +661,24 @@ func WithHostSet(hs *HostSet) Option {
 
 // UpdateHosts atomically replaces the default host pool and closes the old pool. | UpdateHosts 原子替换默认 Host 池并关闭旧池。
 func (c *Client) UpdateHosts(hosts ...Host) error {
-	if c == nil || c.engine == nil || c.closed.Load() {
+	if c == nil || c.engine == nil {
+		return ErrClosed
+	}
+	c.lifecycleMu.Lock()
+	defer c.lifecycleMu.Unlock()
+	if c.closed.Load() {
 		return ErrClosed
 	}
 	hs, err := NewHostSet(hosts...)
 	if err != nil {
 		return err
 	}
-	c.engine.bare.Store(false)
 	old := c.engine.hosts.Swap(hs)
 	hs.startHealth(context.Background(), c.engine.healthTransport, c.opts.Logger)
 	c.engine.pruneTLS()
 	if old != nil {
 		_ = old.Close()
 	}
+	c.engine.bare.Store(isBareEngine(c.opts, c.engine.rules.Load(), hs))
 	return nil
 }

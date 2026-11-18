@@ -40,6 +40,9 @@ func WithRequestTimeout(d time.Duration) RequestOption {
 // WithRequestHeader adds one request header. | WithRequestHeader 添加一个请求头。
 func WithRequestHeader(key, value string) RequestOption {
 	return func(c *requestConfig) error {
+		if key == "" {
+			return errs.Detail(ErrInvalidConfig, "empty request header name | 空请求头名")
+		}
 		c.headers = append(c.headers, headerPair{key: key, value: value})
 		return nil
 	}
@@ -86,10 +89,7 @@ func (c *Client) send(ctx context.Context, method, rawURL string, body any, cfg 
 		ctx = context.Background()
 	}
 	relative := !strings.Contains(rawURL, "://")
-	if relative {
-		ctx = context.WithValue(ctx, useDefaultHostsKey{}, true)
-	}
-	state := &responseState{Context: ctx}
+	state := &responseState{Context: ctx, useDefaultHosts: relative}
 	state.response.Meta.Hops = state.response.Meta.hopInline[:0]
 	if strings.Contains(rawURL, "://") && !strings.ContainsAny(rawURL, "?#@%") {
 		state.response.Meta.urlHint = rawURL
@@ -116,6 +116,9 @@ func (c *Client) send(ctx context.Context, method, rawURL string, body any, cfg 
 		}
 		return nil, errs.Wrap(err, ErrInvalidRequest)
 	}
+	if relative {
+		state.defaultHost = req.URL.Host
+	}
 	if rc != nil && length >= 0 {
 		if length == 0 {
 			_ = rc.Close()
@@ -134,6 +137,11 @@ func (c *Client) send(ctx context.Context, method, rawURL string, body any, cfg 
 	for _, header := range cfg.headers {
 		if http.CanonicalHeaderKey(header.key) == "Host" {
 			req.Host = header.value
+			state.explicitHost = true
+			continue
+		}
+		if http.CanonicalHeaderKey(header.key) == "Content-Type" {
+			req.Header.Set(header.key, header.value)
 			continue
 		}
 		req.Header.Add(header.key, header.value)
@@ -201,17 +209,51 @@ func (c *Client) resolveRequestURL(raw string) (string, error) {
 	return base.ResolveReference(parsed).String(), nil
 }
 
+// explicitHostKey marks a request whose Host header was explicitly set. | explicitHostKey 标记显式设置 Host 头的请求。
+type explicitHostKey struct{}
+
+// explicitHostFrom reports whether the caller explicitly set the Host header. | explicitHostFrom 报告调用方是否显式设置 Host 头。
+func explicitHostFrom(ctx context.Context) bool {
+	if ctx == nil {
+		return false
+	}
+	value, _ := ctx.Value(explicitHostKey{}).(bool)
+	return value
+}
+
+// defaultHostKey carries the host resolved from a relative convenience URL. | defaultHostKey 携带相对便捷 URL 解析出的 Host。
+type defaultHostKey struct{}
+
+// defaultHostFrom returns the expected default host for a relative send. | defaultHostFrom 返回相对请求预期的默认 Host。
+func defaultHostFrom(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	host, _ := ctx.Value(defaultHostKey{}).(string)
+	return host
+}
+
 // finish executes a request and wraps the response with meta. | finish 执行请求并用 meta 包装响应。
 // responseState combines Meta and Response in one allocation. | responseState 用一次分配组合 Meta 与 Response。
 type responseState struct {
 	context.Context
-	response Response
+	response        Response
+	defaultHost     string
+	useDefaultHosts bool
+	explicitHost    bool
 }
 
 // Value supplies the per-request Meta in its final response location. | Value 在最终响应位置提供逐请求 Meta。
 func (s *responseState) Value(key any) any {
-	if _, ok := key.(metaKey); ok {
+	switch key.(type) {
+	case metaKey:
 		return &s.response.Meta
+	case useDefaultHostsKey:
+		return s.useDefaultHosts
+	case defaultHostKey:
+		return s.defaultHost
+	case explicitHostKey:
+		return s.explicitHost
 	}
 	return s.Context.Value(key)
 }

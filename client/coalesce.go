@@ -22,9 +22,11 @@ type CoalescePolicy struct {
 }
 
 // withDefaults fills zero-value coalesce fields. | withDefaults 填充零值合并字段。
+var defaultCoalesceMethods = []string{http.MethodGet, http.MethodHead}
+
 func (p CoalescePolicy) withDefaults() CoalescePolicy {
 	if p.Methods == nil {
-		p.Methods = []string{http.MethodGet, http.MethodHead}
+		p.Methods = defaultCoalesceMethods
 	}
 	if p.MaxBodyBytes <= 0 {
 		p.MaxBodyBytes = 4 << 20
@@ -34,6 +36,7 @@ func (p CoalescePolicy) withDefaults() CoalescePolicy {
 
 // WithCoalesce sets the client-wide coalescing policy. | WithCoalesce 设置客户端级请求合并策略。
 func WithCoalesce(policy CoalescePolicy) Option {
+	policy.Methods = append([]string(nil), policy.Methods...)
 	return func(o *options) error {
 		o.Coalesce = &policy
 		return nil

@@ -114,3 +114,59 @@ func TestTeeSinkReceives(t *testing.T) {
 		t.Fatalf("sink collected %q", collected)
 	}
 }
+
+func TestGlobalTeeSinkReceives(t *testing.T) {
+	payload := []byte("global-tee")
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write(payload)
+	}))
+	defer srv.Close()
+	var mu sync.Mutex
+	var collected []byte
+	sink := SinkFunc(func(ctx context.Context, chunk []byte) error {
+		mu.Lock()
+		collected = append(collected, chunk...)
+		mu.Unlock()
+		return nil
+	})
+	c, err := New(WithMirror(MirrorPolicy{Mode: MirrorTee, TeeSinks: []Sink{sink}}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	resp, err := c.Get(context.Background(), srv.URL+"/x")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := resp.Bytes(); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if !bytes.Equal(collected, payload) {
+		t.Fatalf("sink collected %q", collected)
+	}
+}
+
+func TestTeeSinkPanicIsIsolated(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("payload"))
+	}))
+	defer srv.Close()
+	sink := SinkFunc(func(context.Context, []byte) error { panic("boom") })
+	c, err := New(WithMirror(MirrorPolicy{Mode: MirrorTee, TeeSinks: []Sink{sink}}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	resp, err := c.Get(context.Background(), srv.URL+"/x")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := resp.Bytes(); err != nil {
+		t.Fatal(err)
+	}
+	if c.engine.mirrorDrops.Load() == 0 {
+		t.Fatal("expected drop after sink panic")
+	}
+}

@@ -32,6 +32,6 @@ func (j *lazyJar) SetCookies(u *url.URL, cookies []*http.Cookie) {
 	if j == nil || len(cookies) == 0 {
 		return
 	}
-	j.active.Store(true)
 	j.jar.SetCookies(u, cookies)
+	j.active.Store(true)
 }

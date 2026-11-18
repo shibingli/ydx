@@ -1,7 +1,6 @@
 package client
 
 import (
-	"hash/fnv"
 	"math"
 	"math/rand/v2"
 	"net/http"
@@ -135,9 +134,7 @@ func (hs *HostSet) chooseHash(req *http.Request, eligible []bool) int {
 	if count == 0 {
 		return -1
 	}
-	hash := fnv.New64a()
-	_, _ = hash.Write([]byte(hs.hashKey(req)))
-	pick := int(hash.Sum64() % uint64(count))
+	pick := int(fnv64aString(safeHashKey(hs.hashKey, req)) % uint64(count))
 	for index, ok := range eligible {
 		if !ok {
 			continue
@@ -148,6 +145,19 @@ func (hs *HostSet) chooseHash(req *http.Request, eligible []bool) int {
 		pick--
 	}
 	return -1
+}
+
+// safeHashKey invokes a user hash key function with panic isolation. | safeHashKey 以 panic 隔离调用用户哈希键函数。
+func safeHashKey(fn func(*http.Request) string, req *http.Request) (key string) {
+	if fn == nil {
+		return ""
+	}
+	defer func() {
+		if recover() != nil {
+			key = ""
+		}
+	}()
+	return fn(req)
 }
 
 // chooseOrdered returns the first eligible index. | chooseOrdered 返回第一个可用索引。

@@ -7,6 +7,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/shibingli/ydx/errs"
 )
 
 // Sink receives raw response chunks from tee mirroring. | Sink 接收 tee 镜像的原始响应块。
@@ -35,6 +37,44 @@ func (f EventSinkFunc) WriteEvent(ctx context.Context, event Event) error {
 
 // Close implements EventSink and does nothing. | Close 实现 EventSink 且不做任何事。
 func (f EventSinkFunc) Close() error { return nil }
+
+// callSinkChunk invokes a user Sink with panic isolation. | callSinkChunk 以 panic 隔离调用用户 Sink。
+func callSinkChunk(sink Sink, ctx context.Context, chunk []byte) (err error) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			err = errs.Detail(ErrHookPanic, "sink panic: %v | sink panic：%v", recovered, recovered)
+		}
+	}()
+	return sink.WriteChunk(ctx, chunk)
+}
+
+// closeSink invokes a user Sink.Close with panic isolation. | closeSink 以 panic 隔离调用用户 Sink.Close。
+func closeSink(sink Sink) {
+	if sink == nil {
+		return
+	}
+	defer func() { _ = recover() }()
+	_ = sink.Close()
+}
+
+// callSinkEvent invokes a user EventSink with panic isolation. | callSinkEvent 以 panic 隔离调用用户 EventSink。
+func callSinkEvent(sink EventSink, ctx context.Context, event Event) (err error) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			err = errs.Detail(ErrHookPanic, "event sink panic: %v | event sink panic：%v", recovered, recovered)
+		}
+	}()
+	return sink.WriteEvent(ctx, event)
+}
+
+// closeEventSink invokes a user EventSink.Close with panic isolation. | closeEventSink 以 panic 隔离调用用户 EventSink.Close。
+func closeEventSink(sink EventSink) {
+	if sink == nil {
+		return
+	}
+	defer func() { _ = recover() }()
+	_ = sink.Close()
+}
 
 // SinkFunc adapts a function into a Sink. | SinkFunc 把函数适配为 Sink。
 type SinkFunc func(ctx context.Context, chunk []byte) error
@@ -111,10 +151,10 @@ func (w *teeSinkWorker) enqueue(chunk []byte) bool {
 // run consumes chunks until Close. | run 消费块直到 Close。
 func (w *teeSinkWorker) run() {
 	defer close(w.done)
-	defer func() { _ = w.sink.Close() }()
+	defer closeSink(w.sink)
 	for chunk := range w.ch {
 		ctx, cancel := context.WithTimeout(context.Background(), w.timeout)
-		err := w.sink.WriteChunk(ctx, chunk)
+		err := callSinkChunk(w.sink, ctx, chunk)
 		cancel()
 		if err != nil {
 			w.drops.Add(1)
@@ -201,10 +241,10 @@ func (w *eventSinkWorker) enqueue(event Event) bool {
 // run consumes events until Close. | run 消费事件直到 Close。
 func (w *eventSinkWorker) run() {
 	defer close(w.done)
-	defer func() { _ = w.sink.Close() }()
+	defer closeEventSink(w.sink)
 	for event := range w.ch {
 		ctx, cancel := context.WithTimeout(context.Background(), w.timeout)
-		err := w.sink.WriteEvent(ctx, event)
+		err := callSinkEvent(w.sink, ctx, event)
 		cancel()
 		if err != nil {
 			w.drops.Add(1)
@@ -316,17 +356,18 @@ func (t *teeBody) closeSinks() {
 }
 
 // applyTee wraps a response body when the rule uses tee mirroring. | applyTee 在规则使用 tee 镜像时包装响应正文。
-func (e *engine) applyTee(rule *Rule, resp *http.Response) *http.Response {
-	if resp == nil || resp.Body == nil {
+func (e *engine) applyTee(req *http.Request, rule *Rule, resp *http.Response) *http.Response {
+	if resp == nil || resp.Body == nil || req == nil {
 		return resp
 	}
 	policy, ok := e.mirrorFor(rule)
-	if !ok || policy.Mode != MirrorTee || len(policy.TeeSinks) == 0 {
+	if !ok || policy == nil || policy.Mode != MirrorTee ||
+		!mirrorSampled(req.URL, rule, policy.Percent) {
 		return resp
 	}
-	workers := make([]*teeSinkWorker, 0, len(policy.TeeSinks))
-	for _, sink := range policy.TeeSinks {
-		workers = append(workers, newTeeSinkWorker(sink, policy.TeeQueue, policy.TeeDrop, policy.TeeTimeout, &e.mirrorDrops))
+	workers := e.teeSinks(policy)
+	if len(workers) == 0 {
+		return resp
 	}
 	resp.Body = &teeBody{body: resp.Body, workers: workers}
 	return resp

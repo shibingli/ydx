@@ -47,6 +47,11 @@ type UAPolicy struct {
 
 // WithUserAgent enables User-Agent simulation. | WithUserAgent 启用 User-Agent 模拟。
 func WithUserAgent(policy UAPolicy) Option {
+	policy.List = append([]string(nil), policy.List...)
+	policy.Weights = append([]int(nil), policy.Weights...)
+	if policy.Companion != nil {
+		policy.Companion = policy.Companion.Clone()
+	}
 	return func(o *options) error {
 		cloned := policy
 		o.UserAgent = &cloned
@@ -60,6 +65,8 @@ func prepareUA(policy *UAPolicy) (*UAPolicy, error) {
 		return nil, nil
 	}
 	prepared := *policy
+	prepared.List = append([]string(nil), policy.List...)
+	prepared.Weights = append([]int(nil), policy.Weights...)
 	if prepared.Mode == "" {
 		prepared.Mode = UARandom
 	}

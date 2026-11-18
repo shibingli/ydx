@@ -56,6 +56,9 @@ func NewEventReader(r io.Reader, opts ...EventReaderOption) *EventReader {
 			opt(&cfg)
 		}
 	}
+	if r == nil {
+		r = strings.NewReader("")
+	}
 	br := bufio.NewReaderSize(r, 32<<10)
 	if prefix, err := br.Peek(3); err == nil && len(prefix) == 3 &&
 		prefix[0] == 0xEF && prefix[1] == 0xBB && prefix[2] == 0xBF {
@@ -66,7 +69,7 @@ func NewEventReader(r io.Reader, opts ...EventReaderOption) *EventReader {
 
 // Next returns the next dispatched event or io.EOF. | Next 返回下一个分发的事件或 io.EOF。
 func (r *EventReader) Next() (Event, error) {
-	if r == nil {
+	if r == nil || r.reader == nil {
 		return Event{}, io.EOF
 	}
 	if r.lastErr != nil {

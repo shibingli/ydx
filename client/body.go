@@ -3,6 +3,8 @@ package client
 import (
 	"bytes"
 	"io"
+	"mime"
+	"mime/multipart"
 	"net/http"
 	"net/url"
 	"os"
@@ -14,6 +16,42 @@ import (
 	"github.com/shibingli/ydx/json"
 	"github.com/shibingli/ydx/xml"
 )
+
+// JSONBody marks a value that should be encoded as JSON. | JSONBody 标记应按 JSON 编码的值。
+type JSONBody struct {
+	// Value is the value passed to ydx/json.Marshal. | Value 是传给 ydx/json.Marshal 的值。
+	Value any
+}
+
+// JSON returns a request body encoded as JSON. | JSON 返回按 JSON 编码的请求正文。
+func JSON(v any) JSONBody {
+	return JSONBody{Value: v}
+}
+
+// MultipartFile is one file part in a multipart body. | MultipartFile 是 multipart 正文中的一个文件分片。
+type MultipartFile struct {
+	// Field is the form field name. | Field 是表单字段名。
+	Field string
+	// FileName is the filename sent to the server; empty uses Field. | FileName 是发送给服务器的文件名；为空时使用 Field。
+	FileName string
+	// ContentType is the part content type; empty uses application/octet-stream. | ContentType 是分片 Content-Type；为空时使用 application/octet-stream。
+	ContentType string
+	// Reader supplies the file content. | Reader 提供文件内容。
+	Reader io.Reader
+}
+
+// MultipartBody marks a multipart/form-data request body. | MultipartBody 标记 multipart/form-data 请求正文。
+type MultipartBody struct {
+	// Fields are regular form fields. | Fields 是普通表单字段。
+	Fields url.Values
+	// Files are file parts. | Files 是文件分片。
+	Files []MultipartFile
+}
+
+// Multipart returns a multipart/form-data request body. | Multipart 返回 multipart/form-data 请求正文。
+func Multipart(fields url.Values, files ...MultipartFile) MultipartBody {
+	return MultipartBody{Fields: fields, Files: files}
+}
 
 // XMLBody marks a value that should be encoded as XML. | XMLBody 标记应按 XML 编码的值。
 type XMLBody struct {
@@ -43,6 +81,60 @@ type readerAtSeeker interface {
 	io.Seeker
 }
 
+// prepareMultipartBody encodes fields and files into a replayable multipart body. | prepareMultipartBody 把字段与文件编码为可重放的 multipart 正文。
+func prepareMultipartBody(body MultipartBody) (io.ReadCloser, func() (io.ReadCloser, error), string, int64, error) {
+	var buffer bytes.Buffer
+	writer := multipart.NewWriter(&buffer)
+	for key, values := range body.Fields {
+		if key == "" {
+			return nil, nil, "", 0, errs.Detail(ErrEncodeBody, "empty multipart field name | 空 multipart 字段名")
+		}
+		for _, value := range values {
+			if err := writer.WriteField(key, value); err != nil {
+				return nil, nil, "", 0, errs.Wrap(err, ErrEncodeBody)
+			}
+		}
+	}
+	for _, file := range body.Files {
+		if file.Field == "" {
+			return nil, nil, "", 0, errs.Detail(ErrEncodeBody, "empty multipart field | 空 multipart 字段")
+		}
+		if file.Reader == nil {
+			return nil, nil, "", 0, errs.Detail(ErrEncodeBody, "nil multipart file %q | 空 multipart 文件 %q", file.Field, file.Field)
+		}
+		name := file.FileName
+		if name == "" {
+			name = file.Field
+		}
+		contentType := file.ContentType
+		if contentType == "" {
+			contentType = "application/octet-stream"
+		}
+		if strings.ContainsAny(contentType, "\r\n") {
+			return nil, nil, "", 0, errs.Detail(ErrEncodeBody, "invalid multipart content type | 非法的 multipart Content-Type")
+		}
+		disposition := mime.FormatMediaType("form-data", map[string]string{"name": file.Field, "filename": name})
+		if disposition == "" {
+			return nil, nil, "", 0, errs.Detail(ErrEncodeBody, "invalid multipart field %q | 非法的 multipart 字段 %q", file.Field, file.Field)
+		}
+		part, err := writer.CreatePart(map[string][]string{
+			"Content-Disposition": {disposition},
+			"Content-Type":        {contentType},
+		})
+		if err != nil {
+			return nil, nil, "", 0, errs.Wrap(err, ErrEncodeBody)
+		}
+		if _, err := io.Copy(part, file.Reader); err != nil {
+			return nil, nil, "", 0, errs.Wrap(err, ErrEncodeBody)
+		}
+	}
+	if err := writer.Close(); err != nil {
+		return nil, nil, "", 0, errs.Wrap(err, ErrEncodeBody)
+	}
+	data := buffer.Bytes()
+	return bytesBody(data), bytesGetBody(data), writer.FormDataContentType(), int64(len(data)), nil
+}
+
 // prepareBody classifies a request body into a reader, a replay function and an
 // optional content type. The branch order is deliberate: explicit wrappers first,
 // then concrete replayable types, then the narrowest interfaces. | prepareBody 把请求正文
@@ -59,6 +151,14 @@ func prepareBodyInfo(v any) (io.ReadCloser, func() (io.ReadCloser, error), strin
 	switch body := v.(type) {
 	case nil:
 		return nil, nil, "", 0, nil
+	case JSONBody:
+		data, err := json.Marshal(body.Value)
+		if err != nil {
+			return nil, nil, "", 0, errs.Wrap(err, ErrEncodeBody)
+		}
+		return bytesBody(data), bytesGetBody(data), "application/json", int64(len(data)), nil
+	case MultipartBody:
+		return prepareMultipartBody(body)
 	case XMLBody:
 		data, err := xml.Marshal(body.Value)
 		if err != nil {
@@ -206,7 +306,9 @@ func (e *engine) spoolBodyWith(req *http.Request, toDisk bool) (*spool, error) {
 			return sp, nil
 		}
 		if !toDisk {
-			_ = req.Body.Close()
+			// Preserve the bytes already read and let the caller downgrade to a
+			// single streaming attempt. | 保留已读字节，让调用方降级为单次流式尝试。
+			req.Body = &multiReadCloser{Reader: io.MultiReader(bytes.NewReader(data), req.Body), closer: req.Body}
 			return nil, ErrBodyNotReplayable
 		}
 		return spoolToFile(data, req.Body, max)

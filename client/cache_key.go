@@ -3,14 +3,22 @@ package client
 import (
 	"net/http"
 	"strings"
+
+	"github.com/shibingli/ydx/errs"
 )
 
 // cacheKey builds the logical cache key for a request. | cacheKey 为请求构建逻辑缓存键。
-func cacheKey(req *http.Request, rule *Rule, policy *CachePolicy) (string, error) {
+func cacheKey(req *http.Request, rule *Rule, policy *CachePolicy) (key string, err error) {
 	if req == nil || req.URL == nil {
 		return "", ErrInvalidRequest
 	}
 	if policy != nil && policy.KeyFunc != nil {
+		defer func() {
+			if recovered := recover(); recovered != nil {
+				key = ""
+				err = errs.Detail(ErrHookPanic, "cache key panic: %v | 缓存键 panic：%v", recovered, recovered)
+			}
+		}()
 		return policy.KeyFunc(req), nil
 	}
 	var builder strings.Builder

@@ -87,12 +87,15 @@ func (c *Client) Submit(ctx context.Context, req *http.Request, cb func(*Respons
 	c.asyncWG.Add(1)
 	c.asyncMu.Unlock()
 	go func() {
-		defer c.asyncWG.Done()
 		defer func() { <-c.asyncSem }()
 		defer cancel()
 		defer stop()
 		resp, err := c.DoWithMeta(req.WithContext(runCtx))
 		future.complete(resp, err)
+		// Release the close barrier before running user code so a callback that
+		// calls Close cannot wait on its own goroutine. | 先释放关闭屏障再执行用户
+		// 回调，避免回调调用 Close 时等待自身。
+		c.asyncWG.Done()
 		if cb != nil {
 			func() {
 				defer func() { _ = recover() }()

@@ -284,3 +284,39 @@ func TestMaxInflightAtomicReservation(t *testing.T) {
 		t.Fatalf("MaxInflight exceeded: %d", maxSeen.Load())
 	}
 }
+
+func TestRuleHostSetSharedWithDefaultFollowsUpdate(t *testing.T) {
+	one := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("one"))
+	}))
+	defer one.Close()
+	two := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("two"))
+	}))
+	defer two.Close()
+	u1, _ := url.Parse(one.URL)
+	shared, err := NewHostSet(Host{URL: u1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, err := New(WithHostSet(shared), WithRule(Rule{Name: "r", Pattern: "/**", HostSet: shared}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	u2, _ := url.Parse(two.URL)
+	if err := c.UpdateHosts(Host{URL: u2}); err != nil {
+		t.Fatal(err)
+	}
+	resp, err := c.Get(context.Background(), "/x")
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := resp.Bytes()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "two" {
+		t.Fatalf("body %q", data)
+	}
+}

@@ -20,22 +20,23 @@ type stepHeaderFunc struct {
 
 // StepBuilder builds one HTTP pipeline step. | StepBuilder 构建一个 HTTP Pipeline 步骤。
 type StepBuilder struct {
-	body        any
-	headers     http.Header
-	query       url.Values
-	bodyFunc    func(*Vars) (io.Reader, error)
-	jsonFunc    func(*Vars) any
-	urlFunc     func(*Vars) string
-	expect      map[int]bool
-	when        func(*Vars) bool
-	name        string
-	method      string
-	target      string
-	headerFuncs []stepHeaderFunc
-	extractors  []Extractor
-	timeout     time.Duration
-	maxBody     int64
-	required    bool
+	body          any
+	headers       http.Header
+	query         url.Values
+	bodyFunc      func(*Vars) (io.Reader, error)
+	jsonFunc      func(*Vars) any
+	urlFunc       func(*Vars) string
+	expect        map[int]bool
+	when          func(*Vars) bool
+	name          string
+	method        string
+	target        string
+	headerFuncs   []stepHeaderFunc
+	staticOptions []RequestOption
+	extractors    []Extractor
+	timeout       time.Duration
+	maxBody       int64
+	required      bool
 }
 
 // Step creates a pipeline step. | Step 创建一个 Pipeline 步骤。
@@ -79,6 +80,7 @@ func (s *StepBuilder) Header(key, value string) *StepBuilder {
 		s.headers = make(http.Header)
 	}
 	s.headers.Add(key, value)
+	s.staticOptions = append(s.staticOptions, WithRequestHeader(key, value))
 	return s
 }
 
@@ -94,6 +96,7 @@ func (s *StepBuilder) Query(key, value string) *StepBuilder {
 		s.query = make(url.Values)
 	}
 	s.query.Add(key, value)
+	s.staticOptions = append(s.staticOptions, WithRequestQuery(key, value))
 	return s
 }
 
@@ -235,20 +238,11 @@ func (s *StepBuilder) run(rs *runState) error {
 		}
 		body = reader
 	}
-	options := make([]RequestOption, 0, len(s.headers)+len(s.headerFuncs)+len(s.query))
-	for key, values := range s.headers {
-		for _, value := range values {
-			options = append(options, WithRequestHeader(key, value))
-		}
-	}
+	options := make([]RequestOption, 0, len(s.staticOptions)+len(s.headerFuncs))
+	options = append(options, s.staticOptions...)
 	for _, header := range s.headerFuncs {
 		if header.fn != nil {
 			options = append(options, WithRequestHeader(header.key, header.fn(vars)))
-		}
-	}
-	for key, values := range s.query {
-		for _, value := range values {
-			options = append(options, WithRequestQuery(key, value))
 		}
 	}
 	if err := rs.acquire(ctx); err != nil {

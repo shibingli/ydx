@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -426,5 +427,100 @@ func TestBareHostFastPathMeta(t *testing.T) {
 	resp.Body.Close()
 	if resp.Meta.Host == nil || resp.Meta.Attempts != 1 || len(resp.Meta.Hops) != 1 {
 		t.Fatalf("meta %+v", resp.Meta)
+	}
+}
+
+func TestBareStateRecomputedAfterUpdates(t *testing.T) {
+	c, err := New(WithoutCookieJar())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	if !c.engine.bare.Load() {
+		t.Fatal("new client should use bare path")
+	}
+	root, _ := url.Parse("http://127.0.0.1:1/")
+	if err := c.UpdateHosts(Host{URL: root}); err != nil {
+		t.Fatal(err)
+	}
+	if !c.engine.bare.Load() {
+		t.Fatal("simple single host should use bare path")
+	}
+	base, _ := url.Parse("http://127.0.0.1:1/api")
+	if err := c.UpdateHosts(Host{URL: base}); err != nil {
+		t.Fatal(err)
+	}
+	if c.engine.bare.Load() {
+		t.Fatal("host base path must disable bare path")
+	}
+	if err := c.UpdateRules(Rule{Name: "r", Pattern: "/**"}); err != nil {
+		t.Fatal(err)
+	}
+	if c.engine.bare.Load() {
+		t.Fatal("rules must disable bare path")
+	}
+	if err := c.UpdateHosts(Host{URL: root}); err != nil {
+		t.Fatal(err)
+	}
+	if c.engine.bare.Load() {
+		t.Fatal("rules must still disable bare path")
+	}
+	if err := c.UpdateRules(); err != nil {
+		t.Fatal(err)
+	}
+	if !c.engine.bare.Load() {
+		t.Fatal("empty rules should restore bare path")
+	}
+}
+
+func TestRelativeSendRedirectToOtherHostIsDirect(t *testing.T) {
+	var finalHits atomic.Int32
+	final := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		finalHits.Add(1)
+		_, _ = w.Write([]byte("final"))
+	}))
+	defer final.Close()
+	start := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, final.URL+"/final", http.StatusFound)
+	}))
+	defer start.Close()
+	c, err := New(WithHosts(start.URL))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	resp, err := c.Get(context.Background(), "/start")
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := resp.Bytes()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "final" || finalHits.Load() != 1 {
+		t.Fatalf("body %q hits %d", data, finalHits.Load())
+	}
+}
+
+func TestExplicitHostHeaderPreservedWithHostPool(t *testing.T) {
+	var got string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = r.Host
+	}))
+	defer srv.Close()
+	c, err := New(WithHosts(srv.URL), WithRetry(RetryPolicy{MaxAttempts: 1}), WithoutCookieJar())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	resp, err := c.Get(context.Background(), "/x", WithRequestHeader("Host", "custom.example"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := resp.Discard(); err != nil {
+		t.Fatal(err)
+	}
+	if got != "custom.example" {
+		t.Fatalf("host %q", got)
 	}
 }

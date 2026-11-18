@@ -26,7 +26,7 @@ func (hs *HostSet) startHealth(ctx context.Context, choose func(*Host) http.Roun
 		return
 	}
 	hs.healthMu.Lock()
-	if hs.healthStarted {
+	if hs.healthStarted || hs.closed.Load() {
 		hs.healthMu.Unlock()
 		return
 	}
@@ -85,7 +85,10 @@ func (hs *HostSet) checkHost(ctx context.Context, rt http.RoundTripper, entry *h
 	}
 	target := *entry.host.URL
 	target.Path = joinHealthPath(target.Path, entry.host.Health.Path)
+	target.RawPath = ""
 	target.RawQuery = ""
+	target.ForceQuery = false
+	target.Fragment = ""
 	checkCtx, cancel := context.WithTimeout(ctx, entry.host.Health.Timeout)
 	defer cancel()
 	req, err := http.NewRequestWithContext(checkCtx, http.MethodHead, target.String(), nil)
@@ -94,6 +97,12 @@ func (hs *HostSet) checkHost(ctx context.Context, rt http.RoundTripper, entry *h
 		return
 	}
 	for key, values := range entry.host.Headers {
+		if strings.EqualFold(key, "Host") {
+			if len(values) > 0 {
+				req.Host = values[len(values)-1]
+			}
+			continue
+		}
 		req.Header[key] = append([]string(nil), values...)
 	}
 	resp, err := rt.RoundTrip(req)

@@ -132,3 +132,30 @@ func TestSubmitCloseRace(t *testing.T) {
 	_ = c.Close()
 	wg.Wait()
 }
+
+func TestSubmitCallbackCanClose(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer srv.Close()
+	c, err := New(WithHosts(srv.URL), WithoutCookieJar())
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan struct{})
+	future := c.Submit(context.Background(), mustRequest(t, http.MethodGet, srv.URL, ""), func(resp *Response, err error) {
+		defer close(done)
+		if err == nil {
+			_ = resp.Discard()
+		}
+		_ = c.Close()
+	})
+	if _, err := future.Wait(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("callback did not finish")
+	}
+}

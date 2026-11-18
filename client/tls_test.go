@@ -321,3 +321,14 @@ func TestPruneTLSOnUpdateHosts(t *testing.T) {
 		t.Fatalf("tls state was not reclaimed: %d", len(c.engine.tlsByConfig))
 	}
 }
+
+func TestTLSSessionCacheDisabled(t *testing.T) {
+	state, err := newTLSState(TLSConfig{SessionCacheSize: -1}, &http.Transport{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tr := state.current()
+	if tr == nil || tr.TLSClientConfig == nil || tr.TLSClientConfig.ClientSessionCache != nil {
+		t.Fatal("session cache should be disabled")
+	}
+}

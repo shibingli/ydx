@@ -3,7 +3,6 @@ package client
 import (
 	"bytes"
 	"context"
-	"hash/fnv"
 	"io"
 	"net/http"
 	"strconv"
@@ -167,6 +166,10 @@ func (s *MemoryStore) Get(key string) (*CacheEntry, bool) {
 		return nil, false
 	}
 	shard := s.shardFor(key)
+	if shard == nil {
+		s.misses.Add(1)
+		return nil, false
+	}
 	shard.mu.Lock()
 	item := shard.items[key]
 	if item == nil {
@@ -196,7 +199,7 @@ func (s *MemoryStore) Set(key string, entry *CacheEntry) {
 		return
 	}
 	shard := s.shardFor(key)
-	if size > shard.capacity {
+	if shard == nil || size > shard.capacity {
 		return
 	}
 	shard.mu.Lock()
@@ -221,6 +224,9 @@ func (s *MemoryStore) Delete(key string) {
 		return
 	}
 	shard := s.shardFor(key)
+	if shard == nil {
+		return
+	}
 	shard.mu.Lock()
 	if item := shard.items[key]; item != nil {
 		shard.remove(item)
@@ -247,7 +253,9 @@ func (s *MemoryStore) Close() error {
 		return nil
 	}
 	s.closeOnce.Do(func() {
-		close(s.stop)
+		if s.stop != nil {
+			close(s.stop)
+		}
 		s.wg.Wait()
 		for _, shard := range s.shards {
 			shard.mu.Lock()
@@ -287,9 +295,10 @@ func (s *MemoryStore) janitor(interval time.Duration) {
 
 // shardFor returns the shard for key. | shardFor 返回 key 对应的分片。
 func (s *MemoryStore) shardFor(key string) *cacheShard {
-	hash := fnv.New64a()
-	_, _ = hash.Write([]byte(key))
-	return s.shards[hash.Sum64()%uint64(len(s.shards))]
+	if s == nil || len(s.shards) == 0 {
+		return nil
+	}
+	return s.shards[fnv64aString(key)%uint64(len(s.shards))]
 }
 
 // cacheEntrySize estimates the accounted bytes of one entry. | cacheEntrySize 估算单条目的计费字节。
@@ -375,12 +384,15 @@ type CachePolicy struct {
 }
 
 // withDefaults fills zero-value cache policy fields. | withDefaults 填充零值缓存策略字段。
+var defaultCacheMethods = []string{http.MethodGet, http.MethodHead}
+var defaultCacheStatuses = []int{http.StatusOK, http.StatusNonAuthoritativeInfo, http.StatusNoContent}
+
 func (p CachePolicy) withDefaults() CachePolicy {
 	if p.Methods == nil {
-		p.Methods = []string{http.MethodGet, http.MethodHead}
+		p.Methods = defaultCacheMethods
 	}
 	if p.StatusCodes == nil {
-		p.StatusCodes = []int{http.StatusOK, http.StatusNonAuthoritativeInfo, http.StatusNoContent}
+		p.StatusCodes = defaultCacheStatuses
 	}
 	if p.MaxBodyBytes <= 0 {
 		p.MaxBodyBytes = 4 << 20
@@ -390,6 +402,9 @@ func (p CachePolicy) withDefaults() CachePolicy {
 
 // WithCache sets the client-wide cache policy. | WithCache 设置客户端级缓存策略。
 func WithCache(policy CachePolicy) Option {
+	policy.Methods = append([]string(nil), policy.Methods...)
+	policy.StatusCodes = append([]int(nil), policy.StatusCodes...)
+	policy.Vary = append([]string(nil), policy.Vary...)
 	return func(o *options) error {
 		o.Cache = &policy
 		return nil
@@ -569,7 +584,8 @@ func cacheReadable(req *http.Request, policy CachePolicy) bool {
 		return false
 	}
 	if !policy.AllowSensitive {
-		if req.Header.Get("Authorization") != "" || req.Header.Get("Cookie") != "" {
+		if req.Header.Get("Authorization") != "" || req.Header.Get("Cookie") != "" ||
+			req.Header.Get("Proxy-Authorization") != "" {
 			return false
 		}
 	}
@@ -594,7 +610,8 @@ func cacheWritable(req *http.Request, policy CachePolicy) bool {
 		return false
 	}
 	if !policy.AllowSensitive {
-		if req.Header.Get("Authorization") != "" || req.Header.Get("Cookie") != "" {
+		if req.Header.Get("Authorization") != "" || req.Header.Get("Cookie") != "" ||
+			req.Header.Get("Proxy-Authorization") != "" {
 			return false
 		}
 	}

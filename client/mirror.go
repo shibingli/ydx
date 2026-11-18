@@ -2,7 +2,6 @@ package client
 
 import (
 	"context"
-	"hash/fnv"
 	"io"
 	"net/http"
 	"net/url"
@@ -93,6 +92,9 @@ func prepareMirror(policy *MirrorPolicy) (*MirrorPolicy, error) {
 		return nil, nil
 	}
 	prepared := *policy
+	prepared.Targets = append([]string(nil), policy.Targets...)
+	prepared.TeeSinks = append([]Sink(nil), policy.TeeSinks...)
+	prepared.TeeEventSinks = append([]EventSink(nil), policy.TeeEventSinks...)
 	if prepared.Mode == "" {
 		prepared.Mode = MirrorUpstream
 	}
@@ -445,14 +447,14 @@ func mirrorSampled(logical *url.URL, rule *Rule, percent int) bool {
 	if percent >= 100 {
 		return true
 	}
-	hash := fnv.New32a()
+	hash := uint32(2166136261)
 	if logical != nil {
-		_, _ = hash.Write([]byte(logical.String()))
+		hash = fnv32aUpdate(hash, logical.String())
 	}
 	if rule != nil {
-		_, _ = hash.Write([]byte(rule.Name))
+		hash = fnv32aUpdate(hash, rule.Name)
 	}
-	return int(hash.Sum32()%100) < percent
+	return int(hash%100) < percent
 }
 
 // waitGroup waits for wg or the timeout. | waitGroup 等待 wg 或超时。

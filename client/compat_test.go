@@ -4,6 +4,7 @@ import (
 	"compress/gzip"
 	"context"
 	"crypto/x509"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/cookiejar"
@@ -11,6 +12,7 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -409,5 +411,34 @@ func TestTrailersAndNoBody(t *testing.T) {
 	resp.Body.Close()
 	if resp.Body != http.NoBody || resp.ContentLength != 0 {
 		t.Fatalf("204 body %T length %d", resp.Body, resp.ContentLength)
+	}
+}
+
+type closeTrackingBody struct {
+	closed *atomic.Bool
+}
+
+func (b closeTrackingBody) Read([]byte) (int, error) { return 0, io.EOF }
+func (b closeTrackingBody) Close() error {
+	b.closed.Store(true)
+	return nil
+}
+
+func TestDoClosesBodyOnEarlyError(t *testing.T) {
+	c, err := New(WithoutCookieJar())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	var closed atomic.Bool
+	req, err := http.NewRequest(http.MethodPost, "/relative", closeTrackingBody{closed: &closed})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.Do(req); !errors.Is(err, ErrRelativeURL) {
+		t.Fatalf("error %v", err)
+	}
+	if !closed.Load() {
+		t.Fatal("body was not closed")
 	}
 }

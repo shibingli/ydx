@@ -78,6 +78,8 @@ func defaultRetryPolicy(hostCount int) RetryPolicy {
 
 // WithRetry sets the client-wide retry policy. | WithRetry 设置客户端级重试策略。
 func WithRetry(policy RetryPolicy) Option {
+	policy.Methods = append([]string(nil), policy.Methods...)
+	policy.StatusCodes = append([]int(nil), policy.StatusCodes...)
 	return func(o *options) error {
 		if policy.MaxAttempts < 0 {
 			return errs.Detail(ErrInvalidConfig, "negative max attempts | 最大尝试次数为负")
@@ -137,7 +139,8 @@ func retryableError(err error, parent context.Context) bool {
 	if errors.As(err, &certErr) {
 		return false
 	}
-	if errors.Is(err, ErrTLSPin) || errors.Is(err, ErrTLS) || errors.Is(err, ErrTLSConfig) {
+	if errors.Is(err, ErrTLSPin) || errors.Is(err, ErrTLS) || errors.Is(err, ErrTLSConfig) ||
+		errors.Is(err, ErrRequestTooLarge) || errors.Is(err, ErrBlocked) || errors.Is(err, ErrGuard) {
 		return false
 	}
 	var netErr net.Error
@@ -151,15 +154,20 @@ func retryableError(err error, parent context.Context) bool {
 }
 
 // backoffDelay returns a full-jitter delay for the next attempt. | backoffDelay 返回下一次尝试的 full-jitter 延迟。
-func backoffDelay(policy RetryPolicy, attempt int) time.Duration {
+func backoffDelay(policy RetryPolicy, attempt int) (delay time.Duration) {
 	if policy.Backoff != nil {
-		delay := policy.Backoff(attempt)
+		defer func() {
+			if recover() != nil {
+				delay = 0
+			}
+		}()
+		delay = policy.Backoff(attempt)
 		if delay < 0 {
 			return 0
 		}
 		return delay
 	}
-	delay := 50 * time.Millisecond
+	delay = 50 * time.Millisecond
 	for i := 1; i < attempt; i++ {
 		delay *= 2
 		if delay >= policy.MaxBackoff {
@@ -183,6 +191,9 @@ func retryAfterDelay(header http.Header, max time.Duration) time.Duration {
 		return 0
 	}
 	if seconds, err := strconv.Atoi(value); err == nil && seconds >= 0 {
+		if max > 0 && int64(seconds) > int64(max/time.Second) {
+			return max
+		}
 		delay := time.Duration(seconds) * time.Second
 		if max > 0 && delay > max {
 			delay = max

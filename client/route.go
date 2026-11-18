@@ -181,6 +181,30 @@ func CompileRules(rules ...Rule) (*RuleSet, error) {
 			}
 			rule.Mirror = prepared
 		}
+		if rule.Retry != nil {
+			if rule.Retry.MaxAttempts < 0 {
+				return nil, errs.Detail(ErrInvalidConfig, "negative rule max attempts | 规则最大尝试次数为负")
+			}
+			retry := *rule.Retry
+			retry.Methods = append([]string(nil), retry.Methods...)
+			retry.StatusCodes = append([]int(nil), retry.StatusCodes...)
+			rule.Retry = &retry
+		}
+		if rule.Cache != nil {
+			cache := *rule.Cache
+			cache.Methods = append([]string(nil), cache.Methods...)
+			cache.StatusCodes = append([]int(nil), cache.StatusCodes...)
+			cache.Vary = append([]string(nil), cache.Vary...)
+			rule.Cache = &cache
+		}
+		if rule.Coalesce != nil {
+			coalesce := *rule.Coalesce
+			coalesce.Methods = append([]string(nil), coalesce.Methods...)
+			rule.Coalesce = &coalesce
+		}
+		if access, ok := rule.Guard.(*AccessPolicy); ok {
+			rule.Guard = cloneAccessPolicy(access)
+		}
 		if rule.Connection != "" && !validConnMode(rule.Connection) {
 			return nil, errs.Detail(ErrInvalidConfig, "unknown rule connection mode %q | 未知规则连接模式 %q", rule.Connection, rule.Connection)
 		}
@@ -238,25 +262,37 @@ func (rs *RuleSet) Match(method, path string) (*Rule, Params, bool) {
 
 // MatchRequest returns the first rule matching the request, including its condition. | MatchRequest 返回首个匹配请求的规则，并求值 Condition。
 func (rs *RuleSet) MatchRequest(req *http.Request) (*Rule, Params, bool) {
+	rule, params, ok, _ := rs.matchRequest(req)
+	return rule, params, ok
+}
+
+// matchRequest evaluates conditions with panic isolation for engine routing. | matchRequest 带 panic 隔离地为引擎路由求值 Condition。
+func (rs *RuleSet) matchRequest(req *http.Request) (rule *Rule, params Params, ok bool, err error) {
 	if rs == nil || req == nil || req.URL == nil || len(rs.entries) == 0 {
-		return nil, Params{}, false
+		return nil, Params{}, false, nil
 	}
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			rule, params, ok = nil, Params{}, false
+			err = errs.Detail(ErrHookPanic, "rule condition panic: %v | 规则 Condition panic：%v", recovered, recovered)
+		}
+	}()
 	path := matchPath(req.URL)
 	for i := range rs.entries {
 		entry := &rs.entries[i]
 		if !methodAllowed(entry.methods, req.Method) {
 			continue
 		}
-		params, ok := entry.pattern.Match(path)
-		if !ok {
+		matched, matchOK := entry.pattern.Match(path)
+		if !matchOK {
 			continue
 		}
 		if entry.rule.Condition != nil && !entry.rule.Condition(req) {
 			continue
 		}
-		return entry.rule, params, true
+		return entry.rule, matched, true, nil
 	}
-	return nil, Params{}, false
+	return nil, Params{}, false, nil
 }
 
 // methodAllowed reports whether method is in the rule's method set. | methodAllowed 报告 method 是否在规则方法集合中。
@@ -355,7 +391,7 @@ func resolveLogicalURL(base *url.URL, ref string) (*url.URL, error) {
 func WithBaseURL(base string) Option {
 	return func(o *options) error {
 		parsed, err := url.Parse(base)
-		if err != nil || !parsed.IsAbs() || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+		if err != nil || !parsed.IsAbs() || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
 			return errs.Detail(ErrInvalidConfig, "invalid base URL %q | 非法的 base URL %q", base, base)
 		}
 		o.BaseURL = parsed
@@ -381,18 +417,39 @@ func WithRules(rules ...Rule) Option {
 
 // UpdateRules atomically replaces the client's compiled rule snapshot. | UpdateRules 原子替换客户端已编译的规则快照。
 func (c *Client) UpdateRules(rules ...Rule) error {
-	if c == nil || c.engine == nil || c.closed.Load() {
+	if c == nil || c.engine == nil {
+		return ErrClosed
+	}
+	c.lifecycleMu.Lock()
+	defer c.lifecycleMu.Unlock()
+	if c.closed.Load() {
 		return ErrClosed
 	}
 	rs, err := CompileRules(rules...)
 	if err != nil {
 		return err
 	}
-	c.engine.bare.Store(false)
+	rs.detachDefaultHostSet(c.engine.hosts.Load())
 	c.engine.rules.Store(rs)
 	c.engine.registerRuleHosts(rs)
+	c.engine.retireRuleHosts(rs)
 	c.engine.pruneTLS()
+	c.engine.bare.Store(isBareEngine(c.opts, rs, c.engine.hosts.Load()))
 	return nil
+}
+
+// detachDefaultHostSet makes rules that reference the current default follow
+// future default-pool replacements instead of retaining a closed pool. | detachDefaultHostSet
+// 让引用当前默认池的规则跟随后续默认池替换，而不是保留已关闭的池。
+func (rs *RuleSet) detachDefaultHostSet(def *HostSet) {
+	if rs == nil || def == nil {
+		return
+	}
+	for i := range rs.entries {
+		if rs.entries[i].rule.HostSet == def {
+			rs.entries[i].rule.HostSet = nil
+		}
+	}
 }
 
 // registerRuleHosts starts active health for rule-owned host pools. | registerRuleHosts 为规则持有的 Host 池启动主动健康检查。
@@ -413,6 +470,31 @@ func (e *engine) registerRuleHosts(rs *RuleSet) {
 		e.ruleHosts[hs] = struct{}{}
 		e.ruleHostsMu.Unlock()
 		hs.startHealth(context.Background(), e.healthTransport, e.opts.Logger)
+	}
+}
+
+// retireRuleHosts closes rule host pools no longer referenced by active rules. | retireRuleHosts 关闭不再被活动规则引用的规则 Host 池。
+func (e *engine) retireRuleHosts(rs *RuleSet) {
+	if e == nil || rs == nil {
+		return
+	}
+	active := make(map[*HostSet]struct{})
+	for _, hs := range rs.hostSets() {
+		if hs != nil {
+			active[hs] = struct{}{}
+		}
+	}
+	e.ruleHostsMu.Lock()
+	var retired []*HostSet
+	for hs := range e.ruleHosts {
+		if _, ok := active[hs]; !ok {
+			delete(e.ruleHosts, hs)
+			retired = append(retired, hs)
+		}
+	}
+	e.ruleHostsMu.Unlock()
+	for _, hs := range retired {
+		_ = hs.Close()
 	}
 }
 

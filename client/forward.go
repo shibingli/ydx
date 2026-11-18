@@ -70,6 +70,10 @@ func buildForwardOptions(opts ...ForwardOption) (ForwardOptions, error) {
 			return ForwardOptions{}, err
 		}
 	}
+	if cfg.FlushInterval < 0 || cfg.BodyTimeout < 0 || cfg.SSEIdleTimeout < 0 || cfg.SSEHeartbeat < 0 {
+		return ForwardOptions{}, errs.Detail(ErrInvalidConfig, "negative forward duration | 转发时长为负")
+	}
+	cfg.StripHeaders = append([]string(nil), cfg.StripHeaders...)
 	return cfg, nil
 }
 
@@ -81,7 +85,8 @@ func WithForwardAddForwardedFor(ok bool) ForwardOption {
 	}
 }
 
-// WithForwardFlushInterval sets the normal-response flush interval. | WithForwardFlushInterval 设置普通响应刷新间隔。
+// WithForwardFlushInterval sets the normal-response flush interval; <=0 disables
+// intermediate flushes. | WithForwardFlushInterval 设置普通响应刷新间隔；<=0 关闭中间刷新。
 func WithForwardFlushInterval(d time.Duration) ForwardOption {
 	return func(o *ForwardOptions) error {
 		o.FlushInterval = d
@@ -91,9 +96,9 @@ func WithForwardFlushInterval(d time.Duration) ForwardOption {
 
 // WithForwardMaxBodyBytes caps forwarded bodies; the default is unlimited.
 // Known-length responses over the cap fail with ErrResponseTooLarge;
-// unknown-length non-HEAD bodies stop at the cap. | WithForwardMaxBodyBytes
+// unknown-length non-HEAD, non-SSE bodies stop at the cap. | WithForwardMaxBodyBytes
 // 限制转发正文，默认不限制。已知长度超限返回 ErrResponseTooLarge；未知长度的
-// 非 HEAD 正文在达到上限时停止。
+// 非 HEAD、非 SSE 正文在达到上限时停止。
 func WithForwardMaxBodyBytes(n int64) ForwardOption {
 	return func(o *ForwardOptions) error {
 		if n <= 0 {
@@ -106,8 +111,9 @@ func WithForwardMaxBodyBytes(n int64) ForwardOption {
 
 // WithForwardStripHeaders removes extra inbound headers. | WithForwardStripHeaders 移除额外入站头。
 func WithForwardStripHeaders(names ...string) ForwardOption {
+	cloned := append([]string(nil), names...)
 	return func(o *ForwardOptions) error {
-		o.StripHeaders = append(o.StripHeaders, names...)
+		o.StripHeaders = append(o.StripHeaders, cloned...)
 		return nil
 	}
 }
@@ -126,9 +132,14 @@ func WithForwardBodyTimeout(d time.Duration) ForwardOption {
 func (c *Client) Forward(ctx context.Context, r *http.Request, opts ...ForwardOption) (*http.Response, error) {
 	cfg, err := buildForwardOptions(opts...)
 	if err != nil {
+		closeRequestBody(r)
 		return nil, err
 	}
-	return c.forwardRequest(ctx, r, cfg)
+	resp, err := c.forwardRequest(ctx, r, cfg)
+	if err != nil {
+		closeRequestBody(r)
+	}
+	return resp, err
 }
 
 // forwardRequest clones and sanitizes the inbound request before the engine. | forwardRequest 在进入引擎前克隆并净化入站请求。
@@ -166,7 +177,11 @@ func (c *Client) forwardRequest(ctx context.Context, r *http.Request, cfg Forwar
 		rules := c.engine.rules.Load()
 		var rule *Rule
 		if rules != nil {
-			rule, _, _ = rules.MatchRequest(r)
+			matched, _, _, matchErr := rules.matchRequest(r)
+			if matchErr != nil {
+				return nil, matchErr
+			}
+			rule = matched
 		}
 		if c.engine.hosts.Load() == nil && (rule == nil || rule.HostSet == nil) {
 			return nil, errs.Detail(ErrNoHosts, "forward request has no target host | 转发请求没有目标 Host")
@@ -175,12 +190,15 @@ func (c *Client) forwardRequest(ctx context.Context, r *http.Request, cfg Forwar
 			return nil, errs.Detail(ErrNoHosts, "forward request has no logical host | 转发请求没有逻辑 Host")
 		}
 	}
+	if scheme != "http" && scheme != "https" {
+		return nil, errs.Detail(ErrInvalidRequest, "unsupported forward scheme %q | 不支持的转发 scheme %q", scheme, scheme)
+	}
 	if host == "" {
 		return nil, errs.Detail(ErrNoHosts, "forward request has no target host | 转发请求没有目标 Host")
 	}
 	out := r.Clone(ctx)
 	out.RequestURI = ""
-	out.URL = &url.URL{Scheme: scheme, Host: host, Path: path, RawPath: rawPath, RawQuery: query}
+	out.URL = &url.URL{Scheme: scheme, Host: host, Path: path, RawPath: rawPath, RawQuery: query, ForceQuery: r.URL.ForceQuery}
 	out.Trailer = r.Trailer
 	out.Header = r.Header.Clone()
 	if out.Header == nil {
@@ -216,6 +234,10 @@ func (c *Client) forwardRequest(ctx context.Context, r *http.Request, cfg Forwar
 		return nil, errs.Detail(ErrResponseTooLarge,
 			"forward body %d exceeds limit %d | 转发正文 %d 超过限制 %d",
 			resp.ContentLength, cfg.MaxBodyBytes, resp.ContentLength, cfg.MaxBodyBytes)
+	}
+	if cfg.MaxBodyBytes > 0 && r.Method != http.MethodHead && resp.ContentLength < 0 &&
+		!isEventStream(resp.Header) && resp.Body != nil {
+		resp.Body = &multiReadCloser{Reader: io.LimitReader(resp.Body, cfg.MaxBodyBytes), closer: resp.Body}
 	}
 	if cfg.BodyTimeout > 0 && !isEventStream(resp.Header) && resp.Body != nil {
 		resp.Body = newTimerBody(resp.Body, cfg.BodyTimeout)
@@ -342,7 +364,7 @@ type forwardFlushWriter struct {
 // Write writes and periodically flushes. | Write 写入并周期性刷新。
 func (f *forwardFlushWriter) Write(p []byte) (int, error) {
 	n, err := f.writer.Write(p)
-	if err == nil && time.Since(f.last) >= f.interval {
+	if err == nil && f.interval > 0 && time.Since(f.last) >= f.interval {
 		_ = flushResponseWriter(f.writer)
 		f.last = time.Now()
 	}
@@ -353,7 +375,7 @@ func (f *forwardFlushWriter) Write(p []byte) (int, error) {
 func writeForwardError(w http.ResponseWriter, err error) {
 	status := http.StatusBadGateway
 	switch {
-	case errors.Is(err, context.DeadlineExceeded):
+	case errors.Is(err, context.DeadlineExceeded), errors.Is(err, ErrForwardTimeout):
 		status = http.StatusGatewayTimeout
 	case errors.Is(err, ErrBlocked):
 		status = http.StatusForbidden

@@ -1,6 +1,7 @@
 package client
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -262,5 +263,85 @@ func TestForwardUpstreamError(t *testing.T) {
 	c.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "http://svc/x", nil))
 	if rec.Code != http.StatusBadGateway {
 		t.Fatalf("code %d", rec.Code)
+	}
+}
+
+func TestForwardUnknownBodyLimit(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/octet-stream")
+		w.(http.Flusher).Flush()
+		_, _ = w.Write(bytes.Repeat([]byte("x"), 100))
+	}))
+	defer upstream.Close()
+	c, err := New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	req := httptest.NewRequest(http.MethodGet, upstream.URL+"/data", nil)
+	resp, err := c.Forward(context.Background(), req, WithForwardMaxBodyBytes(10))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.ContentLength >= 0 {
+		t.Fatalf("expected unknown length, got %d", resp.ContentLength)
+	}
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(data) != 10 {
+		t.Fatalf("body length %d", len(data))
+	}
+}
+
+func TestForwardRuleHeaderTimeout(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(100 * time.Millisecond)
+		_, _ = w.Write([]byte("late"))
+	}))
+	defer upstream.Close()
+	c, err := New(WithHosts(upstream.URL), WithRule(Rule{
+		Name: "/**", Pattern: "/**", Timeout: 20 * time.Millisecond,
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	rec := httptest.NewRecorder()
+	c.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "http://svc/x", nil))
+	if rec.Code != http.StatusGatewayTimeout {
+		t.Fatalf("code %d body %q", rec.Code, rec.Body.String())
+	}
+}
+
+func TestForwardRuleTimeoutStopsAtHeaders(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.(http.Flusher).Flush()
+		time.Sleep(80 * time.Millisecond)
+		_, _ = w.Write([]byte("body"))
+	}))
+	defer upstream.Close()
+	c, err := New(WithHosts(upstream.URL), WithRule(Rule{
+		Name: "/**", Pattern: "/**", Timeout: 20 * time.Millisecond,
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	req := httptest.NewRequest(http.MethodGet, upstream.URL+"/x", nil)
+	resp, err := c.Forward(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "body" {
+		t.Fatalf("body %q", data)
 	}
 }

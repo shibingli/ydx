@@ -8,6 +8,8 @@ import (
 	"net/url"
 	"sync"
 	"time"
+
+	"github.com/shibingli/ydx/buffpool"
 )
 
 // ForwardOptions configures Forward and Handler. | ForwardOptions 配置 Forward 与 Handler。
@@ -59,6 +61,14 @@ func WithForwardSSEHeartbeat(d time.Duration) ForwardOption {
 	}
 }
 
+// inURL returns the logical URL of an inbound request. | inURL 返回入站请求的逻辑 URL。
+func inURL(req *http.Request) *url.URL {
+	if req == nil {
+		return nil
+	}
+	return req.URL
+}
+
 // copySSE streams an upstream SSE body to w, teeing to sinks when configured. | copySSE 把上游 SSE 正文流式写给 w，并在配置时 tee 到 sink。
 func (c *Client) copySSE(ctx context.Context, w http.ResponseWriter, resp *http.Response, in *http.Request, opts ForwardOptions) error {
 	if c == nil || w == nil || resp == nil || resp.Body == nil {
@@ -77,7 +87,8 @@ func (c *Client) copySSE(ctx context.Context, w http.ResponseWriter, resp *http.
 	}
 	var workers []*teeSinkWorker
 	var eventPump *sseEventPump
-	if policy, ok := c.engine.mirrorFor(rule); ok && policy.Mode == MirrorTee {
+	if policy, ok := c.engine.mirrorFor(rule); ok && policy.Mode == MirrorTee &&
+		mirrorSampled(inURL(in), rule, policy.Percent) {
 		workers = c.engine.teeSinks(policy)
 		if len(policy.TeeEventSinks) > 0 {
 			eventWorkers := make([]*eventSinkWorker, 0, len(policy.TeeEventSinks))
@@ -111,8 +122,6 @@ func (c *Client) copySSE(ctx context.Context, w http.ResponseWriter, resp *http.
 		header.Set("X-Accel-Buffering", "no")
 	}
 	w.WriteHeader(resp.StatusCode)
-	controller := http.NewResponseController(w)
-	_ = controller.SetWriteDeadline(time.Time{})
 	if err := flushResponseWriter(w); err != nil {
 		return err
 	}
@@ -121,20 +130,36 @@ func (c *Client) copySSE(ctx context.Context, w http.ResponseWriter, resp *http.
 		err  error
 		data []byte
 	}
+	teeActive := len(workers) > 0 || eventPump != nil
 	chunks := make(chan streamChunk, 1)
 	readCtx, cancelRead := context.WithCancel(ctx)
 	defer cancelRead()
 	go func() {
-		buffer := make([]byte, 32<<10)
+		var buffer []byte
+		if teeActive {
+			buffer = make([]byte, 32<<10)
+		}
 		for {
+			if !teeActive {
+				buffer = buffpool.Get(32 << 10)
+				buffer = buffer[:cap(buffer)]
+			}
 			n, err := resp.Body.Read(buffer)
 			if n > 0 {
-				data := append([]byte(nil), buffer[:n]...)
+				data := buffer[:n]
+				if teeActive {
+					data = append([]byte(nil), data...)
+				}
 				select {
 				case chunks <- streamChunk{data: data}:
 				case <-readCtx.Done():
+					if !teeActive {
+						buffpool.Put(buffer[:cap(buffer)])
+					}
 					return
 				}
+			} else if !teeActive {
+				buffpool.Put(buffer[:cap(buffer)])
 			}
 			if err != nil {
 				select {
@@ -145,6 +170,11 @@ func (c *Client) copySSE(ctx context.Context, w http.ResponseWriter, resp *http.
 			}
 		}
 	}()
+	releaseChunk := func(data []byte) {
+		if !teeActive && data != nil {
+			buffpool.Put(data[:cap(data)])
+		}
+	}
 
 	var idleTimer *time.Timer
 	var idleC <-chan time.Time
@@ -171,19 +201,22 @@ func (c *Client) copySSE(ctx context.Context, w http.ResponseWriter, resp *http.
 				if idleTimer != nil {
 					resetForwardTimer(idleTimer, opts.SSEIdleTimeout)
 				}
-				if _, err := w.Write(outcome.data); err != nil {
+				if _, writeErr := w.Write(outcome.data); writeErr != nil {
+					releaseChunk(outcome.data)
 					_ = resp.Body.Close()
-					return err
+					return writeErr
 				}
 				writeTeeChunk(workers, outcome.data)
 				eventPump.Write(outcome.data)
 				if flushInterval <= 0 || time.Since(lastFlush) >= flushInterval {
-					if err := flushResponseWriter(w); err != nil {
+					if flushErr := flushResponseWriter(w); flushErr != nil {
+						releaseChunk(outcome.data)
 						_ = resp.Body.Close()
-						return err
+						return flushErr
 					}
 					lastFlush = time.Now()
 				}
+				releaseChunk(outcome.data)
 			}
 			if outcome.err != nil {
 				if errors.Is(outcome.err, io.EOF) {

@@ -3,6 +3,7 @@ package client
 import (
 	"context"
 	"net/http"
+	"strings"
 
 	"github.com/shibingli/ydx/errs"
 )
@@ -97,14 +98,31 @@ func (c *Client) Warmup(ctx context.Context, n int) error {
 		if target.Path == "" {
 			target.Path = "/"
 		}
+		target.RawQuery = ""
+		target.ForceQuery = false
+		target.Fragment = ""
 		transport, err := c.engine.transportFor(entry.host)
 		if err != nil {
 			return err
 		}
 		for i := 0; i < n; i++ {
+			if c.closed.Load() || c.engine.closed.Load() {
+				return ErrClosed
+			}
 			req, err := http.NewRequestWithContext(ctx, http.MethodHead, target.String(), nil)
 			if err != nil {
 				return err
+			}
+			for key, values := range entry.host.Headers {
+				if strings.EqualFold(key, "Host") {
+					if len(values) > 0 {
+						req.Host = values[len(values)-1]
+					}
+					continue
+				}
+				for _, value := range values {
+					req.Header.Add(key, value)
+				}
 			}
 			resp, err := transport.RoundTrip(req)
 			if err != nil {

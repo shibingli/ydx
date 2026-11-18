@@ -1,6 +1,7 @@
 package client
 
 import (
+	"bytes"
 	"context"
 	"io"
 	"net/http"
@@ -106,7 +107,21 @@ func (r *Response) BytesLimit(n int64) ([]byte, error) {
 		n = defaultResponseLimit
 	}
 	body := r.Body
-	data, err := io.ReadAll(io.LimitReader(body, n+1))
+	limit := n + 1
+	if limit <= 0 {
+		limit = n
+	}
+	var data []byte
+	var err error
+	maxInt := int64(^uint(0) >> 1)
+	if r.ContentLength > 0 && r.ContentLength <= n && r.ContentLength <= maxInt {
+		var buffer bytes.Buffer
+		buffer.Grow(int(r.ContentLength))
+		_, err = io.Copy(&buffer, io.LimitReader(body, limit))
+		data = buffer.Bytes()
+	} else {
+		data, err = io.ReadAll(io.LimitReader(body, limit))
+	}
 	r.Body = nil
 	_ = body.Close()
 	if err != nil {

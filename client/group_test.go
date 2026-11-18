@@ -143,3 +143,23 @@ func TestGroupLimit(t *testing.T) {
 		t.Fatalf("max concurrency %d", maxSeen.Load())
 	}
 }
+
+func TestGroupWaitRejectsLateTask(t *testing.T) {
+	c, err := New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	g := c.NewGroup(context.Background())
+	first := g.GoFunc("first", func(context.Context) error { return nil })
+	if _, err := first.Wait(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := g.Wait(); err != nil {
+		t.Fatal(err)
+	}
+	late := g.GoRequest("late", http.MethodGet, "http://example.com/", nil)
+	if _, err := late.Wait(context.Background()); !errors.Is(err, ErrPipelineStep) {
+		t.Fatalf("late task error = %v", err)
+	}
+}

@@ -61,10 +61,22 @@ type TLSConfig struct {
 // WithTLS sets the default TLS configuration. | WithTLS 设置默认 TLS 配置。
 func WithTLS(cfg TLSConfig) Option {
 	return func(o *options) error {
-		cloned := cfg
+		cloned := cloneTLSConfig(cfg)
 		o.TLSConfig = &cloned
 		return nil
 	}
+}
+
+// cloneTLSConfig snapshots mutable TLSConfig slices. | cloneTLSConfig 快照 TLSConfig 的可变切片。
+func cloneTLSConfig(cfg TLSConfig) TLSConfig {
+	cfg.RootCAFiles = append([]string(nil), cfg.RootCAFiles...)
+	cfg.CertPEM = append([]byte(nil), cfg.CertPEM...)
+	cfg.KeyPEM = append([]byte(nil), cfg.KeyPEM...)
+	cfg.Certificates = append([]tls.Certificate(nil), cfg.Certificates...)
+	cfg.CipherSuites = append([]uint16(nil), cfg.CipherSuites...)
+	cfg.CurvePreferences = append([]tls.CurveID(nil), cfg.CurvePreferences...)
+	cfg.PinSHA256 = append([]string(nil), cfg.PinSHA256...)
+	return cfg
 }
 
 // WithHostTLS overrides TLS for one host name or host:port. | WithHostTLS 为一个主机名或 host:port 覆盖 TLS。
@@ -82,14 +94,19 @@ func WithHostTLS(host string, cfg TLSConfig) Option {
 		if o.HostTLS == nil {
 			o.HostTLS = make(map[string]TLSConfig)
 		}
-		o.HostTLS[key] = cfg
+		o.HostTLS[key] = cloneTLSConfig(cfg)
 		return nil
 	}
 }
 
 // ReloadTLS re-reads certificate and root files and swaps TLS transports. | ReloadTLS 重新读取证书与根文件并替换 TLS 传输。
 func (c *Client) ReloadTLS() error {
-	if c == nil || c.engine == nil || c.closed.Load() {
+	if c == nil || c.engine == nil {
+		return ErrClosed
+	}
+	c.lifecycleMu.Lock()
+	defer c.lifecycleMu.Unlock()
+	if c.closed.Load() {
 		return ErrClosed
 	}
 	return c.engine.reloadTLS()
@@ -120,9 +137,6 @@ func newTLSState(cfg TLSConfig, base *http.Transport) (*tlsState, error) {
 	tlsCfg, err := buildTLSConfig(cfg)
 	if err != nil {
 		return nil, err
-	}
-	if tlsCfg.ClientSessionCache == nil {
-		tlsCfg.ClientSessionCache = tls.NewLRUClientSessionCache(64)
 	}
 	state := &tlsState{cfg: cfg, base: base}
 	state.transport.Store(cloneTransport(base, tlsCfg))
@@ -199,6 +213,9 @@ func buildTLSConfig(cfg TLSConfig) (*tls.Config, error) {
 	tlsCfg.CurvePreferences = append([]tls.CurveID(nil), cfg.CurvePreferences...)
 	if tlsCfg.MinVersion == 0 {
 		tlsCfg.MinVersion = tls.VersionTLS12
+	}
+	if tlsCfg.MaxVersion != 0 && tlsCfg.MinVersion > tlsCfg.MaxVersion {
+		return nil, errs.Detail(ErrTLSConfig, "TLS minimum version exceeds maximum | TLS 最低版本高于最高版本")
 	}
 	if cfg.CertFile != "" || cfg.KeyFile != "" {
 		if cfg.CertFile == "" || cfg.KeyFile == "" {
@@ -373,6 +390,9 @@ func (e *engine) pruneTLS() {
 		return
 	}
 	active := make(map[*TLSConfig]struct{})
+	if e.opts.TLSConfig != nil {
+		active[e.opts.TLSConfig] = struct{}{}
+	}
 	addSet := func(hs *HostSet) {
 		if hs == nil {
 			return

@@ -46,6 +46,17 @@ func (f GuardFunc) Check(ctx context.Context, req *http.Request) (GuardDecision,
 	return f(ctx, req)
 }
 
+// callGuard invokes a guard with panic isolation and fails closed. | callGuard 以 panic 隔离调用守卫并失败关闭。
+func callGuard(guard Guard, ctx context.Context, req *http.Request) (decision GuardDecision, err error) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			decision = GuardDecision{}
+			err = errs.Detail(ErrHookPanic, "guard panic: %v | guard panic：%v", recovered, recovered)
+		}
+	}()
+	return guard.Check(ctx, req)
+}
+
 // GuardChain runs guards in order and stops at the first denial or error. | GuardChain 顺序执行守卫，在首个拒绝或错误处停止。
 type GuardChain []Guard
 
@@ -118,9 +129,30 @@ func WithAccessPolicy(policy *AccessPolicy) Option {
 		if policy == nil {
 			return errs.Detail(ErrInvalidConfig, "nil access policy | 空访问策略")
 		}
-		o.AccessPolicy = policy
+		o.AccessPolicy = cloneAccessPolicy(policy)
 		return nil
 	}
+}
+
+// cloneAccessPolicy snapshots the exported policy fields. | cloneAccessPolicy 快照访问策略的导出字段。
+func cloneAccessPolicy(policy *AccessPolicy) *AccessPolicy {
+	if policy == nil {
+		return nil
+	}
+	cloned := &AccessPolicy{
+		AllowSchemes:    append([]string(nil), policy.AllowSchemes...),
+		AllowHosts:      append([]string(nil), policy.AllowHosts...),
+		DenyHosts:       append([]string(nil), policy.DenyHosts...),
+		AllowCIDRs:      append([]string(nil), policy.AllowCIDRs...),
+		DenyCIDRs:       append([]string(nil), policy.DenyCIDRs...),
+		AllowPorts:      append([]int(nil), policy.AllowPorts...),
+		DenyPorts:       append([]int(nil), policy.DenyPorts...),
+		AllowMethods:    append([]string(nil), policy.AllowMethods...),
+		DenyMethods:     append([]string(nil), policy.DenyMethods...),
+		MaxRequestBytes: policy.MaxRequestBytes,
+		BlockPrivateIPs: policy.BlockPrivateIPs,
+	}
+	return cloned
 }
 
 // prepare compiles the policy once. | prepare 只编译一次策略。
@@ -199,6 +231,17 @@ func (p *AccessPolicy) Check(ctx context.Context, req *http.Request) (GuardDecis
 	}
 	if p.MaxRequestBytes > 0 && req.ContentLength <= 0 && req.Body != nil && req.Body != http.NoBody {
 		req.Body = &maxBytesBody{body: req.Body, remaining: p.MaxRequestBytes}
+		if req.GetBody != nil {
+			originalGetBody := req.GetBody
+			limit := p.MaxRequestBytes
+			req.GetBody = func() (io.ReadCloser, error) {
+				body, err := originalGetBody()
+				if err != nil {
+					return nil, err
+				}
+				return &maxBytesBody{body: body, remaining: limit}, nil
+			}
+		}
 	}
 	port := urlPort(req.URL)
 	if len(p.allowPorts) > 0 && !p.allowPorts[port] {
@@ -244,6 +287,9 @@ func (b *maxBytesBody) Read(p []byte) (int, error) {
 
 // Close closes the wrapped body. | Close 关闭被包装的正文。
 func (b *maxBytesBody) Close() error { return b.body.Close() }
+
+// LimitedBody marks a streaming body capped by an access policy. | LimitedBody 标记由访问策略限长的流式正文。
+func (b *maxBytesBody) LimitedBody() {}
 
 // guardFor resolves the access policy, rule guard and client guard chain. | guardFor 解析访问策略、规则守卫与客户端守卫链。
 func (e *engine) guardFor(rule *Rule) Guard {

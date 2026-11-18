@@ -49,6 +49,7 @@ type Group struct {
 	errs    []error
 
 	wg      sync.WaitGroup
+	waiting bool
 	maxBody int64
 
 	mu sync.Mutex
@@ -130,7 +131,6 @@ func (g *Group) GoRequest(name, method, rawURL string, body any, opts ...Request
 		task.complete(&StepResult{Name: name, Err: err}, err)
 		return task
 	}
-	g.wg.Add(1)
 	go func() {
 		defer g.wg.Done()
 		start := time.Now()
@@ -188,7 +188,6 @@ func (g *Group) GoFunc(name string, fn func(context.Context) error) *GroupTask {
 		task.complete(&StepResult{Name: name, Err: err}, err)
 		return task
 	}
-	g.wg.Add(1)
 	go func() {
 		defer g.wg.Done()
 		start := time.Now()
@@ -215,6 +214,9 @@ func (g *Group) Wait() error {
 	if g == nil {
 		return ErrClosed
 	}
+	g.mu.Lock()
+	g.waiting = true
+	g.mu.Unlock()
 	g.wg.Wait()
 	g.mu.Lock()
 	errs := append([]error(nil), g.errs...)
@@ -254,12 +256,16 @@ func (g *Group) reserve(name string) error {
 	}
 	g.mu.Lock()
 	defer g.mu.Unlock()
+	if g.waiting {
+		return errs.Detail(ErrPipelineStep, "group already waiting | Group 已进入等待")
+	}
 	if _, exists := g.names[name]; exists {
 		err := errs.Detail(ErrPipelineStep, "duplicate group task %q | 重复 Group 任务 %q", name, name)
 		g.errs = append(g.errs, err)
 		return err
 	}
 	g.names[name] = struct{}{}
+	g.wg.Add(1)
 	return nil
 }
 

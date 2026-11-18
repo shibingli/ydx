@@ -10,15 +10,16 @@ import (
 
 // Client is a policy-driven HTTP client compatible with http.Client.Do. | Client 是兼容 http.Client.Do 的策略化 HTTP 客户端。
 type Client struct {
-	rootCtx    context.Context
-	hc         *http.Client
-	engine     *engine
-	rootCancel context.CancelFunc
-	asyncSem   chan struct{}
-	opts       options
-	asyncWG    sync.WaitGroup
-	asyncMu    sync.Mutex
-	closed     atomic.Bool
+	rootCtx     context.Context
+	hc          *http.Client
+	engine      *engine
+	rootCancel  context.CancelFunc
+	asyncSem    chan struct{}
+	opts        options
+	asyncWG     sync.WaitGroup
+	asyncMu     sync.Mutex
+	lifecycleMu sync.Mutex
+	closed      atomic.Bool
 }
 
 // New creates a Client from functional options. | New 根据函数式选项创建 Client。
@@ -36,18 +37,10 @@ func New(opts ...Option) (*Client, error) {
 	if err != nil {
 		return nil, err
 	}
-	eng, err := newEngine(cfg)
-	if err != nil {
-		return nil, err
-	}
 	ua, err := prepareUA(cfg.UserAgent)
 	if err != nil {
 		return nil, err
 	}
-	eng.ua = ua
-	eng.hooks = cfg.Hooks
-	eng.rules.Store(rules)
-	eng.registerRuleHosts(rules)
 	hs := cfg.HostSet
 	if hs == nil && len(cfg.Hosts) > 0 {
 		hs, err = NewHostSet(cfg.Hosts...)
@@ -55,8 +48,19 @@ func New(opts ...Option) (*Client, error) {
 			return nil, err
 		}
 	}
+	eng, err := newEngine(cfg)
+	if err != nil {
+		return nil, err
+	}
+	eng.ua = ua
+	eng.hooks = cfg.Hooks
+	rules.detachDefaultHostSet(hs)
+	eng.rules.Store(rules)
 	if hs != nil {
 		eng.hosts.Store(hs)
+	}
+	eng.registerRuleHosts(rules)
+	if hs != nil {
 		hs.startHealth(context.Background(), eng.healthTransport, cfg.Logger)
 	}
 	eng.bare.Store(isBareEngine(cfg, rules, hs))
@@ -86,15 +90,19 @@ func New(opts ...Option) (*Client, error) {
 // Do sends req and returns the response, following standard http.Client semantics. | Do 发送 req 并返回响应，遵循标准 http.Client 语义。
 func (c *Client) Do(req *http.Request) (*http.Response, error) {
 	if c == nil || c.engine == nil || c.hc == nil {
+		closeRequestBody(req)
 		return nil, ErrInvalidConfig
 	}
 	if c.closed.Load() {
+		closeRequestBody(req)
 		return nil, ErrClosed
 	}
 	if req == nil || req.URL == nil {
+		closeRequestBody(req)
 		return nil, ErrInvalidConfig
 	}
 	if !req.URL.IsAbs() {
+		closeRequestBody(req)
 		return nil, ErrRelativeURL
 	}
 	if req.Header == nil {
@@ -147,6 +155,8 @@ func (c *Client) CloseContext(ctx context.Context) error {
 	}
 	c.rootCancel()
 	c.engine.closed.Store(true)
+	c.lifecycleMu.Lock()
+	c.lifecycleMu.Unlock()
 	c.asyncMu.Lock()
 	c.asyncMu.Unlock()
 	if ctx == nil {
@@ -167,9 +177,6 @@ func (c *Client) CloseContext(ctx context.Context) error {
 		_ = store.Close()
 	}
 	c.engine.closeIdleConnections()
-	if ctx == nil {
-		ctx = context.Background()
-	}
 	done := make(chan struct{})
 	go func() {
 		c.asyncWG.Wait()
@@ -180,5 +187,20 @@ func (c *Client) CloseContext(ctx context.Context) error {
 		return nil
 	case <-ctx.Done():
 		return ctx.Err()
+	}
+}
+
+// CloseIdleConnections closes idle connections held by every transport. | CloseIdleConnections 关闭所有传输持有的空闲连接。
+func (c *Client) CloseIdleConnections() {
+	if c == nil || c.engine == nil {
+		return
+	}
+	c.engine.CloseIdleConnections()
+}
+
+// closeRequestBody releases a request body on paths that never reach a transport. | closeRequestBody 在未进入传输的路径释放请求正文。
+func closeRequestBody(req *http.Request) {
+	if req != nil && req.Body != nil {
+		_ = req.Body.Close()
 	}
 }
