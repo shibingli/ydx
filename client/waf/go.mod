@@ -3,9 +3,9 @@ module github.com/shibingli/ydx/client/waf
 go 1.27.4
 
 require (
-	github.com/shibingli/ydx/client v0.1.5
+	github.com/shibingli/ydx/client v0.1.6
 	github.com/shibingli/ydx/errs v0.1.6
-	github.com/shibingli/ydx/waf v0.1.10
+	github.com/shibingli/ydx/waf v0.1.11
 )
 
 require (
