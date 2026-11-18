@@ -90,9 +90,9 @@ func (c *Client) send(ctx context.Context, method, rawURL string, body any, cfg 
 		ctx = context.WithValue(ctx, useDefaultHostsKey{}, true)
 	}
 	state := &responseState{Context: ctx}
-	state.meta.Hops = state.meta.hopInline[:0]
+	state.response.Meta.Hops = state.response.Meta.hopInline[:0]
 	if strings.Contains(rawURL, "://") && !strings.ContainsAny(rawURL, "?#@%") {
-		state.meta.urlHint = rawURL
+		state.response.Meta.urlHint = rawURL
 	}
 	ctx = state
 	target := rawURL
@@ -106,8 +106,8 @@ func (c *Client) send(ctx context.Context, method, rawURL string, body any, cfg 
 		}
 		target = resolved
 	}
-	if state.meta.urlHint == "" && strings.Contains(target, "://") && !strings.ContainsAny(target, "?#@%") {
-		state.meta.urlHint = target
+	if state.response.Meta.urlHint == "" && strings.Contains(target, "://") && !strings.ContainsAny(target, "?#@%") {
+		state.response.Meta.urlHint = target
 	}
 	req, err := http.NewRequestWithContext(ctx, method, target, rc)
 	if err != nil {
@@ -157,9 +157,8 @@ func (c *Client) send(ctx context.Context, method, rawURL string, body any, cfg 
 		return nil, err
 	}
 	resp.Body = &cancelBody{body: resp.Body, cancel: cancel}
-	c.engine.fireComplete(req.Context(), &state.meta)
+	c.engine.fireComplete(req.Context(), &state.response.Meta)
 	state.response.Response = resp
-	state.response.Meta = state.meta
 	return &state.response, nil
 }
 
@@ -169,15 +168,14 @@ func (c *Client) DoWithMeta(req *http.Request) (*Response, error) {
 		return nil, ErrInvalidRequest
 	}
 	state := &responseState{Context: req.Context()}
-	state.meta.Hops = state.meta.hopInline[:0]
+	state.response.Meta.Hops = state.response.Meta.hopInline[:0]
 	req = req.WithContext(state)
 	resp, err := c.Do(req)
 	if err != nil {
 		return nil, err
 	}
-	c.engine.fireComplete(req.Context(), &state.meta)
+	c.engine.fireComplete(req.Context(), &state.response.Meta)
 	state.response.Response = resp
-	state.response.Meta = state.meta
 	return &state.response, nil
 }
 
@@ -207,14 +205,13 @@ func (c *Client) resolveRequestURL(raw string) (string, error) {
 // responseState combines Meta and Response in one allocation. | responseState 用一次分配组合 Meta 与 Response。
 type responseState struct {
 	context.Context
-	meta     Meta
 	response Response
 }
 
-// Value supplies the per-request Meta. | Value 提供逐请求 Meta。
+// Value supplies the per-request Meta in its final response location. | Value 在最终响应位置提供逐请求 Meta。
 func (s *responseState) Value(key any) any {
 	if _, ok := key.(metaKey); ok {
-		return &s.meta
+		return &s.response.Meta
 	}
 	return s.Context.Value(key)
 }
@@ -228,9 +225,8 @@ func (c *Client) finishState(req *http.Request, state *responseState) (*Response
 	if resp.Body == nil {
 		resp.Body = http.NoBody
 	}
-	c.engine.fireComplete(req.Context(), &state.meta)
+	c.engine.fireComplete(req.Context(), &state.response.Meta)
 	state.response.Response = resp
-	state.response.Meta = state.meta
 	return &state.response, nil
 }
 
