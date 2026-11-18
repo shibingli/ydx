@@ -14,6 +14,8 @@ var (
 	ErrInvalidRequest = errs.New("client: invalid request | client：非法请求")
 	// ErrEncodeBody indicates a request body that could not be encoded. | ErrEncodeBody 表示无法编码的请求正文。
 	ErrEncodeBody = errs.New("client: encode request body | client：编码请求正文失败")
+	// ErrBodyNotReplayable indicates a request body that cannot be replayed. | ErrBodyNotReplayable 表示无法重放的请求正文。
+	ErrBodyNotReplayable = errs.New("client: request body is not replayable | client：请求正文不可重放")
 	// ErrBodyConsumed indicates the response body was already read or closed. | ErrBodyConsumed 表示响应正文已被读取或关闭。
 	ErrBodyConsumed = errs.New("client: response body already consumed | client：响应正文已被消费")
 	// ErrResponseTooLarge indicates a response body exceeded its configured cap. | ErrResponseTooLarge 表示响应正文超过配置上限。

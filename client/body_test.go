@@ -1,10 +1,26 @@
 package client
 
 import (
+	"bytes"
 	"io"
+	"net/url"
+	"os"
 	"strings"
+	"sync"
 	"testing"
+
+	"github.com/shibingli/ydx/json"
 )
+
+type testReadSeekCloser struct {
+	*strings.Reader
+	closed bool
+}
+
+func (r *testReadSeekCloser) Close() error {
+	r.closed = true
+	return nil
+}
 
 func TestPrepareBodyKinds(t *testing.T) {
 	t.Run("nil", func(t *testing.T) {
@@ -55,4 +71,132 @@ func TestPrepareBodyKinds(t *testing.T) {
 			t.Fatalf("got %q getBody=%v type=%q", got, getBody != nil, contentType)
 		}
 	})
+}
+
+func TestPrepareBodyPrecedence(t *testing.T) {
+	var nilBuf *bytes.Buffer
+	body, getBody, contentType, err := prepareBody(nilBuf)
+	if err != nil || body != nil || getBody != nil || contentType != "" {
+		t.Fatalf("nil buffer: body=%v getBody=%v type=%q err=%v", body, getBody != nil, contentType, err)
+	}
+
+	buf := bytes.NewBufferString("buf")
+	body, getBody, _, err = prepareBody(buf)
+	if err != nil || getBody == nil {
+		t.Fatal("bytes.Buffer must be replayable")
+	}
+	if got, _ := io.ReadAll(body); string(got) != "buf" {
+		t.Fatalf("buffer body %q", got)
+	}
+
+	rc := io.NopCloser(strings.NewReader("rc"))
+	_, getBody, _, err = prepareBody(rc)
+	if err != nil || getBody != nil {
+		t.Fatal("plain ReadCloser must be one-shot")
+	}
+
+	rsc := &testReadSeekCloser{Reader: strings.NewReader("rsc")}
+	body, getBody, _, err = prepareBody(rsc)
+	if err != nil || getBody != nil {
+		t.Fatal("a closer other than *os.File must be one-shot")
+	}
+	if err := body.Close(); err != nil || !rsc.closed {
+		t.Fatalf("Close did not reach the underlying closer: %v", err)
+	}
+
+	form := url.Values{"a": {"b"}}
+	body, getBody, contentType, err = prepareBody(Form(form))
+	if err != nil || contentType != "application/x-www-form-urlencoded" {
+		t.Fatalf("form type %q err %v", contentType, err)
+	}
+	b, _ := io.ReadAll(body)
+	if string(b) != "a=b" || getBody == nil {
+		t.Fatalf("form body %q getBody=%v", b, getBody != nil)
+	}
+}
+
+func TestPrepareBodyConcurrentReaderAt(t *testing.T) {
+	src := bytes.NewReader([]byte("shared-data"))
+	_, getBody, _, err := prepareBody(src)
+	if err != nil || getBody == nil {
+		t.Fatal("bytes.Reader must be replayable")
+	}
+	var wg sync.WaitGroup
+	for i := 0; i < 4; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			rc, err := getBody()
+			if err != nil {
+				t.Errorf("getBody: %v", err)
+				return
+			}
+			defer rc.Close()
+			got, _ := io.ReadAll(rc)
+			if string(got) != "shared-data" {
+				t.Errorf("replay %q", got)
+			}
+		}()
+	}
+	wg.Wait()
+}
+
+func TestPrepareBodyFileOwnership(t *testing.T) {
+	f, err := os.CreateTemp(t.TempDir(), "body-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.WriteString("file-data"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
+		t.Fatal(err)
+	}
+
+	body, getBody, _, err := prepareBody(f)
+	if err != nil || getBody == nil {
+		t.Fatalf("regular file must be replayable: %v", err)
+	}
+	got, _ := io.ReadAll(body)
+	if string(got) != "file-data" {
+		t.Fatalf("primary %q", got)
+	}
+	if err := body.Close(); err != nil {
+		t.Fatal(err)
+	}
+	replay, err := getBody()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer replay.Close()
+	got, _ = io.ReadAll(replay)
+	if string(got) != "file-data" {
+		t.Fatalf("replay %q", got)
+	}
+
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer w.Close()
+	defer r.Close()
+	_, getBody, _, err = prepareBody(r)
+	if err != nil || getBody != nil {
+		t.Fatal("pipe must be one-shot")
+	}
+}
+
+func TestPrepareBodyRawMessage(t *testing.T) {
+	body, getBody, contentType, err := prepareBody([]byte(`{"a":1}`))
+	if err != nil || getBody == nil || contentType != "" {
+		t.Fatalf("bytes type=%q getBody=%v err=%v", contentType, getBody != nil, err)
+	}
+	body, getBody, contentType, err = prepareBody(json.RawMessage(`{"a":1}`))
+	if err != nil || getBody == nil || contentType != "application/json" {
+		t.Fatalf("json raw type=%q getBody=%v err=%v", contentType, getBody != nil, err)
+	}
+	got, _ := io.ReadAll(body)
+	if string(got) != `{"a":1}` {
+		t.Fatalf("json raw body %q", got)
+	}
 }
