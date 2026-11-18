@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -245,4 +247,40 @@ func TestMaxInflightWaitsForSlot(t *testing.T) {
 		t.Fatalf("want deadline, got %v", err)
 	}
 	hs.Release(held)
+}
+
+func TestMaxInflightAtomicReservation(t *testing.T) {
+	hs, err := NewHostSetWithOptions(HostSetOptions{Wait: -1},
+		Host{Name: "a", URL: mustURL("http://a"), MaxInflight: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer hs.Close()
+	req := httptest.NewRequest(http.MethodGet, "http://svc/x", nil)
+	var current, maxSeen atomic.Int32
+	var wg sync.WaitGroup
+	for i := 0; i < 200; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			host, err := hs.Pick(req, nil)
+			if err != nil {
+				return
+			}
+			value := current.Add(1)
+			for {
+				seen := maxSeen.Load()
+				if value <= seen || maxSeen.CompareAndSwap(seen, value) {
+					break
+				}
+			}
+			time.Sleep(time.Millisecond)
+			current.Add(-1)
+			hs.Release(host)
+		}()
+	}
+	wg.Wait()
+	if maxSeen.Load() > 1 {
+		t.Fatalf("MaxInflight exceeded: %d", maxSeen.Load())
+	}
 }

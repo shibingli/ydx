@@ -376,9 +376,7 @@ func (hs *HostSet) pickOnce(req *http.Request, exclude map[string]struct{}) (*Ho
 	if len(hs.entries) == 1 {
 		entry := hs.entries[0]
 		_, excluded := exclude[entry.host.Name]
-		if !excluded && entry.healthy.Load() &&
-			(entry.host.MaxInflight == 0 || entry.inflight.Load() < int64(entry.host.MaxInflight)) {
-			entry.inflight.Add(1)
+		if !excluded && entry.healthy.Load() && entry.acquire() {
 			entry.requests.Add(1)
 			return entry.host, nil
 		}
@@ -419,12 +417,37 @@ func (hs *HostSet) pickOnce(req *http.Request, exclude map[string]struct{}) (*Ho
 		return nil, ErrNoHealthyHosts
 	}
 	entry := hs.entries[index]
+	for !entry.acquire() {
+		eligible[index] = false
+		index = hs.choose(req, eligible)
+		if index < 0 {
+			return nil, ErrNoHealthyHosts
+		}
+		entry = hs.entries[index]
+	}
 	if failOpen {
 		hs.failOpen.Add(1)
 	}
-	entry.inflight.Add(1)
 	entry.requests.Add(1)
 	return entry.host, nil
+}
+
+// acquire reserves one in-flight slot atomically. | acquire 原子预留一个在途名额。
+func (e *hostEntry) acquire() bool {
+	if e.host.MaxInflight <= 0 {
+		e.inflight.Add(1)
+		return true
+	}
+	limit := int64(e.host.MaxInflight)
+	for {
+		current := e.inflight.Load()
+		if current >= limit {
+			return false
+		}
+		if e.inflight.CompareAndSwap(current, current+1) {
+			return true
+		}
+	}
 }
 
 // hostSelectable reports whether the host is not excluded and below its in-flight cap. | hostSelectable 报告 Host 未被排除且未超在途上限。
