@@ -80,6 +80,7 @@ func TestStatsSSE(t *testing.T) {
 
 func TestMetaTimings(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(5 * time.Millisecond)
 		_, _ = w.Write([]byte("ok"))
 	}))
 	defer srv.Close()
