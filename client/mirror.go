@@ -204,7 +204,7 @@ func (m *mirrorer) submit(parent context.Context, req *http.Request, logical *ur
 		return
 	}
 	var getBody func() (io.ReadCloser, error)
-	if req.Body != nil {
+	if req.Body != nil && req.Body != http.NoBody {
 		getBody = req.GetBody
 		if getBody == nil {
 			return
@@ -244,6 +244,7 @@ func (m *mirrorer) run(parent context.Context, req *http.Request, logical *url.U
 	defer cancel()
 	out := req.Clone(ctx)
 	out.URL = targetURL(logical, &Host{URL: target}, rule)
+	out.RequestURI = ""
 	out.Host = out.URL.Host
 	out.Header = req.Header.Clone()
 	if out.Header == nil {

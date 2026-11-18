@@ -310,6 +310,7 @@ func (e *engine) roundTripHosts(req *http.Request, rule *Rule, meta *Meta, hosts
 func (e *engine) cloneAttempt(req *http.Request, attempt int, target *url.URL, originalHost string, rule *Rule, host *Host, sp *spool) (*http.Request, error) {
 	out := req.Clone(req.Context())
 	out.URL = target
+	out.RequestURI = ""
 	if host != nil {
 		if rule != nil && rule.PreserveHost {
 			out.Host = originalHost

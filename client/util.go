@@ -21,6 +21,28 @@ func headerValue(header http.Header, key string) string {
 	return strings.Join(values, "\x00")
 }
 
+// hopByHopSet returns the hop-by-hop headers plus Connection-listed tokens. | hopByHopSet 返回逐跳头以及 Connection 列出的令牌。
+func hopByHopSet(header http.Header) map[string]bool {
+	set := map[string]bool{
+		"Connection":        true,
+		"Proxy-Connection":  true,
+		"Keep-Alive":        true,
+		"Te":                true,
+		"Trailer":           true,
+		"Transfer-Encoding": true,
+		"Upgrade":           true,
+	}
+	for _, value := range header.Values("Connection") {
+		for _, token := range strings.Split(value, ",") {
+			token = strings.TrimSpace(token)
+			if token != "" {
+				set[http.CanonicalHeaderKey(token)] = true
+			}
+		}
+	}
+	return set
+}
+
 // isEventStream reports whether the header names an SSE response. | isEventStream 报告响应头是否表示 SSE。
 func isEventStream(header http.Header) bool {
 	if header == nil {
