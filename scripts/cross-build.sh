@@ -18,17 +18,37 @@ trap 'rm -rf "$tmp"' EXIT
 failed="$tmp/failed"
 : >"$failed"
 
+should_vet() {
+  local rel="$1" module
+  [[ -z "$vet_modules" ]] && return 0
+  for module in $vet_modules; do
+    [[ "$rel" == "$module" ]] && return 0
+  done
+  return 1
+}
+
 run_task() {
   local dir="$1" rel="$2" target="$3" os arch
   os="${target%/*}"
   arch="${target#*/}"
-  printf '==> %s %s\n' "$rel" "$target"
+  printf '==> %s %s
+' "$rel" "$target"
   if ! (cd "$dir" &&
-    GOWORK=off CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" go build ./... &&
+    GOWORK=off CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" go build ./...); then
+    printf '%s %s build
+' "$rel" "$target" >>"$failed"
+    return
+  fi
+  # Test-file type checking is only needed for modules with platform/arch
+  # build-tagged tests; native CI covers the remaining test compilation.
+  # | 仅含平台/架构测试标签的模块需要测试类型检查；其余测试编译由原生 CI 覆盖。
+  if should_vet "$rel" && ! (cd "$dir" &&
     GOWORK=off CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" go vet ./...); then
-    printf '%s %s\n' "$rel" "$target" >>"$failed"
+    printf '%s %s vet
+' "$rel" "$target" >>"$failed"
   fi
 }
+
 export -f run_task should_vet
 export failed vet_modules
 
@@ -49,5 +69,5 @@ if [[ -s "$failed" ]]; then
   sort -u "$failed" >&2
   exit 1
 fi
-printf 'cross-build ok: %d modules, targets: %s, jobs: %d\n' \
-  "$(find "$root" -name go.mod -not -path '*/.git/*' | wc -l)" "$targets" "$jobs"
+printf 'cross-build ok: %d modules, targets: %s, jobs: %d, vet modules: %s\n' \
+  "$(find "$root" -name go.mod -not -path '*/.git/*' | wc -l)" "$targets" "$jobs" "${vet_modules:-all}"
