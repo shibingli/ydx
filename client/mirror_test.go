@@ -221,7 +221,7 @@ func TestMirrorSpoolsNonReplayableBody(t *testing.T) {
 	}
 	defer c.Close()
 	req, _ := http.NewRequest(http.MethodPost, primary.URL+"/x", io.NopCloser(strings.NewReader("payload")))
-	req.ContentLength = 7
+	req.ContentLength = -1
 	resp, err := c.Do(req)
 	if err != nil {
 		t.Fatal(err)
@@ -229,5 +229,39 @@ func TestMirrorSpoolsNonReplayableBody(t *testing.T) {
 	resp.Body.Close()
 	if primaryBody != "payload" || mirrorBody != "payload" {
 		t.Fatalf("primary %q mirror %q", primaryBody, mirrorBody)
+	}
+}
+
+func TestAsyncMirrorResults(t *testing.T) {
+	mirror := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(20 * time.Millisecond)
+	}))
+	defer mirror.Close()
+	primary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	defer primary.Close()
+	c, err := New(
+		WithHosts(primary.URL),
+		WithRule(Rule{Name: "r", Pattern: "/x", Mirror: &MirrorPolicy{
+			Targets: []string{mirror.URL},
+			Percent: 100,
+			Timeout: time.Second,
+		}}),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	resp, err := c.Get(context.Background(), primary.URL+"/x")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.Meta.MirrorResults == nil {
+		t.Fatal("nil async mirror tracker")
+	}
+	waitFor(t, time.Second, func() bool { return len(resp.Meta.MirrorResults.Snapshot()) == 1 })
+	results := resp.Meta.MirrorResults.Snapshot()
+	if results[0].Status != http.StatusOK || results[0].Target != mirror.URL {
+		t.Fatalf("results %+v", results)
 	}
 }

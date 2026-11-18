@@ -307,15 +307,18 @@ func (e *engine) RoundTrip(req *http.Request) (resp *http.Response, err error) {
 		ruleCancel = cancel
 	}
 	mirrorPolicy, mirroring := e.mirrorFor(rule)
-	var mirrorResults *mirrorTracker
+	var mirrorResults *MirrorResults
 	if mirroring {
-		mirrorResults = &mirrorTracker{}
+		mirrorResults = &MirrorResults{}
 		req = req.WithContext(context.WithValue(req.Context(), mirrorTrackKey{}, mirrorResults))
 	}
 	var mirrorSpool *spool
 	if mirroring && mirrorPolicy.Mode == MirrorUpstream && req.Body != nil && req.Body != http.NoBody &&
-		req.GetBody == nil && (e.opts.SpoolToDisk || (e.opts.SpoolLimit > 0 && req.ContentLength > 0 && req.ContentLength <= e.opts.SpoolLimit)) {
-		spooled, spoolErr := e.spoolBody(req)
+		req.GetBody == nil {
+		// Mirror A must replay the body; a bounded disk spool is allowed even
+		// when retry spooling itself is memory-only. | Mirror A 必须重放正文；即使
+		// 重试仅允许内存暂存，也允许有界磁盘暂存。
+		spooled, spoolErr := e.spoolBodyWith(req, true)
 		if spoolErr != nil {
 			return nil, e.wrapError("prepare_body", req, "", 0, spoolErr)
 		}
@@ -323,12 +326,6 @@ func (e *engine) RoundTrip(req *http.Request) (resp *http.Response, err error) {
 		defer spooled.release()
 		req.GetBody = spooled.getBody
 		req.ContentLength = spooled.length
-	} else if mirroring && mirrorPolicy.Mode == MirrorUpstream && req.Body != nil &&
-		req.Body != http.NoBody && req.GetBody == nil {
-		for _, target := range mirrorPolicy.targets {
-			recordMirror(req.Context(), MirrorResult{Target: target.String(), Dropped: true, Err: ErrBodyNotReplayable})
-		}
-		mirroring = false
 	}
 	preMirror := mirroring && mirrorPolicy.Mode == MirrorUpstream && mirrorPolicy.Parallel && !mirrorPolicy.Sync
 	if preMirror {
@@ -351,6 +348,7 @@ func (e *engine) RoundTrip(req *http.Request) (resp *http.Response, err error) {
 		return nil, err
 	}
 	if meta != nil && mirrorResults != nil {
+		meta.MirrorResults = mirrorResults
 		meta.Mirrors = mirrorResults.snapshot()
 	}
 	if ruleCancel != nil {
@@ -523,6 +521,7 @@ func (e *engine) roundTripDirect(req *http.Request, rule *Rule, meta *Meta, sp *
 			}
 			continue
 		}
+		rewriteRedirectLocation(resp, out.URL, nil, rule)
 		return e.finishResponse(resp, req, meta, nil, attempt, start), nil
 	}
 	if lastErr == nil {
@@ -685,7 +684,7 @@ func (e *engine) roundTripHosts(req *http.Request, rule *Rule, meta *Meta, hosts
 			}
 			continue
 		}
-		rewriteRedirectLocation(resp, out.URL, host)
+		rewriteRedirectLocation(resp, out.URL, host, rule)
 		if host.IsFailureStatus(resp.StatusCode) {
 			hosts.MarkFailure(host, errs.Detail(ErrUpstreamStatus, "status %d", resp.StatusCode))
 		} else {
@@ -792,12 +791,18 @@ func canPassThroughHost(host *Host, rule *Rule, logical *url.URL, req *http.Requ
 // rewriteRedirectLocation maps a wire-space Location back to logical space
 // after a host base path was prefixed. | rewriteRedirectLocation 把带 Host base
 // path 的 wire 空间 Location 还原为逻辑空间。
-func rewriteRedirectLocation(resp *http.Response, wire *url.URL, host *Host) {
-	if resp == nil || wire == nil || host == nil || host.URL == nil || resp.Header == nil {
+func rewriteRedirectLocation(resp *http.Response, wire *url.URL, host *Host, rule *Rule) {
+	if resp == nil || wire == nil || resp.Header == nil {
 		return
 	}
-	base := host.URL.EscapedPath()
-	if base == "" || base == "/" {
+	base := ""
+	if host != nil && host.URL != nil {
+		base = host.URL.EscapedPath()
+		if base == "/" {
+			base = ""
+		}
+	}
+	if base == "" && (rule == nil || rule.Rewrite == nil) {
 		return
 	}
 	location := resp.Header.Get("Location")
@@ -809,19 +814,45 @@ func rewriteRedirectLocation(resp *http.Response, wire *url.URL, host *Host) {
 		return
 	}
 	path := resolved.EscapedPath()
-	if path != base && !strings.HasPrefix(path, base+"/") && !(strings.HasSuffix(base, "/") && strings.HasPrefix(path, base)) {
-		return
+	if base != "" {
+		if path != base && !strings.HasPrefix(path, base+"/") && !(strings.HasSuffix(base, "/") && strings.HasPrefix(path, base)) {
+			return
+		}
+		path = strings.TrimPrefix(path, base)
 	}
-	trimmed := strings.TrimPrefix(path, base)
-	if trimmed == "" {
-		trimmed = "/"
-	} else if trimmed[0] != '/' {
-		trimmed = "/" + trimmed
+	if path == "" {
+		path = "/"
+	} else if path[0] != '/' {
+		path = "/" + path
 	}
+	trimmed := unrewritePath(rule, path)
 	if resolved.RawQuery != "" {
 		trimmed += "?" + resolved.RawQuery
 	}
 	resp.Header.Set("Location", trimmed)
+}
+
+// unrewritePath reverses a rule Rewrite for redirect mapping. | unrewritePath 为重定向映射反向应用规则 Rewrite。
+func unrewritePath(rule *Rule, path string) string {
+	if rule == nil || rule.Rewrite == nil {
+		return path
+	}
+	rw := rule.Rewrite
+	if rw.AddPrefix != "" {
+		prefix := strings.TrimSuffix(rw.AddPrefix, "/")
+		if path == prefix {
+			path = "/"
+		} else if strings.HasPrefix(path, prefix+"/") {
+			path = strings.TrimPrefix(path, prefix)
+		}
+	}
+	if rw.StripPrefix != "" {
+		path = strings.TrimSuffix(rw.StripPrefix, "/") + path
+	}
+	if path == "" {
+		return "/"
+	}
+	return path
 }
 
 // directTarget applies a rule rewrite without a host base path. | directTarget 在无 Host base path 时应用规则重写。

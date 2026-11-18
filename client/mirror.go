@@ -179,14 +179,25 @@ func WithMaxMirrorInflight(n int) Option {
 // mirrorTrackKey carries a per-request mirror result collector. | mirrorTrackKey 携带逐请求的镜像结果收集器。
 type mirrorTrackKey struct{}
 
-// mirrorTracker collects shadow results for Meta.Mirrors. | mirrorTracker 为 Meta.Mirrors 收集影子结果。
-type mirrorTracker struct {
+// MirrorResults is a concurrent shadow-result collector for asynchronous
+// mirrors. | MirrorResults 是异步镜像的并发安全结果收集器。
+type MirrorResults struct {
 	mu      sync.Mutex
 	results []MirrorResult
 }
 
+// Snapshot returns a safe copy of all completed shadow results. | Snapshot 返回全部已完成影子结果的安全副本。
+func (t *MirrorResults) Snapshot() []MirrorResult {
+	if t == nil {
+		return nil
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return append([]MirrorResult(nil), t.results...)
+}
+
 // add appends one result. | add 追加一个结果。
-func (t *mirrorTracker) add(result MirrorResult) {
+func (t *MirrorResults) add(result MirrorResult) {
 	if t == nil {
 		return
 	}
@@ -196,13 +207,8 @@ func (t *mirrorTracker) add(result MirrorResult) {
 }
 
 // snapshot returns a copy of the collected results. | snapshot 返回已收集结果的副本。
-func (t *mirrorTracker) snapshot() []MirrorResult {
-	if t == nil {
-		return nil
-	}
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	return append([]MirrorResult(nil), t.results...)
+func (t *MirrorResults) snapshot() []MirrorResult {
+	return t.Snapshot()
 }
 
 // recordMirror appends a shadow result to the request tracker. | recordMirror 把影子结果追加到请求收集器。
@@ -210,7 +216,7 @@ func recordMirror(ctx context.Context, result MirrorResult) {
 	if ctx == nil {
 		return
 	}
-	if tracker, ok := ctx.Value(mirrorTrackKey{}).(*mirrorTracker); ok {
+	if tracker, ok := ctx.Value(mirrorTrackKey{}).(*MirrorResults); ok {
 		tracker.add(result)
 	}
 }

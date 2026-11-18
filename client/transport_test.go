@@ -329,3 +329,81 @@ func TestHostBasePathRedirectMapping(t *testing.T) {
 		t.Fatalf("paths %v", paths)
 	}
 }
+
+func TestHostBasePathAndRewriteRedirect(t *testing.T) {
+	var mu sync.Mutex
+	var paths []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		paths = append(paths, r.URL.Path)
+		mu.Unlock()
+		if r.URL.Path == "/v1/user/start" {
+			http.Redirect(w, r, "next", http.StatusFound)
+			return
+		}
+		if r.URL.Path == "/v1/user/next" {
+			_, _ = w.Write([]byte("ok"))
+		}
+	}))
+	defer srv.Close()
+	c, err := New(
+		WithHosts(srv.URL+"/v1"),
+		WithRule(Rule{Name: "user", Pattern: "/api/user/{id}", Rewrite: &Rewrite{StripPrefix: "/api"}}),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	resp, err := c.Get(context.Background(), "/api/user/start")
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if string(data) != "ok" {
+		t.Fatalf("body %q", data)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(paths) != 2 || paths[0] != "/v1/user/start" || paths[1] != "/v1/user/next" {
+		t.Fatalf("paths %v", paths)
+	}
+}
+
+func TestRuleRewriteRedirectDirect(t *testing.T) {
+	var mu sync.Mutex
+	var paths []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		paths = append(paths, r.URL.Path)
+		mu.Unlock()
+		if r.URL.Path == "/start" {
+			http.Redirect(w, r, "next", http.StatusFound)
+			return
+		}
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer srv.Close()
+	c, err := New(
+		WithBaseURL(srv.URL),
+		WithRule(Rule{Name: "api", Pattern: "/api/{id}", Rewrite: &Rewrite{StripPrefix: "/api"}}),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	resp, err := c.Get(context.Background(), "/api/start")
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if string(data) != "ok" {
+		t.Fatalf("body %q", data)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(paths) != 2 || paths[0] != "/start" || paths[1] != "/next" {
+		t.Fatalf("paths %v", paths)
+	}
+}

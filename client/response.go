@@ -53,8 +53,10 @@ type Meta struct {
 	Guard *GuardDecision
 	// Timings carries optional phase timings. | Timings 携带可选的阶段耗时。
 	Timings Timings
-	// Mirrors records shadow request results. | Mirrors 记录影子请求结果。
+	// Mirrors records the synchronous shadow snapshot. | Mirrors 记录同步影子结果快照。
 	Mirrors []MirrorResult
+	// MirrorResults safely observes asynchronous shadows; nil without mirroring. | MirrorResults 安全观察异步镜像；无镜像时为 nil。
+	MirrorResults *MirrorResults
 	// Hops records the redirect chain in order. | Hops 按顺序记录重定向链。
 	Hops []HopMeta
 	// Params are the captured path parameters. | Params 是路径参数捕获。

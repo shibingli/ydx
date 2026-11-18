@@ -61,6 +61,9 @@ func (c *Client) Send(ctx context.Context, method, rawURL string, body any, opts
 	if c == nil || c.engine == nil {
 		return nil, ErrInvalidConfig
 	}
+	if len(opts) == 0 {
+		return c.send(ctx, method, rawURL, body, requestConfig{})
+	}
 	cfg := requestConfig{}
 	for _, opt := range opts {
 		if opt == nil {
@@ -70,6 +73,11 @@ func (c *Client) Send(ctx context.Context, method, rawURL string, body any, opts
 			return nil, err
 		}
 	}
+	return c.send(ctx, method, rawURL, body, cfg)
+}
+
+// send executes one request with an already-resolved option set. | send 使用已解析选项执行单个请求。
+func (c *Client) send(ctx context.Context, method, rawURL string, body any, cfg requestConfig) (*Response, error) {
 	rc, getBody, contentType, length, err := prepareBodyInfo(body)
 	if err != nil {
 		return nil, err
@@ -81,9 +89,9 @@ func (c *Client) Send(ctx context.Context, method, rawURL string, body any, opts
 	if relative {
 		ctx = context.WithValue(ctx, useDefaultHostsKey{}, true)
 	}
-	meta := &Meta{}
-	meta.Hops = meta.hopInline[:0]
-	ctx = context.WithValue(ctx, metaKey{}, meta)
+	state := &responseState{}
+	state.meta.Hops = state.meta.hopInline[:0]
+	ctx = context.WithValue(ctx, metaKey{}, &state.meta)
 	target := rawURL
 	if !strings.Contains(rawURL, "://") {
 		resolved, err := c.resolveRequestURL(rawURL)
@@ -134,7 +142,7 @@ func (c *Client) Send(ctx context.Context, method, rawURL string, body any, opts
 		req.URL.RawQuery = query.Encode()
 	}
 	if cfg.timeout <= 0 {
-		return c.finish(req, meta)
+		return c.finishState(req, state)
 	}
 	deadlineCtx, cancel := context.WithTimeout(req.Context(), cfg.timeout)
 	resp, err := c.Do(req.WithContext(deadlineCtx))
@@ -143,8 +151,10 @@ func (c *Client) Send(ctx context.Context, method, rawURL string, body any, opts
 		return nil, err
 	}
 	resp.Body = &cancelBody{body: resp.Body, cancel: cancel}
-	c.engine.fireComplete(req.Context(), meta)
-	return &Response{Response: resp, Meta: *meta}, nil
+	c.engine.fireComplete(req.Context(), &state.meta)
+	state.response.Response = resp
+	state.response.Meta = state.meta
+	return &state.response, nil
 }
 
 // DoWithMeta executes req and returns the client metadata alongside the response. | DoWithMeta 执行 req 并返回客户端元数据。
@@ -152,15 +162,17 @@ func (c *Client) DoWithMeta(req *http.Request) (*Response, error) {
 	if req == nil || req.URL == nil {
 		return nil, ErrInvalidRequest
 	}
-	meta := &Meta{}
-	meta.Hops = meta.hopInline[:0]
-	req = req.WithContext(context.WithValue(req.Context(), metaKey{}, meta))
+	state := &responseState{}
+	state.meta.Hops = state.meta.hopInline[:0]
+	req = req.WithContext(context.WithValue(req.Context(), metaKey{}, &state.meta))
 	resp, err := c.Do(req)
 	if err != nil {
 		return nil, err
 	}
-	c.engine.fireComplete(req.Context(), meta)
-	return &Response{Response: resp, Meta: *meta}, nil
+	c.engine.fireComplete(req.Context(), &state.meta)
+	state.response.Response = resp
+	state.response.Meta = state.meta
+	return &state.response, nil
 }
 
 // resolveRequestURL resolves a convenience-method URL against BaseURL or the
@@ -186,7 +198,14 @@ func (c *Client) resolveRequestURL(raw string) (string, error) {
 }
 
 // finish executes a request and wraps the response with meta. | finish 执行请求并用 meta 包装响应。
-func (c *Client) finish(req *http.Request, meta *Meta) (*Response, error) {
+// responseState combines Meta and Response in one allocation. | responseState 用一次分配组合 Meta 与 Response。
+type responseState struct {
+	meta     Meta
+	response Response
+}
+
+// finishState executes a request and fills the combined response state. | finishState 执行请求并填充组合响应状态。
+func (c *Client) finishState(req *http.Request, state *responseState) (*Response, error) {
 	resp, err := c.Do(req)
 	if err != nil {
 		return nil, err
@@ -194,8 +213,10 @@ func (c *Client) finish(req *http.Request, meta *Meta) (*Response, error) {
 	if resp.Body == nil {
 		resp.Body = http.NoBody
 	}
-	c.engine.fireComplete(req.Context(), meta)
-	return &Response{Response: resp, Meta: *meta}, nil
+	c.engine.fireComplete(req.Context(), &state.meta)
+	state.response.Response = resp
+	state.response.Meta = state.meta
+	return &state.response, nil
 }
 
 // Get issues a GET request. | Get 发起 GET 请求。

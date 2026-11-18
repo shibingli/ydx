@@ -166,11 +166,15 @@ func (r *spoolReader) Close() error {
 
 // spoolBody snapshots a non-replayable request body into memory or a temp file. | spoolBody 把不可重放正文暂存到内存或临时文件。
 func (e *engine) spoolBody(req *http.Request) (*spool, error) {
+	return e.spoolBodyWith(req, e.opts.SpoolToDisk)
+}
+
+// spoolBodyWith snapshots a body with explicit disk permission. | spoolBodyWith 以显式磁盘许可暂存正文。
+func (e *engine) spoolBodyWith(req *http.Request, toDisk bool) (*spool, error) {
 	if req == nil || req.Body == nil {
 		return nil, ErrBodyNotReplayable
 	}
 	limit := e.opts.SpoolLimit
-	toDisk := e.opts.SpoolToDisk
 	max := e.opts.SpoolMaxBytes
 	if ap := e.opts.AccessPolicy; ap != nil && ap.MaxRequestBytes > 0 && (max <= 0 || ap.MaxRequestBytes < max) {
 		max = ap.MaxRequestBytes
