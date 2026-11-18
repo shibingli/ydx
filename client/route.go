@@ -44,6 +44,8 @@ type Rule struct {
 	Retry *RetryPolicy
 	// Cache enables response caching for this rule. | Cache 为该规则启用响应缓存。
 	Cache *CachePolicy
+	// Coalesce merges concurrent identical requests for this rule. | Coalesce 为该规则合并并发相同请求。
+	Coalesce *CoalescePolicy
 }
 
 // patternScore is the deterministic specificity key used to order rules. | patternScore 是用于规则排序的确定性特异性键。

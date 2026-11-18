@@ -25,6 +25,8 @@ type engine struct {
 	cacheMu    sync.Mutex
 	cacheStore Store
 	ownsCache  bool
+
+	flights *flightGroup
 }
 
 // newEngine builds the engine and a default transport when none was supplied. | newEngine 构建引擎，并在未提供 Transport 时创建默认传输。
@@ -42,7 +44,7 @@ func newEngine(o options) *engine {
 			ExpectContinueTimeout: time.Second,
 		}
 	}
-	eng := &engine{base: base, opts: o, budget: newRetryBudget(0.1)}
+	eng := &engine{base: base, opts: o, budget: newRetryBudget(0.1), flights: newFlightGroup()}
 	eng.rules.Store(&RuleSet{})
 	return eng
 }
@@ -84,6 +86,14 @@ func (e *engine) RoundTrip(req *http.Request) (*http.Response, error) {
 			return cachedResponse(req, entry), nil
 		}
 	}
+	if coalescePolicy, ok := e.coalesceFor(rule); ok && shouldCoalesce(req, coalescePolicy) {
+		return e.coalesceRoundTrip(req, rule, meta, hosts, key, policy, store, coalescePolicy)
+	}
+	return e.execute(req, rule, meta, hosts, key, policy, store)
+}
+
+// execute runs the attempt loop and stores a cacheable response. | execute 执行尝试循环并存储可缓存响应。
+func (e *engine) execute(req *http.Request, rule *Rule, meta *Meta, hosts *HostSet, key string, policy CachePolicy, store Store) (*http.Response, error) {
 	var resp *http.Response
 	var err error
 	if hosts == nil || hosts.Len() == 0 {
