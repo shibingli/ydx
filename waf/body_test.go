@@ -352,3 +352,19 @@ func TestConcurrentRequests(t *testing.T) {
 	}
 	wait.Wait()
 }
+
+type failingBody struct{}
+
+func (failingBody) Read([]byte) (int, error) { return 0, io.ErrUnexpectedEOF }
+func (failingBody) Close() error             { return nil }
+
+func TestCaptureRequestBodyReadErrorClearsLength(t *testing.T) {
+	req := httptest.NewRequest(http.MethodPost, "/", failingBody{})
+	req.ContentLength = 10
+	if _, _, err := captureRequestBody(req, 100, LimitProcessPartial); err == nil {
+		t.Fatal("expected read error")
+	}
+	if req.ContentLength != 0 {
+		t.Fatalf("content length = %d", req.ContentLength)
+	}
+}

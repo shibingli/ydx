@@ -48,6 +48,8 @@ func captureRequestBody(r *http.Request, limit int, action LimitAction) ([]byte,
 	if err != nil {
 		_ = original.Close()
 		r.Body = http.NoBody
+		r.ContentLength = 0
+		r.GetBody = nil
 		return nil, false, err
 	}
 	if len(data) > limit {
