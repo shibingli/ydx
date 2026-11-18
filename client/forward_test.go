@@ -298,12 +298,7 @@ func TestForwardUnknownBodyLimit(t *testing.T) {
 }
 
 func TestForwardRuleHeaderTimeout(t *testing.T) {
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		time.Sleep(100 * time.Millisecond)
-		_, _ = w.Write([]byte("late"))
-	}))
-	defer upstream.Close()
-	c, err := New(WithHosts(upstream.URL), WithRule(Rule{
+	c, err := New(WithTransport(blockingRoundTripper{}), WithHosts("http://svc"), WithRule(Rule{
 		Name: "/**", Pattern: "/**", Timeout: 20 * time.Millisecond,
 	}))
 	if err != nil {
@@ -311,28 +306,25 @@ func TestForwardRuleHeaderTimeout(t *testing.T) {
 	}
 	defer c.Close()
 	rec := httptest.NewRecorder()
+	start := time.Now()
 	c.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "http://svc/x", nil))
 	if rec.Code != http.StatusGatewayTimeout {
 		t.Fatalf("code %d body %q", rec.Code, rec.Body.String())
 	}
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Fatalf("header timeout took %v", elapsed)
+	}
 }
 
 func TestForwardRuleTimeoutStopsAtHeaders(t *testing.T) {
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		w.(http.Flusher).Flush()
-		time.Sleep(80 * time.Millisecond)
-		_, _ = w.Write([]byte("body"))
-	}))
-	defer upstream.Close()
-	c, err := New(WithHosts(upstream.URL), WithRule(Rule{
+	c, err := New(WithTransport(headerThenSlowBodyRoundTripper{}), WithHosts("http://svc"), WithRule(Rule{
 		Name: "/**", Pattern: "/**", Timeout: 20 * time.Millisecond,
 	}))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer c.Close()
-	req := httptest.NewRequest(http.MethodGet, upstream.URL+"/x", nil)
+	req := httptest.NewRequest(http.MethodGet, "http://svc/x", nil)
 	resp, err := c.Forward(context.Background(), req)
 	if err != nil {
 		t.Fatal(err)
@@ -346,6 +338,47 @@ func TestForwardRuleTimeoutStopsAtHeaders(t *testing.T) {
 		t.Fatalf("body %q", data)
 	}
 }
+
+type blockingRoundTripper struct{}
+
+func (blockingRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	<-req.Context().Done()
+	return nil, req.Context().Err()
+}
+
+type headerThenSlowBodyRoundTripper struct{}
+
+func (headerThenSlowBodyRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	return &http.Response{
+		Status:        "200 OK",
+		StatusCode:    http.StatusOK,
+		Proto:         "HTTP/1.1",
+		ProtoMajor:    1,
+		ProtoMinor:    1,
+		Header:        make(http.Header),
+		ContentLength: -1,
+		Body:          &headerThenSlowBody{ctx: req.Context()},
+		Request:       req,
+	}, nil
+}
+
+type headerThenSlowBody struct {
+	ctx  context.Context
+	read bool
+}
+
+func (b *headerThenSlowBody) Read(p []byte) (int, error) {
+	if !b.read {
+		b.read = true
+		time.Sleep(60 * time.Millisecond)
+	}
+	if err := b.ctx.Err(); err != nil {
+		return 0, err
+	}
+	return copy(p, "body"), io.EOF
+}
+
+func (b *headerThenSlowBody) Close() error { return nil }
 
 func TestForwardPreservesAllForwardedForValues(t *testing.T) {
 	var got []string
