@@ -13,13 +13,13 @@
 | 缓存 | 可选内置分片 LRU+TTL，支持 `Cache-Control`、`Expires`、`Vary`、自定义 `Store`/Key |
 | 重定向/Cookie | 默认内存 Cookie Jar，301/302/303/307/308 自动带入 Set-Cookie；`CheckRedirect`/`Jar` 保持标准语义；`WithoutCookieJar` 可关闭；Host base path 的 Location 自动还原到逻辑路径 |
 | 请求合并 | 相同并发 GET/HEAD 合并（singleflight）；超大/不可共享响应自动 bypass |
-| 镜像 | A：影子上游重放（默认，可同步/异步/抽样/并行）；B：主流 tee 到 Sink/EventSink，慢消费者丢弃 |
+| 镜像 | A：影子上游重放（默认，可同步/异步/抽样/并行；不可重放 body 自动有界 spool，含磁盘）；B：主流 tee 到 Sink/EventSink，慢消费者丢弃 |
 | SSE | EventReader、出站 Stream（重连/Last-Event-ID/空闲超时）、Forward/Handler 逐块 Flush、A/B 镜像 |
 | 安全 | Guard 链、AccessPolicy 黑白名单/CIDR/私网拦截、拨号期 IP 复检、内置 WAF 适配模块 |
 | TLS | 系统根/私有 CA、mTLS、SPKI 固定、会话复用、按 Host 覆盖、`ReloadTLS` 热更新 |
 | UA | Fixed/Random/Rotate/Weighted，内置桌面/移动 UA，Force 语义，companion headers |
 | 编排 | Pipeline：Serial/Parallel/Step/Func/Vars，JSON/Header/Status/Regexp/Func 提取，FailFast 取消 |
-| 元数据 | `Meta.Timings`（`WithTrace`）、`Meta.Mirrors`、Hops、Attempts、BytesSent/Read；规则级 `Rule.UA` |
+| 元数据 | `Meta.Timings`（`WithTrace`）、`Meta.Mirrors`（同步快照）、`Meta.MirrorResults.Snapshot()`（异步）、Hops、Attempts、BytesSent/Read；规则级 `Rule.UA` |
 | 观测 | Hooks、原子 Stats、HostStats、请求/重试/响应元数据、ydx/log 结构化日志 |
 | 连接 | Long/Short、h2c（HTTPS 不受影响）、连接预热、连接池参数、响应排空复用 |
 | 绝对 URL | 默认直连；`WithRewriteAll(true)` 强制走默认 Host 池；规则 Hosts 始终优先 |

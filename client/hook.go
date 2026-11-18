@@ -36,6 +36,15 @@ type MirrorInfo struct {
 	Target string
 }
 
+// empty reports whether no hook is configured. | empty 报告是否未配置任何钩子。
+func (h Hooks) empty() bool {
+	return h.OnRequest == nil && h.OnRoute == nil && h.OnHost == nil && h.OnAttempt == nil &&
+		h.OnRetry == nil && h.OnResponse == nil && h.OnCacheHit == nil && h.OnCacheMiss == nil &&
+		h.OnCacheStore == nil && h.OnCoalesce == nil && h.OnMirrorStart == nil && h.OnMirrorDone == nil &&
+		h.OnMirrorDrop == nil && h.OnBlocked == nil && h.OnStreamStart == nil && h.OnStreamEvent == nil &&
+		h.OnStreamEnd == nil && h.OnError == nil && h.OnComplete == nil
+}
+
 // Hooks is the ordered callback set; nil fields are free. | Hooks 是有序回调集合；nil 字段零开销。
 type Hooks struct {
 	// OnRequest runs before routing; an error aborts the request. | OnRequest 在路由前运行；错误会中止请求。

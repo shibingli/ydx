@@ -89,9 +89,12 @@ func (c *Client) send(ctx context.Context, method, rawURL string, body any, cfg 
 	if relative {
 		ctx = context.WithValue(ctx, useDefaultHostsKey{}, true)
 	}
-	state := &responseState{}
+	state := &responseState{Context: ctx}
 	state.meta.Hops = state.meta.hopInline[:0]
-	ctx = context.WithValue(ctx, metaKey{}, &state.meta)
+	if strings.Contains(rawURL, "://") && !strings.ContainsAny(rawURL, "?#@%") {
+		state.meta.urlHint = rawURL
+	}
+	ctx = state
 	target := rawURL
 	if !strings.Contains(rawURL, "://") {
 		resolved, err := c.resolveRequestURL(rawURL)
@@ -102,6 +105,9 @@ func (c *Client) send(ctx context.Context, method, rawURL string, body any, cfg 
 			return nil, err
 		}
 		target = resolved
+	}
+	if state.meta.urlHint == "" && strings.Contains(target, "://") && !strings.ContainsAny(target, "?#@%") {
+		state.meta.urlHint = target
 	}
 	req, err := http.NewRequestWithContext(ctx, method, target, rc)
 	if err != nil {
@@ -162,9 +168,9 @@ func (c *Client) DoWithMeta(req *http.Request) (*Response, error) {
 	if req == nil || req.URL == nil {
 		return nil, ErrInvalidRequest
 	}
-	state := &responseState{}
+	state := &responseState{Context: req.Context()}
 	state.meta.Hops = state.meta.hopInline[:0]
-	req = req.WithContext(context.WithValue(req.Context(), metaKey{}, &state.meta))
+	req = req.WithContext(state)
 	resp, err := c.Do(req)
 	if err != nil {
 		return nil, err
@@ -200,8 +206,17 @@ func (c *Client) resolveRequestURL(raw string) (string, error) {
 // finish executes a request and wraps the response with meta. | finish 执行请求并用 meta 包装响应。
 // responseState combines Meta and Response in one allocation. | responseState 用一次分配组合 Meta 与 Response。
 type responseState struct {
+	context.Context
 	meta     Meta
 	response Response
+}
+
+// Value supplies the per-request Meta. | Value 提供逐请求 Meta。
+func (s *responseState) Value(key any) any {
+	if _, ok := key.(metaKey); ok {
+		return &s.meta
+	}
+	return s.Context.Value(key)
 }
 
 // finishState executes a request and fills the combined response state. | finishState 执行请求并填充组合响应状态。

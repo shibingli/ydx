@@ -532,6 +532,9 @@ func (hs *HostSet) entryOf(host *Host) *hostEntry {
 
 // recordSuccess resets circuit state. | recordSuccess 重置熔断状态。
 func (hs *HostSet) recordSuccess(entry *hostEntry) {
+	if entry.healthy.Load() && entry.consecutive.Load() == 0 {
+		return
+	}
 	entry.consecutive.Store(0)
 	entry.healthy.Store(true)
 	entry.halfOpen.Store(false)
@@ -660,6 +663,7 @@ func (c *Client) UpdateHosts(hosts ...Host) error {
 	if err != nil {
 		return err
 	}
+	c.engine.bare.Store(false)
 	old := c.engine.hosts.Swap(hs)
 	hs.startHealth(context.Background(), c.engine.healthTransport, c.opts.Logger)
 	c.engine.pruneTLS()

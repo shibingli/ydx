@@ -388,6 +388,7 @@ func (c *Client) UpdateRules(rules ...Rule) error {
 	if err != nil {
 		return err
 	}
+	c.engine.bare.Store(false)
 	c.engine.rules.Store(rs)
 	c.engine.registerRuleHosts(rs)
 	c.engine.pruneTLS()

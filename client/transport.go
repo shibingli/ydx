@@ -27,6 +27,7 @@ type engine struct {
 	budgets    map[float64]*retryBudget
 	budgetMu   sync.Mutex
 	closed     atomic.Bool
+	bare       atomic.Bool
 
 	flights *flightGroup
 	mirrors *mirrorer
@@ -142,6 +143,81 @@ func useDefaultHosts(ctx context.Context) bool {
 	return value
 }
 
+// singleHost returns the only host when the pool has exactly one. | singleHost 在池仅有一个 Host 时返回它。
+func (e *engine) singleHost() *Host {
+	hosts := e.hosts.Load()
+	if hosts == nil || hosts.Len() != 1 {
+		return nil
+	}
+	return hosts.entries[0].host
+}
+
+// tryBare executes a request without policy layers when possible. | tryBare 在可能时绕过策略层执行请求。
+func (e *engine) tryBare(req *http.Request) (*http.Response, error, bool) {
+	meta := metaFromContext(req.Context())
+	hosts := e.hosts.Load()
+	if hosts == nil {
+		e.counters.requests.Add(1)
+		e.counters.inflight.Add(1)
+		start := time.Now()
+		resp, err := e.defaultTransport().RoundTrip(req)
+		e.counters.inflight.Add(-1)
+		if err != nil {
+			e.counters.errors.Add(1)
+			return nil, e.wrapError("roundtrip", req, "", 1, err), true
+		}
+		e.counters.responses.Add(1)
+		return e.finishResponse(resp, req, meta, nil, 1, start), nil, true
+	}
+	if hosts.Len() != 1 {
+		return nil, nil, false
+	}
+	host, err := hosts.Pick(req, nil)
+	if err != nil {
+		e.counters.errors.Add(1)
+		return nil, e.wrapError("roundtrip", req, "", 0, err), true
+	}
+	if !canPassThroughHost(host, nil, req.URL, req) {
+		hosts.Release(host)
+		return nil, nil, false
+	}
+	transport, err := e.transportFor(host)
+	if err != nil {
+		hosts.MarkFailure(host, err)
+		e.counters.errors.Add(1)
+		return nil, e.wrapError("roundtrip", req, host.Name, 0, err), true
+	}
+	e.counters.requests.Add(1)
+	e.counters.inflight.Add(1)
+	start := time.Now()
+	resp, err := transport.RoundTrip(req)
+	e.counters.inflight.Add(-1)
+	if err != nil {
+		if req.Context().Err() != nil {
+			hosts.Release(host)
+		} else {
+			hosts.MarkFailure(host, err)
+		}
+		e.counters.errors.Add(1)
+		return nil, e.wrapError("roundtrip", req, host.Name, 1, err), true
+	}
+	if host.IsFailureStatus(resp.StatusCode) {
+		hosts.MarkFailure(host, errs.Detail(ErrUpstreamStatus, "status %d", resp.StatusCode))
+	} else {
+		hosts.MarkSuccess(host)
+	}
+	e.counters.responses.Add(1)
+	return e.finishResponse(resp, req, meta, host, 1, start), nil, true
+}
+
+// isBareEngine reports whether the engine can bypass all policy layers. | isBareEngine 报告引擎是否可绕过全部策略层。
+func isBareEngine(o options, rules *RuleSet, hosts *HostSet) bool {
+	return (rules == nil || rules.Len() == 0) && (hosts == nil || hosts.Len() == 1) && o.Hooks.empty() &&
+		o.Cache == nil && o.Coalesce == nil && o.Mirror == nil && o.Guard == nil &&
+		o.AccessPolicy == nil && o.Retry == nil && o.UserAgent == nil && !o.Trace &&
+		len(o.HostTLS) == 0 && o.ConnMode != ConnShort
+}
+
 // RoundTrip applies rules, host selection and retries before the base transport. | RoundTrip 在底层传输前应用规则、Host 选择与重试。
 func (e *engine) RoundTrip(req *http.Request) (resp *http.Response, err error) {
 	if req != nil {
@@ -156,6 +232,11 @@ func (e *engine) RoundTrip(req *http.Request) (resp *http.Response, err error) {
 	}
 	if req == nil || req.URL == nil {
 		return nil, ErrInvalidConfig
+	}
+	if e.bare.Load() {
+		if resp, tripErr, handled := e.tryBare(req); handled {
+			return resp, tripErr
+		}
 	}
 	if e.ua != nil {
 		req = req.Clone(req.Context())
@@ -284,8 +365,14 @@ func (e *engine) RoundTrip(req *http.Request) (resp *http.Response, err error) {
 				meta.Attempts = 0
 				meta.BytesSent = req.ContentLength
 				meta.BytesRead = int64(len(entry.Body))
+				hopURL := meta.urlHint
+				if hopURL == "" {
+					hopURL = safeURL(req.URL)
+				} else {
+					meta.urlHint = ""
+				}
 				meta.Hops = append(meta.Hops, HopMeta{
-					URL:      safeURL(req.URL),
+					URL:      hopURL,
 					Status:   entry.StatusCode,
 					CacheHit: true,
 				})
@@ -927,13 +1014,19 @@ func (e *engine) finishResponse(resp *http.Response, req *http.Request, meta *Me
 		meta.Attempts = attempt
 		meta.BytesSent = req.ContentLength
 		meta.BytesRead = resp.ContentLength
+		hopURL := meta.urlHint
+		if hopURL != "" {
+			meta.urlHint = ""
+		} else {
+			hopURL = safeURL(req.URL)
+		}
 		hostName := ""
 		if host != nil {
 			meta.Host = host
 			hostName = host.Name
 		}
 		meta.Hops = append(meta.Hops, HopMeta{
-			URL:      safeURL(req.URL),
+			URL:      hopURL,
 			Host:     hostName,
 			Status:   resp.StatusCode,
 			Duration: time.Since(start),

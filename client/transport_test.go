@@ -407,3 +407,24 @@ func TestRuleRewriteRedirectDirect(t *testing.T) {
 		t.Fatalf("paths %v", paths)
 	}
 }
+
+func TestBareHostFastPathMeta(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	defer srv.Close()
+	c, err := New(WithHosts(srv.URL), WithoutCookieJar())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	if !c.engine.bare.Load() {
+		t.Fatal("single-host bare engine expected")
+	}
+	resp, err := c.Get(context.Background(), "/x")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.Meta.Host == nil || resp.Meta.Attempts != 1 || len(resp.Meta.Hops) != 1 {
+		t.Fatalf("meta %+v", resp.Meta)
+	}
+}

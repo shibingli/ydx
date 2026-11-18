@@ -64,6 +64,8 @@ type Meta struct {
 
 	// hopInline backs the first redirect hop without an allocation. | hopInline 为首次重定向提供无分配存储。
 	hopInline [1]HopMeta
+	// urlHint avoids rebuilding the first logical hop URL. | urlHint 避免重建首次逻辑跳 URL。
+	urlHint string
 	// Attempts is the number of upstream attempts for the final hop. | Attempts 是最终一跳的上游尝试次数。
 	Attempts int
 	// BytesSent is the request body bytes written. | BytesSent 是写出的请求正文字节数。

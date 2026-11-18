@@ -3,7 +3,6 @@ package client
 import (
 	"context"
 	"net/http"
-	"net/http/cookiejar"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -60,8 +59,9 @@ func New(opts ...Option) (*Client, error) {
 		eng.hosts.Store(hs)
 		hs.startHealth(context.Background(), eng.healthTransport, cfg.Logger)
 	}
+	eng.bare.Store(isBareEngine(cfg, rules, hs))
 	if cfg.Jar == nil && !cfg.DisableCookieJar {
-		cfg.Jar, _ = cookiejar.New(nil)
+		cfg.Jar = newLazyJar()
 	}
 	hc := &http.Client{
 		Transport:     eng,
