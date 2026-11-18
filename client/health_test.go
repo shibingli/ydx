@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -100,16 +101,22 @@ func TestStartHealthNoActive(t *testing.T) {
 
 type blockingTransport struct {
 	release chan struct{}
+	started chan struct{}
+	once    sync.Once
 }
 
 func (b *blockingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if b.started != nil {
+		b.once.Do(func() { close(b.started) })
+	}
 	<-b.release
 	return nil, context.Canceled
 }
 
 func TestCloseContextBoundsHealthWait(t *testing.T) {
 	release := make(chan struct{})
-	rt := &blockingTransport{release: release}
+	started := make(chan struct{})
+	rt := &blockingTransport{release: release, started: started}
 	hs, err := NewHostSet(Host{
 		Name: "a",
 		URL:  mustURL("http://127.0.0.1:1"),
@@ -126,7 +133,11 @@ func TestCloseContextBoundsHealthWait(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	time.Sleep(20 * time.Millisecond)
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("health check did not start")
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
 	defer cancel()
 	err = c.CloseContext(ctx)
