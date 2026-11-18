@@ -58,6 +58,9 @@ func WithRequestQuery(key, value string) RequestOption {
 
 // Send builds and executes one request. | Send 构建并执行单个请求。
 func (c *Client) Send(ctx context.Context, method, rawURL string, body any, opts ...RequestOption) (*Response, error) {
+	if c == nil || c.engine == nil {
+		return nil, ErrInvalidConfig
+	}
 	cfg := requestConfig{}
 	for _, opt := range opts {
 		if opt == nil {

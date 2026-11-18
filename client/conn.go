@@ -76,7 +76,10 @@ func (e *engine) connectionMode(rule *Rule) ConnMode {
 
 // Warmup opens n connections per default host with HEAD requests. | Warmup 用 HEAD 请求为每个默认 Host 预热 n 个连接。
 func (c *Client) Warmup(ctx context.Context, n int) error {
-	if c == nil || c.closed.Load() {
+	if c == nil || c.engine == nil {
+		return ErrInvalidConfig
+	}
+	if c.closed.Load() {
 		return ErrClosed
 	}
 	if n <= 0 {

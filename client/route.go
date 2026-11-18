@@ -381,7 +381,7 @@ func WithRules(rules ...Rule) Option {
 
 // UpdateRules atomically replaces the client's compiled rule snapshot. | UpdateRules 原子替换客户端已编译的规则快照。
 func (c *Client) UpdateRules(rules ...Rule) error {
-	if c == nil || c.closed.Load() {
+	if c == nil || c.engine == nil || c.closed.Load() {
 		return ErrClosed
 	}
 	rs, err := CompileRules(rules...)

@@ -630,7 +630,7 @@ func WithHostSet(hs *HostSet) Option {
 
 // UpdateHosts atomically replaces the default host pool and closes the old pool. | UpdateHosts 原子替换默认 Host 池并关闭旧池。
 func (c *Client) UpdateHosts(hosts ...Host) error {
-	if c == nil || c.closed.Load() {
+	if c == nil || c.engine == nil || c.closed.Load() {
 		return ErrClosed
 	}
 	hs, err := NewHostSet(hosts...)

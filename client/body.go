@@ -131,6 +131,39 @@ func (s *spool) release() {
 	}
 }
 
+// open returns a body whose Close releases its spool reference. | open 返回关闭时释放 spool 引用的正文。
+func (s *spool) open() (io.ReadCloser, error) {
+	if s == nil {
+		return nil, ErrBodyNotReplayable
+	}
+	s.retain()
+	body, err := s.getBody()
+	if err != nil {
+		s.release()
+		return nil, err
+	}
+	return &spoolReader{body: body, spool: s}, nil
+}
+
+// spoolReader releases the spool when its body is closed. | spoolReader 在正文关闭时释放 spool。
+type spoolReader struct {
+	body  io.ReadCloser
+	spool *spool
+	once  sync.Once
+}
+
+// Read reads the replay body. | Read 读取重放正文。
+func (r *spoolReader) Read(p []byte) (int, error) { return r.body.Read(p) }
+
+// Close closes the body and releases the spool reference. | Close 关闭正文并释放 spool 引用。
+func (r *spoolReader) Close() error {
+	r.once.Do(func() {
+		_ = r.body.Close()
+		r.spool.release()
+	})
+	return nil
+}
+
 // spoolBody snapshots a non-replayable request body into memory or a temp file. | spoolBody 把不可重放正文暂存到内存或临时文件。
 func (e *engine) spoolBody(req *http.Request) (*spool, error) {
 	if req == nil || req.Body == nil {

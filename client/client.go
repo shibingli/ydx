@@ -85,7 +85,10 @@ func New(opts ...Option) (*Client, error) {
 
 // Do sends req and returns the response, following standard http.Client semantics. | Do 发送 req 并返回响应，遵循标准 http.Client 语义。
 func (c *Client) Do(req *http.Request) (*http.Response, error) {
-	if c == nil || c.closed.Load() {
+	if c == nil || c.engine == nil || c.hc == nil {
+		return nil, ErrInvalidConfig
+	}
+	if c.closed.Load() {
 		return nil, ErrClosed
 	}
 	if req == nil || req.URL == nil {
@@ -116,7 +119,7 @@ func (c *Client) Do(req *http.Request) (*http.Response, error) {
 
 // HTTPClient exposes the embedded standard client for interoperability. | HTTPClient 暴露内嵌的标准客户端以便互操作。
 func (c *Client) HTTPClient() *http.Client {
-	if c == nil {
+	if c == nil || c.hc == nil {
 		return nil
 	}
 	return c.hc
@@ -124,7 +127,7 @@ func (c *Client) HTTPClient() *http.Client {
 
 // Transport returns the policy RoundTripper, suitable for a standard http.Client. | Transport 返回策略 RoundTripper，可交给标准 http.Client。
 func (c *Client) Transport() http.RoundTripper {
-	if c == nil {
+	if c == nil || c.engine == nil {
 		return nil
 	}
 	return c.engine
@@ -139,7 +142,7 @@ func (c *Client) Close() error {
 
 // CloseContext releases resources and waits for async requests within ctx. | CloseContext 释放资源并在 ctx 内等待异步请求。
 func (c *Client) CloseContext(ctx context.Context) error {
-	if c == nil || !c.closed.CompareAndSwap(false, true) {
+	if c == nil || c.engine == nil || !c.closed.CompareAndSwap(false, true) {
 		return nil
 	}
 	c.rootCancel()

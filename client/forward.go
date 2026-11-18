@@ -133,7 +133,10 @@ func (c *Client) Forward(ctx context.Context, r *http.Request, opts ...ForwardOp
 
 // forwardRequest clones and sanitizes the inbound request before the engine. | forwardRequest 在进入引擎前克隆并净化入站请求。
 func (c *Client) forwardRequest(ctx context.Context, r *http.Request, cfg ForwardOptions) (*http.Response, error) {
-	if c == nil || c.closed.Load() {
+	if c == nil || c.engine == nil {
+		return nil, ErrInvalidConfig
+	}
+	if c.closed.Load() {
 		return nil, ErrClosed
 	}
 	if r == nil || r.URL == nil {

@@ -81,7 +81,10 @@ type Stream struct {
 
 // OpenStream opens an SSE request through the client engine. | OpenStream 通过客户端引擎打开 SSE 请求。
 func (c *Client) OpenStream(ctx context.Context, req *http.Request, opts ...StreamOption) (*Stream, error) {
-	if c == nil || c.closed.Load() {
+	if c == nil || c.engine == nil {
+		return nil, ErrInvalidConfig
+	}
+	if c.closed.Load() {
 		return nil, ErrClosed
 	}
 	if req == nil || req.URL == nil {

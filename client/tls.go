@@ -89,7 +89,7 @@ func WithHostTLS(host string, cfg TLSConfig) Option {
 
 // ReloadTLS re-reads certificate and root files and swaps TLS transports. | ReloadTLS 重新读取证书与根文件并替换 TLS 传输。
 func (c *Client) ReloadTLS() error {
-	if c == nil || c.closed.Load() {
+	if c == nil || c.engine == nil || c.closed.Load() {
 		return ErrClosed
 	}
 	return c.engine.reloadTLS()

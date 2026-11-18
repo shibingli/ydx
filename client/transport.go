@@ -744,7 +744,7 @@ func (e *engine) cloneAttempt(req *http.Request, attempt int, target *url.URL, o
 	out.GetBody = req.GetBody
 	switch {
 	case sp != nil:
-		body, err := sp.getBody()
+		body, err := sp.open()
 		if err != nil {
 			return nil, err
 		}

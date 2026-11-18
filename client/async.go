@@ -58,6 +58,10 @@ func (c *Client) Submit(ctx context.Context, req *http.Request, cb func(*Respons
 		future.complete(nil, ErrClosed)
 		return future
 	}
+	if c.engine == nil {
+		future.complete(nil, ErrInvalidConfig)
+		return future
+	}
 	if req == nil || req.URL == nil {
 		future.complete(nil, ErrInvalidRequest)
 		return future
