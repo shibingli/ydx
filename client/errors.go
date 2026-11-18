@@ -54,6 +54,14 @@ var (
 	ErrRetryExhausted = errs.New("client: retry attempts exhausted | client：重试次数耗尽")
 	// ErrUpstreamStatus indicates a status configured as a host failure. | ErrUpstreamStatus 表示被配置为 Host 失败的状态码。
 	ErrUpstreamStatus = errs.New("client: upstream status failure | client：上游状态失败")
+	// ErrSSEProtocol indicates a malformed or non-SSE response. | ErrSSEProtocol 表示非法或非 SSE 响应。
+	ErrSSEProtocol = errs.New("client: invalid event stream | client：非法的事件流")
+	// ErrSSETooLarge indicates an event or line over the configured cap. | ErrSSETooLarge 表示事件或行超过配置上限。
+	ErrSSETooLarge = errs.New("client: event stream payload too large | client：事件流载荷过大")
+	// ErrSSEIdle indicates no event arrived within the idle timeout. | ErrSSEIdle 表示空闲超时内没有事件。
+	ErrSSEIdle = errs.New("client: event stream idle timeout | client：事件流空闲超时")
+	// ErrStreamMode indicates mixed Next and Raw calls on a stream. | ErrStreamMode 表示流上混用 Next 与 Raw。
+	ErrStreamMode = errs.New("client: stream mode conflict | client：流模式冲突")
 )
 
 // Error wraps a client operation failure and preserves the cause chain. | Error 包装客户端操作失败并保留原因链。
