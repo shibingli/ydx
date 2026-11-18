@@ -367,3 +367,40 @@ func TestCoalescePostAndAuthKey(t *testing.T) {
 		t.Fatalf("different auth coalesced: %d", hits.Load())
 	}
 }
+
+func TestCoalesceHEADPreservesContentLength(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", "123")
+		time.Sleep(30 * time.Millisecond)
+	}))
+	defer srv.Close()
+	c, err := New(WithHosts(srv.URL), WithCoalesce(CoalescePolicy{}), WithoutCookieJar())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	type outcome struct {
+		resp *Response
+		err  error
+	}
+	results := make(chan outcome, 2)
+	start := make(chan struct{})
+	for i := 0; i < 2; i++ {
+		go func() {
+			<-start
+			resp, err := c.Head(context.Background(), srv.URL+"/x")
+			results <- outcome{resp, err}
+		}()
+	}
+	close(start)
+	for i := 0; i < 2; i++ {
+		out := <-results
+		if out.err != nil {
+			t.Fatal(out.err)
+		}
+		if out.resp.ContentLength != 123 || out.resp.Header.Get("Content-Length") != "123" {
+			t.Fatalf("content length %d header %q", out.resp.ContentLength, out.resp.Header.Get("Content-Length"))
+		}
+		_ = out.resp.Body.Close()
+	}
+}

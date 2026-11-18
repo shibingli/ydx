@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -161,5 +162,48 @@ func TestGroupWaitRejectsLateTask(t *testing.T) {
 	late := g.GoRequest("late", http.MethodGet, "http://example.com/", nil)
 	if _, err := late.Wait(context.Background()); !errors.Is(err, ErrPipelineStep) {
 		t.Fatalf("late task error = %v", err)
+	}
+}
+
+func TestGroupRejectsEventStream(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "data: one\n\n")
+		w.(http.Flusher).Flush()
+	}))
+	defer srv.Close()
+	c, err := New(WithHosts(srv.URL))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	g := c.NewGroup(context.Background())
+	task := g.GoRequest("sse", http.MethodGet, srv.URL+"/events", nil)
+	if _, err := task.Wait(context.Background()); !errors.Is(err, ErrPipelineStream) {
+		t.Fatalf("error %v", err)
+	}
+	if err := g.Wait(); !errors.Is(err, ErrPipelineStream) {
+		t.Fatalf("wait error %v", err)
+	}
+}
+
+func TestGroupHEADPreservesContentLength(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", "321")
+	}))
+	defer srv.Close()
+	c, err := New(WithHosts(srv.URL))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	g := c.NewGroup(context.Background())
+	task := g.GoRequest("head", http.MethodHead, srv.URL+"/x", nil)
+	result, err := task.Wait(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Response.ContentLength != 321 || result.Response.Header.Get("Content-Length") != "321" {
+		t.Fatalf("content length %d header %q", result.Response.ContentLength, result.Response.Header.Get("Content-Length"))
 	}
 }

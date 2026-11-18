@@ -524,3 +524,104 @@ func TestExplicitHostHeaderPreservedWithHostPool(t *testing.T) {
 		t.Fatalf("host %q", got)
 	}
 }
+
+type nilResponseRT struct{ calls atomic.Int32 }
+
+func (r *nilResponseRT) RoundTrip(*http.Request) (*http.Response, error) {
+	r.calls.Add(1)
+	return nil, nil
+}
+
+func TestNilTransportResponseIsError(t *testing.T) {
+	for _, host := range []bool{false, true} {
+		rt := &nilResponseRT{}
+		opts := []Option{WithTransport(rt), WithoutCookieJar()}
+		if host {
+			opts = append(opts, WithHosts("http://example.com"))
+		}
+		c, err := New(opts...)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = c.Get(context.Background(), "http://example.com/x")
+		c.Close()
+		if !errors.Is(err, ErrInvalidResponse) {
+			t.Fatalf("host=%t error %v", host, err)
+		}
+		if rt.calls.Load() != 1 {
+			t.Fatalf("host=%t calls %d", host, rt.calls.Load())
+		}
+	}
+}
+
+func TestNilTransportResponseNotRetried(t *testing.T) {
+	rt := &nilResponseRT{}
+	c, err := New(WithTransport(rt), WithRetry(RetryPolicy{MaxAttempts: 3}), WithoutCookieJar())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	if _, err := c.Get(context.Background(), "http://example.com/x"); !errors.Is(err, ErrInvalidResponse) {
+		t.Fatalf("error %v", err)
+	}
+	if rt.calls.Load() != 1 {
+		t.Fatalf("retried nil response %d times", rt.calls.Load())
+	}
+}
+
+type errorResponseRT struct{ closed *atomic.Bool }
+
+func (r errorResponseRT) RoundTrip(req *http.Request) (*http.Response, error) {
+	return &http.Response{
+		StatusCode: http.StatusBadGateway,
+		Header:     make(http.Header),
+		Body:       closeTrackingBody{closed: r.closed},
+		Request:    req,
+	}, io.ErrUnexpectedEOF
+}
+
+func TestTransportResponseAndErrorClosesBody(t *testing.T) {
+	var closed atomic.Bool
+	c, err := New(WithTransport(errorResponseRT{closed: &closed}), WithRetry(RetryPolicy{MaxAttempts: 1}), WithoutCookieJar())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	if _, err := c.Get(context.Background(), "http://example.com/x"); err == nil {
+		t.Fatal("expected error")
+	}
+	if !closed.Load() {
+		t.Fatal("response body was not closed")
+	}
+}
+
+type urlErrorRT struct{}
+
+func (urlErrorRT) RoundTrip(req *http.Request) (*http.Response, error) {
+	return nil, &url.Error{Op: "Get", URL: req.URL.String(), Err: errors.New("boom")}
+}
+
+func TestTransportErrorRedactsURL(t *testing.T) {
+	c, err := New(WithTransport(urlErrorRT{}), WithoutCookieJar())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	_, err = c.Get(context.Background(), "http://user:pass@127.0.0.1:1/path?token=secret")
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	text := err.Error()
+	for _, secret := range []string{"user:pass", "token=secret", "?token"} {
+		if strings.Contains(text, secret) {
+			t.Fatalf("error leaked %q: %s", secret, text)
+		}
+	}
+	if !strings.Contains(text, "http://127.0.0.1:1/path") {
+		t.Fatalf("safe URL missing: %s", text)
+	}
+	var urlErr *url.Error
+	if !errors.As(err, &urlErr) {
+		t.Fatalf("url.Error type lost: %T", err)
+	}
+}

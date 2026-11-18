@@ -151,6 +151,15 @@ func CompileRules(rules ...Rule) (*RuleSet, error) {
 		}
 		rule.Methods = methods
 		rule.Hosts = append([]string(nil), rule.Hosts...)
+		if rule.Timeout < 0 {
+			return nil, errs.Detail(ErrInvalidConfig, "negative rule timeout | 规则超时为负")
+		}
+		if rule.Retry != nil && rule.Retry.MaxAttempts < 0 {
+			return nil, errs.Detail(ErrInvalidConfig, "negative rule max attempts | 规则最大尝试次数为负")
+		}
+		if rule.HostSet != nil && rule.HostSet.Len() == 0 {
+			return nil, errs.Detail(ErrInvalidConfig, "empty rule host set | 空规则 Host 池")
+		}
 		if rule.HostSet == nil && len(rule.Hosts) > 0 {
 			hosts := make([]Host, 0, len(rule.Hosts))
 			for _, raw := range rule.Hosts {

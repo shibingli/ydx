@@ -70,7 +70,7 @@ func New(opts ...Option) (*Client, error) {
 	hc := &http.Client{
 		Transport:     eng,
 		Jar:           cfg.Jar,
-		CheckRedirect: cfg.CheckRedirect,
+		CheckRedirect: safeCheckRedirect(cfg.CheckRedirect),
 	}
 	rootCtx, rootCancel := context.WithCancel(context.Background())
 	maxAsync := cfg.MaxAsync
@@ -110,12 +110,17 @@ func (c *Client) Do(req *http.Request) (*http.Response, error) {
 		req.Header = make(http.Header)
 	}
 	if c.opts.Timeout <= 0 {
-		return c.hc.Do(req)
+		resp, err := c.hc.Do(req)
+		if err != nil {
+			err = redactRequestError(err, req.URL)
+		}
+		return resp, err
 	}
 	ctx, cancel := context.WithTimeout(req.Context(), c.opts.Timeout)
 	resp, err := c.hc.Do(req.WithContext(ctx))
 	if err != nil {
 		cancel()
+		err = redactRequestError(err, req.URL)
 		if resp != nil {
 			return resp, err
 		}

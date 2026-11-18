@@ -1,10 +1,8 @@
 package client
 
 import (
-	"bytes"
 	"context"
 	"errors"
-	"io"
 	"sync"
 	"time"
 
@@ -151,6 +149,15 @@ func (g *Group) GoRequest(name, method, rawURL string, body any, opts ...Request
 			task.complete(result, err)
 			return
 		}
+		if isEventStream(resp.Header) {
+			_ = resp.Body.Close()
+			result.Status = resp.StatusCode
+			result.Headers = resp.Header.Clone()
+			result.Err = ErrPipelineStream
+			g.finish(name, result)
+			task.complete(result, ErrPipelineStream)
+			return
+		}
 		data, err := resp.BytesLimit(g.maxBody)
 		if err != nil {
 			if errors.Is(err, ErrResponseTooLarge) {
@@ -163,13 +170,11 @@ func (g *Group) GoRequest(name, method, rawURL string, body any, opts ...Request
 			task.complete(result, err)
 			return
 		}
-		copied := *resp.Response
-		copied.Body = io.NopCloser(bytes.NewReader(data))
-		copied.ContentLength = int64(len(data))
+		copied := bufferedResponse(resp.Response, method, data)
 		result.Status = resp.StatusCode
-		result.Headers = resp.Header.Clone()
+		result.Headers = copied.Header.Clone()
 		result.Body = data
-		result.Response = &Response{Response: &copied, Meta: resp.Meta}
+		result.Response = &Response{Response: copied, Meta: resp.Meta}
 		result.Attempts = resp.Meta.Attempts
 		g.finish(name, result)
 		task.complete(result, nil)

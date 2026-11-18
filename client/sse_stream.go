@@ -71,6 +71,7 @@ type Stream struct {
 	opts   StreamOptions
 
 	retryHint  time.Duration
+	retrySet   bool
 	reconnects int
 
 	mu sync.Mutex
@@ -160,9 +161,21 @@ func (s *Stream) open(ctx context.Context) error {
 	meta := &Meta{}
 	req = req.WithContext(context.WithValue(req.Context(), streamRequestKey{}, true))
 	req = req.WithContext(context.WithValue(req.Context(), metaKey{}, meta))
+	var jar http.CookieJar
+	if s.client.hc != nil {
+		jar = s.client.hc.Jar
+	}
+	if jar != nil {
+		for _, cookie := range jar.Cookies(req.URL) {
+			req.AddCookie(cookie)
+		}
+	}
 	resp, err := s.client.engine.RoundTrip(req)
 	if err != nil {
 		return err
+	}
+	if jar != nil {
+		jar.SetCookies(req.URL, resp.Cookies())
 	}
 	if s.closed.Load() {
 		if resp.Body != nil {
@@ -230,8 +243,9 @@ func (s *Stream) Next(ctx context.Context) (Event, error) {
 			if event.IDSet {
 				s.lastID = event.ID
 			}
-			if event.Retry > 0 {
+			if event.RetrySet {
 				s.retryHint = event.Retry
+				s.retrySet = true
 			}
 			s.client.engine.counters.sseEvents.Add(1)
 			if s.client.engine.hooks.OnStreamEvent != nil {
@@ -261,7 +275,7 @@ func (s *Stream) Next(ctx context.Context) (Event, error) {
 		s.reconnects++
 		s.closeBody()
 		delay := s.opts.Backoff
-		if s.retryHint > 0 {
+		if s.retrySet {
 			delay = s.retryHint
 		}
 		if err := sleepContext(ctx, delay); err != nil {

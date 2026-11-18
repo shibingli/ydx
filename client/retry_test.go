@@ -299,3 +299,40 @@ func TestBodySpoolReplay(t *testing.T) {
 		t.Fatalf("bodies %v", bodies)
 	}
 }
+
+func TestRetryAfterDelay(t *testing.T) {
+	max := time.Second
+	if got := retryAfterDelay(http.Header{"Retry-After": {"2"}}, max); got != max {
+		t.Fatalf("seconds cap = %v", got)
+	}
+	if got := retryAfterDelay(http.Header{"Retry-After": {"999999999999999999"}}, max); got != max {
+		t.Fatalf("overflow cap = %v", got)
+	}
+	if got := retryAfterDelay(http.Header{"Retry-After": {"garbage"}}, max); got != 0 {
+		t.Fatalf("invalid = %v", got)
+	}
+	past := time.Now().Add(-time.Hour).UTC().Format(http.TimeFormat)
+	if got := retryAfterDelay(http.Header{"Retry-After": {past}}, max); got != 0 {
+		t.Fatalf("past date = %v", got)
+	}
+	future := time.Now().Add(10 * time.Second).UTC().Format(http.TimeFormat)
+	if got := retryAfterDelay(http.Header{"Retry-After": {future}}, max); got != max {
+		t.Fatalf("future date cap = %v", got)
+	}
+}
+
+func TestNegativeRuleRetryRejected(t *testing.T) {
+	if _, err := CompileRules(Rule{Pattern: "/**", Retry: &RetryPolicy{MaxAttempts: -1}}); err == nil {
+		t.Fatal("expected negative rule retry error")
+	}
+	if _, err := CompileRules(Rule{Pattern: "/**", Timeout: -time.Second}); err == nil {
+		t.Fatal("expected negative rule timeout error")
+	}
+}
+
+func TestCustomBackoffHonorsMaxBackoff(t *testing.T) {
+	policy := RetryPolicy{Backoff: func(int) time.Duration { return time.Minute }, MaxBackoff: time.Second}
+	if got := backoffDelay(policy, 1); got != time.Second {
+		t.Fatalf("backoff = %v", got)
+	}
+}

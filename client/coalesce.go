@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -118,10 +119,17 @@ func cloneFlightResponse(template *http.Response, body []byte) *http.Response {
 		resp.ProtoMajor = template.ProtoMajor
 		resp.ProtoMinor = template.ProtoMinor
 		resp.Uncompressed = template.Uncompressed
+		if template.Trailer != nil {
+			resp.Trailer = template.Trailer.Clone()
+		}
 	}
 	if body != nil {
 		resp.Body = io.NopCloser(bytes.NewReader(body))
-		resp.ContentLength = int64(len(body))
+		if template != nil {
+			resp.ContentLength = template.ContentLength
+		} else {
+			resp.ContentLength = int64(len(body))
+		}
 	}
 	return resp
 }
@@ -187,6 +195,10 @@ func coalesceKey(req *http.Request, rule *Rule) string {
 	builder.WriteString(req.URL.Scheme)
 	builder.WriteString("://")
 	builder.WriteString(req.URL.Host)
+	if req.URL.User != nil {
+		builder.WriteByte(0)
+		builder.WriteString(req.URL.User.String())
+	}
 	builder.WriteString(req.URL.EscapedPath())
 	if req.URL.RawQuery != "" {
 		builder.WriteByte('?')
@@ -238,7 +250,11 @@ func (e *engine) coalesceRoundTrip(req *http.Request, rule *Rule, meta *Meta, ho
 		}
 		_ = resp.Body.Close()
 		resp.Body = io.NopCloser(bytes.NewReader(data))
-		resp.ContentLength = int64(len(data))
+		if req.Method != http.MethodHead && resp.StatusCode != http.StatusNotModified {
+			resp.ContentLength = int64(len(data))
+		} else if n, parseErr := strconv.ParseInt(resp.Header.Get("Content-Length"), 10, 64); parseErr == nil {
+			resp.ContentLength = n
+		}
 		resp.TransferEncoding = nil
 		resp.Header.Del("Transfer-Encoding")
 		return resp, data, true, nil

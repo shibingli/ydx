@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -343,5 +344,170 @@ func TestForwardRuleTimeoutStopsAtHeaders(t *testing.T) {
 	}
 	if string(data) != "body" {
 		t.Fatalf("body %q", data)
+	}
+}
+
+func TestForwardPreservesAllForwardedForValues(t *testing.T) {
+	var got []string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = append([]string(nil), r.Header.Values("X-Forwarded-For")...)
+	}))
+	defer upstream.Close()
+	c, err := New(WithHosts(upstream.URL))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	in := httptest.NewRequest(http.MethodGet, upstream.URL+"/x", nil)
+	in.Header.Add("X-Forwarded-For", "198.51.100.1")
+	in.Header.Add("X-Forwarded-For", "203.0.113.2")
+	resp, err := c.Forward(context.Background(), in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if len(got) != 1 || !strings.Contains(got[0], "198.51.100.1") ||
+		!strings.Contains(got[0], "203.0.113.2") || !strings.Contains(got[0], "192.0.2.1") {
+		t.Fatalf("X-Forwarded-For %v", got)
+	}
+}
+
+func TestForwardNetworkPathURL(t *testing.T) {
+	var hit atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hit.Add(1)
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer upstream.Close()
+	target, _ := url.Parse(upstream.URL)
+	c, err := New(WithoutCookieJar())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	in := httptest.NewRequest(http.MethodGet, upstream.URL+"/x", nil)
+	in.URL = &url.URL{Path: "/x", Host: target.Host}
+	in.Host = ""
+	resp, err := c.Forward(context.Background(), in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, _ := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if string(data) != "ok" || hit.Load() != 1 {
+		t.Fatalf("body %q hits %d", data, hit.Load())
+	}
+}
+
+func TestForwardDefaultDoesNotRetryAcrossHosts(t *testing.T) {
+	var firstHits, secondHits atomic.Int32
+	first := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		firstHits.Add(1)
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer first.Close()
+	second := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		secondHits.Add(1)
+		_, _ = w.Write([]byte("second"))
+	}))
+	defer second.Close()
+	c, err := New(WithHosts(first.URL, second.URL))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	in := httptest.NewRequest(http.MethodGet, first.URL+"/x", nil)
+	resp, err := c.Forward(context.Background(), in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("status %d", resp.StatusCode)
+	}
+	if firstHits.Load()+secondHits.Load() != 1 {
+		t.Fatalf("default Forward retried: %d/%d", firstHits.Load(), secondHits.Load())
+	}
+}
+
+type switchingRT struct{}
+
+func (switchingRT) RoundTrip(req *http.Request) (*http.Response, error) {
+	return &http.Response{
+		Status:     "101 Switching Protocols",
+		StatusCode: http.StatusSwitchingProtocols,
+		Proto:      "HTTP/1.1",
+		ProtoMajor: 1,
+		ProtoMinor: 1,
+		Header:     http.Header{"Upgrade": {"websocket"}},
+		Body:       http.NoBody,
+		Request:    req,
+	}, nil
+}
+
+func TestForwardRejectsUpstream101(t *testing.T) {
+	c, err := New(WithTransport(switchingRT{}), WithHosts("http://svc"), WithoutCookieJar())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	in := httptest.NewRequest(http.MethodGet, "http://svc/x", nil)
+	if _, err := c.Forward(context.Background(), in); !errors.Is(err, ErrUpgradeUnsupported) {
+		t.Fatalf("error %v", err)
+	}
+	rec := httptest.NewRecorder()
+	c.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "http://svc/x", nil))
+	if rec.Code != http.StatusNotImplemented {
+		t.Fatalf("handler status %d", rec.Code)
+	}
+}
+
+func TestForwardRelativeRejectsEmptyHostPool(t *testing.T) {
+	empty, err := NewHostSet()
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, err := New(WithHostSet(empty), WithoutCookieJar())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	in := httptest.NewRequest(http.MethodGet, "/x", nil)
+	in.Host = "svc"
+	if _, err := c.Forward(context.Background(), in); !errors.Is(err, ErrNoHosts) {
+		t.Fatalf("error %v", err)
+	}
+}
+
+type notModifiedRT struct{}
+
+func (notModifiedRT) RoundTrip(req *http.Request) (*http.Response, error) {
+	return &http.Response{
+		Status:        "304 Not Modified",
+		StatusCode:    http.StatusNotModified,
+		Proto:         "HTTP/1.1",
+		ProtoMajor:    1,
+		ProtoMinor:    1,
+		Header:        http.Header{"Content-Length": {"999"}},
+		ContentLength: 999,
+		Body:          http.NoBody,
+		Request:       req,
+	}, nil
+}
+
+func TestForwardMaxBodyIgnoresNotModified(t *testing.T) {
+	c, err := New(WithTransport(notModifiedRT{}), WithHosts("http://svc"), WithoutCookieJar())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	in := httptest.NewRequest(http.MethodGet, "http://svc/x", nil)
+	resp, err := c.Forward(context.Background(), in, WithForwardMaxBodyBytes(10))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusNotModified {
+		t.Fatalf("status %d", resp.StatusCode)
 	}
 }

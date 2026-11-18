@@ -291,3 +291,24 @@ func TestPipelineRecoversUserPanics(t *testing.T) {
 		}
 	}
 }
+
+func TestPipelineHEADPreservesContentLength(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", "456")
+	}))
+	defer srv.Close()
+	c, err := New(WithHosts(srv.URL))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	p := NewPipeline(PipelineOptions{}, Step("head").HEAD(srv.URL+"/x"))
+	result, err := p.Run(context.Background(), c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	step := result.Steps["head"]
+	if step == nil || step.Response.ContentLength != 456 || step.Response.Header.Get("Content-Length") != "456" {
+		t.Fatalf("step %+v", step)
+	}
+}

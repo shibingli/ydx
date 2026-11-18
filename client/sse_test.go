@@ -236,3 +236,53 @@ func TestStreamEmptyIDResetsLastEventID(t *testing.T) {
 		t.Fatalf("hits %d", hits.Load())
 	}
 }
+
+func TestEventReaderRetryZeroIsSet(t *testing.T) {
+	reader := NewEventReader(strings.NewReader("retry: 0\ndata: x\n\n"))
+	event, err := reader.Next()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !event.RetrySet || event.Retry != 0 {
+		t.Fatalf("retry %v set=%t", event.Retry, event.RetrySet)
+	}
+}
+
+func TestOpenStreamUsesCookieJar(t *testing.T) {
+	var sawCookie atomic.Bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		switch r.URL.Path {
+		case "/a":
+			http.SetCookie(w, &http.Cookie{Name: "sse", Value: "1", Path: "/"})
+			_, _ = io.WriteString(w, "data: a\n\n")
+		case "/b":
+			sawCookie.Store(strings.Contains(r.Header.Get("Cookie"), "sse=1"))
+			_, _ = io.WriteString(w, "data: b\n\n")
+		}
+	}))
+	defer srv.Close()
+	c, err := New(WithHosts(srv.URL))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	open := func(path string) *Stream {
+		req, _ := http.NewRequest(http.MethodGet, srv.URL+path, nil)
+		stream, err := c.OpenStream(context.Background(), req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := stream.Next(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		return stream
+	}
+	first := open("/a")
+	_ = first.Close()
+	second := open("/b")
+	_ = second.Close()
+	if !sawCookie.Load() {
+		t.Fatal("SSE stream cookie was not sent")
+	}
+}

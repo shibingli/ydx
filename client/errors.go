@@ -1,7 +1,10 @@
 package client
 
 import (
+	"errors"
+	"net/url"
 	"strconv"
+	"strings"
 
 	"github.com/shibingli/ydx/errs"
 )
@@ -14,6 +17,8 @@ var (
 	ErrClosed = errs.New("client: client closed | client：客户端已关闭")
 	// ErrRelativeURL indicates a relative URL where an absolute URL is required. | ErrRelativeURL 表示需要绝对 URL 却收到相对 URL。
 	ErrRelativeURL = errs.New("client: relative URL requires a base URL | client：相对 URL 需要 base URL")
+	// ErrInvalidResponse indicates a transport returned no response and no error. | ErrInvalidResponse 表示传输层既未返回响应也无错误。
+	ErrInvalidResponse = errs.New("client: transport returned nil response | client：传输层返回空响应")
 	// ErrInvalidRequest indicates a request that cannot be constructed. | ErrInvalidRequest 表示无法构造的请求。
 	ErrInvalidRequest = errs.New("client: invalid request | client：非法请求")
 	// ErrEncodeBody indicates a request body that could not be encoded. | ErrEncodeBody 表示无法编码的请求正文。
@@ -93,6 +98,75 @@ var (
 	// ErrPipelineStep indicates an invalid pipeline step or graph. | ErrPipelineStep 表示非法的 Pipeline 步骤或结构。
 	ErrPipelineStep = errs.New("client: invalid pipeline step | client：非法的 Pipeline 步骤")
 )
+
+// redactedError preserves the cause while replacing an error message that
+// contains a request URL. | redactedError 保留原因链，同时替换含请求 URL 的错误文案。
+type redactedError struct {
+	err  error
+	text string
+}
+
+// Error returns the sanitized message. | Error 返回脱敏后文案。
+func (e *redactedError) Error() string { return e.text }
+
+// Unwrap returns the original cause for errors.Is/As. | Unwrap 返回原始原因供 errors.Is/As 使用。
+func (e *redactedError) Unwrap() error { return e.err }
+
+// redactRequestError removes request URL/query/userinfo from transport error text. | redactRequestError
+// 从传输错误文案中移除请求 URL、查询与 userinfo。
+func redactRequestError(err error, u *url.URL) error {
+	if err == nil || u == nil {
+		return err
+	}
+	replacements := []struct{ from, to string }{
+		{u.String(), safeURL(u)},
+		{u.Redacted(), safeURL(u)},
+		{u.RequestURI(), u.EscapedPath()},
+	}
+	var urlErr *url.Error
+	if errors.As(err, &urlErr) {
+		if parsed, parseErr := url.Parse(urlErr.URL); parseErr == nil {
+			safe := safeURL(parsed)
+			replacements = append(replacements,
+				struct{ from, to string }{urlErr.URL, safe},
+				struct{ from, to string }{parsed.Redacted(), safe},
+				struct{ from, to string }{parsed.RequestURI(), parsed.EscapedPath()},
+			)
+		}
+	}
+	redact := func(text string) string {
+		for _, replacement := range replacements {
+			if replacement.from == "" || replacement.from == replacement.to {
+				continue
+			}
+			text = strings.ReplaceAll(text, replacement.from, replacement.to)
+		}
+		return text
+	}
+	if urlErr != nil {
+		cloned := *urlErr
+		if parsed, parseErr := url.Parse(urlErr.URL); parseErr == nil {
+			cloned.URL = safeURL(parsed)
+		} else {
+			cloned.URL = safeURL(u)
+		}
+		if urlErr.Err != nil {
+			innerText := urlErr.Err.Error()
+			if redacted := redact(innerText); redacted != innerText {
+				cloned.Err = &redactedError{err: urlErr.Err, text: redacted}
+			}
+		}
+		if cloned.Error() != err.Error() {
+			return &cloned
+		}
+		return err
+	}
+	text := err.Error()
+	if redacted := redact(text); redacted != text {
+		return &redactedError{err: err, text: redacted}
+	}
+	return err
+}
 
 // Error wraps a client operation failure and preserves the cause chain. | Error 包装客户端操作失败并保留原因链。
 type Error struct {

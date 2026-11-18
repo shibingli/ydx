@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -140,7 +141,10 @@ func retryableError(err error, parent context.Context) bool {
 		return false
 	}
 	if errors.Is(err, ErrTLSPin) || errors.Is(err, ErrTLS) || errors.Is(err, ErrTLSConfig) ||
-		errors.Is(err, ErrRequestTooLarge) || errors.Is(err, ErrBlocked) || errors.Is(err, ErrGuard) {
+		errors.Is(err, ErrRequestTooLarge) || errors.Is(err, ErrBlocked) || errors.Is(err, ErrGuard) ||
+		errors.Is(err, ErrInvalidResponse) || errors.Is(err, ErrInvalidRequest) ||
+		errors.Is(err, ErrInvalidConfig) || errors.Is(err, ErrEncodeBody) ||
+		errors.Is(err, ErrBodyNotReplayable) {
 		return false
 	}
 	var netErr net.Error
@@ -165,6 +169,9 @@ func backoffDelay(policy RetryPolicy, attempt int) (delay time.Duration) {
 		if delay < 0 {
 			return 0
 		}
+		if policy.MaxBackoff > 0 && delay > policy.MaxBackoff {
+			delay = policy.MaxBackoff
+		}
 		return delay
 	}
 	delay = 50 * time.Millisecond
@@ -186,7 +193,7 @@ func backoffDelay(policy RetryPolicy, attempt int) (delay time.Duration) {
 
 // retryAfterDelay parses Retry-After seconds or HTTP-date and caps it at max. | retryAfterDelay 解析 Retry-After 的秒数或 HTTP 日期，并以 max 为上限。
 func retryAfterDelay(header http.Header, max time.Duration) time.Duration {
-	value := header.Get("Retry-After")
+	value := strings.TrimSpace(header.Get("Retry-After"))
 	if value == "" {
 		return 0
 	}
@@ -252,6 +259,7 @@ func finishAttempt(resp *http.Response, cancel context.CancelFunc, err error) {
 		return
 	}
 	if err != nil || resp == nil || resp.Body == nil {
+		closeResponseBody(resp)
 		cancel()
 		return
 	}

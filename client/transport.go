@@ -157,8 +157,13 @@ func (e *engine) tryBare(req *http.Request) (*http.Response, error, bool) {
 		resp, err := e.defaultTransport().RoundTrip(req)
 		e.counters.inflight.Add(-1)
 		if err != nil {
+			closeResponseBody(resp)
 			e.counters.errors.Add(1)
 			return nil, e.wrapError("roundtrip", req, "", 1, err), true
+		}
+		if resp == nil {
+			e.counters.errors.Add(1)
+			return nil, e.wrapError("roundtrip", req, "", 1, ErrInvalidResponse), true
 		}
 		if resp.ContentLength > 0 {
 			e.counters.bytesReceived.Add(uint64(resp.ContentLength))
@@ -192,6 +197,7 @@ func (e *engine) tryBare(req *http.Request) (*http.Response, error, bool) {
 	resp, err := transport.RoundTrip(req)
 	e.counters.inflight.Add(-1)
 	if err != nil {
+		closeResponseBody(resp)
 		if req.Context().Err() != nil {
 			hosts.Release(host)
 		} else {
@@ -199,6 +205,11 @@ func (e *engine) tryBare(req *http.Request) (*http.Response, error, bool) {
 		}
 		e.counters.errors.Add(1)
 		return nil, e.wrapError("roundtrip", req, host.Name, 1, err), true
+	}
+	if resp == nil {
+		hosts.MarkFailure(host, ErrInvalidResponse)
+		e.counters.errors.Add(1)
+		return nil, e.wrapError("roundtrip", req, host.Name, 1, ErrInvalidResponse), true
 	}
 	if resp.ContentLength > 0 {
 		e.counters.bytesReceived.Add(uint64(resp.ContentLength))
@@ -604,7 +615,11 @@ func (e *engine) roundTripDirect(req *http.Request, rule *Rule, meta *Meta, sp *
 		start := time.Now()
 		resp, err := e.transportForURL(req.URL).RoundTrip(req)
 		if err != nil {
+			closeResponseBody(resp)
 			return nil, e.wrapError("roundtrip", req, "", 1, err)
+		}
+		if resp == nil {
+			return nil, e.wrapError("roundtrip", req, "", 1, ErrInvalidResponse)
 		}
 		if resp.ContentLength > 0 {
 			e.counters.bytesReceived.Add(uint64(resp.ContentLength))
@@ -632,6 +647,9 @@ func (e *engine) roundTripDirect(req *http.Request, rule *Rule, meta *Meta, sp *
 		}
 		start := time.Now()
 		resp, err := e.transportForURL(out.URL).RoundTrip(out)
+		if resp == nil && err == nil {
+			err = ErrInvalidResponse
+		}
 		finishAttempt(resp, attemptCancel, err)
 		if err != nil {
 			lastErr = err
@@ -745,12 +763,17 @@ func (e *engine) roundTripHosts(req *http.Request, rule *Rule, meta *Meta, hosts
 			start := time.Now()
 			resp, err := transport.RoundTrip(req)
 			if err != nil {
+				closeResponseBody(resp)
 				if req.Context().Err() != nil {
 					hosts.Release(host)
 				} else {
 					hosts.MarkFailure(host, err)
 				}
 				return nil, e.wrapError("roundtrip", req, host.Name, 1, err)
+			}
+			if resp == nil {
+				hosts.MarkFailure(host, ErrInvalidResponse)
+				return nil, e.wrapError("roundtrip", req, host.Name, 1, ErrInvalidResponse)
 			}
 			if resp.ContentLength > 0 {
 				e.counters.bytesReceived.Add(uint64(resp.ContentLength))
@@ -781,6 +804,9 @@ func (e *engine) roundTripHosts(req *http.Request, rule *Rule, meta *Meta, hosts
 		}
 		start := time.Now()
 		resp, err := transport.RoundTrip(out)
+		if resp == nil && err == nil {
+			err = ErrInvalidResponse
+		}
 		finishAttempt(resp, attemptCancel, err)
 		if err != nil {
 			if req.Context().Err() != nil {
@@ -871,7 +897,7 @@ func (e *engine) cloneAttempt(req *http.Request, attempt int, target *url.URL, o
 			out.Host = target.Host
 		}
 	}
-	out.Close = connModeFrom(out.Context()) == ConnShort
+	out.Close = req.Close || connModeFrom(out.Context()) == ConnShort
 	out.Header = req.Header.Clone()
 	if out.Header == nil {
 		out.Header = make(http.Header)
@@ -920,6 +946,8 @@ func (e *engine) cloneAttempt(req *http.Request, attempt int, target *url.URL, o
 		out.Body = body
 		out.GetBody = sp.getBody
 		out.ContentLength = sp.length
+		out.TransferEncoding = nil
+		out.Header.Del("Transfer-Encoding")
 	case req.Body == nil:
 		out.Body = nil
 		out.GetBody = nil
@@ -940,6 +968,9 @@ func (e *engine) cloneAttempt(req *http.Request, attempt int, target *url.URL, o
 // canPassThroughHost reports whether the logical request already equals the host target. | canPassThroughHost 报告逻辑请求是否已等于 Host 目标。
 func canPassThroughHost(host *Host, rule *Rule, logical *url.URL, req *http.Request) bool {
 	if host == nil || host.URL == nil || logical == nil || req == nil {
+		return false
+	}
+	if logical.User != nil {
 		return false
 	}
 	if connModeFrom(req.Context()) == ConnShort {
@@ -980,7 +1011,7 @@ func rewriteRedirectLocation(resp *http.Response, wire *url.URL, host *Host, rul
 		return
 	}
 	resolved, err := wire.Parse(location)
-	if err != nil || resolved.Scheme != wire.Scheme || resolved.Host != wire.Host {
+	if err != nil || !strings.EqualFold(resolved.Scheme, wire.Scheme) || !strings.EqualFold(resolved.Host, wire.Host) {
 		return
 	}
 	path := resolved.EscapedPath()
@@ -1101,6 +1132,9 @@ func (e *engine) finishResponse(resp *http.Response, req *http.Request, meta *Me
 	if resp.Body == nil {
 		resp.Body = http.NoBody
 	}
+	if resp.Header == nil {
+		resp.Header = make(http.Header)
+	}
 	resp.Request = req
 	if meta != nil {
 		meta.Attempts = attempt
@@ -1146,6 +1180,7 @@ func (e *engine) wrapError(op string, req *http.Request, host string, attempts i
 	if isTLSError(err) && !errors.Is(err, ErrTLS) {
 		err = errs.Wrap(err, ErrTLS)
 	}
+	err = redactRequestError(err, req.URL)
 	return &Error{
 		Op:       op,
 		Method:   req.Method,

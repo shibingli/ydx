@@ -22,6 +22,8 @@ type Event struct {
 	Data []byte
 	// Retry is the server-suggested reconnect delay. | Retry 是服务器建议的重连延迟。
 	Retry time.Duration
+	// RetrySet reports whether a valid retry field was present. | RetrySet 报告事件是否携带合法 retry 字段。
+	RetrySet bool
 }
 
 // EventReaderOption configures an EventReader. | EventReaderOption 配置 EventReader。
@@ -77,7 +79,7 @@ func (r *EventReader) Next() (Event, error) {
 	}
 	var data []byte
 	var id, name, comment string
-	var idSet bool
+	var idSet, retrySet bool
 	var retry time.Duration
 	for {
 		line, err := r.readLine()
@@ -92,7 +94,7 @@ func (r *EventReader) Next() (Event, error) {
 			if data[len(data)-1] == '\n' {
 				data = data[:len(data)-1]
 			}
-			return Event{ID: id, IDSet: idSet, Name: name, Comment: comment, Data: data, Retry: retry}, nil
+			return Event{ID: id, IDSet: idSet, Name: name, Comment: comment, Data: data, Retry: retry, RetrySet: retrySet}, nil
 		}
 		if line[0] == ':' {
 			comment = strings.TrimPrefix(line[1:], " ")
@@ -118,6 +120,7 @@ func (r *EventReader) Next() (Event, error) {
 			if isDigits(value) {
 				if millis, err := strconv.Atoi(value); err == nil {
 					retry = time.Duration(millis) * time.Millisecond
+					retrySet = true
 				}
 			}
 		}

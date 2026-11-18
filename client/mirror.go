@@ -418,7 +418,16 @@ func (m *mirrorer) run(parent context.Context, req *http.Request, logical *url.U
 	}
 	resp, err := base.RoundTrip(out)
 	if err != nil {
+		closeResponseBody(resp)
+		err = redactRequestError(err, out.URL)
 		result.Err = err
+		if m.engine != nil {
+			m.engine.counters.mirrorErrors.Add(1)
+		}
+		return
+	}
+	if resp == nil {
+		result.Err = ErrInvalidResponse
 		if m.engine != nil {
 			m.engine.counters.mirrorErrors.Add(1)
 		}

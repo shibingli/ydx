@@ -379,3 +379,55 @@ func TestCacheNoCacheRequestStillWrites(t *testing.T) {
 		t.Fatalf("hits %d cacheHits %d", hits.Load(), c.Stats().CacheHits)
 	}
 }
+
+func TestCacheSkipsRequestsWithBody(t *testing.T) {
+	var hits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		w.Header().Set("Cache-Control", "max-age=60")
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer srv.Close()
+	c, err := New(WithCache(CachePolicy{TTL: time.Minute}), WithHosts(srv.URL), WithoutCookieJar())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	if _, err := c.Get(context.Background(), srv.URL+"/x"); err != nil {
+		t.Fatal(err)
+	}
+	resp, err := c.Send(context.Background(), http.MethodGet, srv.URL+"/x", strings.NewReader("body"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if hits.Load() != 2 {
+		t.Fatalf("request with body used cache: hits=%d", hits.Load())
+	}
+}
+
+func TestCacheSkipsURLUserinfo(t *testing.T) {
+	var hits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		w.Header().Set("Cache-Control", "max-age=60")
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer srv.Close()
+	c, err := New(WithCache(CachePolicy{TTL: time.Minute}), WithHosts(srv.URL), WithoutCookieJar())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	u := strings.Replace(srv.URL, "http://", "http://user:pass@", 1) + "/x"
+	for i := 0; i < 2; i++ {
+		resp, err := c.Get(context.Background(), u)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = resp.Body.Close()
+	}
+	if hits.Load() != 2 {
+		t.Fatalf("URL userinfo used cache: hits=%d", hits.Load())
+	}
+}

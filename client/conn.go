@@ -126,7 +126,11 @@ func (c *Client) Warmup(ctx context.Context, n int) error {
 			}
 			resp, err := transport.RoundTrip(req)
 			if err != nil {
+				closeResponseBody(resp)
 				return err
+			}
+			if resp == nil {
+				return ErrInvalidResponse
 			}
 			drainAndClose(resp.Body, 64<<10)
 		}

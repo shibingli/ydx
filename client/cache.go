@@ -560,7 +560,8 @@ func (e *engine) cacheFor(rule *Rule) (CachePolicy, Store, bool) {
 
 // cacheReadable reports whether a request may read the cache. | cacheReadable 报告请求是否可读缓存。
 func cacheReadable(req *http.Request, policy CachePolicy) bool {
-	if req == nil || req.URL == nil || cacheBypassed(req.Context()) {
+	if req == nil || req.URL == nil || cacheBypassed(req.Context()) ||
+		(req.Body != nil && req.Body != http.NoBody) {
 		return false
 	}
 	allowed := false
@@ -584,8 +585,8 @@ func cacheReadable(req *http.Request, policy CachePolicy) bool {
 		return false
 	}
 	if !policy.AllowSensitive {
-		if req.Header.Get("Authorization") != "" || req.Header.Get("Cookie") != "" ||
-			req.Header.Get("Proxy-Authorization") != "" {
+		if req.URL.User != nil || req.Header.Get("Authorization") != "" ||
+			req.Header.Get("Cookie") != "" || req.Header.Get("Proxy-Authorization") != "" {
 			return false
 		}
 	}
@@ -594,7 +595,8 @@ func cacheReadable(req *http.Request, policy CachePolicy) bool {
 
 // cacheWritable reports whether a response may be stored for this request. | cacheWritable 报告该请求的响应是否可写入缓存。
 func cacheWritable(req *http.Request, policy CachePolicy) bool {
-	if req == nil || req.URL == nil || cacheBypassed(req.Context()) {
+	if req == nil || req.URL == nil || cacheBypassed(req.Context()) ||
+		(req.Body != nil && req.Body != http.NoBody) {
 		return false
 	}
 	allowed := false
@@ -610,8 +612,8 @@ func cacheWritable(req *http.Request, policy CachePolicy) bool {
 		return false
 	}
 	if !policy.AllowSensitive {
-		if req.Header.Get("Authorization") != "" || req.Header.Get("Cookie") != "" ||
-			req.Header.Get("Proxy-Authorization") != "" {
+		if req.URL.User != nil || req.Header.Get("Authorization") != "" ||
+			req.Header.Get("Cookie") != "" || req.Header.Get("Proxy-Authorization") != "" {
 			return false
 		}
 	}
@@ -693,6 +695,9 @@ func (e *engine) storeCacheResponse(resp *http.Response, req *http.Request, key 
 // cachedResponse materializes a cached entry as a fresh response. | cachedResponse 把缓存条目物化为全新响应。
 func cachedResponse(req *http.Request, entry *CacheEntry) *http.Response {
 	header := entry.Header.Clone()
+	if header == nil {
+		header = make(http.Header)
+	}
 	contentLength := int64(len(entry.Body))
 	if req.Method == http.MethodHead || header.Get("Content-Length") != "" {
 		if n, err := strconv.ParseInt(header.Get("Content-Length"), 10, 64); err == nil {

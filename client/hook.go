@@ -108,6 +108,21 @@ func callHook(fn func() error) (err error) {
 	return fn()
 }
 
+// safeCheckRedirect isolates panics in a user redirect callback. | safeCheckRedirect 隔离用户重定向回调中的 panic。
+func safeCheckRedirect(fn func(*http.Request, []*http.Request) error) func(*http.Request, []*http.Request) error {
+	if fn == nil {
+		return nil
+	}
+	return func(req *http.Request, via []*http.Request) (err error) {
+		defer func() {
+			if recovered := recover(); recovered != nil {
+				err = errs.Detail(ErrHookPanic, "check redirect panic: %v | 重定向检查 panic：%v", recovered, recovered)
+			}
+		}()
+		return fn(req, via)
+	}
+}
+
 // fireRequest runs OnRequest. | fireRequest 运行 OnRequest。
 func (e *engine) fireRequest(ctx context.Context, req *http.Request) error {
 	if e.hooks.OnRequest == nil {

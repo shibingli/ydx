@@ -332,3 +332,22 @@ func TestTLSSessionCacheDisabled(t *testing.T) {
 		t.Fatal("session cache should be disabled")
 	}
 }
+
+func TestTLSCallbacksPanicIsolated(t *testing.T) {
+	state, err := newTLSState(TLSConfig{
+		VerifyConnection: func(tls.ConnectionState) error { panic("verify") },
+		GetClientCertificate: func(*tls.CertificateRequestInfo) (*tls.Certificate, error) {
+			panic("cert")
+		},
+	}, &http.Transport{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := state.current().TLSClientConfig
+	if err := cfg.VerifyConnection(tls.ConnectionState{}); !errors.Is(err, ErrTLSConfig) {
+		t.Fatalf("verify error %v", err)
+	}
+	if _, err := cfg.GetClientCertificate(&tls.CertificateRequestInfo{}); !errors.Is(err, ErrTLSConfig) {
+		t.Fatalf("certificate error %v", err)
+	}
+}

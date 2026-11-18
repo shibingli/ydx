@@ -1,10 +1,55 @@
 package client
 
 import (
+	"bytes"
+	"io"
 	"mime"
 	"net/http"
+	"strconv"
 	"strings"
 )
+
+// closeResponseBody releases a response body on a failed transport call. | closeResponseBody 在传输失败时释放响应正文。
+func closeResponseBody(resp *http.Response) {
+	if resp != nil && resp.Body != nil {
+		_ = resp.Body.Close()
+	}
+}
+
+// responseHasBody reports whether the method/status pair can carry a body. | responseHasBody
+// 报告方法与状态码组合是否可能携带正文。
+func responseHasBody(method string, status int) bool {
+	return method != http.MethodHead && status != http.StatusNoContent &&
+		status != http.StatusResetContent && status != http.StatusNotModified
+}
+
+// bufferedResponse materializes a buffered response without transfer-coding
+// metadata that no longer applies. | bufferedResponse 生成已缓冲响应，并清理不再适用的传输编码元数据。
+func bufferedResponse(resp *http.Response, method string, data []byte) *http.Response {
+	copied := *resp
+	copied.Header = resp.Header.Clone()
+	if copied.Header == nil {
+		copied.Header = make(http.Header)
+	}
+	copied.Body = io.NopCloser(bytes.NewReader(data))
+	copied.ContentLength = bufferedContentLength(method, resp.StatusCode, resp.Header, len(data))
+	copied.TransferEncoding = nil
+	copied.Header.Del("Transfer-Encoding")
+	return &copied
+}
+
+// bufferedContentLength keeps HEAD/304 metadata when a body is buffered. | bufferedContentLength
+// 在正文被缓冲时保留 HEAD/304 的长度元数据。
+func bufferedContentLength(method string, status int, header http.Header, bodyLen int) int64 {
+	if method == http.MethodHead || status == http.StatusNotModified {
+		if value := header.Get("Content-Length"); value != "" {
+			if n, err := strconv.ParseInt(value, 10, 64); err == nil && n >= 0 {
+				return n
+			}
+		}
+	}
+	return int64(bodyLen)
+}
 
 // headerValue joins all values of one header with NUL separators. | headerValue 用一个头部全部值并以 NUL 分隔。
 func headerValue(header http.Header, key string) string {

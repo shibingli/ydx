@@ -172,6 +172,36 @@ func cloneTransport(base *http.Transport, tlsCfg *tls.Config) *http.Transport {
 	return clone
 }
 
+// safeVerifyConnection isolates panics in a user TLS verifier. | safeVerifyConnection 隔离用户 TLS 校验器中的 panic。
+func safeVerifyConnection(fn func(tls.ConnectionState) error) func(tls.ConnectionState) error {
+	if fn == nil {
+		return nil
+	}
+	return func(state tls.ConnectionState) (err error) {
+		defer func() {
+			if recovered := recover(); recovered != nil {
+				err = errs.Detail(ErrTLSConfig, "TLS verify panic: %v | TLS 校验 panic：%v", recovered, recovered)
+			}
+		}()
+		return fn(state)
+	}
+}
+
+// safeGetClientCertificate isolates panics in a user certificate callback. | safeGetClientCertificate 隔离用户证书回调中的 panic。
+func safeGetClientCertificate(fn func(*tls.CertificateRequestInfo) (*tls.Certificate, error)) func(*tls.CertificateRequestInfo) (*tls.Certificate, error) {
+	if fn == nil {
+		return nil
+	}
+	return func(info *tls.CertificateRequestInfo) (cert *tls.Certificate, err error) {
+		defer func() {
+			if recovered := recover(); recovered != nil {
+				cert, err = nil, errs.Detail(ErrTLSConfig, "TLS certificate panic: %v | TLS 证书回调 panic：%v", recovered, recovered)
+			}
+		}()
+		return fn(info)
+	}
+}
+
 // buildTLSConfig validates and materializes one TLS configuration. | buildTLSConfig 校验并物化一份 TLS 配置。
 func buildTLSConfig(cfg TLSConfig) (*tls.Config, error) {
 	var pool *x509.CertPool
@@ -208,7 +238,7 @@ func buildTLSConfig(cfg TLSConfig) (*tls.Config, error) {
 		CipherSuites:         append([]uint16(nil), cfg.CipherSuites...),
 		InsecureSkipVerify:   cfg.InsecureSkipVerify,
 		Certificates:         append([]tls.Certificate(nil), cfg.Certificates...),
-		GetClientCertificate: cfg.GetClientCertificate,
+		GetClientCertificate: safeGetClientCertificate(cfg.GetClientCertificate),
 	}
 	tlsCfg.CurvePreferences = append([]tls.CurveID(nil), cfg.CurvePreferences...)
 	if tlsCfg.MinVersion == 0 {
@@ -249,7 +279,7 @@ func buildTLSConfig(cfg TLSConfig) (*tls.Config, error) {
 		return nil, err
 	}
 	if len(pins) > 0 || cfg.VerifyConnection != nil {
-		userVerify := cfg.VerifyConnection
+		userVerify := safeVerifyConnection(cfg.VerifyConnection)
 		pinChain := cfg.PinChain
 		tlsCfg.VerifyConnection = func(state tls.ConnectionState) error {
 			if len(pins) > 0 {

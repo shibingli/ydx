@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"strings"
 	"sync"
 	"time"
 
@@ -167,8 +168,10 @@ func (c *Client) forwardRequest(ctx context.Context, r *http.Request, cfg Forwar
 	rawPath := r.URL.RawPath
 	query := r.URL.RawQuery
 	host := r.Host
-	if r.URL.IsAbs() {
-		scheme = r.URL.Scheme
+	if r.URL.IsAbs() || r.URL.Host != "" {
+		if r.URL.Scheme != "" {
+			scheme = r.URL.Scheme
+		}
 		host = r.URL.Host
 	} else {
 		// A relative inbound URL is only routable through a rule or default
@@ -183,7 +186,10 @@ func (c *Client) forwardRequest(ctx context.Context, r *http.Request, cfg Forwar
 			}
 			rule = matched
 		}
-		if c.engine.hosts.Load() == nil && (rule == nil || rule.HostSet == nil) {
+		defaultHosts := c.engine.hosts.Load()
+		hasDefaultHosts := defaultHosts != nil && defaultHosts.Len() > 0
+		hasRuleHosts := rule != nil && rule.HostSet != nil && rule.HostSet.Len() > 0
+		if !hasDefaultHosts && !hasRuleHosts {
 			return nil, errs.Detail(ErrNoHosts, "forward request has no target host | 转发请求没有目标 Host")
 		}
 		if host == "" {
@@ -198,6 +204,7 @@ func (c *Client) forwardRequest(ctx context.Context, r *http.Request, cfg Forwar
 	}
 	out := r.Clone(ctx)
 	out.RequestURI = ""
+	out.TransferEncoding = nil
 	out.URL = &url.URL{Scheme: scheme, Host: host, Path: path, RawPath: rawPath, RawQuery: query, ForceQuery: r.URL.ForceQuery}
 	out.Trailer = r.Trailer
 	out.Header = r.Header.Clone()
@@ -229,17 +236,22 @@ func (c *Client) forwardRequest(ctx context.Context, r *http.Request, cfg Forwar
 	if err != nil {
 		return nil, err
 	}
-	if cfg.MaxBodyBytes > 0 && r.Method != http.MethodHead && resp.ContentLength > cfg.MaxBodyBytes {
+	if resp.StatusCode == http.StatusSwitchingProtocols {
+		_ = resp.Body.Close()
+		return nil, ErrUpgradeUnsupported
+	}
+	if cfg.MaxBodyBytes > 0 && responseHasBody(r.Method, resp.StatusCode) && resp.ContentLength > cfg.MaxBodyBytes {
 		_ = resp.Body.Close()
 		return nil, errs.Detail(ErrResponseTooLarge,
 			"forward body %d exceeds limit %d | 转发正文 %d 超过限制 %d",
 			resp.ContentLength, cfg.MaxBodyBytes, resp.ContentLength, cfg.MaxBodyBytes)
 	}
-	if cfg.MaxBodyBytes > 0 && r.Method != http.MethodHead && resp.ContentLength < 0 &&
+	if cfg.MaxBodyBytes > 0 && responseHasBody(r.Method, resp.StatusCode) && resp.ContentLength < 0 &&
 		!isEventStream(resp.Header) && resp.Body != nil {
 		resp.Body = &multiReadCloser{Reader: io.LimitReader(resp.Body, cfg.MaxBodyBytes), closer: resp.Body}
 	}
-	if cfg.BodyTimeout > 0 && !isEventStream(resp.Header) && resp.Body != nil {
+	if cfg.BodyTimeout > 0 && responseHasBody(r.Method, resp.StatusCode) &&
+		!isEventStream(resp.Header) && resp.Body != nil {
 		resp.Body = newTimerBody(resp.Body, cfg.BodyTimeout)
 	}
 	return resp, nil
@@ -280,8 +292,15 @@ func addForwardedHeaders(out, in *http.Request, scheme string) {
 		clientIP = host
 	}
 	if clientIP != "" {
-		if prior := out.Header.Get("X-Forwarded-For"); prior != "" {
-			out.Header.Set("X-Forwarded-For", prior+", "+clientIP)
+		prior := out.Header.Values("X-Forwarded-For")
+		parts := make([]string, 0, len(prior))
+		for _, value := range prior {
+			if strings.TrimSpace(value) != "" {
+				parts = append(parts, value)
+			}
+		}
+		if len(parts) > 0 {
+			out.Header.Set("X-Forwarded-For", strings.Join(parts, ", ")+", "+clientIP)
 		} else {
 			out.Header.Set("X-Forwarded-For", clientIP)
 		}
@@ -317,7 +336,7 @@ func (c *Client) writeForwardResponse(w http.ResponseWriter, r *http.Request, re
 		http.Error(w, http.StatusText(http.StatusBadGateway), http.StatusBadGateway)
 		return
 	}
-	if isEventStream(resp.Header) {
+	if isEventStream(resp.Header) && responseHasBody(r.Method, resp.StatusCode) {
 		_ = c.copySSE(r.Context(), w, resp, r, cfg)
 		return
 	}
@@ -337,6 +356,12 @@ func (c *Client) writeForwardResponse(w http.ResponseWriter, r *http.Request, re
 		header.Add("Trailer", key)
 	}
 	w.WriteHeader(resp.StatusCode)
+	if !responseHasBody(r.Method, resp.StatusCode) {
+		for key, values := range resp.Trailer {
+			header[key] = values
+		}
+		return
+	}
 	if resp.Body == nil {
 		return
 	}

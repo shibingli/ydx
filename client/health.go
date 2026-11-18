@@ -107,14 +107,22 @@ func (hs *HostSet) checkHost(ctx context.Context, rt http.RoundTripper, entry *h
 	}
 	resp, err := rt.RoundTrip(req)
 	if err != nil {
+		closeResponseBody(resp)
+		err = redactRequestError(err, req.URL)
 		hs.recordFailure(entry, err)
 		if logger != nil {
 			logger.Warn("client: health check failed | client：健康检查失败", log.Str("host", entry.host.Name), log.Err(err))
 		}
 		return
 	}
-	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 64<<10))
-	_ = resp.Body.Close()
+	if resp == nil {
+		hs.recordFailure(entry, ErrInvalidResponse)
+		return
+	}
+	if resp.Body != nil {
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 64<<10))
+		_ = resp.Body.Close()
+	}
 	if healthStatusOK(entry.host.Health.ExpectStatus, resp.StatusCode) {
 		hs.recordSuccess(entry)
 		return

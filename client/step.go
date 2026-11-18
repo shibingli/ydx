@@ -1,7 +1,6 @@
 package client
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"io"
@@ -271,15 +270,13 @@ func (s *StepBuilder) run(rs *runState) error {
 		}
 		return s.finish(rs, start, resp.StatusCode, resp.Header, nil, nil, err)
 	}
-	copied := *resp.Response
-	copied.Body = io.NopCloser(bytes.NewReader(data))
-	copied.ContentLength = int64(len(data))
+	copied := bufferedResponse(resp.Response, s.method, data)
 	result := &StepResult{
 		Name:     s.name,
 		Status:   resp.StatusCode,
-		Headers:  resp.Header.Clone(),
+		Headers:  copied.Header.Clone(),
 		Body:     data,
-		Response: &Response{Response: &copied, Meta: resp.Meta},
+		Response: &Response{Response: copied, Meta: resp.Meta},
 		Duration: time.Since(start),
 		Attempts: resp.Meta.Attempts,
 	}

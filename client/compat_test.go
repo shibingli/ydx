@@ -442,3 +442,123 @@ func TestDoClosesBodyOnEarlyError(t *testing.T) {
 		t.Fatal("body was not closed")
 	}
 }
+
+func TestRequestClosePreservedOnClone(t *testing.T) {
+	var closed atomic.Bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		closed.Store(r.Close)
+	}))
+	defer srv.Close()
+	c, err := New(WithHosts(srv.URL), WithRetry(RetryPolicy{MaxAttempts: 1}), WithoutCookieJar())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	req, _ := http.NewRequest(http.MethodGet, srv.URL+"/x", nil)
+	req.Close = true
+	resp, err := c.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if !closed.Load() {
+		t.Fatal("request Close was not preserved")
+	}
+}
+
+func TestCheckRedirectPanicIsolated(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/next", http.StatusFound)
+	}))
+	defer srv.Close()
+	c, err := New(WithoutCookieJar(), WithCheckRedirect(func(*http.Request, []*http.Request) error {
+		panic("boom")
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	if _, err := c.Get(context.Background(), srv.URL+"/start"); !errors.Is(err, ErrHookPanic) {
+		t.Fatalf("error %v", err)
+	}
+}
+
+func TestDefaultLazyJarRedirectCookies(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/start":
+			http.SetCookie(w, &http.Cookie{Name: "session", Value: "lazy", Path: "/"})
+			http.Redirect(w, r, "/final", http.StatusFound)
+		case "/final":
+			if !strings.Contains(r.Header.Get("Cookie"), "session=lazy") {
+				t.Errorf("cookie missing: %q", r.Header.Get("Cookie"))
+			}
+			_, _ = w.Write([]byte("ok"))
+		}
+	}))
+	defer srv.Close()
+	c, err := New(WithHosts(srv.URL))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	resp, err := c.Get(context.Background(), srv.URL+"/start")
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := resp.Bytes()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "ok" {
+		t.Fatalf("body %q", data)
+	}
+}
+
+func TestConnectMethodRealTransport(t *testing.T) {
+	var gotMethod, gotHost string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod, gotHost = r.Method, r.Host
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("tunnel"))
+	}))
+	defer srv.Close()
+	c, err := New(WithHosts(srv.URL), WithRetry(RetryPolicy{MaxAttempts: 1}), WithoutCookieJar())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	resp, err := c.Connect(context.Background(), srv.URL, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := resp.Bytes()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotMethod != http.MethodConnect || string(data) != "tunnel" {
+		t.Fatalf("method %q body %q", gotMethod, data)
+	}
+	if gotHost == "" {
+		t.Fatal("CONNECT authority missing")
+	}
+}
+
+func TestRedirectErrorRedactsTargetURL(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/target?token=secret", http.StatusFound)
+	}))
+	defer srv.Close()
+	c, err := New(WithoutCookieJar(), WithCheckRedirect(func(*http.Request, []*http.Request) error {
+		return errors.New("stop")
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	if _, err := c.Get(context.Background(), srv.URL+"/start"); err == nil {
+		t.Fatal("expected redirect error")
+	} else if strings.Contains(err.Error(), "token=secret") {
+		t.Fatalf("redirect target leaked: %s", err)
+	}
+}
