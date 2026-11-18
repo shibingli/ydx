@@ -96,9 +96,25 @@ jobs:
             ' _
 
   cross-build:
-    name: cross-build
+    name: cross-build (${{ matrix.target }})
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: linux/amd64
+            arch: amd64
+          - target: linux/arm64
+            arch: arm64
+          - target: windows/amd64
+            arch: amd64
+          - target: windows/arm64
+            arch: arm64
+          - target: darwin/amd64
+            arch: amd64
+          - target: darwin/arm64
+            arch: arm64
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
@@ -106,8 +122,9 @@ jobs:
           go-version: '1.27.4'
           cache: true
           cache-dependency-path: '**/go.sum'
-      - name: Cross-build linux/windows/darwin amd64+arm64
+      - name: Cross-build ${{ matrix.target }}
         env:
+          TARGETS: ${{ matrix.target }}
           JOBS: '4'
           # Only these modules contain platform/arch build-tagged tests. Native
           # Linux, Windows and macOS test jobs compile every other module's tests.
@@ -121,22 +138,22 @@ jobs:
       # 编译不执行链接，否则未定义的 arm64/amd64 汇编符号或重定位问题只能在 macOS
       # runner 上暴露。
       - name: Cross-link macOS test binaries and vet
+        if: startsWith(matrix.target, 'darwin/')
         shell: bash
         env:
           GOWORK: 'off'
           CGO_ENABLED: '0'
+          ARCH: ${{ matrix.arch }}
         run: |
           set -euo pipefail
           tmp="$(mktemp -d)"
           trap 'rm -rf "$tmp"' EXIT
-          for arch in amd64 arm64; do
-            for module in base64 json xml regexpx raft rdma; do
-              echo "==> $module darwin/$arch"
-              (cd "$module" && GOOS=darwin GOARCH="$arch" go vet ./...)
-              out="$tmp/$module-$arch"
-              mkdir -p "$out"
-              (cd "$module" && GOOS=darwin GOARCH="$arch" go test -c -o "$out" ./...)
-            done
+          for module in base64 json xml regexpx raft rdma; do
+            echo "==> $module darwin/$ARCH"
+            (cd "$module" && GOOS=darwin GOARCH="$ARCH" go vet ./...)
+            out="$tmp/$module-$ARCH"
+            mkdir -p "$out"
+            (cd "$module" && GOOS=darwin GOARCH="$ARCH" go test -c -o "$out" ./...)
           done
 
   # Native Apple Silicon coverage is opt-in: hosted arm64 runners are capacity
