@@ -98,6 +98,7 @@ func (c *Client) Close() error {
 	if hs := c.engine.hosts.Load(); hs != nil {
 		_ = hs.Close()
 	}
+	c.engine.mirrors.Close()
 	c.engine.cacheMu.Lock()
 	store := c.engine.cacheStore
 	owned := c.engine.ownsCache

@@ -187,10 +187,10 @@ func coalesceKey(req *http.Request, rule *Rule) string {
 }
 
 // coalesceRoundTrip runs the leader or joins an existing flight. | coalesceRoundTrip 执行 leader 或加入已有合并。
-func (e *engine) coalesceRoundTrip(req *http.Request, rule *Rule, meta *Meta, hosts *HostSet, key string, policy CachePolicy, store Store, coalescePolicy CoalescePolicy) (*http.Response, error) {
+func (e *engine) coalesceRoundTrip(req *http.Request, rule *Rule, meta *Meta, hosts *HostSet, key string, policy CachePolicy, store Store, coalescePolicy CoalescePolicy, postMirror bool) (*http.Response, error) {
 	flightKey := coalesceKey(req, rule)
 	resp, _, coalesced, err := e.flights.Do(req.Context(), flightKey, func() (*http.Response, []byte, bool, error) {
-		resp, err := e.execute(req, rule, meta, hosts, key, policy, store)
+		resp, err := e.execute(req, rule, meta, hosts, key, policy, store, postMirror)
 		if err != nil {
 			return nil, nil, false, err
 		}
@@ -215,7 +215,7 @@ func (e *engine) coalesceRoundTrip(req *http.Request, rule *Rule, meta *Meta, ho
 		return resp, data, true, nil
 	})
 	if errors.Is(err, errCoalesceBypass) {
-		return e.execute(req, rule, meta, hosts, key, policy, store)
+		return e.execute(req, rule, meta, hosts, key, policy, store, false)
 	}
 	if err != nil {
 		return nil, err

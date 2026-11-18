@@ -26,7 +26,9 @@ type engine struct {
 	cacheStore Store
 	ownsCache  bool
 
-	flights *flightGroup
+	flights     *flightGroup
+	mirrors     *mirrorer
+	mirrorDrops atomic.Uint64
 }
 
 // newEngine builds the engine and a default transport when none was supplied. | newEngine 构建引擎，并在未提供 Transport 时创建默认传输。
@@ -44,7 +46,13 @@ func newEngine(o options) *engine {
 			ExpectContinueTimeout: time.Second,
 		}
 	}
-	eng := &engine{base: base, opts: o, budget: newRetryBudget(0.1), flights: newFlightGroup()}
+	eng := &engine{
+		base:    base,
+		opts:    o,
+		budget:  newRetryBudget(0.1),
+		flights: newFlightGroup(),
+		mirrors: newMirrorer(base, o.MaxMirrorInflight),
+	}
 	eng.rules.Store(&RuleSet{})
 	return eng
 }
@@ -83,17 +91,30 @@ func (e *engine) RoundTrip(req *http.Request) (*http.Response, error) {
 					CacheHit: true,
 				})
 			}
-			return cachedResponse(req, entry), nil
+			return e.applyTee(rule, cachedResponse(req, entry)), nil
 		}
 	}
-	if coalescePolicy, ok := e.coalesceFor(rule); ok && shouldCoalesce(req, coalescePolicy) {
-		return e.coalesceRoundTrip(req, rule, meta, hosts, key, policy, store, coalescePolicy)
+	mirrorPolicy, mirroring := e.mirrorFor(rule)
+	preMirror := mirroring && mirrorPolicy.Mode == MirrorUpstream && mirrorPolicy.Parallel && !mirrorPolicy.Sync
+	if preMirror {
+		e.mirrors.submit(req.Context(), req, req.URL, rule, mirrorPolicy)
 	}
-	return e.execute(req, rule, meta, hosts, key, policy, store)
+	postMirror := mirroring && mirrorPolicy.Mode == MirrorUpstream && !preMirror
+	var resp *http.Response
+	var err error
+	if coalescePolicy, ok := e.coalesceFor(rule); ok && shouldCoalesce(req, coalescePolicy) {
+		resp, err = e.coalesceRoundTrip(req, rule, meta, hosts, key, policy, store, coalescePolicy, postMirror)
+	} else {
+		resp, err = e.execute(req, rule, meta, hosts, key, policy, store, postMirror)
+	}
+	if err != nil {
+		return nil, err
+	}
+	return e.applyTee(rule, resp), nil
 }
 
 // execute runs the attempt loop and stores a cacheable response. | execute 执行尝试循环并存储可缓存响应。
-func (e *engine) execute(req *http.Request, rule *Rule, meta *Meta, hosts *HostSet, key string, policy CachePolicy, store Store) (*http.Response, error) {
+func (e *engine) execute(req *http.Request, rule *Rule, meta *Meta, hosts *HostSet, key string, policy CachePolicy, store Store, scheduleMirror bool) (*http.Response, error) {
 	var resp *http.Response
 	var err error
 	if hosts == nil || hosts.Len() == 0 {
@@ -103,6 +124,11 @@ func (e *engine) execute(req *http.Request, rule *Rule, meta *Meta, hosts *HostS
 	}
 	if err == nil && key != "" && resp != nil && cacheableStatus(policy, resp.StatusCode) {
 		e.storeCacheResponse(resp, req, key, policy, store)
+	}
+	if err == nil && scheduleMirror {
+		if mirrorPolicy, ok := e.mirrorFor(rule); ok && mirrorPolicy.Mode == MirrorUpstream {
+			e.mirrors.submit(req.Context(), req, req.URL, rule, mirrorPolicy)
+		}
 	}
 	return resp, err
 }

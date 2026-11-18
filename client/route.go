@@ -46,6 +46,8 @@ type Rule struct {
 	Cache *CachePolicy
 	// Coalesce merges concurrent identical requests for this rule. | Coalesce 为该规则合并并发相同请求。
 	Coalesce *CoalescePolicy
+	// Mirror configures shadow replay or tee mirroring for this rule. | Mirror 为该规则配置影子重放或 tee 镜像。
+	Mirror *MirrorPolicy
 }
 
 // patternScore is the deterministic specificity key used to order rules. | patternScore 是用于规则排序的确定性特异性键。
@@ -137,6 +139,13 @@ func CompileRules(rules ...Rule) (*RuleSet, error) {
 		if rule.Rewrite != nil {
 			rewrite := *rule.Rewrite
 			rule.Rewrite = &rewrite
+		}
+		if rule.Mirror != nil {
+			prepared, err := prepareMirror(rule.Mirror)
+			if err != nil {
+				return nil, err
+			}
+			rule.Mirror = prepared
 		}
 		rs.entries = append(rs.entries, ruleEntry{
 			rule:    &rule,

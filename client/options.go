@@ -11,22 +11,24 @@ import (
 
 // options is the mutable accumulator behind functional options. | options 是函数式选项背后的可变累加器。
 type options struct {
-	Transport     http.RoundTripper
-	Logger        *log.Logger
-	Timeout       time.Duration
-	MaxParallel   int
-	SpoolLimit    int64
-	SpoolToDisk   bool
-	Jar           http.CookieJar
-	CheckRedirect func(*http.Request, []*http.Request) error
-	BaseURL       *url.URL
-	Rules         []Rule
-	Hosts         []Host
-	HostSet       *HostSet
-	Retry         *RetryPolicy
-	Cache         *CachePolicy
-	CacheStore    Store
-	Coalesce      *CoalescePolicy
+	Transport         http.RoundTripper
+	Logger            *log.Logger
+	Timeout           time.Duration
+	MaxParallel       int
+	SpoolLimit        int64
+	SpoolToDisk       bool
+	Jar               http.CookieJar
+	CheckRedirect     func(*http.Request, []*http.Request) error
+	BaseURL           *url.URL
+	Rules             []Rule
+	Hosts             []Host
+	HostSet           *HostSet
+	Retry             *RetryPolicy
+	Cache             *CachePolicy
+	CacheStore        Store
+	Coalesce          *CoalescePolicy
+	Mirror            *MirrorPolicy
+	MaxMirrorInflight int
 }
 
 // Option mutates the client configuration during New. | Option 在 New 期间修改客户端配置。
