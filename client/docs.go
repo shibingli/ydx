@@ -5,6 +5,10 @@
 // The core engine implements http.RoundTripper, so it can be used directly by a
 // standard http.Client or as the transport of an existing client. | 核心引擎实现
 // http.RoundTripper，可直接交给标准 http.Client 使用，也可替换已有客户端的 Transport。
+// The default client carries an in-memory cookie jar, so Set-Cookie responses
+// survive 301/302/303/307/308 redirects; use WithoutCookieJar to disable it. |
+// 默认客户端带内存 Cookie Jar，301/302/303/307/308 跳转会自动带入 Set-Cookie；
+// 可用 WithoutCookieJar 关闭。
 //
 // # Basic usage | 基本用法
 //

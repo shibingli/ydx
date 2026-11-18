@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"sort"
 	"strings"
 	"sync"
 
@@ -192,11 +193,18 @@ func coalesceKey(req *http.Request, rule *Rule) string {
 	if rule != nil {
 		builder.WriteString(rule.Name)
 	}
-	for _, name := range [...]string{"Authorization", "Cookie", "Accept", "Accept-Language", "Accept-Encoding"} {
+	builder.WriteByte(0)
+	builder.WriteString(req.Host)
+	keys := make([]string, 0, len(req.Header))
+	for key := range req.Header {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
 		builder.WriteByte(0)
-		builder.WriteString(name)
+		builder.WriteString(strings.ToLower(key))
 		builder.WriteByte('=')
-		builder.WriteString(headerValue(req.Header, name))
+		builder.WriteString(strings.Join(req.Header.Values(key), "\x00"))
 	}
 	return builder.String()
 }
@@ -211,6 +219,9 @@ func (e *engine) coalesceRoundTrip(req *http.Request, rule *Rule, meta *Meta, ho
 		}
 		if resp == nil || resp.Body == nil {
 			return resp, nil, true, nil
+		}
+		if isEventStream(resp.Header) {
+			return resp, nil, false, nil
 		}
 		max := coalescePolicy.MaxBodyBytes
 		data, readErr := io.ReadAll(io.LimitReader(resp.Body, max+1))

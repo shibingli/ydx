@@ -3,6 +3,7 @@ package client
 import (
 	"context"
 	"net/http"
+	"net/http/cookiejar"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -17,6 +18,7 @@ type Client struct {
 	asyncSem   chan struct{}
 	opts       options
 	asyncWG    sync.WaitGroup
+	asyncMu    sync.Mutex
 	closed     atomic.Bool
 }
 
@@ -46,6 +48,7 @@ func New(opts ...Option) (*Client, error) {
 	eng.ua = ua
 	eng.hooks = cfg.Hooks
 	eng.rules.Store(rules)
+	eng.registerRuleHosts(rules)
 	hs := cfg.HostSet
 	if hs == nil && len(cfg.Hosts) > 0 {
 		hs, err = NewHostSet(cfg.Hosts...)
@@ -56,6 +59,9 @@ func New(opts ...Option) (*Client, error) {
 	if hs != nil {
 		eng.hosts.Store(hs)
 		hs.startHealth(context.Background(), eng.healthTransport, cfg.Logger)
+	}
+	if cfg.Jar == nil && !cfg.DisableCookieJar {
+		cfg.Jar, _ = cookiejar.New(nil)
 	}
 	hc := &http.Client{
 		Transport:     eng,
@@ -88,6 +94,10 @@ func (c *Client) Do(req *http.Request) (*http.Response, error) {
 	if !req.URL.IsAbs() {
 		return nil, ErrRelativeURL
 	}
+	if req.Header == nil {
+		req = req.Clone(req.Context())
+		req.Header = make(http.Header)
+	}
 	if c.opts.Timeout <= 0 {
 		return c.hc.Do(req)
 	}
@@ -95,6 +105,9 @@ func (c *Client) Do(req *http.Request) (*http.Response, error) {
 	resp, err := c.hc.Do(req.WithContext(ctx))
 	if err != nil {
 		cancel()
+		if resp != nil {
+			return resp, err
+		}
 		return nil, err
 	}
 	resp.Body = &cancelBody{body: resp.Body, cancel: cancel}
@@ -131,10 +144,13 @@ func (c *Client) CloseContext(ctx context.Context) error {
 	}
 	c.rootCancel()
 	c.engine.closed.Store(true)
+	c.asyncMu.Lock()
+	c.asyncMu.Unlock()
 	if hs := c.engine.hosts.Load(); hs != nil {
 		_ = hs.Close()
 	}
 	c.engine.mirrors.Close()
+	c.engine.closeRuleHosts()
 	c.engine.closeTLSIdle()
 	c.engine.cacheMu.Lock()
 	store := c.engine.cacheStore

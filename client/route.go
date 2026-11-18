@@ -1,6 +1,7 @@
 package client
 
 import (
+	"context"
 	"net/http"
 	"net/url"
 	"sort"
@@ -96,6 +97,26 @@ type ruleEntry struct {
 // RuleSet is an immutable, specificity-ordered rule snapshot. | RuleSet 是不可变、按特异性排序的规则快照。
 type RuleSet struct {
 	entries []ruleEntry
+}
+
+// hostSets returns the distinct host pools referenced by rules. | hostSets 返回规则引用的不同 Host 池。
+func (rs *RuleSet) hostSets() []*HostSet {
+	if rs == nil {
+		return nil
+	}
+	seen := make(map[*HostSet]struct{}, len(rs.entries))
+	var sets []*HostSet
+	for _, entry := range rs.entries {
+		if entry.rule.HostSet == nil {
+			continue
+		}
+		if _, ok := seen[entry.rule.HostSet]; ok {
+			continue
+		}
+		seen[entry.rule.HostSet] = struct{}{}
+		sets = append(sets, entry.rule.HostSet)
+	}
+	return sets
 }
 
 // CompileRules validates and orders rules, returning an immutable snapshot. | CompileRules 校验并排序规则，返回不可变快照。
@@ -208,7 +229,7 @@ func (rs *RuleSet) Match(method, path string) (*Rule, Params, bool) {
 
 // MatchRequest returns the first rule matching the request, including its condition. | MatchRequest 返回首个匹配请求的规则，并求值 Condition。
 func (rs *RuleSet) MatchRequest(req *http.Request) (*Rule, Params, bool) {
-	if rs == nil || req == nil || req.URL == nil {
+	if rs == nil || req == nil || req.URL == nil || len(rs.entries) == 0 {
 		return nil, Params{}, false
 	}
 	path := matchPath(req.URL)
@@ -359,5 +380,44 @@ func (c *Client) UpdateRules(rules ...Rule) error {
 		return err
 	}
 	c.engine.rules.Store(rs)
+	c.engine.registerRuleHosts(rs)
 	return nil
+}
+
+// registerRuleHosts starts active health for rule-owned host pools. | registerRuleHosts 为规则持有的 Host 池启动主动健康检查。
+func (e *engine) registerRuleHosts(rs *RuleSet) {
+	if e == nil || e.closed.Load() {
+		return
+	}
+	defaultSet := e.hosts.Load()
+	for _, hs := range rs.hostSets() {
+		if hs == nil || hs == defaultSet {
+			continue
+		}
+		e.ruleHostsMu.Lock()
+		if _, exists := e.ruleHosts[hs]; exists {
+			e.ruleHostsMu.Unlock()
+			continue
+		}
+		e.ruleHosts[hs] = struct{}{}
+		e.ruleHostsMu.Unlock()
+		hs.startHealth(context.Background(), e.healthTransport, e.opts.Logger)
+	}
+}
+
+// closeRuleHosts closes every rule-owned host pool. | closeRuleHosts 关闭全部规则持有的 Host 池。
+func (e *engine) closeRuleHosts() {
+	if e == nil {
+		return
+	}
+	e.ruleHostsMu.Lock()
+	sets := make([]*HostSet, 0, len(e.ruleHosts))
+	for hs := range e.ruleHosts {
+		sets = append(sets, hs)
+	}
+	e.ruleHosts = make(map[*HostSet]struct{})
+	e.ruleHostsMu.Unlock()
+	for _, hs := range sets {
+		_ = hs.Close()
+	}
 }

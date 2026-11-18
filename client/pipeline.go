@@ -119,7 +119,13 @@ func (p *Pipeline) Add(nodes ...Node) *Pipeline {
 }
 
 // Run executes the pipeline against c. | Run 在 c 上执行 Pipeline。
-func (p *Pipeline) Run(ctx context.Context, c *Client) (*PipelineResult, error) {
+func (p *Pipeline) Run(ctx context.Context, c *Client) (result *PipelineResult, err error) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			result = nil
+			err = errs.Detail(ErrPipelineStep, "panic: %v", recovered)
+		}
+	}()
 	if p == nil || c == nil {
 		return nil, errs.Detail(ErrPipelineStep, "nil pipeline or client | 空 Pipeline 或客户端")
 	}
@@ -151,20 +157,20 @@ func (p *Pipeline) Run(ctx context.Context, c *Client) (*PipelineResult, error) 
 		hooks:   p.opts.Hooks,
 	}
 	rs := &runState{ctx: ctx, shared: shared}
-	var errs []error
+	var runErrs []error
 	for _, node := range p.nodes {
 		if err := node.run(rs); err != nil {
-			errs = append(errs, err)
+			runErrs = append(runErrs, err)
 			if !p.opts.ContinueOnError {
 				break
 			}
 		}
 	}
-	result := shared.snapshot(time.Since(start))
+	result = shared.snapshot(time.Since(start))
 	if p.opts.Hooks.OnComplete != nil {
 		p.opts.Hooks.OnComplete(ctx, result)
 	}
-	return result, errors.Join(errs...)
+	return result, errors.Join(runErrs...)
 }
 
 // runShared is the mutable state shared by every node in one run. | runShared 是一次运行中所有节点共享的可变状态。
@@ -294,14 +300,24 @@ func (p *parallelNode) run(rs *runState) error {
 	sub := rs.withContext(ctx)
 	var wg sync.WaitGroup
 	var mu sync.Mutex
-	var errs []error
+	var runErrs []error
 	for _, node := range p.nodes {
 		wg.Add(1)
 		go func(node Node) {
 			defer wg.Done()
+			defer func() {
+				if recovered := recover(); recovered != nil {
+					mu.Lock()
+					runErrs = append(runErrs, errs.Detail(ErrPipelineStep, "panic: %v", recovered))
+					mu.Unlock()
+					if !rs.shared.opts.ContinueOnError {
+						cancel()
+					}
+				}
+			}()
 			if err := node.run(sub); err != nil {
 				mu.Lock()
-				errs = append(errs, err)
+				runErrs = append(runErrs, err)
 				mu.Unlock()
 				if !rs.shared.opts.ContinueOnError {
 					cancel()
@@ -310,7 +326,7 @@ func (p *parallelNode) run(rs *runState) error {
 		}(node)
 	}
 	wg.Wait()
-	return errors.Join(errs...)
+	return errors.Join(runErrs...)
 }
 
 // funcNode runs an arbitrary function. | funcNode 运行任意函数。

@@ -5,6 +5,7 @@ import (
 	"crypto/subtle"
 	"crypto/tls"
 	"crypto/x509"
+	"errors"
 	"net/http"
 	"net/url"
 	"os"
@@ -72,10 +73,16 @@ func WithHostTLS(host string, cfg TLSConfig) Option {
 		if host == "" {
 			return errs.Detail(ErrTLSConfig, "empty TLS host | 空 TLS Host")
 		}
+		key := strings.ToLower(host)
+		if strings.Contains(host, "://") {
+			if parsed, err := url.Parse(host); err == nil && parsed.Host != "" {
+				key = strings.ToLower(parsed.Host)
+			}
+		}
 		if o.HostTLS == nil {
 			o.HostTLS = make(map[string]TLSConfig)
 		}
-		o.HostTLS[strings.ToLower(host)] = cfg
+		o.HostTLS[key] = cfg
 		return nil
 	}
 }
@@ -86,6 +93,16 @@ func (c *Client) ReloadTLS() error {
 		return ErrClosed
 	}
 	return c.engine.reloadTLS()
+}
+
+// isTLSError reports whether err is a TLS trust/handshake failure. | isTLSError 报告 err 是否为 TLS 信任/握手失败。
+func isTLSError(err error) bool {
+	if err == nil {
+		return false
+	}
+	var certErr *tls.CertificateVerificationError
+	return errors.As(err, &certErr) || errors.Is(err, ErrTLSPin) ||
+		errors.Is(err, ErrTLS) || errors.Is(err, ErrTLSConfig)
 }
 
 // tlsState owns one TLS configuration and its transport snapshot. | tlsState 拥有一份 TLS 配置及其传输快照。
@@ -301,6 +318,9 @@ func (e *engine) stateFor(cfg *TLSConfig) (*tlsState, error) {
 
 // transportFor selects the base, host-specific or default TLS transport. | transportFor 选择基础、Host 专用或默认 TLS 传输。
 func (e *engine) transportFor(host *Host) (http.RoundTripper, error) {
+	if len(e.hostTLS) == 0 && (host == nil || host.TLS == nil) {
+		return e.defaultTransport(), nil
+	}
 	if host != nil {
 		if host.TLS != nil {
 			state, err := e.stateFor(host.TLS)
@@ -316,10 +336,7 @@ func (e *engine) transportFor(host *Host) (http.RoundTripper, error) {
 			return state.current(), nil
 		}
 	}
-	if e.defaultTLS != nil {
-		return e.defaultTLS.current(), nil
-	}
-	return e.base, nil
+	return e.defaultTransport(), nil
 }
 
 // transportForURL applies a hostname TLS override for direct requests. | transportForURL 为直连请求应用按主机名的 TLS 覆盖。
@@ -346,10 +363,43 @@ func (e *engine) healthTransport(host *Host) http.RoundTripper {
 
 // defaultTransport returns the transport used without a host pool. | defaultTransport 返回无 Host 池时使用的传输。
 func (e *engine) defaultTransport() http.RoundTripper {
+	if e.h2c != nil {
+		secure := http.RoundTripper(e.baseTransport)
+		if e.defaultTLS != nil {
+			secure = e.defaultTLS.current()
+		}
+		return &schemeTransport{plain: e.h2c, secure: secure}
+	}
 	if e.defaultTLS != nil {
 		return e.defaultTLS.current()
 	}
 	return e.base
+}
+
+// schemeTransport sends cleartext requests to the h2c transport and TLS
+// requests to the secure transport. | schemeTransport 把明文请求交给 h2c 传输，
+// TLS 请求交给安全传输。
+type schemeTransport struct {
+	plain  http.RoundTripper
+	secure http.RoundTripper
+}
+
+// RoundTrip dispatches by URL scheme. | RoundTrip 按 URL scheme 分派。
+func (s *schemeTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if req != nil && req.URL != nil && req.URL.Scheme == "http" {
+		return s.plain.RoundTrip(req)
+	}
+	return s.secure.RoundTrip(req)
+}
+
+// CloseIdleConnections closes both underlying transports. | CloseIdleConnections 关闭两个底层传输的空闲连接。
+func (s *schemeTransport) CloseIdleConnections() {
+	if closer, ok := s.plain.(interface{ CloseIdleConnections() }); ok {
+		closer.CloseIdleConnections()
+	}
+	if closer, ok := s.secure.(interface{ CloseIdleConnections() }); ok {
+		closer.CloseIdleConnections()
+	}
 }
 
 // reloadTLS reloads every known TLS state. | reloadTLS 重新加载全部已知 TLS 状态。

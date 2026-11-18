@@ -54,7 +54,7 @@ func (f *Future) complete(resp *Response, err error) {
 // Submit starts an asynchronous request under the client async limit. | Submit 在客户端异步限制下启动异步请求。
 func (c *Client) Submit(ctx context.Context, req *http.Request, cb func(*Response, error)) *Future {
 	future := &Future{done: make(chan struct{})}
-	if c == nil || c.closed.Load() {
+	if c == nil {
 		future.complete(nil, ErrClosed)
 		return future
 	}
@@ -65,15 +65,23 @@ func (c *Client) Submit(ctx context.Context, req *http.Request, cb func(*Respons
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	c.asyncMu.Lock()
+	if c.closed.Load() {
+		c.asyncMu.Unlock()
+		future.complete(nil, ErrClosed)
+		return future
+	}
 	select {
 	case c.asyncSem <- struct{}{}:
 	default:
+		c.asyncMu.Unlock()
 		future.complete(nil, ErrBusy)
 		return future
 	}
 	runCtx, cancel := context.WithCancel(ctx)
 	stop := context.AfterFunc(c.rootCtx, cancel)
 	c.asyncWG.Add(1)
+	c.asyncMu.Unlock()
 	go func() {
 		defer c.asyncWG.Done()
 		defer func() { <-c.asyncSem }()

@@ -207,7 +207,7 @@ func TestTLSHostOverride(t *testing.T) {
 func TestTLSDirectHostOverride(t *testing.T) {
 	srv, cert := newTestTLSServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
 	defer srv.Close()
-	c, err := New(WithHostTLS(mustURL(srv.URL).Host, TLSConfig{
+	c, err := New(WithHostTLS(srv.URL, TLSConfig{
 		RootCAs:            testCertPool(cert),
 		DisableSystemRoots: true,
 	}))

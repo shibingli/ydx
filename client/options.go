@@ -38,6 +38,7 @@ type options struct {
 	MaxAsync          int
 	SpoolToDisk       bool
 	H2C               bool
+	DisableCookieJar  bool
 }
 
 // Option mutates the client configuration during New. | Option 在 New 期间修改客户端配置。
@@ -110,10 +111,21 @@ func WithSpoolToDisk(ok bool) Option {
 	}
 }
 
-// WithCookieJar installs the cookie jar used by Do. | WithCookieJar 安装 Do 使用的 Cookie 罐。
+// WithCookieJar installs the cookie jar used by Do; nil disables the default
+// jar. | WithCookieJar 安装 Do 使用的 Cookie 罐；nil 关闭默认 Cookie 罐。
 func WithCookieJar(jar http.CookieJar) Option {
 	return func(o *options) error {
 		o.Jar = jar
+		o.DisableCookieJar = jar == nil
+		return nil
+	}
+}
+
+// WithoutCookieJar disables the default in-memory cookie jar. | WithoutCookieJar 关闭默认内存 Cookie 罐。
+func WithoutCookieJar() Option {
+	return func(o *options) error {
+		o.Jar = nil
+		o.DisableCookieJar = true
 		return nil
 	}
 }

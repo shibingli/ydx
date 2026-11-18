@@ -217,6 +217,38 @@ func TestForwardSSETeeNotDuplicated(t *testing.T) {
 	}
 }
 
+func TestForwardSSERuleTimeoutDoesNotCutBody(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, "data: one\n\n")
+		w.(http.Flusher).Flush()
+		time.Sleep(100 * time.Millisecond)
+		fmt.Fprint(w, "data: two\n\n")
+	}))
+	defer upstream.Close()
+	c, err := New(
+		WithHosts(upstream.URL),
+		WithRule(Rule{Name: "sse", Pattern: "/events", Timeout: 30 * time.Millisecond}),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	in := httptest.NewRequest(http.MethodGet, "/events", nil)
+	resp, err := c.Forward(context.Background(), in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec := httptest.NewRecorder()
+	if err := c.copySSE(context.Background(), rec, resp, in, ForwardOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "data: one") || !strings.Contains(body, "data: two") {
+		t.Fatalf("rule timeout cut SSE body: %q", body)
+	}
+}
+
 func TestSSEEventSinkOversizedDoesNotHang(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")

@@ -265,3 +265,21 @@ func TestPipelineErrorsJoin(t *testing.T) {
 		t.Fatalf("want ErrExtract, got %v", err)
 	}
 }
+
+func TestPipelineRecoversUserPanics(t *testing.T) {
+	c, err := New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	boom := func(context.Context, *Vars) error { panic("boom") }
+	for _, node := range []Node{
+		Func("boom", boom),
+		Parallel(Func("boom", boom)),
+	} {
+		p := NewPipeline(PipelineOptions{}, node)
+		if _, err := p.Run(context.Background(), c); err == nil {
+			t.Fatal("panic was not converted to a pipeline error")
+		}
+	}
+}

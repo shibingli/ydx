@@ -506,6 +506,9 @@ func (e *engine) ensureCacheStore() Store {
 	}
 	e.cacheMu.Lock()
 	defer e.cacheMu.Unlock()
+	if e.closed.Load() {
+		return nil
+	}
 	if e.cacheStore != nil {
 		return e.cacheStore
 	}

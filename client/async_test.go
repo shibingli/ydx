@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -107,4 +108,27 @@ func TestFutureWaitContext(t *testing.T) {
 	if _, err := future.Wait(context.Background()); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func TestSubmitCloseRace(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(5 * time.Millisecond)
+	}))
+	defer srv.Close()
+	c, err := New(WithHosts(srv.URL), WithMaxAsync(1000), WithoutCookieJar())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wg sync.WaitGroup
+	for i := 0; i < 100; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			future := c.Submit(context.Background(), mustRequest(t, http.MethodGet, srv.URL, ""), nil)
+			_, _ = future.Wait(context.Background())
+		}()
+	}
+	time.Sleep(time.Millisecond)
+	_ = c.Close()
+	wg.Wait()
 }

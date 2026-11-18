@@ -173,6 +173,40 @@ func TestTLSErrorsNotRetried(t *testing.T) {
 	}
 }
 
+func TestIdempotencyKeyRetriesPOST(t *testing.T) {
+	var hits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if hits.Add(1) == 1 {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer srv.Close()
+	c, err := New(
+		WithHosts(srv.URL),
+		WithRetry(RetryPolicy{
+			MaxAttempts: 3,
+			StatusCodes: []int{http.StatusServiceUnavailable},
+			Backoff:     func(int) time.Duration { return time.Millisecond },
+		}),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	resp, err := c.Post(context.Background(), srv.URL+"/x", []byte("payload"),
+		WithRequestHeader("Idempotency-Key", "one"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if string(data) != "ok" || hits.Load() != 2 {
+		t.Fatalf("body %q hits %d", data, hits.Load())
+	}
+}
+
 func TestPerAttemptTimeout(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		select {

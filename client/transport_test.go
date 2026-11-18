@@ -3,8 +3,10 @@ package client
 import (
 	"context"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -175,5 +177,72 @@ func TestRetryContextCancel(t *testing.T) {
 	_, err = c.Get(ctx, srv.URL+"/x")
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("want deadline exceeded, got %v", err)
+	}
+}
+
+type trackingBody struct {
+	reader io.Reader
+	closed atomic.Bool
+}
+
+func (b *trackingBody) Read(p []byte) (int, error) { return b.reader.Read(p) }
+func (b *trackingBody) Close() error               { b.closed.Store(true); return nil }
+
+func TestRoundTripClosesBodyOnGuardDeny(t *testing.T) {
+	guard := GuardFunc(func(context.Context, *http.Request) (GuardDecision, error) {
+		return GuardDecision{Allowed: false, Status: http.StatusForbidden}, nil
+	})
+	c, err := New(WithGuard(guard))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	body := &trackingBody{reader: strings.NewReader("payload")}
+	req, _ := http.NewRequest(http.MethodPost, "http://example.com/x", body)
+	if _, err := c.Transport().RoundTrip(req); !errors.Is(err, ErrBlocked) {
+		t.Fatalf("want ErrBlocked, got %v", err)
+	}
+	if !body.closed.Load() {
+		t.Fatal("request body was not closed on guard denial")
+	}
+}
+
+func TestRoundTripClosesBodyOnCacheHit(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("cached"))
+	}))
+	defer srv.Close()
+	c, err := New(WithHosts(srv.URL), WithCache(CachePolicy{TTL: time.Minute}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	resp, err := c.Get(context.Background(), srv.URL+"/x")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	body := &trackingBody{reader: strings.NewReader("payload")}
+	req, _ := http.NewRequest(http.MethodGet, srv.URL+"/x", body)
+	if _, err := c.Transport().RoundTrip(req); err != nil {
+		t.Fatal(err)
+	}
+	if !body.closed.Load() {
+		t.Fatal("request body was not closed on cache hit")
+	}
+}
+
+func TestSendClosesBodyOnResolveError(t *testing.T) {
+	c, err := New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	body := &trackingBody{reader: strings.NewReader("payload")}
+	if _, err := c.Send(context.Background(), http.MethodPost, "/relative", body); !errors.Is(err, ErrRelativeURL) {
+		t.Fatalf("want ErrRelativeURL, got %v", err)
+	}
+	if !body.closed.Load() {
+		t.Fatal("request body was not closed on resolve error")
 	}
 }

@@ -111,6 +111,31 @@ func TestCooldownHalfOpen(t *testing.T) {
 	}
 }
 
+func TestReleasedHalfOpenProbeIsReclaimable(t *testing.T) {
+	hs, err := NewHostSetWithOptions(HostSetOptions{Balance: BalanceOrdered},
+		Host{Name: "a", URL: mustURL("http://a"), Health: HealthPolicy{FailThreshold: 1}},
+		Host{Name: "b", URL: mustURL("http://b")},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer hs.Close()
+	entry := hs.entries[0]
+	hs.MarkFailure(entry.host, errors.New("boom"))
+	entry.cooldownUntil.Store(time.Now().Add(-time.Second).UnixNano())
+	req := httptest.NewRequest(http.MethodGet, "http://svc/x", nil)
+	host, err := hs.Pick(req, nil)
+	if err != nil || host.Name != "a" {
+		t.Fatalf("first probe: host=%v err=%v", host, err)
+	}
+	hs.Release(host)
+	host, err = hs.Pick(req, nil)
+	if err != nil || host.Name != "a" {
+		t.Fatalf("probe was not reclaimable: host=%v err=%v", host, err)
+	}
+	hs.Release(host)
+}
+
 func TestNoHealthyWithExclude(t *testing.T) {
 	hs, err := NewHostSet(Host{Name: "a", URL: mustURL("http://a"), Health: HealthPolicy{FailThreshold: 1}})
 	if err != nil {

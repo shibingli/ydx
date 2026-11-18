@@ -56,6 +56,63 @@ func TestCacheTTLAndVary(t *testing.T) {
 	}
 }
 
+func TestCacheAllowSensitiveSeparatesCredentials(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(r.Header.Get("Authorization")))
+	}))
+	defer srv.Close()
+	c, err := New(
+		WithHosts(srv.URL),
+		WithCache(CachePolicy{TTL: time.Minute, AllowSensitive: true}),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	for _, credential := range []string{"Bearer alice", "Bearer bob"} {
+		resp, err := c.Get(context.Background(), srv.URL+"/x", WithRequestHeader("Authorization", credential))
+		if err != nil {
+			t.Fatal(err)
+		}
+		data, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if string(data) != credential {
+			t.Fatalf("credential %q got %q", credential, data)
+		}
+	}
+}
+
+func TestCacheSeparatesAcceptEncoding(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Accept-Encoding") == "identity" {
+			_, _ = w.Write([]byte("identity"))
+			return
+		}
+		_, _ = w.Write([]byte("auto"))
+	}))
+	defer srv.Close()
+	c, err := New(WithHosts(srv.URL), WithCache(CachePolicy{TTL: time.Minute}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	resp, err := c.Get(context.Background(), srv.URL+"/x", WithRequestHeader("Accept-Encoding", "identity"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	resp, err = c.Get(context.Background(), srv.URL+"/x")
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if string(first) != "identity" || string(second) != "auto" {
+		t.Fatalf("bodies %q %q", first, second)
+	}
+}
+
 func TestCacheHeadContentLength(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Length", "1234")

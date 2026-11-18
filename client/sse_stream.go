@@ -45,6 +45,18 @@ func WithStreamIdleTimeout(d time.Duration) StreamOption {
 	}
 }
 
+// streamRequestKey marks a request whose body must outlive rule timeouts. | streamRequestKey 标记正文不应受规则超时影响的请求。
+type streamRequestKey struct{}
+
+// streamingRequest reports whether the request is an SSE stream. | streamingRequest 报告请求是否为 SSE 流。
+func streamingRequest(ctx context.Context) bool {
+	if ctx == nil {
+		return false
+	}
+	value, _ := ctx.Value(streamRequestKey{}).(bool)
+	return value
+}
+
 // Stream is an outbound SSE stream with optional reconnects. | Stream 是带可选重连的出站 SSE 流。
 type Stream struct {
 	body     io.ReadCloser
@@ -128,6 +140,7 @@ func (s *Stream) open(ctx context.Context) error {
 		req.Header.Set("Last-Event-ID", s.lastID)
 	}
 	meta := &Meta{}
+	req = req.WithContext(context.WithValue(req.Context(), streamRequestKey{}, true))
 	req = req.WithContext(context.WithValue(req.Context(), metaKey{}, meta))
 	resp, err := s.client.engine.RoundTrip(req)
 	if err != nil {

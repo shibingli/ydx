@@ -11,6 +11,7 @@
 | Host 池 | 加权/最少在途/随机/一致性哈希/顺序；被动健康、冷却/半开、可选主动检查、fail-open、换 Host 重试 |
 | 请求体 | 内存/string/文件/Reader；重试/镜像时按上限 spool（可选落盘）；GET/直通路径零额外 clone |
 | 缓存 | 可选内置分片 LRU+TTL，支持 `Cache-Control`、`Expires`、`Vary`、自定义 `Store`/Key |
+| 重定向/Cookie | 默认内存 Cookie Jar，301/302/303/307/308 自动带入 Set-Cookie；`CheckRedirect`/`Jar` 保持标准语义；`WithoutCookieJar` 可关闭 |
 | 请求合并 | 相同并发 GET/HEAD 合并（singleflight）；超大/不可共享响应自动 bypass |
 | 镜像 | A：影子上游重放（默认，可同步/异步/抽样/并行）；B：主流 tee 到 Sink/EventSink，慢消费者丢弃 |
 | SSE | EventReader、出站 Stream（重连/Last-Event-ID/空闲超时）、Forward/Handler 逐块 Flush、A/B 镜像 |

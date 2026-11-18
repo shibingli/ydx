@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strings"
 	"sync"
 	"time"
 
@@ -110,9 +111,18 @@ func prepareMirror(policy *MirrorPolicy) (*MirrorPolicy, error) {
 	if prepared.MaxBodyBytes <= 0 {
 		prepared.MaxBodyBytes = 1 << 20
 	}
-	if prepared.StripHeaders == nil {
-		prepared.StripHeaders = append([]string(nil), defaultMirrorStripHeaders...)
+	strip := append([]string(nil), defaultMirrorStripHeaders...)
+	seen := make(map[string]bool, len(strip)+len(prepared.StripHeaders))
+	for _, name := range strip {
+		seen[strings.ToLower(name)] = true
 	}
+	for _, name := range prepared.StripHeaders {
+		if !seen[strings.ToLower(name)] {
+			seen[strings.ToLower(name)] = true
+			strip = append(strip, name)
+		}
+	}
+	prepared.StripHeaders = strip
 	if prepared.TeeQueue <= 0 {
 		prepared.TeeQueue = 64
 	}
@@ -290,11 +300,21 @@ func (m *mirrorer) run(parent context.Context, req *http.Request, logical *url.U
 		}()
 	}
 	ctx := m.ctx
+	var detach func()
 	if policy.FollowCancel && parent != nil {
-		ctx = parent
+		parentCtx, parentCancel := context.WithCancel(parent)
+		stop := context.AfterFunc(m.ctx, parentCancel)
+		detach = func() {
+			stop()
+			parentCancel()
+		}
+		ctx = parentCtx
 	}
 	ctx, cancel := context.WithTimeout(ctx, policy.Timeout)
 	defer cancel()
+	if detach != nil {
+		defer detach()
+	}
 	out := req.Clone(ctx)
 	out.URL = targetURL(logical, &Host{URL: target}, rule)
 	out.RequestURI = ""
@@ -316,7 +336,7 @@ func (m *mirrorer) run(parent context.Context, req *http.Request, logical *url.U
 	out.GetBody = getBody
 	base := m.base
 	if m.engine != nil {
-		base = m.engine.defaultTransport()
+		base = m.engine.transportForURL(out.URL)
 	}
 	resp, err := base.RoundTrip(out)
 	if err != nil {

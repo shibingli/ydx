@@ -275,8 +275,24 @@ func (hs *HostSet) Pick(req *http.Request, exclude map[string]struct{}) (*Host, 
 	if len(hs.entries) == 0 {
 		return nil, ErrNoHosts
 	}
+	if len(hs.entries) == 1 {
+		entry := hs.entries[0]
+		_, excluded := exclude[entry.host.Name]
+		if !excluded && entry.healthy.Load() &&
+			(entry.host.MaxInflight == 0 || entry.inflight.Load() < int64(entry.host.MaxInflight)) {
+			entry.inflight.Add(1)
+			entry.requests.Add(1)
+			return entry.host, nil
+		}
+	}
 	now := hs.now()
-	eligible := make([]bool, len(hs.entries))
+	var inline [16]bool
+	var eligible []bool
+	if len(hs.entries) <= len(inline) {
+		eligible = inline[:len(hs.entries)]
+	} else {
+		eligible = make([]bool, len(hs.entries))
+	}
 	anyEligible := false
 	for i, entry := range hs.entries {
 		if !hostSelectable(entry, exclude) {
@@ -353,8 +369,17 @@ func (hs *HostSet) MarkFailure(host *Host, err error) {
 
 // Release only releases an in-flight slot without changing health. | Release 只释放在途名额，不改变健康状态。
 func (hs *HostSet) Release(host *Host) {
-	if entry := hs.entryOf(host); entry != nil && entry.inflight.Load() > 0 {
+	entry := hs.entryOf(host)
+	if entry == nil {
+		return
+	}
+	if entry.inflight.Load() > 0 {
 		entry.inflight.Add(-1)
+	}
+	// A released half-open probe must not leave the host permanently
+	// unselectable. | 释放半开探测后不能让 Host 永久不可选。
+	if entry.halfOpen.CompareAndSwap(true, false) {
+		entry.cooldownUntil.Store(hs.now().UnixNano())
 	}
 }
 

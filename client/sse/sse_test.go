@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/shibingli/ydx/client"
@@ -56,4 +57,25 @@ func TestFanoutClose(t *testing.T) {
 	if _, err := fanout.Add(httptest.NewRecorder()); !errors.Is(err, ErrClosed) {
 		t.Fatalf("want ErrClosed, got %v", err)
 	}
+}
+
+func TestFanoutBroadcastCloseRace(t *testing.T) {
+	fanout := NewFanout(Options{Queue: 8})
+	sub, err := fanout.Add(httptest.NewRecorder())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 1000; i++ {
+			_ = fanout.Sink().WriteEvent(context.Background(), client.Event{Data: []byte("x")})
+		}
+	}()
+	for i := 0; i < 100; i++ {
+		_ = sub.Close()
+	}
+	_ = fanout.Close()
+	wg.Wait()
 }

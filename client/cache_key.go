@@ -25,8 +25,20 @@ func cacheKey(req *http.Request, rule *Rule, policy *CachePolicy) (string, error
 		builder.WriteString(req.URL.RawQuery)
 	}
 	builder.WriteByte(0)
+	builder.WriteString(req.Host)
+	builder.WriteByte(0)
 	if rule != nil {
 		builder.WriteString(rule.Name)
+	}
+	builder.WriteByte(0)
+	builder.WriteString(headerValue(req.Header, "Accept-Encoding"))
+	if policy != nil && policy.AllowSensitive {
+		for _, name := range [...]string{"Authorization", "Cookie", "Proxy-Authorization"} {
+			builder.WriteByte(0)
+			builder.WriteString(name)
+			builder.WriteByte('=')
+			builder.WriteString(headerValue(req.Header, name))
+		}
 	}
 	if policy != nil {
 		for _, name := range policy.Vary {

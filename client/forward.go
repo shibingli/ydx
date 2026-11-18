@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"sync"
 	"time"
 
 	"github.com/shibingli/ydx/buffpool"
@@ -42,7 +43,7 @@ func defaultForwardOptions() ForwardOptions {
 	return ForwardOptions{
 		PreserveHost:    true,
 		AddForwardedFor: true,
-		MaxBodyBytes:    8 << 20,
+		MaxBodyBytes:    0,
 	}
 }
 
@@ -76,10 +77,11 @@ func WithForwardFlushInterval(d time.Duration) ForwardOption {
 	}
 }
 
-// WithForwardMaxBodyBytes caps forwarded bodies. Known-length responses over
-// the cap fail with ErrResponseTooLarge; unknown-length bodies are truncated
-// at the cap. | WithForwardMaxBodyBytes 限制转发正文。已知长度超限返回
-// ErrResponseTooLarge；未知长度正文在达到上限时截断。
+// WithForwardMaxBodyBytes caps forwarded bodies; the default is unlimited.
+// Known-length responses over the cap fail with ErrResponseTooLarge;
+// unknown-length non-HEAD bodies stop at the cap. | WithForwardMaxBodyBytes
+// 限制转发正文，默认不限制。已知长度超限返回 ErrResponseTooLarge；未知长度的
+// 非 HEAD 正文在达到上限时停止。
 func WithForwardMaxBodyBytes(n int64) ForwardOption {
 	return func(o *ForwardOptions) error {
 		if n <= 0 {
@@ -135,16 +137,28 @@ func (c *Client) forwardRequest(ctx context.Context, r *http.Request, cfg Forwar
 	if r.TLS != nil {
 		scheme = "https"
 	}
-	host := r.Host
-	if host == "" {
-		host = r.URL.Host
-	}
 	path := r.URL.Path
 	rawPath := r.URL.RawPath
 	query := r.URL.RawQuery
+	host := r.Host
 	if r.URL.IsAbs() {
 		scheme = r.URL.Scheme
 		host = r.URL.Host
+	} else {
+		// A relative inbound URL is only routable through a rule or default
+		// host pool; falling back to the Host header would create an open
+		// proxy. | 相对入站 URL 只能走规则或默认 Host 池；回退到 Host 头会形成开放代理。
+		rules := c.engine.rules.Load()
+		var rule *Rule
+		if rules != nil {
+			rule, _, _ = rules.MatchRequest(r)
+		}
+		if c.engine.hosts.Load() == nil && (rule == nil || rule.HostSet == nil) {
+			return nil, errs.Detail(ErrNoHosts, "forward request has no target host | 转发请求没有目标 Host")
+		}
+		if host == "" {
+			return nil, errs.Detail(ErrNoHosts, "forward request has no logical host | 转发请求没有逻辑 Host")
+		}
 	}
 	if host == "" {
 		return nil, errs.Detail(ErrNoHosts, "forward request has no target host | 转发请求没有目标 Host")
@@ -152,6 +166,7 @@ func (c *Client) forwardRequest(ctx context.Context, r *http.Request, cfg Forwar
 	out := r.Clone(ctx)
 	out.RequestURI = ""
 	out.URL = &url.URL{Scheme: scheme, Host: host, Path: path, RawPath: rawPath, RawQuery: query}
+	out.Trailer = r.Trailer
 	out.Header = r.Header.Clone()
 	if out.Header == nil {
 		out.Header = make(http.Header)
@@ -180,13 +195,44 @@ func (c *Client) forwardRequest(ctx context.Context, r *http.Request, cfg Forwar
 	if err != nil {
 		return nil, err
 	}
-	if cfg.MaxBodyBytes > 0 && resp.ContentLength > cfg.MaxBodyBytes {
+	if cfg.MaxBodyBytes > 0 && r.Method != http.MethodHead && resp.ContentLength > cfg.MaxBodyBytes {
 		_ = resp.Body.Close()
 		return nil, errs.Detail(ErrResponseTooLarge,
 			"forward body %d exceeds limit %d | 转发正文 %d 超过限制 %d",
 			resp.ContentLength, cfg.MaxBodyBytes, resp.ContentLength, cfg.MaxBodyBytes)
 	}
+	if cfg.BodyTimeout > 0 && !isEventStream(resp.Header) && resp.Body != nil {
+		resp.Body = newTimerBody(resp.Body, cfg.BodyTimeout)
+	}
 	return resp, nil
+}
+
+// timerBody closes the body when its deadline fires. | timerBody 在截止时间关闭正文。
+type timerBody struct {
+	body  io.ReadCloser
+	timer *time.Timer
+	once  sync.Once
+}
+
+// newTimerBody starts the body deadline. | newTimerBody 启动正文截止计时。
+func newTimerBody(body io.ReadCloser, timeout time.Duration) *timerBody {
+	bodyTimer := &timerBody{body: body}
+	bodyTimer.timer = time.AfterFunc(timeout, func() { _ = bodyTimer.Close() })
+	return bodyTimer
+}
+
+// Read reads from the upstream body. | Read 读取上游正文。
+func (b *timerBody) Read(p []byte) (int, error) { return b.body.Read(p) }
+
+// Close stops the timer and closes the body. | Close 停止计时并关闭正文。
+func (b *timerBody) Close() error {
+	b.once.Do(func() {
+		if b.timer != nil {
+			b.timer.Stop()
+		}
+		_ = b.body.Close()
+	})
+	return nil
 }
 
 // addForwardedHeaders appends X-Forwarded-For/Proto/Host. | addForwardedHeaders 追加 X-Forwarded-For/Proto/Host。
@@ -256,15 +302,7 @@ func (c *Client) writeForwardResponse(w http.ResponseWriter, r *http.Request, re
 	if resp.Body == nil {
 		return
 	}
-	var timer *time.Timer
-	if cfg.BodyTimeout > 0 {
-		timer = time.AfterFunc(cfg.BodyTimeout, func() { _ = resp.Body.Close() })
-		defer timer.Stop()
-	}
-	var dst io.Writer = w
-	if cfg.FlushInterval > 0 {
-		dst = &forwardFlushWriter{writer: w, interval: cfg.FlushInterval, last: time.Now()}
-	}
+	dst := io.Writer(&forwardFlushWriter{writer: w, interval: cfg.FlushInterval, last: time.Now()})
 	buffer := buffpool.Get(32 << 10)
 	buffer = buffer[:cap(buffer)]
 	defer buffpool.Put(buffer)
@@ -303,6 +341,10 @@ func writeForwardError(w http.ResponseWriter, err error) {
 		status = http.StatusGatewayTimeout
 	case errors.Is(err, ErrBlocked):
 		status = http.StatusForbidden
+		var clientErr *Error
+		if errors.As(err, &clientErr) && clientErr.Status > 0 {
+			status = clientErr.Status
+		}
 	case errors.Is(err, ErrClosed):
 		status = http.StatusServiceUnavailable
 	case errors.Is(err, ErrUpgradeUnsupported):

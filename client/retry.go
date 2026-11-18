@@ -88,7 +88,11 @@ func WithRetry(policy RetryPolicy) Option {
 }
 
 // retryableMethod reports whether method may be retried under policy. | retryableMethod 报告 method 在 policy 下是否可重试。
-func retryableMethod(policy RetryPolicy, method string) bool {
+func retryableMethod(policy RetryPolicy, req *http.Request) bool {
+	if req == nil {
+		return false
+	}
+	method := req.Method
 	if policy.Methods != nil {
 		for _, candidate := range policy.Methods {
 			if candidate == method {
@@ -98,6 +102,9 @@ func retryableMethod(policy RetryPolicy, method string) bool {
 		return false
 	}
 	if policy.NonIdempotent {
+		return true
+	}
+	if (method == http.MethodPost || method == http.MethodPatch) && req.Header.Get("Idempotency-Key") != "" {
 		return true
 	}
 	switch method {

@@ -254,13 +254,11 @@ func prepareSeekerBody(body io.ReadSeeker) (io.ReadCloser, func() (io.ReadCloser
 	if err != nil {
 		return nil, nil, "", 0, errs.Wrap(err, ErrBodyNotReplayable)
 	}
-	getBody := func() (io.ReadCloser, error) {
-		if _, err := body.Seek(offset, io.SeekStart); err != nil {
-			return nil, err
-		}
-		return wrapReader(body), nil
-	}
-	return wrapReader(body), getBody, "", -1, nil
+	_ = offset
+	// A shared seeker cannot be replayed concurrently (mirror fan-out); treat
+	// it as one-shot and let retry spool it. | 共享 seeker 无法并发重放（镜像扇出）；
+	// 按一次性处理，由重试负责暂存。
+	return wrapReader(body), nil, "", -1, nil
 }
 
 // readerRange returns the current offset and total size of a ReaderAt+Seeker. | readerRange 返回 ReaderAt+Seeker 的当前偏移与总大小。

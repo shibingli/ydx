@@ -30,6 +30,7 @@ type engine struct {
 	mirrors *mirrorer
 
 	baseTransport *http.Transport
+	h2c           *http.Transport
 	tlsByConfig   map[*TLSConfig]*tlsState
 	hostTLS       map[string]*tlsState
 	defaultTLS    *tlsState
@@ -42,9 +43,11 @@ type engine struct {
 
 	uaCounter atomic.Uint64
 
-	cacheMu   sync.Mutex
-	tlsMu     sync.Mutex
-	ownsCache bool
+	cacheMu     sync.Mutex
+	tlsMu       sync.Mutex
+	ruleHostsMu sync.Mutex
+	ruleHosts   map[*HostSet]struct{}
+	ownsCache   bool
 }
 
 // newEngine builds the engine and a default transport when none was supplied. | newEngine 构建引擎，并在未提供 Transport 时创建默认传输。
@@ -70,24 +73,28 @@ func newEngine(o options) (*engine, error) {
 	} else if tr, ok := base.(*http.Transport); ok {
 		baseTransport = tr
 	}
+	var h2cTransport *http.Transport
 	if o.H2C {
 		if baseTransport == nil {
 			return nil, errs.Detail(ErrInvalidConfig, "H2C needs an *http.Transport | H2C 需要 *http.Transport")
 		}
+		h2cTransport = baseTransport.Clone()
 		protocols := new(http.Protocols)
 		protocols.SetHTTP2(true)
 		protocols.SetUnencryptedHTTP2(true)
-		baseTransport.Protocols = protocols
+		h2cTransport.Protocols = protocols
 	}
 	eng := &engine{
 		base:          base,
 		baseTransport: baseTransport,
+		h2c:           h2cTransport,
 		opts:          o,
 		budget:        newRetryBudget(0.1),
 		budgets:       make(map[float64]*retryBudget),
 		flights:       newFlightGroup(),
 		tlsByConfig:   make(map[*TLSConfig]*tlsState),
 		hostTLS:       make(map[string]*tlsState),
+		ruleHosts:     make(map[*HostSet]struct{}),
 	}
 	if o.TLSConfig != nil {
 		state, err := newTLSState(*o.TLSConfig, baseTransport)
@@ -121,6 +128,13 @@ func newEngine(o options) (*engine, error) {
 
 // RoundTrip applies rules, host selection and retries before the base transport. | RoundTrip 在底层传输前应用规则、Host 选择与重试。
 func (e *engine) RoundTrip(req *http.Request) (resp *http.Response, err error) {
+	if req != nil {
+		defer func() {
+			if err != nil && req.Body != nil {
+				_ = req.Body.Close()
+			}
+		}()
+	}
 	if e.closed.Load() {
 		return nil, ErrClosed
 	}
@@ -153,6 +167,17 @@ func (e *engine) RoundTrip(req *http.Request) (resp *http.Response, err error) {
 		return nil, e.wrapError("hook", req, "", 0, hookErr)
 	}
 	meta := metaFromContext(req.Context())
+	if meta != nil {
+		meta.CacheHit = false
+		meta.Coalesced = false
+		meta.Rule = nil
+		meta.Params.Reset()
+		meta.Host = nil
+		meta.Guard = nil
+		meta.Attempts = 0
+		meta.BytesSent = 0
+		meta.BytesRead = 0
+	}
 	rules := e.rules.Load()
 	var rule *Rule
 	var params Params
@@ -189,7 +214,9 @@ func (e *engine) RoundTrip(req *http.Request) (resp *http.Response, err error) {
 			if message == "" {
 				message = "blocked"
 			}
-			return nil, e.wrapError("guard", req, "", 0, errs.Detail(ErrBlocked, "%s", message))
+			blocked := e.wrapError("guard", req, "", 0, errs.Detail(ErrBlocked, "%s", message))
+			blocked.Status = decision.Status
+			return nil, blocked
 		}
 	}
 	hosts := e.hosts.Load()
@@ -207,6 +234,9 @@ func (e *engine) RoundTrip(req *http.Request) (resp *http.Response, err error) {
 					e.hooks.OnCacheHit(req.Context(), req)
 					return nil
 				})
+			}
+			if req.Body != nil {
+				_ = req.Body.Close()
 			}
 			if meta != nil {
 				meta.CacheHit = true
@@ -230,7 +260,7 @@ func (e *engine) RoundTrip(req *http.Request) (resp *http.Response, err error) {
 		}
 	}
 	var ruleCancel context.CancelFunc
-	if rule != nil && rule.Timeout > 0 {
+	if rule != nil && rule.Timeout > 0 && !forwardNoDefaultRetry(req.Context()) && !streamingRequest(req.Context()) {
 		ctx, cancel := context.WithTimeout(req.Context(), rule.Timeout)
 		req = req.WithContext(ctx)
 		ruleCancel = cancel
@@ -334,7 +364,7 @@ func (e *engine) roundTripDirect(req *http.Request, rule *Rule, meta *Meta) (*ht
 	policy := e.retryPolicy(req, rule, 1)
 	budget := e.budgetFor(policy.Budget)
 	attempts := policy.MaxAttempts
-	if !retryableMethod(policy, req.Method) {
+	if !retryableMethod(policy, req) {
 		attempts = 1
 	}
 	var sp *spool
@@ -348,7 +378,9 @@ func (e *engine) roundTripDirect(req *http.Request, rule *Rule, meta *Meta) (*ht
 	}
 	if attempts == 1 && (rule == nil || (len(rule.Headers) == 0 && rule.Rewrite == nil)) &&
 		connModeFrom(req.Context()) != ConnShort && policy.PerAttemptTimeout <= 0 {
-		e.fireAttempt(req.Context(), AttemptInfo{Attempt: 1, Method: req.Method, URL: safeURL(req.URL)})
+		if e.hooks.OnAttempt != nil {
+			e.fireAttempt(req.Context(), AttemptInfo{Attempt: 1, Method: req.Method, URL: safeURL(req.URL)})
+		}
 		if req.ContentLength > 0 {
 			e.counters.bytesSent.Add(uint64(req.ContentLength))
 		}
@@ -375,7 +407,9 @@ func (e *engine) roundTripDirect(req *http.Request, rule *Rule, meta *Meta) (*ht
 			}
 			return nil, e.wrapError("prepare_attempt", req, "", attempt-1, err)
 		}
-		e.fireAttempt(req.Context(), AttemptInfo{Attempt: attempt, Method: req.Method, URL: safeURL(req.URL)})
+		if e.hooks.OnAttempt != nil {
+			e.fireAttempt(req.Context(), AttemptInfo{Attempt: attempt, Method: req.Method, URL: safeURL(req.URL)})
+		}
 		if out.ContentLength > 0 {
 			e.counters.bytesSent.Add(uint64(out.ContentLength))
 		}
@@ -432,7 +466,7 @@ func (e *engine) roundTripHosts(req *http.Request, rule *Rule, meta *Meta, hosts
 	policy := e.retryPolicy(req, rule, hosts.Len())
 	budget := e.budgetFor(policy.Budget)
 	attempts := policy.MaxAttempts
-	if !retryableMethod(policy, req.Method) {
+	if !retryableMethod(policy, req) {
 		attempts = 1
 	}
 	var sp *spool
@@ -481,7 +515,9 @@ func (e *engine) roundTripHosts(req *http.Request, rule *Rule, meta *Meta, hosts
 			break
 		}
 		if attempt == 1 && attempts == 1 && policy.PerAttemptTimeout <= 0 && canPassThroughHost(host, rule, logical, req) {
-			e.fireAttempt(req.Context(), AttemptInfo{Attempt: 1, Host: host, Method: req.Method, URL: safeURL(logical)})
+			if e.hooks.OnAttempt != nil {
+				e.fireAttempt(req.Context(), AttemptInfo{Attempt: 1, Host: host, Method: req.Method, URL: safeURL(logical)})
+			}
 			if req.ContentLength > 0 {
 				e.counters.bytesSent.Add(uint64(req.ContentLength))
 			}
@@ -512,11 +548,13 @@ func (e *engine) roundTripHosts(req *http.Request, rule *Rule, meta *Meta, hosts
 			if attemptCancel != nil {
 				attemptCancel()
 			}
-			hosts.MarkFailure(host, prepErr)
+			hosts.Release(host)
 			lastErr = prepErr
 			break
 		}
-		e.fireAttempt(req.Context(), AttemptInfo{Attempt: attempt, Host: host, Method: req.Method, URL: safeURL(logical)})
+		if e.hooks.OnAttempt != nil {
+			e.fireAttempt(req.Context(), AttemptInfo{Attempt: attempt, Host: host, Method: req.Method, URL: safeURL(logical)})
+		}
 		if out.ContentLength > 0 {
 			e.counters.bytesSent.Add(uint64(out.ContentLength))
 		}
@@ -551,11 +589,14 @@ func (e *engine) roundTripHosts(req *http.Request, rule *Rule, meta *Meta, hosts
 			e.counters.bytesReceived.Add(uint64(resp.ContentLength))
 		}
 		if retryStatus(policy, resp.StatusCode) && attempt < attempts {
-			if !budget.allow() {
+			if host.IsFailureStatus(resp.StatusCode) {
 				hosts.MarkFailure(host, errs.Detail(ErrUpstreamStatus, "status %d", resp.StatusCode))
+			} else {
+				hosts.Release(host)
+			}
+			if !budget.allow() {
 				return e.finishResponse(resp, req, meta, host, attempt, start), nil
 			}
-			hosts.MarkFailure(host, errs.Detail(ErrUpstreamStatus, "status %d", resp.StatusCode))
 			delay := backoffDelay(policy, attempt)
 			if !policy.DisableRetryAfter {
 				if wait := retryAfterDelay(resp.Header, policy.MaxBackoff); wait > delay {
@@ -593,6 +634,9 @@ func (e *engine) cloneAttempt(req *http.Request, attempt int, target *url.URL, o
 	out := req.Clone(req.Context())
 	out.URL = target
 	out.RequestURI = ""
+	if req.Trailer != nil {
+		out.Trailer = req.Trailer
+	}
 	if host != nil {
 		preserve := rule != nil && rule.PreserveHost
 		if forwardPreserveHost(out.Context()) {
@@ -774,6 +818,9 @@ func (e *engine) wrapError(op string, req *http.Request, host string, attempts i
 	if err == nil {
 		err = ErrRetryExhausted
 	}
+	if isTLSError(err) && !errors.Is(err, ErrTLS) {
+		err = errs.Wrap(err, ErrTLS)
+	}
 	return &Error{
 		Op:       op,
 		Method:   req.Method,
@@ -788,6 +835,9 @@ func (e *engine) wrapError(op string, req *http.Request, host string, attempts i
 func (e *engine) closeIdleConnections() {
 	if closer, ok := e.base.(interface{ CloseIdleConnections() }); ok {
 		closer.CloseIdleConnections()
+	}
+	if e.h2c != nil {
+		e.h2c.CloseIdleConnections()
 	}
 }
 

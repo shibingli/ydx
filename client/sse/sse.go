@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/shibingli/ydx/client"
 	"github.com/shibingli/ydx/errs"
@@ -22,6 +23,8 @@ type Options struct {
 	Drop client.DropPolicy
 	// Writer is the base ydx/sse writer configuration. | Writer 是基础 ydx/sse writer 配置。
 	Writer ydxsse.Options
+	// WriteTimeout bounds one event write; <=0 means 30s. | WriteTimeout 限制单次事件写入；<=0 表示 30s。
+	WriteTimeout time.Duration
 }
 
 // Fanout broadcasts parsed SSE events to independent sse.Writer subscribers. | Fanout 把解析后的 SSE 事件广播给独立的 sse.Writer 订阅者。
@@ -37,15 +40,22 @@ type Fanout struct {
 type Subscription struct {
 	fanout    *Fanout
 	writer    *ydxsse.Writer
+	response  http.ResponseWriter
+	timeout   time.Duration
 	queue     chan client.Event
 	closeOnce sync.Once
+	mu        sync.RWMutex
 	wg        sync.WaitGroup
+	closed    bool
 }
 
 // NewFanout builds a fanout with defaults. | NewFanout 使用默认值构建扇出。
 func NewFanout(o Options) *Fanout {
 	if o.Queue <= 0 {
 		o.Queue = 64
+	}
+	if o.WriteTimeout <= 0 {
+		o.WriteTimeout = 30 * time.Second
 	}
 	return &Fanout{opts: o, subs: make(map[*Subscription]struct{})}
 }
@@ -70,9 +80,11 @@ func (f *Fanout) Add(w http.ResponseWriter, opts ...ydxsse.Options) (*Subscripti
 		return nil, err
 	}
 	sub := &Subscription{
-		fanout: f,
-		writer: writer,
-		queue:  make(chan client.Event, f.opts.Queue),
+		fanout:   f,
+		writer:   writer,
+		response: w,
+		timeout:  f.opts.WriteTimeout,
+		queue:    make(chan client.Event, f.opts.Queue),
 	}
 	f.mu.Lock()
 	if f.closed {
@@ -152,6 +164,12 @@ func (f *Fanout) remove(sub *Subscription) {
 
 // enqueue offers an event without blocking the primary. | enqueue 在不阻塞主流的情况下投递事件。
 func (s *Subscription) enqueue(event client.Event) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.closed {
+		s.fanout.drops.Add(1)
+		return
+	}
 	select {
 	case s.queue <- event:
 		return
@@ -176,6 +194,9 @@ func (s *Subscription) run() {
 	defer s.wg.Done()
 	defer func() { _ = s.writer.Close() }()
 	for event := range s.queue {
+		if s.response != nil && s.timeout > 0 {
+			_ = http.NewResponseController(s.response).SetWriteDeadline(time.Now().Add(s.timeout))
+		}
 		err := s.writer.WriteEvent(ydxsse.Event{
 			ID:      event.ID,
 			Name:    event.Name,
@@ -196,7 +217,13 @@ func (s *Subscription) Close() error {
 	}
 	s.closeOnce.Do(func() {
 		s.fanout.remove(s)
+		if s.response != nil {
+			_ = http.NewResponseController(s.response).SetWriteDeadline(time.Now())
+		}
+		s.mu.Lock()
+		s.closed = true
 		close(s.queue)
+		s.mu.Unlock()
 		s.wg.Wait()
 	})
 	return nil

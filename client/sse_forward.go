@@ -22,7 +22,7 @@ type ForwardOptions struct {
 	SSEHeartbeat time.Duration
 	// BodyTimeout bounds a non-SSE upstream body; <=0 disables it. | BodyTimeout 限制非 SSE 上游正文；<=0 禁用。
 	BodyTimeout time.Duration
-	// MaxBodyBytes caps non-SSE body buffering; <=0 means 8 MiB. | MaxBodyBytes 限制非 SSE 正文缓冲；<=0 表示 8 MiB。
+	// MaxBodyBytes caps non-SSE forwarded bodies; <=0 means unlimited. | MaxBodyBytes 限制非 SSE 转发正文；<=0 表示不限制。
 	MaxBodyBytes int64
 	// PreserveHost keeps the inbound Host header. | PreserveHost 保留入站 Host 头。
 	PreserveHost bool
@@ -296,11 +296,21 @@ func (m *mirrorer) runSSE(parent context.Context, req *http.Request, logical *ur
 		}()
 	}
 	ctx := m.ctx
+	var detach func()
 	if policy.FollowCancel && parent != nil {
-		ctx = parent
+		parentCtx, parentCancel := context.WithCancel(parent)
+		stop := context.AfterFunc(m.ctx, parentCancel)
+		detach = func() {
+			stop()
+			parentCancel()
+		}
+		ctx = parentCtx
 	}
 	ctx, cancel := context.WithTimeout(ctx, policy.Timeout)
 	defer cancel()
+	if detach != nil {
+		defer detach()
+	}
 	out := req.Clone(ctx)
 	out.URL = targetURL(logical, &Host{URL: target}, rule)
 	out.RequestURI = ""
@@ -324,7 +334,7 @@ func (m *mirrorer) runSSE(parent context.Context, req *http.Request, logical *ur
 	out.GetBody = getBody
 	base := m.base
 	if m.engine != nil {
-		base = m.engine.defaultTransport()
+		base = m.engine.transportForURL(out.URL)
 	}
 	resp, err := base.RoundTrip(out)
 	if err != nil {

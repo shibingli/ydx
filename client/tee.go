@@ -51,7 +51,6 @@ func (f SinkFunc) Close() error { return nil }
 type teeSinkWorker struct {
 	sink    Sink
 	ch      chan []byte
-	stop    chan struct{}
 	done    chan struct{}
 	drops   *atomic.Uint64
 	drop    DropPolicy
@@ -72,7 +71,6 @@ func newTeeSinkWorker(sink Sink, queue int, drop DropPolicy, timeout time.Durati
 	worker := &teeSinkWorker{
 		sink:    sink,
 		ch:      make(chan []byte, queue),
-		stop:    make(chan struct{}),
 		done:    make(chan struct{}),
 		drop:    drop,
 		timeout: timeout,
@@ -114,35 +112,28 @@ func (w *teeSinkWorker) enqueue(chunk []byte) bool {
 func (w *teeSinkWorker) run() {
 	defer close(w.done)
 	defer func() { _ = w.sink.Close() }()
-	for {
-		select {
-		case <-w.stop:
-			return
-		case chunk, ok := <-w.ch:
-			if !ok {
-				return
-			}
-			ctx, cancel := context.WithTimeout(context.Background(), w.timeout)
-			err := w.sink.WriteChunk(ctx, chunk)
-			cancel()
-			if err != nil {
-				w.drops.Add(1)
-			}
+	for chunk := range w.ch {
+		ctx, cancel := context.WithTimeout(context.Background(), w.timeout)
+		err := w.sink.WriteChunk(ctx, chunk)
+		cancel()
+		if err != nil {
+			w.drops.Add(1)
 		}
 	}
 }
 
-// Close closes the queue and waits for the consumer; the stop signal bounds
-// teardown to one in-flight sink call. | Close 关闭队列并等待消费者；stop 信号把
-// 退出限制在一次在途 sink 调用内。
+// Close closes the queue and waits up to one sink timeout for the consumer. | Close
+// 关闭队列并最多等待一个 sink 超时。
 func (w *teeSinkWorker) Close() {
 	w.once.Do(func() {
 		w.mu.Lock()
 		w.closed = true
-		close(w.stop)
 		close(w.ch)
 		w.mu.Unlock()
-		<-w.done
+		select {
+		case <-w.done:
+		case <-time.After(w.timeout):
+		}
 	})
 }
 
@@ -150,7 +141,6 @@ func (w *teeSinkWorker) Close() {
 type eventSinkWorker struct {
 	sink    EventSink
 	ch      chan Event
-	stop    chan struct{}
 	done    chan struct{}
 	drops   *atomic.Uint64
 	drop    DropPolicy
@@ -171,7 +161,6 @@ func newEventSinkWorker(sink EventSink, queue int, drop DropPolicy, timeout time
 	worker := &eventSinkWorker{
 		sink:    sink,
 		ch:      make(chan Event, queue),
-		stop:    make(chan struct{}),
 		done:    make(chan struct{}),
 		drop:    drop,
 		timeout: timeout,
@@ -213,35 +202,28 @@ func (w *eventSinkWorker) enqueue(event Event) bool {
 func (w *eventSinkWorker) run() {
 	defer close(w.done)
 	defer func() { _ = w.sink.Close() }()
-	for {
-		select {
-		case <-w.stop:
-			return
-		case event, ok := <-w.ch:
-			if !ok {
-				return
-			}
-			ctx, cancel := context.WithTimeout(context.Background(), w.timeout)
-			err := w.sink.WriteEvent(ctx, event)
-			cancel()
-			if err != nil {
-				w.drops.Add(1)
-			}
+	for event := range w.ch {
+		ctx, cancel := context.WithTimeout(context.Background(), w.timeout)
+		err := w.sink.WriteEvent(ctx, event)
+		cancel()
+		if err != nil {
+			w.drops.Add(1)
 		}
 	}
 }
 
-// Close closes the queue and waits for the consumer; the stop signal bounds
-// teardown to one in-flight sink call. | Close 关闭队列并等待消费者；stop 信号把
-// 退出限制在一次在途 sink 调用内。
+// Close closes the queue and waits up to one sink timeout for the consumer. | Close
+// 关闭队列并最多等待一个 sink 超时。
 func (w *eventSinkWorker) Close() {
 	w.once.Do(func() {
 		w.mu.Lock()
 		w.closed = true
-		close(w.stop)
 		close(w.ch)
 		w.mu.Unlock()
-		<-w.done
+		select {
+		case <-w.done:
+		case <-time.After(w.timeout):
+		}
 	})
 }
 

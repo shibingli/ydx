@@ -81,12 +81,18 @@ func (c *Client) Send(ctx context.Context, method, rawURL string, body any, opts
 	if !strings.Contains(rawURL, "://") {
 		resolved, err := c.resolveRequestURL(rawURL)
 		if err != nil {
+			if rc != nil {
+				_ = rc.Close()
+			}
 			return nil, err
 		}
 		target = resolved
 	}
 	req, err := http.NewRequestWithContext(ctx, method, target, rc)
 	if err != nil {
+		if rc != nil {
+			_ = rc.Close()
+		}
 		return nil, errs.Wrap(err, ErrInvalidRequest)
 	}
 	if rc != nil && length >= 0 {

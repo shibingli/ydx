@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -83,6 +84,69 @@ func TestForwardStripsProxyAuthorization(t *testing.T) {
 	resp.Body.Close()
 	if got != "" {
 		t.Fatalf("proxy credentials leaked: %q", got)
+	}
+}
+
+func TestForwardTrailers(t *testing.T) {
+	var trailer string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		trailer = r.Trailer.Get("X-Sum")
+	}))
+	defer upstream.Close()
+	c, err := New(WithHosts(upstream.URL))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	in := httptest.NewRequest(http.MethodPost, "/x", strings.NewReader("payload"))
+	in.Header.Set("Trailer", "X-Sum")
+	in.Trailer = http.Header{"X-Sum": {"42"}}
+	in.ContentLength = -1
+	rec := httptest.NewRecorder()
+	c.Handler().ServeHTTP(rec, in)
+	if rec.Code != http.StatusOK || trailer != "42" {
+		t.Fatalf("status %d trailer %q", rec.Code, trailer)
+	}
+}
+
+func TestForwardRelativeHostHeaderIsNotATarget(t *testing.T) {
+	var hits atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+	}))
+	defer upstream.Close()
+	c, err := New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	req := httptest.NewRequest(http.MethodGet, "/x", nil)
+	req.Host = strings.TrimPrefix(upstream.URL, "http://")
+	if _, err := c.Forward(context.Background(), req); !errors.Is(err, ErrNoHosts) {
+		t.Fatalf("want ErrNoHosts, got %v", err)
+	}
+	if hits.Load() != 0 {
+		t.Fatal("inbound Host was used as a proxy target")
+	}
+}
+
+func TestForwardLargeResponseDefaultUnlimited(t *testing.T) {
+	payload := strings.Repeat("x", 9<<20)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(payload))
+	}))
+	defer upstream.Close()
+	c, err := New(WithHosts(upstream.URL))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	rec := httptest.NewRecorder()
+	in := httptest.NewRequest(http.MethodGet, upstream.URL+"/x", nil)
+	c.Handler().ServeHTTP(rec, in)
+	if rec.Code != http.StatusOK || rec.Body.Len() != len(payload) {
+		t.Fatalf("status %d size %d", rec.Code, rec.Body.Len())
 	}
 }
 

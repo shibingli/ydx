@@ -22,6 +22,42 @@ func (r *testReadSeekCloser) Close() error {
 	return nil
 }
 
+type seekerOnly struct {
+	data string
+	off  int64
+}
+
+func (s *seekerOnly) Read(p []byte) (int, error) {
+	if s.off >= int64(len(s.data)) {
+		return 0, io.EOF
+	}
+	n := copy(p, s.data[s.off:])
+	s.off += int64(n)
+	return n, nil
+}
+
+func (s *seekerOnly) Seek(offset int64, whence int) (int64, error) {
+	switch whence {
+	case io.SeekStart:
+		s.off = offset
+	case io.SeekCurrent:
+		s.off += offset
+	case io.SeekEnd:
+		s.off = int64(len(s.data)) + offset
+	}
+	return s.off, nil
+}
+
+func TestPrepareSeekerIsOneShot(t *testing.T) {
+	_, getBody, _, err := prepareBody(&seekerOnly{data: "payload"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if getBody != nil {
+		t.Fatal("shared seeker must not expose a concurrent replay function")
+	}
+}
+
 func TestPrepareBodyKinds(t *testing.T) {
 	t.Run("nil", func(t *testing.T) {
 		body, getBody, contentType, err := prepareBody(nil)

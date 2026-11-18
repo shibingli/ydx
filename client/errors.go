@@ -104,6 +104,8 @@ type Error struct {
 	Host string
 	// Attempts is the number of attempted upstream calls. | Attempts 是已尝试的上游调用次数。
 	Attempts int
+	// Status is the guard-supplied HTTP status, when non-zero. | Status 是 Guard 给出的 HTTP 状态码（非零时）。
+	Status int
 }
 
 // Error implements error. | Error 实现 error 接口。

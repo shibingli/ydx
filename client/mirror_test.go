@@ -53,6 +53,40 @@ func TestMirrorUpstreamAsyncAndNoRecursion(t *testing.T) {
 	}
 }
 
+func TestMirrorUsesHostTLS(t *testing.T) {
+	var hits atomic.Int32
+	mirror, cert := newTestTLSServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+	}))
+	defer mirror.Close()
+	primary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	defer primary.Close()
+	c, err := New(
+		WithHosts(primary.URL),
+		WithHostTLS(mirror.URL, TLSConfig{RootCAs: testCertPool(cert), DisableSystemRoots: true}),
+		WithRule(Rule{
+			Name:    "r",
+			Pattern: "/x",
+			Mirror:  &MirrorPolicy{Targets: []string{mirror.URL}, Percent: 100, Sync: true, Wait: time.Second},
+		}),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	resp, err := c.Get(context.Background(), primary.URL+"/x")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if hits.Load() != 1 {
+		t.Fatalf("mirror hits %d", hits.Load())
+	}
+	if c.Stats().MirrorErrors != 0 {
+		t.Fatalf("mirror errors %d", c.Stats().MirrorErrors)
+	}
+}
+
 func TestMirrorCloseRace(t *testing.T) {
 	target := mustURL("http://127.0.0.1:1")
 	policy := &MirrorPolicy{
@@ -127,7 +161,13 @@ func TestMirrorStripsSensitiveHeaders(t *testing.T) {
 		WithRule(Rule{
 			Name:    "r",
 			Pattern: "/x",
-			Mirror:  &MirrorPolicy{Targets: []string{mirror.URL}, Percent: 100, Sync: true, Wait: time.Second},
+			Mirror: &MirrorPolicy{
+				Targets:      []string{mirror.URL},
+				Percent:      100,
+				Sync:         true,
+				Wait:         time.Second,
+				StripHeaders: []string{"X-Trace"},
+			},
 		}),
 	)
 	if err != nil {

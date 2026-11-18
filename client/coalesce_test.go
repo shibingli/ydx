@@ -3,9 +3,11 @@ package client
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -112,6 +114,83 @@ func TestCoalesceDoesNotShareRanges(t *testing.T) {
 	}
 	if hits.Load() != 2 {
 		t.Fatalf("upstream hits %d, want 2", hits.Load())
+	}
+}
+
+func TestCoalesceDoesNotBufferSSE(t *testing.T) {
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, "data: one\n\n")
+		w.(http.Flusher).Flush()
+		<-release
+	}))
+	defer srv.Close()
+	defer close(release)
+	c, err := New(WithRule(Rule{
+		Name:     "r",
+		Pattern:  "/events",
+		Coalesce: &CoalescePolicy{MaxBodyBytes: 1 << 20},
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	resp, err := c.Get(ctx, srv.URL+"/events")
+	if err != nil {
+		t.Fatalf("SSE was buffered until timeout: %v", err)
+	}
+	defer resp.Body.Close()
+	buf := make([]byte, 64)
+	n, _ := resp.Body.Read(buf)
+	if !strings.Contains(string(buf[:n]), "data: one") {
+		t.Fatalf("event %q", buf[:n])
+	}
+}
+
+func TestCoalesceSeparatesCustomHeaders(t *testing.T) {
+	var hits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		time.Sleep(30 * time.Millisecond)
+		_, _ = w.Write([]byte(r.Header.Get("X-Tenant")))
+	}))
+	defer srv.Close()
+	c, err := New(WithRule(Rule{
+		Name:     "r",
+		Pattern:  "/x",
+		Coalesce: &CoalescePolicy{MaxBodyBytes: 1 << 20},
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	results := make(chan string, 2)
+	var wg sync.WaitGroup
+	for _, tenant := range []string{"a", "b"} {
+		wg.Add(1)
+		go func(tenant string) {
+			defer wg.Done()
+			resp, err := c.Get(context.Background(), srv.URL+"/x", WithRequestHeader("X-Tenant", tenant))
+			if err != nil {
+				results <- "error:" + err.Error()
+				return
+			}
+			data, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			results <- string(data)
+		}(tenant)
+	}
+	wg.Wait()
+	close(results)
+	seen := map[string]bool{}
+	for result := range results {
+		seen[result] = true
+	}
+	if !seen["a"] || !seen["b"] || hits.Load() != 2 {
+		t.Fatalf("results %v hits %d", seen, hits.Load())
 	}
 }
 
