@@ -30,7 +30,7 @@ ydx 是 yd 全栈框架的可复用组件仓库；组件源码以本仓库为唯
 - **组件模块不得包含基准**：所有 `Benchmark*` 放 `benchmarks/*` 独立模块；组件模块也不得
   依赖基准专用库。基准模块的包名同样等于目录名。
 - 产品模块：`errs`、`sysinfo`、`gc`、`buffpool`、`pool`、`protocol`、`nodeid`、`base64`、`json`、`xml`、`afs`、
-  `config`、`log`、`regexpx`、`router`、`gorm`、`redis`、`asynq`、`cron`、`cache`、`sse`、`websocket`、
+  `config`、`log`、`regexpx`、`router`、`gorm`、`redis`、`asynq`、`cron`、`cache`、`client`、`client/waf`、`client/sse`、`sse`、`websocket`、
   `webtransport`、`realtime`、`render`、`i18n`、`openapi`、`openapi/ydrouter`、`auth`、`authstore`、`captcha`、`guomi`、
   `workflow`、`waf`、`raft`、`rdma`、`wal`、`wal/zstd`、`wal/uring`、`wal/cronbackup`、`middleware` 及
   `middleware/{accesslog,asyncafter,compress,cors,ratelimit,recovery,requestid,reqlog}`。
@@ -50,13 +50,19 @@ ydx 是 yd 全栈框架的可复用组件仓库；组件源码以本仓库为唯
   多实例实现（`authstore/redis` 与 `authstore/{oauth2,oidc,saml,cas,scim,rbac,kms,kmip,wsfed,otp,webauthn}`）。
   依赖方向只能是 `authstore → auth`，auth 不得反向依赖 authstore/Redis；测试使用 miniredis，
   不得要求外部 Redis 才能通过 CI。模块根目录同样提供 `docs.go`、`go.mod`、`go.sum`。
+- `client` 是策略化 HTTP 客户端与转发引擎：核心实现为 `http.RoundTripper`，兼容标准
+  `http.Client` 语义；路径规则、Host 池、重试、缓存、合并、镜像、SSE 转发/镜像、WAF/ACL、
+  TLS、Pipeline 编排均在核心模块内。核心只依赖 `errs`、`json`、`xml`、`log`、`buffpool`、
+  `regexpx`、`base64`，不得引入 `waf`、Redis、gorm 等重依赖；WAF 与 SSE 扇出适配分别放
+  嵌套模块 `client/waf`、`client/sse`，未使用时核心不承担其依赖。SSE 转发/镜像与反向代理
+  `Handler` 必须逐块 Flush、不得整包缓冲；`Forward` 默认保持请求体流式并关闭隐式重试。
 - `waf`（根目录）是唯一的 WAF 实现：自研 SecLang 引擎，原生支持 `router` 与 `net/http`，
   带热更新、钩子、原生/WASM 插件与报警；热路径使用必需字面量/字节集/最小长度预过滤与
   独立规则并发纯求值，动作仍按源码顺序提交。原 `middleware/waf`（Coraza 封装的 v1）已移除；
   依赖方向仍为 yd → ydx，不得让 `waf` 反向依赖 `yd` 或重新引入 Coraza 引擎。
 - `openapi` 是独立模块：核心只接受 `openapi.Route` 并提供标准 `net/http` 处理器，
   **不得** import `ydx/router`；路由适配（`FromRouter` / `Handler`）只在 `openapi/ydrouter`。
-- 基准模块（23 个）：`benchmarks/{auth,base64,buffpool,cache,compress,cron,crypto,json,jwt,log,middleware,pool,raft,rdma,regexpx,router,sse,template,waf,wal,websocket,workflow,xml}`。
+- 基准模块（24 个）：`benchmarks/{auth,base64,buffpool,cache,client,compress,cron,crypto,json,jwt,log,middleware,pool,raft,rdma,regexpx,router,sse,template,waf,wal,websocket,workflow,xml}`。
   `benchmarks/cache/compare` 是 `cache` 模块内的对比子包。`benchmarks/xml` 以 `xml/v0.1.0`
   子目录标签发布为运行门禁，标签发布前通过仓库外临时 `go.work` 运行。yd 仓库不再保留基准，所有最终结果以本仓为准。
 - 守卫模块：`repotest`。

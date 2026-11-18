@@ -6,11 +6,9 @@
 // standard http.Client or as the transport of an existing client. | 核心引擎实现
 // http.RoundTripper，可直接交给标准 http.Client 使用，也可替换已有客户端的 Transport。
 //
-// Basic usage with net/http semantics: | 使用 net/http 语义的基本用法：
+// # Basic usage | 基本用法
 //
-//	c, err := client.New(
-//		client.WithBaseURL("https://api.example.com"),
-//	)
+//	c, err := client.New(client.WithBaseURL("https://api.example.com"))
 //	if err != nil {
 //		log.Fatal("create client", log.Err(err))
 //	}
@@ -22,7 +20,55 @@
 //	}
 //	defer resp.Body.Close()
 //
-// The same engine can be mounted as a reverse proxy handler: | 同一引擎也可以挂成反向代理：
+// # Rules, hosts and cache | 规则、Host 与缓存
 //
+//	c, err := client.New(
+//		client.WithHosts("https://api-a.example.com", "https://api-b.example.com"),
+//		client.WithRule(client.Rule{
+//			Name:    "user",
+//			Pattern: "/api/user/{id}",
+//			Cache:   &client.CachePolicy{TTL: 30 * time.Second},
+//		}),
+//	)
+//
+// # SSE forwarding | SSE 转发
+//
+// Mount the reverse proxy on a YD route or on net/http: | 把反向代理挂到 YD 路由或 net/http：
+//
+//	r.HandleRaw(http.MethodGet, "/gateway", c.Handler().ServeHTTP)
 //	http.Handle("/gateway/", http.StripPrefix("/gateway", c.Handler()))
+//
+// The handler detects text/event-stream and streams it chunk by chunk with a
+// Flush; cache and coalescing are bypassed for streams. | Handler 会识别
+// text/event-stream 并逐块 Flush；流式响应绕过缓存与合并。
+//
+// # Pipeline orchestration | Pipeline 编排
+//
+//	plan := client.NewPipeline(client.PipelineOptions{Timeout: 10 * time.Second},
+//		client.Step("login").POST("/auth/login").JSON(credentials).
+//			ExtractJSON("token", "token"),
+//		client.Parallel(
+//			client.Step("profile").GET("/api/me").
+//				HeaderFunc("Authorization", func(v *client.Vars) string {
+//					return "Bearer " + v.String("token")
+//				}),
+//			client.Step("orders").GET("/api/orders").
+//				HeaderFunc("Authorization", func(v *client.Vars) string {
+//					return "Bearer " + v.String("token")
+//				}),
+//		),
+//	)
+//	result, err := plan.Run(ctx, c)
+//
+// # TLS | TLS
+//
+//	c, err := client.New(
+//		client.WithHosts("https://mts.example.com"),
+//		client.WithTLS(client.TLSConfig{
+//			RootCAFiles: []string{"/etc/ydx/ca.pem"},
+//			CertFile:    "/etc/ydx/client.pem",
+//			KeyFile:     "/etc/ydx/client-key.pem",
+//		}),
+//	)
+//	err = c.ReloadTLS() // re-read files and swap new connections
 package client

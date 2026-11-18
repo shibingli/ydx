@@ -171,11 +171,11 @@ func buildTLSConfig(cfg TLSConfig) (*tls.Config, error) {
 		MinVersion:           cfg.MinVersion,
 		MaxVersion:           cfg.MaxVersion,
 		CipherSuites:         append([]uint16(nil), cfg.CipherSuites...),
-		CurvePreferences:     append([]tls.CurveID(nil), cfg.CurvePreferences...),
 		InsecureSkipVerify:   cfg.InsecureSkipVerify,
 		Certificates:         append([]tls.Certificate(nil), cfg.Certificates...),
 		GetClientCertificate: cfg.GetClientCertificate,
 	}
+	tlsCfg.CurvePreferences = append([]tls.CurveID(nil), cfg.CurvePreferences...)
 	if tlsCfg.MinVersion == 0 {
 		tlsCfg.MinVersion = tls.VersionTLS12
 	}

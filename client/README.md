@@ -1,18 +1,72 @@
 # ydx/client
 
-基于 `net/http` 的策略化 HTTP 客户端与转发引擎，正在实现中。
+基于 `net/http` 的策略化 HTTP 客户端、SSE/反向代理转发引擎与请求编排模块。
 
-计划能力：
+## 能力
 
-- 完整 HTTP 方法（含 CONNECT 隧道流）
-- 路径规则匹配：`:id`、`{id}`、参数正则、段内通配、末段捕获
-- 多 Host 负载、健康检查、故障剔除与换 Host 重试
-- 可选缓存、并发请求合并、A/B 流量镜像
-- SSE 出站消费、流式转发、影子上游重放与 tee 扇出
-- 反向代理 `Forward`/`Handler`
-- WAF/黑白名单/SSRF 防护
-- UA 模拟与随机、Hooks、统计
-- TLS 私有 CA、mTLS、证书固定、热更新
-- Pipeline/Group 请求编排
+| 能力 | 说明 |
+|---|---|
+| HTTP 方法 | GET/HEAD/POST/PUT/PATCH/DELETE/OPTIONS/TRACE/CONNECT + 自定义方法；CONNECT 的 2xx Body 即隧道流 |
+| 路径规则 | `:id`、`{id}`、`:id(regex)`、`{id:regex}`、段内 `*.jpg`、末段 `*path`、多参数；`Expand` 反向生成 URL |
+| Host 池 | 加权/最少在途/随机/一致性哈希/顺序；被动健康、冷却/半开、可选主动检查、fail-open、换 Host 重试 |
+| 请求体 | 内存/string/文件/Reader；重试/镜像时按上限 spool（可选落盘）；GET/直通路径零额外 clone |
+| 缓存 | 可选内置分片 LRU+TTL，支持 `Cache-Control`、`Expires`、`Vary`、自定义 `Store`/Key |
+| 请求合并 | 相同并发 GET/HEAD 合并（singleflight）；超大/不可共享响应自动 bypass |
+| 镜像 | A：影子上游重放（默认，可同步/异步/抽样/并行）；B：主流 tee 到 Sink/EventSink，慢消费者丢弃 |
+| SSE | EventReader、出站 Stream（重连/Last-Event-ID/空闲超时）、Forward/Handler 逐块 Flush、A/B 镜像 |
+| 安全 | Guard 链、AccessPolicy 黑白名单/CIDR/私网拦截、拨号期 IP 复检、内置 WAF 适配模块 |
+| TLS | 系统根/私有 CA、mTLS、SPKI 固定、会话复用、按 Host 覆盖、`ReloadTLS` 热更新 |
+| UA | Fixed/Random/Rotate/Weighted，内置桌面/移动 UA，Force 语义，companion headers |
+| 编排 | Pipeline：Serial/Parallel/Step/Func/Vars，JSON/Header/Status/Regexp/Func 提取，FailFast 取消 |
+| 观测 | Hooks、原子 Stats、HostStats、HTTP trace（可选）、ydx/log 结构化日志 |
+| 连接 | Long/Short、h2c、连接预热、连接池参数、响应排空复用 |
 
-设计稿：`../docs/superpowers/specs/2026-11-18-http-client-design.md`
+## 设计边界
+
+- 核心不 import `ydx/waf`、`ydx/cache`（Redis/gorm）或 `ydx/sse`（router）；WAF 与 SSE
+  扇出适配分别在可选模块 `client/waf`、`client/sse`。
+- `net/http` 对外发 body 没有内核零拷贝；“零拷贝”指正文只读一次、fan-out 共享只读字节、
+  不重复序列化、池化缓冲与流式透传。
+- v1 不做任意 DAG、WebSocket/Upgrade 转发、完整 RFC 9111 缓存或分布式缓存。
+
+## 最小用法
+
+```go
+c, err := client.New(
+    client.WithHosts("https://api-a.example.com", "https://api-b.example.com"),
+    client.WithRule(client.Rule{
+        Name:    "user",
+        Pattern: "/api/user/{id}",
+        Cache:   &client.CachePolicy{TTL: 30 * time.Second},
+    }),
+)
+if err != nil { /* ... */ }
+defer c.Close()
+
+resp, err := c.Get(ctx, "/api/user/42")
+```
+
+反向代理：
+
+```go
+r.HandleRaw(http.MethodGet, "/gateway", c.Handler().ServeHTTP)
+http.Handle("/gateway/", http.StripPrefix("/gateway", c.Handler()))
+```
+
+SSE 转发/镜像：
+
+```go
+c, _ := client.New(
+    client.WithHosts("https://sse.example.com"),
+    client.WithRule(client.Rule{
+        Name:    "events",
+        Pattern: "/events",
+        Mirror: &client.MirrorPolicy{
+            Targets: []string{"https://shadow.example.com"},
+            Percent: 100,
+        },
+    }),
+)
+```
+
+设计稿：`../docs/superpowers/specs/2026-11-18-http-client-design.md`。

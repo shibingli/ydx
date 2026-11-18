@@ -42,6 +42,9 @@
 | `github.com/shibingli/ydx/asynq` | `asynq` | 基于 asynq 的异步任务层（注册表、客户端、服务端） |
 | `github.com/shibingli/ydx/cron` | `cron` | 单机/多机全生命周期定时任务：cron/Quartz 语法、持久化、超时/重试/并发策略、分布式锁与 YD 路由原生管理 API（net/http 适配）；Redis 适配见 `cron/redis` |
 | `github.com/shibingli/ydx/cache` | `cache` | 二级缓存（L1 环形缓存 + Redis） |
+| `github.com/shibingli/ydx/client` | `client` | 策略化 HTTP 客户端：全方法/路径规则、多 Host 与重试、缓存/合并/镜像、SSE 转发、WAF/ACL、TLS、Pipeline 编排 |
+| `github.com/shibingli/ydx/client/waf` | `waf` | 将 `ydx/waf` 适配为 `client.Guard` 的可选模块 |
+| `github.com/shibingli/ydx/client/sse` | `sse` | 将 `ydx/sse` 适配为 `client.EventSink` 的 SSE 多订阅者扇出 |
 | `github.com/shibingli/ydx/sse` | `sse` | Server-Sent Events 写入器与广播器 |
 | `github.com/shibingli/ydx/websocket` | `websocket` | RFC 6455 / 7692 / 8441 / 9220 WebSocket |
 | `github.com/shibingli/ydx/webtransport` | `webtransport` | HTTP/3 WebTransport 服务端/客户端、带帧消息通道与会话追踪 |
@@ -124,6 +127,7 @@ ydx 的组件实例默认**不共享 Go 内存状态**：同一个进程里创�
 | `benchmarks/base64` | `encoding/base64`、`cristalhq/base64`、`cloudwego/base64x` | [base64](benchmarks/base64/README.md) |
 | `benchmarks/buffpool` | `sync.Pool`、`bytebufferpool` | [buffpool](benchmarks/buffpool/README.md) |
 | `benchmarks/cache` | `bigcache`、`freecache`、`ristretto`、`sync.Map`、`go-cache`、`theine`、`ttlcache`、`golang-lru` | [cache](benchmarks/cache/README.md) |
+| `benchmarks/client` | `net/http`、resty v2、req v3、fasthttp | [client](benchmarks/client/README.md) |
 | `benchmarks/compress` | 标准库 gzip、klauspost gzip/zstd、brotli、snappy、lz4 | [compress](benchmarks/compress/README.md) |
 | `benchmarks/cron` | `robfig/cron/v3`、`go-co-op/gocron/v2`、`adhocore/gronx` | [cron](benchmarks/cron/README.md) |
 | `benchmarks/crypto` | 标准库 SHA-256/AES-GCM/ChaCha20-Poly1305/ECDSA/Ed25519、维护版与旧版 gmsm | [crypto](benchmarks/crypto/README.md) |
