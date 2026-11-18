@@ -22,4 +22,3 @@ require (
 	github.com/spf13/afero v1.15.0 // indirect
 	golang.org/x/text v0.44.0 // indirect
 )
-
