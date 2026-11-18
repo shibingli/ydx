@@ -29,17 +29,25 @@ type engine struct {
 	flights     *flightGroup
 	mirrors     *mirrorer
 	mirrorDrops atomic.Uint64
+
+	baseTransport *http.Transport
+	tlsMu         sync.Mutex
+	tlsByConfig   map[*TLSConfig]*tlsState
+	tlsStates     []*tlsState
+	hostTLS       map[string]*tlsState
+	defaultTLS    *tlsState
 }
 
 // newEngine builds the engine and a default transport when none was supplied. | newEngine 构建引擎，并在未提供 Transport 时创建默认传输。
-func newEngine(o options) *engine {
+func newEngine(o options) (*engine, error) {
 	base := o.Transport
+	var baseTransport *http.Transport
 	if base == nil {
 		dialer := &net.Dialer{Timeout: 5 * time.Second, KeepAlive: 30 * time.Second}
 		if o.AccessPolicy != nil {
 			dialer.Control = o.AccessPolicy.dialControl
 		}
-		base = &http.Transport{
+		baseTransport = &http.Transport{
 			Proxy:                 http.ProxyFromEnvironment,
 			DialContext:           dialer.DialContext,
 			ForceAttemptHTTP2:     true,
@@ -49,16 +57,46 @@ func newEngine(o options) *engine {
 			TLSHandshakeTimeout:   10 * time.Second,
 			ExpectContinueTimeout: time.Second,
 		}
+		base = baseTransport
+	} else if tr, ok := base.(*http.Transport); ok {
+		baseTransport = tr
 	}
 	eng := &engine{
-		base:    base,
-		opts:    o,
-		budget:  newRetryBudget(0.1),
-		flights: newFlightGroup(),
-		mirrors: newMirrorer(base, o.MaxMirrorInflight),
+		base:          base,
+		baseTransport: baseTransport,
+		opts:          o,
+		budget:        newRetryBudget(0.1),
+		flights:       newFlightGroup(),
+		tlsByConfig:   make(map[*TLSConfig]*tlsState),
+		hostTLS:       make(map[string]*tlsState),
 	}
+	if o.TLSConfig != nil {
+		state, err := newTLSState(*o.TLSConfig, baseTransport)
+		if err != nil {
+			return nil, err
+		}
+		eng.defaultTLS = state
+		eng.tlsByConfig[o.TLSConfig] = state
+		eng.tlsStates = append(eng.tlsStates, state)
+	}
+	for host, cfg := range o.HostTLS {
+		if baseTransport == nil {
+			return nil, errs.Detail(ErrTLSConfig, "host TLS needs an *http.Transport | Host TLS 需要 *http.Transport")
+		}
+		state, err := newTLSState(cfg, baseTransport)
+		if err != nil {
+			return nil, err
+		}
+		eng.hostTLS[strings.ToLower(host)] = state
+		eng.tlsStates = append(eng.tlsStates, state)
+	}
+	mirrorBase := http.RoundTripper(base)
+	if eng.defaultTLS != nil {
+		mirrorBase = eng.defaultTLS.current()
+	}
+	eng.mirrors = newMirrorer(mirrorBase, o.MaxMirrorInflight)
 	eng.rules.Store(&RuleSet{})
-	return eng
+	return eng, nil
 }
 
 // RoundTrip applies rules, host selection and retries before the base transport. | RoundTrip 在底层传输前应用规则、Host 选择与重试。
@@ -199,7 +237,7 @@ func (e *engine) roundTripDirect(req *http.Request, rule *Rule, meta *Meta) (*ht
 			return nil, e.wrapError("prepare_attempt", req, "", attempt-1, err)
 		}
 		start := time.Now()
-		resp, err := e.base.RoundTrip(out)
+		resp, err := e.defaultTransport().RoundTrip(out)
 		if err != nil {
 			lastErr = err
 			if attempt >= attempts || policy.DisableNetworkRetry ||
@@ -282,8 +320,14 @@ func (e *engine) roundTripHosts(req *http.Request, rule *Rule, meta *Meta, hosts
 			lastErr = prepErr
 			break
 		}
+		transport, transportErr := e.transportFor(host)
+		if transportErr != nil {
+			hosts.MarkFailure(host, transportErr)
+			lastErr = transportErr
+			break
+		}
 		start := time.Now()
-		resp, err := e.base.RoundTrip(out)
+		resp, err := transport.RoundTrip(out)
 		if err != nil {
 			hosts.MarkFailure(host, err)
 			lastErr = err

@@ -68,6 +68,12 @@ var (
 	ErrBlocked = errs.New("client: request blocked | client：请求被拦截")
 	// ErrGuard indicates a guard execution failure. | ErrGuard 表示守卫执行失败。
 	ErrGuard = errs.New("client: guard failed | client：守卫执行失败")
+	// ErrTLSConfig indicates an unusable TLS configuration. | ErrTLSConfig 表示不可用的 TLS 配置。
+	ErrTLSConfig = errs.New("client: invalid TLS configuration | client：非法的 TLS 配置")
+	// ErrTLS indicates a TLS handshake or verification failure. | ErrTLS 表示 TLS 握手或校验失败。
+	ErrTLS = errs.New("client: TLS failure | client：TLS 失败")
+	// ErrTLSPin indicates an SPKI pin mismatch. | ErrTLSPin 表示 SPKI 固定不匹配。
+	ErrTLSPin = errs.New("client: TLS certificate pin mismatch | client：TLS 证书固定不匹配")
 )
 
 // Error wraps a client operation failure and preserves the cause chain. | Error 包装客户端操作失败并保留原因链。

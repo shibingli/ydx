@@ -29,7 +29,10 @@ func New(opts ...Option) (*Client, error) {
 	if err != nil {
 		return nil, err
 	}
-	eng := newEngine(cfg)
+	eng, err := newEngine(cfg)
+	if err != nil {
+		return nil, err
+	}
 	eng.rules.Store(rules)
 	hs := cfg.HostSet
 	if hs == nil && len(cfg.Hosts) > 0 {
@@ -99,6 +102,7 @@ func (c *Client) Close() error {
 		_ = hs.Close()
 	}
 	c.engine.mirrors.Close()
+	c.engine.closeTLSIdle()
 	c.engine.cacheMu.Lock()
 	store := c.engine.cacheStore
 	owned := c.engine.ownsCache

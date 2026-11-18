@@ -47,6 +47,8 @@ type Host struct {
 	Headers http.Header
 	// Health configures passive and active health. | Health 配置被动与主动健康。
 	Health HealthPolicy
+	// TLS overrides the client TLS configuration for this host. | TLS 为该 Host 覆盖客户端 TLS 配置。
+	TLS *TLSConfig
 
 	entry *hostEntry
 }
