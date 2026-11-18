@@ -8,6 +8,13 @@ name: ci-extra
 on:
   push:
     branches: [main]
+    # Documentation-only pushes do not need platform/build matrix coverage.
+    # | 仅文档变更的推送不需要平台/构建矩阵覆盖。
+    paths-ignore:
+      - '**/*.md'
+      - 'docs/**'
+      - '.gitignore'
+      - 'LICENSE'
   workflow_dispatch:
 
 permissions:
@@ -100,6 +107,8 @@ jobs:
           cache: true
           cache-dependency-path: '**/go.sum'
       - name: Cross-build linux/windows/darwin amd64+arm64
+        env:
+          JOBS: '4'
         run: bash scripts/cross-build.sh
       # Link the assembly-heavy test binaries for both macOS instruction sets.
       # A library cross-build does not link, so an undefined arm64/amd64 assembly
