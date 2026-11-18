@@ -302,6 +302,12 @@ func TestBodySpoolReplay(t *testing.T) {
 
 func TestRetryAfterDelay(t *testing.T) {
 	max := time.Second
+	if got, ok := retryAfterValue(http.Header{"Retry-After": {"0"}}, max); !ok || got != 0 {
+		t.Fatalf("zero = %v ok=%t", got, ok)
+	}
+	if _, ok := retryAfterValue(http.Header{"Retry-After": {"bad"}}, max); ok {
+		t.Fatal("invalid Retry-After accepted")
+	}
 	if got := retryAfterDelay(http.Header{"Retry-After": {"2"}}, max); got != max {
 		t.Fatalf("seconds cap = %v", got)
 	}

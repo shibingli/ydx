@@ -134,9 +134,14 @@ func (w *teeSinkWorker) enqueue(chunk []byte) bool {
 	default:
 	}
 	if w.drop == DropOldest {
+		dropped := false
 		select {
 		case <-w.ch:
+			dropped = true
 		default:
+		}
+		if dropped {
+			w.drops.Add(1)
 		}
 		select {
 		case w.ch <- chunk:
@@ -224,9 +229,14 @@ func (w *eventSinkWorker) enqueue(event Event) bool {
 	default:
 	}
 	if w.drop == DropOldest {
+		dropped := false
 		select {
 		case <-w.ch:
+			dropped = true
 		default:
+		}
+		if dropped {
+			w.drops.Add(1)
 		}
 		select {
 		case w.ch <- event:

@@ -71,7 +71,7 @@ func buildForwardOptions(opts ...ForwardOption) (ForwardOptions, error) {
 			return ForwardOptions{}, err
 		}
 	}
-	if cfg.FlushInterval < 0 || cfg.BodyTimeout < 0 || cfg.SSEIdleTimeout < 0 || cfg.SSEHeartbeat < 0 {
+	if cfg.FlushInterval < 0 || cfg.BodyTimeout < 0 || cfg.SSEIdleTimeout < 0 || cfg.SSEHeartbeat < 0 || cfg.MaxBodyBytes < 0 {
 		return ForwardOptions{}, errs.Detail(ErrInvalidConfig, "negative forward duration | 转发时长为负")
 	}
 	cfg.StripHeaders = append([]string(nil), cfg.StripHeaders...)

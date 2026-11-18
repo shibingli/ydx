@@ -191,33 +191,40 @@ func backoffDelay(policy RetryPolicy, attempt int) (delay time.Duration) {
 	return time.Duration(rand.Int64N(int64(delay) + 1))
 }
 
-// retryAfterDelay parses Retry-After seconds or HTTP-date and caps it at max. | retryAfterDelay 解析 Retry-After 的秒数或 HTTP 日期，并以 max 为上限。
-func retryAfterDelay(header http.Header, max time.Duration) time.Duration {
+// retryAfterValue parses Retry-After seconds or HTTP-date and caps it at max. | retryAfterValue
+// 解析 Retry-After 秒数或 HTTP 日期并以 max 为上限；ok 表示头部合法。
+func retryAfterValue(header http.Header, max time.Duration) (delay time.Duration, ok bool) {
 	value := strings.TrimSpace(header.Get("Retry-After"))
 	if value == "" {
-		return 0
+		return 0, false
 	}
 	if seconds, err := strconv.Atoi(value); err == nil && seconds >= 0 {
 		if max > 0 && int64(seconds) > int64(max/time.Second) {
-			return max
+			return max, true
 		}
-		delay := time.Duration(seconds) * time.Second
+		delay = time.Duration(seconds) * time.Second
 		if max > 0 && delay > max {
 			delay = max
 		}
-		return delay
+		return delay, true
 	}
 	if when, err := http.ParseTime(value); err == nil {
-		delay := time.Until(when)
+		delay = time.Until(when)
 		if delay < 0 {
-			return 0
+			delay = 0
 		}
 		if max > 0 && delay > max {
 			delay = max
 		}
-		return delay
+		return delay, true
 	}
-	return 0
+	return 0, false
+}
+
+// retryAfterDelay returns the parsed Retry-After delay, or zero. | retryAfterDelay 返回解析后的 Retry-After 延迟，非法时为零。
+func retryAfterDelay(header http.Header, max time.Duration) time.Duration {
+	delay, _ := retryAfterValue(header, max)
+	return delay
 }
 
 // sleepContext sleeps for d unless ctx ends first. | sleepContext 休眠 d，ctx 先结束则返回其错误。

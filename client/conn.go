@@ -127,7 +127,7 @@ func (c *Client) Warmup(ctx context.Context, n int) error {
 			resp, err := transport.RoundTrip(req)
 			if err != nil {
 				closeResponseBody(resp)
-				return err
+				return redactRequestError(err, req.URL)
 			}
 			if resp == nil {
 				return ErrInvalidResponse

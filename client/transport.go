@@ -675,7 +675,7 @@ func (e *engine) roundTripDirect(req *http.Request, rule *Rule, meta *Meta, sp *
 			}
 			delay := backoffDelay(policy, attempt)
 			if !policy.DisableRetryAfter {
-				if wait := retryAfterDelay(resp.Header, policy.MaxBackoff); wait > delay {
+				if wait, ok := retryAfterValue(resp.Header, policy.MaxBackoff); ok {
 					delay = wait
 				}
 			}
@@ -846,7 +846,7 @@ func (e *engine) roundTripHosts(req *http.Request, rule *Rule, meta *Meta, hosts
 			}
 			delay := backoffDelay(policy, attempt)
 			if !policy.DisableRetryAfter {
-				if wait := retryAfterDelay(resp.Header, policy.MaxBackoff); wait > delay {
+				if wait, ok := retryAfterValue(resp.Header, policy.MaxBackoff); ok {
 					delay = wait
 				}
 			}

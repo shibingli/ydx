@@ -290,6 +290,10 @@ func (m *mirrorer) submitSSE(parent context.Context, req *http.Request, logical 
 			m.drop(target.String(), "mirror inflight limit")
 			return
 		}
+		if !m.reserve() {
+			<-m.sem
+			return
+		}
 		if m.engine != nil {
 			m.engine.counters.mirrors.Add(1)
 			if m.engine.hooks.OnMirrorStart != nil {
@@ -298,10 +302,6 @@ func (m *mirrorer) submitSSE(parent context.Context, req *http.Request, logical 
 					return nil
 				})
 			}
-		}
-		if !m.reserve() {
-			<-m.sem
-			return
 		}
 		if sp != nil {
 			sp.retain()
