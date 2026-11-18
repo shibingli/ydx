@@ -51,6 +51,9 @@ type Meta struct {
 	BytesSent int64
 	// BytesRead is the response body bytes read. | BytesRead 是读取的响应正文字节数。
 	BytesRead int64
+
+	// hopInline backs the first redirect hop without an allocation. | hopInline 为首次重定向提供无分配存储。
+	hopInline [1]HopMeta
 }
 
 // metaKey is the context key carrying the per-call Meta pointer. | metaKey 是携带每次调用 Meta 指针的 context 键。

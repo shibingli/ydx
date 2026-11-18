@@ -4,15 +4,22 @@ import (
 	"context"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 
 	"github.com/shibingli/ydx/errs"
 )
 
+// headerPair is one request header without a map allocation. | headerPair 是一个无需 map 分配的请求头。
+type headerPair struct {
+	key   string
+	value string
+}
+
 // requestConfig accumulates per-request options. | requestConfig 累加逐请求选项。
 type requestConfig struct {
 	timeout time.Duration
-	headers http.Header
+	headers []headerPair
 	query   url.Values
 }
 
@@ -33,10 +40,7 @@ func WithRequestTimeout(d time.Duration) RequestOption {
 // WithRequestHeader adds one request header. | WithRequestHeader 添加一个请求头。
 func WithRequestHeader(key, value string) RequestOption {
 	return func(c *requestConfig) error {
-		if c.headers == nil {
-			c.headers = make(http.Header, 4)
-		}
-		c.headers.Add(key, value)
+		c.headers = append(c.headers, headerPair{key: key, value: value})
 		return nil
 	}
 }
@@ -63,7 +67,7 @@ func (c *Client) Send(ctx context.Context, method, rawURL string, body any, opts
 			return nil, err
 		}
 	}
-	rc, getBody, contentType, err := prepareBody(body)
+	rc, getBody, contentType, length, err := prepareBodyInfo(body)
 	if err != nil {
 		return nil, err
 	}
@@ -71,14 +75,31 @@ func (c *Client) Send(ctx context.Context, method, rawURL string, body any, opts
 		ctx = context.Background()
 	}
 	meta := &Meta{}
+	meta.Hops = meta.hopInline[:0]
 	ctx = context.WithValue(ctx, metaKey{}, meta)
-	resolved, err := c.resolveRequestURL(rawURL)
-	if err != nil {
-		return nil, err
+	target := rawURL
+	if !strings.Contains(rawURL, "://") {
+		if c.opts.BaseURL == nil {
+			return nil, ErrRelativeURL
+		}
+		resolved, err := c.resolveRequestURL(rawURL)
+		if err != nil {
+			return nil, err
+		}
+		target = resolved
 	}
-	req, err := http.NewRequestWithContext(ctx, method, resolved, rc)
+	req, err := http.NewRequestWithContext(ctx, method, target, rc)
 	if err != nil {
 		return nil, errs.Wrap(err, ErrInvalidRequest)
+	}
+	if rc != nil && length >= 0 {
+		if length == 0 {
+			_ = rc.Close()
+			req.Body = http.NoBody
+			req.ContentLength = 0
+		} else {
+			req.ContentLength = length
+		}
 	}
 	if getBody != nil {
 		req.GetBody = getBody
@@ -86,16 +107,12 @@ func (c *Client) Send(ctx context.Context, method, rawURL string, body any, opts
 	if contentType != "" && req.Header.Get("Content-Type") == "" {
 		req.Header.Set("Content-Type", contentType)
 	}
-	for key, values := range cfg.headers {
-		if http.CanonicalHeaderKey(key) == "Host" {
-			if len(values) > 0 {
-				req.Host = values[0]
-			}
+	for _, header := range cfg.headers {
+		if http.CanonicalHeaderKey(header.key) == "Host" {
+			req.Host = header.value
 			continue
 		}
-		for _, value := range values {
-			req.Header.Add(key, value)
-		}
+		req.Header.Add(header.key, header.value)
 	}
 	if len(cfg.query) > 0 {
 		query := req.URL.Query()
@@ -126,6 +143,7 @@ func (c *Client) DoWithMeta(req *http.Request) (*Response, error) {
 		return nil, ErrInvalidRequest
 	}
 	meta := &Meta{}
+	meta.Hops = meta.hopInline[:0]
 	req = req.WithContext(context.WithValue(req.Context(), metaKey{}, meta))
 	resp, err := c.Do(req)
 	if err != nil {

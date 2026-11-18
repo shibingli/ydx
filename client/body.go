@@ -47,52 +47,59 @@ type readerAtSeeker interface {
 // 归类为 reader、重放函数与可选 Content-Type。分支顺序是刻意安排的：先显式包装类型，
 // 再具体可重放类型，最后才是更宽的接口。
 func prepareBody(v any) (io.ReadCloser, func() (io.ReadCloser, error), string, error) {
+	body, getBody, contentType, _, err := prepareBodyInfo(v)
+	return body, getBody, contentType, err
+}
+
+// prepareBodyInfo also returns the known content length, or -1 when unknown. | prepareBodyInfo
+// 还返回已知正文长度，未知时为 -1。
+func prepareBodyInfo(v any) (io.ReadCloser, func() (io.ReadCloser, error), string, int64, error) {
 	switch body := v.(type) {
 	case nil:
-		return nil, nil, "", nil
+		return nil, nil, "", 0, nil
 	case XMLBody:
 		data, err := xml.Marshal(body.Value)
 		if err != nil {
-			return nil, nil, "", errs.Wrap(err, ErrEncodeBody)
+			return nil, nil, "", 0, errs.Wrap(err, ErrEncodeBody)
 		}
-		return bytesBody(data), bytesGetBody(data), "application/xml", nil
+		return bytesBody(data), bytesGetBody(data), "application/xml", int64(len(data)), nil
 	case FormBody:
 		data := []byte(body.Values.Encode())
-		return bytesBody(data), bytesGetBody(data), "application/x-www-form-urlencoded", nil
+		return bytesBody(data), bytesGetBody(data), "application/x-www-form-urlencoded", int64(len(data)), nil
 	case json.RawMessage:
-		return bytesBody(body), bytesGetBody(body), "application/json", nil
+		return bytesBody(body), bytesGetBody(body), "application/json", int64(len(body)), nil
 	case []byte:
-		return bytesBody(body), bytesGetBody(body), "", nil
+		return bytesBody(body), bytesGetBody(body), "", int64(len(body)), nil
 	case string:
-		return stringBody(body), stringGetBody(body), "", nil
+		return stringBody(body), stringGetBody(body), "", int64(len(body)), nil
 	case *bytes.Buffer:
 		if body == nil {
-			return nil, nil, "", nil
+			return nil, nil, "", 0, nil
 		}
 		data := body.Bytes()
-		return bytesBody(data), bytesGetBody(data), "", nil
+		return bytesBody(data), bytesGetBody(data), "", int64(len(data)), nil
 	case *os.File:
 		if body == nil {
-			return nil, nil, "", nil
+			return nil, nil, "", 0, nil
 		}
 		return prepareFileBody(body)
 	case io.ReadCloser:
 		// A closer other than *os.File is owned by the request and is closed after
 		// the first send; replaying it would be unsafe, so it stays one-shot. | 除
 		// *os.File 外的 Closer 由请求持有并在首次发送后关闭，重放不安全，因此只允许一次性使用。
-		return body, nil, "", nil
+		return body, nil, "", -1, nil
 	case readerAtSeeker:
 		return prepareReaderAtBody(body)
 	case io.ReadSeeker:
 		return prepareSeekerBody(body)
 	case io.Reader:
-		return io.NopCloser(body), nil, "", nil
+		return io.NopCloser(body), nil, "", -1, nil
 	default:
 		data, err := json.Marshal(v)
 		if err != nil {
-			return nil, nil, "", errs.Wrap(err, ErrEncodeBody)
+			return nil, nil, "", 0, errs.Wrap(err, ErrEncodeBody)
 		}
-		return bytesBody(data), bytesGetBody(data), "application/json", nil
+		return bytesBody(data), bytesGetBody(data), "application/json", int64(len(data)), nil
 	}
 }
 
@@ -100,6 +107,7 @@ func prepareBody(v any) (io.ReadCloser, func() (io.ReadCloser, error), string, e
 type spool struct {
 	getBody func() (io.ReadCloser, error)
 	cleanup func()
+	length  int64
 }
 
 // spoolBody snapshots a non-replayable request body into memory or a temp file. | spoolBody 把不可重放正文暂存到内存或临时文件。
@@ -123,7 +131,7 @@ func (e *engine) spoolBody(req *http.Request) (*spool, error) {
 			getBody := func() (io.ReadCloser, error) {
 				return io.NopCloser(bytes.NewReader(data)), nil
 			}
-			return &spool{getBody: getBody, cleanup: func() {}}, nil
+			return &spool{getBody: getBody, cleanup: func() {}, length: int64(len(data))}, nil
 		}
 		if !toDisk {
 			_ = req.Body.Close()
@@ -161,6 +169,12 @@ func spoolToFile(prefix []byte, rest io.ReadCloser) (*spool, error) {
 		return nil, err
 	}
 	_ = rest.Close()
+	info, statErr := file.Stat()
+	if statErr != nil {
+		_ = file.Close()
+		cleanup()
+		return nil, statErr
+	}
 	if err := file.Close(); err != nil {
 		cleanup()
 		return nil, err
@@ -168,20 +182,20 @@ func spoolToFile(prefix []byte, rest io.ReadCloser) (*spool, error) {
 	getBody := func() (io.ReadCloser, error) {
 		return os.Open(name)
 	}
-	return &spool{getBody: getBody, cleanup: cleanup}, nil
+	return &spool{getBody: getBody, cleanup: cleanup, length: info.Size()}, nil
 }
 
 // prepareFileBody keeps the original file as the primary body and reopens its path
 // for each replay, so primary and mirror readers own independent descriptors. | prepareFileBody
 // 把原文件作为主正文，并为每次重放按路径重新打开，使主请求与镜像各自持有独立描述符。
-func prepareFileBody(f *os.File) (io.ReadCloser, func() (io.ReadCloser, error), string, error) {
+func prepareFileBody(f *os.File) (io.ReadCloser, func() (io.ReadCloser, error), string, int64, error) {
 	info, err := f.Stat()
 	if err != nil || !info.Mode().IsRegular() {
-		return f, nil, "", nil
+		return f, nil, "", -1, nil
 	}
 	name := f.Name()
 	if name == "" {
-		return f, nil, "", nil
+		return f, nil, "", -1, nil
 	}
 	offset, err := f.Seek(0, io.SeekCurrent)
 	if err != nil {
@@ -200,41 +214,45 @@ func prepareFileBody(f *os.File) (io.ReadCloser, func() (io.ReadCloser, error), 
 		}
 		return next, nil
 	}
-	return f, getBody, "", nil
+	length := info.Size() - offset
+	if length < 0 {
+		length = -1
+	}
+	return f, getBody, "", length, nil
 }
 
 // prepareReaderAtBody uses ReadAt-based section readers so every replay is
 // independent and safe to read concurrently; the primary consumes the original. | prepareReaderAtBody
 // 使用基于 ReadAt 的区间 reader，使每次重放相互独立且可并发读取；主请求消费原 reader。
-func prepareReaderAtBody(body readerAtSeeker) (io.ReadCloser, func() (io.ReadCloser, error), string, error) {
+func prepareReaderAtBody(body readerAtSeeker) (io.ReadCloser, func() (io.ReadCloser, error), string, int64, error) {
 	offset, size, err := readerRange(body)
 	if err != nil {
-		return nil, nil, "", err
+		return nil, nil, "", 0, err
 	}
 	length := size - offset
 	if length < 0 {
-		return nil, nil, "", errs.Detail(ErrBodyNotReplayable, "invalid reader position | 非法的 reader 位置")
+		return nil, nil, "", 0, errs.Detail(ErrBodyNotReplayable, "invalid reader position | 非法的 reader 位置")
 	}
 	getBody := func() (io.ReadCloser, error) {
 		return io.NopCloser(io.NewSectionReader(body, offset, length)), nil
 	}
 	if reader, ok := body.(io.Reader); ok {
-		return wrapReader(reader), getBody, "", nil
+		return wrapReader(reader), getBody, "", length, nil
 	}
 	primary, err := getBody()
 	if err != nil {
-		return nil, nil, "", err
+		return nil, nil, "", 0, err
 	}
-	return primary, getBody, "", nil
+	return primary, getBody, "", length, nil
 }
 
 // prepareSeekerBody replays by seeking back to the original offset and preserves
 // the underlying Close when present; callers needing concurrent readers must spool. | prepareSeekerBody
 // 通过 seek 回原偏移重放，并保留底层 Close；需要并发 reader 的调用方必须自行暂存。
-func prepareSeekerBody(body io.ReadSeeker) (io.ReadCloser, func() (io.ReadCloser, error), string, error) {
+func prepareSeekerBody(body io.ReadSeeker) (io.ReadCloser, func() (io.ReadCloser, error), string, int64, error) {
 	offset, err := body.Seek(0, io.SeekCurrent)
 	if err != nil {
-		return nil, nil, "", errs.Wrap(err, ErrBodyNotReplayable)
+		return nil, nil, "", 0, errs.Wrap(err, ErrBodyNotReplayable)
 	}
 	getBody := func() (io.ReadCloser, error) {
 		if _, err := body.Seek(offset, io.SeekStart); err != nil {
@@ -242,7 +260,7 @@ func prepareSeekerBody(body io.ReadSeeker) (io.ReadCloser, func() (io.ReadCloser
 		}
 		return wrapReader(body), nil
 	}
-	return wrapReader(body), getBody, "", nil
+	return wrapReader(body), getBody, "", -1, nil
 }
 
 // readerRange returns the current offset and total size of a ReaderAt+Seeker. | readerRange 返回 ReaderAt+Seeker 的当前偏移与总大小。
@@ -278,26 +296,66 @@ func wrapReader(r io.Reader) io.ReadCloser {
 	return io.NopCloser(r)
 }
 
+// byteBody is a closable bytes.Reader in one allocation. | byteBody 是一个单次分配的可关闭 bytes.Reader。
+type byteBody struct {
+	reader bytes.Reader
+}
+
+// newByteBody wraps a byte slice without copying. | newByteBody 以不复制的方式包装字节切片。
+func newByteBody(b []byte) *byteBody {
+	body := &byteBody{}
+	body.reader.Reset(b)
+	return body
+}
+
+// Read reads from the byte slice. | Read 从字节切片读取。
+func (b *byteBody) Read(p []byte) (int, error) {
+	return b.reader.Read(p)
+}
+
+// Close implements io.Closer. | Close 实现 io.Closer。
+func (b *byteBody) Close() error { return nil }
+
 // bytesBody wraps a byte slice in a reader without copying. | bytesBody 以不复制的方式把字节切片包装为 reader。
 func bytesBody(b []byte) io.ReadCloser {
-	return io.NopCloser(bytes.NewReader(b))
+	return newByteBody(b)
 }
 
 // bytesGetBody returns a replay function over the same byte slice. | bytesGetBody 返回同一字节切片上的重放函数。
 func bytesGetBody(b []byte) func() (io.ReadCloser, error) {
 	return func() (io.ReadCloser, error) {
-		return io.NopCloser(bytes.NewReader(b)), nil
+		return newByteBody(b), nil
 	}
 }
 
+// stringReaderBody is a closable strings.Reader in one allocation. | stringReaderBody 是一个单次分配的可关闭 strings.Reader。
+type stringReaderBody struct {
+	reader strings.Reader
+}
+
+// newStringBody wraps a string without converting it to a byte slice. | newStringBody 以不复制的方式包装字符串。
+func newStringBody(s string) *stringReaderBody {
+	body := &stringReaderBody{}
+	body.reader.Reset(s)
+	return body
+}
+
+// Read reads from the string. | Read 从字符串读取。
+func (b *stringReaderBody) Read(p []byte) (int, error) {
+	return b.reader.Read(p)
+}
+
+// Close implements io.Closer. | Close 实现 io.Closer。
+func (b *stringReaderBody) Close() error { return nil }
+
 // stringBody wraps a string in a reader without converting it to a byte slice. | stringBody 以不复制的方式把字符串包装为 reader。
 func stringBody(s string) io.ReadCloser {
-	return io.NopCloser(strings.NewReader(s))
+	return newStringBody(s)
 }
 
 // stringGetBody returns a replay function over the same string. | stringGetBody 返回同一字符串上的重放函数。
 func stringGetBody(s string) func() (io.ReadCloser, error) {
 	return func() (io.ReadCloser, error) {
-		return io.NopCloser(strings.NewReader(s)), nil
+		return newStringBody(s), nil
 	}
 }

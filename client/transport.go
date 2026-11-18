@@ -119,8 +119,10 @@ func (e *engine) RoundTrip(req *http.Request) (resp *http.Response, err error) {
 	if req == nil || req.URL == nil {
 		return nil, ErrInvalidConfig
 	}
-	req = req.Clone(req.Context())
-	e.applyUA(req)
+	if e.ua != nil {
+		req = req.Clone(req.Context())
+		e.applyUA(req)
+	}
 	e.counters.requests.Add(1)
 	e.counters.inflight.Add(1)
 	defer e.counters.inflight.Add(-1)
@@ -156,7 +158,9 @@ func (e *engine) RoundTrip(req *http.Request) (resp *http.Response, err error) {
 	if hookErr := e.fireRoute(req.Context(), req, rule, params); hookErr != nil {
 		return nil, e.wrapError("hook", req, "", 0, hookErr)
 	}
-	req = req.WithContext(context.WithValue(req.Context(), connModeKey{}, e.connectionMode(rule)))
+	if mode := e.connectionMode(rule); mode == ConnShort {
+		req = req.WithContext(context.WithValue(req.Context(), connModeKey{}, mode))
+	}
 	if guard := e.guardFor(rule); guard != nil {
 		decision, guardErr := guard.Check(req.Context(), req)
 		if guardErr != nil {
@@ -242,15 +246,17 @@ func (e *engine) finalizeResponse(req *http.Request, rule *Rule, meta *Meta, res
 		return nil, e.wrapError("response", req, "", 0, ErrInvalidRequest)
 	}
 	resp = e.applyTee(rule, resp)
-	metaValue := Meta{}
-	if meta != nil {
-		metaValue = *meta
-	}
-	if hookErr := e.fireResponse(req.Context(), &Response{Response: resp, Meta: metaValue}); hookErr != nil {
-		if resp.Body != nil {
-			_ = resp.Body.Close()
+	if e.hooks.OnResponse != nil {
+		metaValue := Meta{}
+		if meta != nil {
+			metaValue = *meta
 		}
-		return nil, e.wrapError("hook", req, "", 0, hookErr)
+		if hookErr := e.fireResponse(req.Context(), &Response{Response: resp, Meta: metaValue}); hookErr != nil {
+			if resp.Body != nil {
+				_ = resp.Body.Close()
+			}
+			return nil, e.wrapError("hook", req, "", 0, hookErr)
+		}
 	}
 	return resp, nil
 }
@@ -308,6 +314,21 @@ func (e *engine) roundTripDirect(req *http.Request, rule *Rule, meta *Meta) (*ht
 			return nil, e.wrapError("prepare_body", req, "", 0, err)
 		}
 		defer sp.cleanup()
+	}
+	if attempts == 1 && (rule == nil || len(rule.Headers) == 0) && connModeFrom(req.Context()) != ConnShort {
+		e.fireAttempt(req.Context(), AttemptInfo{Attempt: 1, Method: req.Method, URL: safeURL(req.URL)})
+		if req.ContentLength > 0 {
+			e.counters.bytesSent.Add(uint64(req.ContentLength))
+		}
+		start := time.Now()
+		resp, err := e.defaultTransport().RoundTrip(req)
+		if err != nil {
+			return nil, e.wrapError("roundtrip", req, "", 1, err)
+		}
+		if resp.ContentLength > 0 {
+			e.counters.bytesReceived.Add(uint64(resp.ContentLength))
+		}
+		return e.finishResponse(resp, req, meta, nil, 1, start), nil
 	}
 	var lastErr error
 	for attempt := 1; attempt <= attempts; attempt++ {
@@ -388,7 +409,10 @@ func (e *engine) roundTripHosts(req *http.Request, rule *Rule, meta *Meta, hosts
 	if originalHost == "" {
 		originalHost = logical.Host
 	}
-	tried := make(map[string]struct{}, hosts.Len())
+	var tried map[string]struct{}
+	if attempts > 1 {
+		tried = make(map[string]struct{}, hosts.Len())
+	}
 	var lastErr error
 	var lastHost *Host
 	for attempt := 1; attempt <= attempts; attempt++ {
@@ -403,20 +427,43 @@ func (e *engine) roundTripHosts(req *http.Request, rule *Rule, meta *Meta, hosts
 			}
 			break
 		}
-		tried[host.Name] = struct{}{}
+		if tried != nil {
+			tried[host.Name] = struct{}{}
+		}
 		lastHost = host
 		e.fireHost(req.Context(), req, host)
+		transport, transportErr := e.transportFor(host)
+		if transportErr != nil {
+			hosts.MarkFailure(host, transportErr)
+			lastErr = transportErr
+			break
+		}
+		if attempt == 1 && attempts == 1 && canPassThroughHost(host, rule, logical, req) {
+			e.fireAttempt(req.Context(), AttemptInfo{Attempt: 1, Host: host, Method: req.Method, URL: safeURL(logical)})
+			if req.ContentLength > 0 {
+				e.counters.bytesSent.Add(uint64(req.ContentLength))
+			}
+			start := time.Now()
+			resp, err := transport.RoundTrip(req)
+			if err != nil {
+				hosts.MarkFailure(host, err)
+				return nil, e.wrapError("roundtrip", req, host.Name, 1, err)
+			}
+			if resp.ContentLength > 0 {
+				e.counters.bytesReceived.Add(uint64(resp.ContentLength))
+			}
+			if host.IsFailureStatus(resp.StatusCode) {
+				hosts.MarkFailure(host, errs.Detail(ErrUpstreamStatus, "status %d", resp.StatusCode))
+			} else {
+				hosts.MarkSuccess(host)
+			}
+			return e.finishResponse(resp, req, meta, host, 1, start), nil
+		}
 		target := targetURL(logical, host, rule)
 		out, prepErr := e.cloneAttempt(req, attempt, target, originalHost, rule, host, sp)
 		if prepErr != nil {
 			hosts.MarkFailure(host, prepErr)
 			lastErr = prepErr
-			break
-		}
-		transport, transportErr := e.transportFor(host)
-		if transportErr != nil {
-			hosts.MarkFailure(host, transportErr)
-			lastErr = transportErr
 			break
 		}
 		e.fireAttempt(req.Context(), AttemptInfo{Attempt: attempt, Host: host, Method: req.Method, URL: safeURL(logical)})
@@ -530,6 +577,7 @@ func (e *engine) cloneAttempt(req *http.Request, attempt int, target *url.URL, o
 		}
 		out.Body = body
 		out.GetBody = sp.getBody
+		out.ContentLength = sp.length
 	case req.Body == nil:
 		out.Body = nil
 		out.GetBody = nil
@@ -545,6 +593,26 @@ func (e *engine) cloneAttempt(req *http.Request, attempt int, target *url.URL, o
 		return nil, ErrBodyNotReplayable
 	}
 	return out, nil
+}
+
+// canPassThroughHost reports whether the logical request already equals the host target. | canPassThroughHost 报告逻辑请求是否已等于 Host 目标。
+func canPassThroughHost(host *Host, rule *Rule, logical *url.URL, req *http.Request) bool {
+	if host == nil || host.URL == nil || logical == nil || req == nil {
+		return false
+	}
+	if connModeFrom(req.Context()) == ConnShort {
+		return false
+	}
+	if rule != nil && (len(rule.Headers) > 0 || rule.Rewrite != nil || rule.PreserveHost) {
+		return false
+	}
+	if len(host.Headers) > 0 || host.URL.RawPath != "" {
+		return false
+	}
+	if host.URL.Path != "" && host.URL.Path != "/" {
+		return false
+	}
+	return host.URL.Scheme == logical.Scheme && host.URL.Host == logical.Host
 }
 
 // targetURL builds the wire URL from the logical URL, the rule rewrite and the host base path. | targetURL 由逻辑 URL、规则重写与 Host base path 构造连接 URL。

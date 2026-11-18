@@ -39,6 +39,14 @@ type RetryPolicy struct {
 	PerAttemptTimeout time.Duration
 }
 
+// defaultRetryStatusCodes is shared by every default retry policy. | defaultRetryStatusCodes 由所有默认重试策略共享。
+var defaultRetryStatusCodes = []int{
+	http.StatusTooManyRequests,
+	http.StatusBadGateway,
+	http.StatusServiceUnavailable,
+	http.StatusGatewayTimeout,
+}
+
 // withDefaults fills zero-value retry settings. | withDefaults 填充零值重试设置。
 func (p RetryPolicy) withDefaults(hostCount int) RetryPolicy {
 	if p.MaxAttempts <= 0 {
@@ -52,7 +60,7 @@ func (p RetryPolicy) withDefaults(hostCount int) RetryPolicy {
 		p.MaxAttempts = 10
 	}
 	if p.StatusCodes == nil {
-		p.StatusCodes = []int{http.StatusTooManyRequests, http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout}
+		p.StatusCodes = defaultRetryStatusCodes
 	}
 	if p.MaxBackoff <= 0 {
 		p.MaxBackoff = time.Second
