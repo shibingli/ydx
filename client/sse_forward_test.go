@@ -135,6 +135,48 @@ func TestSSEForwardTeeSink(t *testing.T) {
 	}
 }
 
+func TestSSEEventSink(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, "event: tick\ndata: one\n\n")
+		fmt.Fprint(w, "data: two\n\n")
+	}))
+	defer upstream.Close()
+
+	var mu sync.Mutex
+	var events []Event
+	sink := EventSinkFunc(func(ctx context.Context, event Event) error {
+		mu.Lock()
+		events = append(events, event)
+		mu.Unlock()
+		return nil
+	})
+	c, err := New(WithRule(Rule{
+		Name:    "sse",
+		Pattern: "/events",
+		Mirror:  &MirrorPolicy{Mode: MirrorTee, TeeEventSinks: []EventSink{sink}},
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	resp, err := http.Get(upstream.URL + "/events")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	rec := httptest.NewRecorder()
+	in := httptest.NewRequest(http.MethodGet, "/events", nil)
+	if err := c.copySSE(context.Background(), rec, resp, in, ForwardOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(events) != 2 || events[0].Name != "tick" || string(events[0].Data) != "one" || string(events[1].Data) != "two" {
+		t.Fatalf("events %+v", events)
+	}
+}
+
 func TestSSEForwardHeartbeat(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")

@@ -76,10 +76,19 @@ func (c *Client) copySSE(ctx context.Context, w http.ResponseWriter, resp *http.
 		}
 	}
 	var workers []*teeSinkWorker
+	var eventPump *sseEventPump
 	if policy, ok := c.engine.mirrorFor(rule); ok && policy.Mode == MirrorTee {
 		workers = c.engine.teeSinks(policy)
+		if len(policy.TeeEventSinks) > 0 {
+			eventWorkers := make([]*eventSinkWorker, 0, len(policy.TeeEventSinks))
+			for _, sink := range policy.TeeEventSinks {
+				eventWorkers = append(eventWorkers, newEventSinkWorker(sink, policy.TeeQueue, policy.TeeDrop, policy.TeeTimeout, &c.engine.mirrorDrops))
+			}
+			eventPump = startSSEEventPump(eventWorkers)
+		}
 	}
 	defer closeTeeWorkers(workers)
+	defer eventPump.Close()
 
 	skip := hopByHopSet(resp.Header)
 	header := w.Header()
@@ -167,6 +176,7 @@ func (c *Client) copySSE(ctx context.Context, w http.ResponseWriter, resp *http.
 					return err
 				}
 				writeTeeChunk(workers, outcome.data)
+				eventPump.Write(outcome.data)
 				if flushInterval <= 0 || time.Since(lastFlush) >= flushInterval {
 					if err := flushResponseWriter(w); err != nil {
 						_ = resp.Body.Close()

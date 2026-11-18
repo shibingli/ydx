@@ -70,6 +70,8 @@ type MirrorPolicy struct {
 	StripHeaders []string
 	// TeeSinks receive primary response chunks in Mode B. | TeeSinks 在 Mode B 接收主流响应块。
 	TeeSinks []Sink
+	// TeeEventSinks receive parsed SSE events in Mode B. | TeeEventSinks 在 Mode B 接收解析后的 SSE 事件。
+	TeeEventSinks []EventSink
 	// TeeQueue is each sink queue length; <=0 means 64. | TeeQueue 是每个 sink 队列长度；<=0 表示 64。
 	TeeQueue int
 	// TeeDrop selects DropNewest or DropOldest. | TeeDrop 选择 DropNewest 或 DropOldest。
@@ -131,7 +133,7 @@ func prepareMirror(policy *MirrorPolicy) (*MirrorPolicy, error) {
 			prepared.targets = append(prepared.targets, parsed)
 		}
 	case MirrorTee:
-		if len(prepared.TeeSinks) == 0 {
+		if len(prepared.TeeSinks) == 0 && len(prepared.TeeEventSinks) == 0 {
 			return nil, errs.Detail(ErrInvalidConfig, "mirror mode tee needs sinks | 镜像 tee 模式需要 sink")
 		}
 	default:

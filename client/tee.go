@@ -17,6 +17,25 @@ type Sink interface {
 	Close() error
 }
 
+// EventSink receives parsed SSE events from tee mirroring. | EventSink 接收 tee 镜像解析后的事件。
+type EventSink interface {
+	// WriteEvent consumes one event. | WriteEvent 消费一个事件。
+	WriteEvent(ctx context.Context, event Event) error
+	// Close releases the sink. | Close 释放 sink。
+	Close() error
+}
+
+// EventSinkFunc adapts a function into an EventSink. | EventSinkFunc 把函数适配为 EventSink。
+type EventSinkFunc func(ctx context.Context, event Event) error
+
+// WriteEvent calls f. | WriteEvent 调用 f。
+func (f EventSinkFunc) WriteEvent(ctx context.Context, event Event) error {
+	return f(ctx, event)
+}
+
+// Close implements EventSink and does nothing. | Close 实现 EventSink 且不做任何事。
+func (f EventSinkFunc) Close() error { return nil }
+
 // SinkFunc adapts a function into a Sink. | SinkFunc 把函数适配为 Sink。
 type SinkFunc func(ctx context.Context, chunk []byte) error
 
@@ -100,6 +119,131 @@ func (w *teeSinkWorker) Close() {
 	w.once.Do(func() {
 		close(w.ch)
 		w.wg.Wait()
+	})
+}
+
+// eventSinkWorker owns one bounded event queue and its consumer goroutine. | eventSinkWorker 拥有一个有界事件队列及其消费 goroutine。
+type eventSinkWorker struct {
+	sink    EventSink
+	ch      chan Event
+	drop    DropPolicy
+	timeout time.Duration
+	drops   *atomic.Uint64
+	once    sync.Once
+	wg      sync.WaitGroup
+}
+
+// newEventSinkWorker starts one event consumer. | newEventSinkWorker 启动一个事件消费者。
+func newEventSinkWorker(sink EventSink, queue int, drop DropPolicy, timeout time.Duration, drops *atomic.Uint64) *eventSinkWorker {
+	if queue <= 0 {
+		queue = 64
+	}
+	if timeout <= 0 {
+		timeout = 5 * time.Second
+	}
+	worker := &eventSinkWorker{
+		sink:    sink,
+		ch:      make(chan Event, queue),
+		drop:    drop,
+		timeout: timeout,
+		drops:   drops,
+	}
+	worker.wg.Add(1)
+	go worker.run()
+	return worker
+}
+
+// enqueue offers an event without blocking the primary. | enqueue 在不阻塞主流的情况下投递事件。
+func (w *eventSinkWorker) enqueue(event Event) bool {
+	select {
+	case w.ch <- event:
+		return true
+	default:
+	}
+	if w.drop == DropOldest {
+		select {
+		case <-w.ch:
+		default:
+		}
+		select {
+		case w.ch <- event:
+			return true
+		default:
+		}
+	}
+	w.drops.Add(1)
+	return false
+}
+
+// run consumes events until Close. | run 消费事件直到 Close。
+func (w *eventSinkWorker) run() {
+	defer w.wg.Done()
+	defer func() { _ = w.sink.Close() }()
+	for event := range w.ch {
+		ctx, cancel := context.WithTimeout(context.Background(), w.timeout)
+		err := w.sink.WriteEvent(ctx, event)
+		cancel()
+		if err != nil {
+			w.drops.Add(1)
+		}
+	}
+}
+
+// Close closes the queue and waits for the consumer. | Close 关闭队列并等待消费者。
+func (w *eventSinkWorker) Close() {
+	w.once.Do(func() {
+		close(w.ch)
+		w.wg.Wait()
+	})
+}
+
+// sseEventPump parses raw SSE chunks and fans events to workers. | sseEventPump 解析原始 SSE 块并把事件扇出到 worker。
+type sseEventPump struct {
+	writer  *io.PipeWriter
+	done    chan struct{}
+	workers []*eventSinkWorker
+	once    sync.Once
+}
+
+// startSSEEventPump starts the parsing goroutine. | startSSEEventPump 启动解析 goroutine。
+func startSSEEventPump(workers []*eventSinkWorker) *sseEventPump {
+	reader, writer := io.Pipe()
+	pump := &sseEventPump{writer: writer, done: make(chan struct{}), workers: workers}
+	go func() {
+		defer close(pump.done)
+		events := NewEventReader(reader)
+		for {
+			event, err := events.Next()
+			if err != nil {
+				return
+			}
+			for _, worker := range workers {
+				worker.enqueue(event)
+			}
+		}
+	}()
+	return pump
+}
+
+// Write offers raw chunks to the parser. | Write 把原始块投递给解析器。
+func (p *sseEventPump) Write(chunk []byte) {
+	if p == nil || len(chunk) == 0 {
+		return
+	}
+	_, _ = p.writer.Write(chunk)
+}
+
+// Close stops parsing and waits for every event worker. | Close 停止解析并等待全部事件 worker。
+func (p *sseEventPump) Close() {
+	if p == nil {
+		return
+	}
+	p.once.Do(func() {
+		_ = p.writer.Close()
+		<-p.done
+		for _, worker := range p.workers {
+			worker.Close()
+		}
 	})
 }
 
