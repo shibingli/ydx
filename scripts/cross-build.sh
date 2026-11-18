@@ -8,6 +8,7 @@ set -uo pipefail
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 targets="${TARGETS:-linux/amd64 linux/arm64 windows/amd64 windows/arm64 darwin/amd64 darwin/arm64}"
 jobs="${JOBS:-4}"
+vet_modules="${VET_MODULES-}"
 case "$jobs" in
   ''|*[!0-9]*|0) echo "JOBS must be a positive integer | JOBS 必须为正整数" >&2; exit 2 ;;
 esac
@@ -28,8 +29,8 @@ run_task() {
     printf '%s %s\n' "$rel" "$target" >>"$failed"
   fi
 }
-export -f run_task
-export failed
+export -f run_task should_vet
+export failed vet_modules
 
 # One task per module and target, three NUL-separated fields per task.
 # | 每个模块/目标一个任务，每个任务三个 NUL 分隔字段。

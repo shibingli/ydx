@@ -109,6 +109,10 @@ jobs:
       - name: Cross-build linux/windows/darwin amd64+arm64
         env:
           JOBS: '4'
+          # Only these modules contain platform/arch build-tagged tests. Native
+          # Linux, Windows and macOS test jobs compile every other module's tests.
+          # | 仅这些模块包含平台/架构测试标签；其他模块的测试由原生 CI 编译。
+          VET_MODULES: 'auth base64 json nodeid rdma regexpx wal/uring xml'
         run: bash scripts/cross-build.sh
       # Link the assembly-heavy test binaries for both macOS instruction sets.
       # A library cross-build does not link, so an undefined arm64/amd64 assembly
