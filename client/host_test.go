@@ -39,6 +39,35 @@ func TestWeightedAndExclusion(t *testing.T) {
 	hs.Release(h)
 }
 
+func TestCallerCancelDoesNotPoisonHost(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-r.Context().Done():
+		case <-time.After(200 * time.Millisecond):
+			w.WriteHeader(http.StatusOK)
+		}
+	}))
+	defer srv.Close()
+	hs, err := NewHostSet(Host{Name: "a", URL: mustURL(srv.URL), Health: HealthPolicy{FailThreshold: 1}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, err := New(WithHostSet(hs))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	if _, err := c.Get(ctx, srv.URL+"/x"); err == nil {
+		t.Fatal("expected cancellation error")
+	}
+	stats := c.HostStats()
+	if stats[0].Failures != 0 || !stats[0].Healthy {
+		t.Fatalf("caller cancellation poisoned host: %+v", stats[0])
+	}
+}
+
 func TestCooldownHalfOpen(t *testing.T) {
 	now := time.Unix(0, 0)
 	hs, err := NewHostSet(Host{

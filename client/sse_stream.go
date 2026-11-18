@@ -47,20 +47,22 @@ func WithStreamIdleTimeout(d time.Duration) StreamOption {
 
 // Stream is an outbound SSE stream with optional reconnects. | Stream 是带可选重连的出站 SSE 流。
 type Stream struct {
+	body     io.ReadCloser
 	client   *Client
 	template *http.Request
-	opts     StreamOptions
+	reader   *EventReader
+	meta     *Meta
 
-	mu         sync.Mutex
-	body       io.ReadCloser
-	reader     *EventReader
-	lastID     string
+	lastID string
+	opts   StreamOptions
+
 	retryHint  time.Duration
 	reconnects int
-	rawMode    bool
-	meta       *Meta
 
-	closed atomic.Bool
+	mu sync.Mutex
+
+	closed  atomic.Bool
+	rawMode bool
 }
 
 // OpenStream opens an SSE request through the client engine. | OpenStream 通过客户端引擎打开 SSE 请求。
@@ -227,8 +229,8 @@ func (s *Stream) Next(ctx context.Context) (Event, error) {
 // readEvent waits for one event with an optional idle timeout. | readEvent 在可选空闲超时下等待一个事件。
 func (s *Stream) readEvent(ctx context.Context, reader *EventReader, body io.ReadCloser) (Event, error) {
 	type result struct {
-		event Event
 		err   error
+		event Event
 	}
 	done := make(chan result, 1)
 	go func() {

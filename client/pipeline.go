@@ -17,6 +17,8 @@ type Node interface {
 
 // PipelineOptions configures a Pipeline. | PipelineOptions 配置 Pipeline。
 type PipelineOptions struct {
+	// Hooks observes step transitions. | Hooks 观测步骤状态。
+	Hooks PipelineHooks
 	// Timeout bounds the whole pipeline; <=0 disables it. | Timeout 限制整个 Pipeline；<=0 禁用。
 	Timeout time.Duration
 	// MaxBodyBytes caps each step body; <=0 means 4 MiB. | MaxBodyBytes 限制步骤正文；<=0 表示 4 MiB。
@@ -25,8 +27,6 @@ type PipelineOptions struct {
 	MaxParallel int
 	// ContinueOnError runs remaining nodes after a failure; zero is fail-fast. | ContinueOnError 在失败后继续运行剩余节点；零值为快速失败。
 	ContinueOnError bool
-	// Hooks observes step transitions. | Hooks 观测步骤状态。
-	Hooks PipelineHooks
 }
 
 // PipelineHooks observes pipeline execution. | PipelineHooks 观测 Pipeline 执行。
@@ -43,24 +43,24 @@ type PipelineHooks struct {
 
 // StepResult is the recorded outcome of one step. | StepResult 是一个步骤的记录结果。
 type StepResult struct {
-	// Name is the step name. | Name 是步骤名。
-	Name string
-	// Status is the response status code, or zero. | Status 是响应状态码（或 0）。
-	Status int
-	// Headers are the response headers. | Headers 是响应头。
-	Headers http.Header
-	// Body is the buffered response body. | Body 是缓冲的响应正文。
-	Body []byte
-	// Response is a replayable response view. | Response 是可重放的响应视图。
-	Response *Response
 	// Err is the step error. | Err 是步骤错误。
 	Err error
-	// Skipped reports a When condition that skipped the step. | Skipped 报告 When 条件跳过步骤。
-	Skipped bool
+	// Headers are the response headers. | Headers 是响应头。
+	Headers http.Header
+	// Response is a replayable response view. | Response 是可重放的响应视图。
+	Response *Response
+	// Name is the step name. | Name 是步骤名。
+	Name string
+	// Body is the buffered response body. | Body 是缓冲的响应正文。
+	Body []byte
+	// Status is the response status code, or zero. | Status 是响应状态码（或 0）。
+	Status int
 	// Duration is the step duration. | Duration 是步骤耗时。
 	Duration time.Duration
 	// Attempts is the number of upstream attempts. | Attempts 是上游尝试次数。
 	Attempts int
+	// Skipped reports a When condition that skipped the step. | Skipped 报告 When 条件跳过步骤。
+	Skipped bool
 }
 
 // PipelineResult is the snapshot returned by Run. | PipelineResult 是 Run 返回的快照。
@@ -77,10 +77,10 @@ type PipelineResult struct {
 
 // PipelineError wraps one failed step. | PipelineError 包装一个失败步骤。
 type PipelineError struct {
-	// Step is the failed step name. | Step 是失败步骤名。
-	Step string
 	// Err is the underlying cause. | Err 是底层原因。
 	Err error
+	// Step is the failed step name. | Step 是失败步骤名。
+	Step string
 }
 
 // Error implements error. | Error 实现 error 接口。
@@ -101,8 +101,8 @@ func (e *PipelineError) Unwrap() error {
 
 // Pipeline executes a tree of serial and parallel steps. | Pipeline 执行串行与并行步骤树。
 type Pipeline struct {
-	nodes []Node
 	opts  PipelineOptions
+	nodes []Node
 }
 
 // NewPipeline builds a pipeline with options and top-level nodes. | NewPipeline 用选项与顶层节点构建 Pipeline。
@@ -169,14 +169,14 @@ func (p *Pipeline) Run(ctx context.Context, c *Client) (*PipelineResult, error) 
 
 // runShared is the mutable state shared by every node in one run. | runShared 是一次运行中所有节点共享的可变状态。
 type runShared struct {
-	mu      sync.Mutex
+	opts    PipelineOptions
+	hooks   PipelineHooks
 	client  *Client
 	vars    *Vars
 	results map[string]*StepResult
-	order   []string
 	limit   chan struct{}
-	opts    PipelineOptions
-	hooks   PipelineHooks
+	order   []string
+	mu      sync.Mutex
 }
 
 // runState is one node's context plus the shared run state. | runState 是一个节点的 context 与共享运行状态。
@@ -315,8 +315,8 @@ func (p *parallelNode) run(rs *runState) error {
 
 // funcNode runs an arbitrary function. | funcNode 运行任意函数。
 type funcNode struct {
-	name string
 	fn   func(context.Context, *Vars) error
+	name string
 }
 
 // Func creates a non-HTTP step. | Func 创建非 HTTP 步骤。

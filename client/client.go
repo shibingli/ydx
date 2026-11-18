@@ -10,15 +10,14 @@ import (
 
 // Client is a policy-driven HTTP client compatible with http.Client.Do. | Client 是兼容 http.Client.Do 的策略化 HTTP 客户端。
 type Client struct {
-	hc     *http.Client
-	engine *engine
-	opts   options
-	closed atomic.Bool
-
 	rootCtx    context.Context
+	hc         *http.Client
+	engine     *engine
 	rootCancel context.CancelFunc
 	asyncSem   chan struct{}
+	opts       options
 	asyncWG    sync.WaitGroup
+	closed     atomic.Bool
 }
 
 // New creates a Client from functional options. | New 根据函数式选项创建 Client。
@@ -131,6 +130,7 @@ func (c *Client) CloseContext(ctx context.Context) error {
 		return nil
 	}
 	c.rootCancel()
+	c.engine.closed.Store(true)
 	if hs := c.engine.hosts.Load(); hs != nil {
 		_ = hs.Close()
 	}

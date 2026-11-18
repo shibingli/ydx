@@ -47,6 +47,16 @@ GOWORK=off go test -bench . -benchmem -count=5 -timeout 20m
 | GET Small allocs/op | 69 | 75 | 86 | 115 | 21 |
 | POST JSON allocs/op | 85 | 93 | 105 | 138 | 25 |
 
+优化前后（同一套基准，非同一进程；用于说明趋势）：
+
+| 场景 | 优化前 | 优化后 |
+|---|---:|---:|
+| GET Small | 232µs / 90 allocs | 155µs / 75 allocs |
+| POST JSON | 250µs / 119 allocs | 160µs / 93 allocs |
+
+“功能全开”（规则 + 缓存 + 合并 + 镜像）没有跨库可比对象，其正确性由 `client` 包测试覆盖；
+本表只测直通热路径，避免把不同语义的实现放在一起比较。
+
 结论（本机单次运行）：
 
 - 直通 GET 比 native 慢约 7%，并发 GET 约 8%；均优于或持平 resty，明显优于 req。

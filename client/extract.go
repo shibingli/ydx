@@ -14,15 +14,15 @@ import (
 
 // extractContext is the buffered response view passed to extractors. | extractContext 是传给提取器的缓冲响应视图。
 type extractContext struct {
-	Status int
 	Header http.Header
 	Body   []byte
+	Status int
 }
 
 // Extractor stores one named extraction rule. | Extractor 存储一条命名提取规则。
 type Extractor struct {
-	name string
 	fn   func(extractContext, *Vars) error
+	name string
 }
 
 // apply runs the extractor and wraps failures with ErrExtract. | apply 运行提取器并用 ErrExtract 包装失败。

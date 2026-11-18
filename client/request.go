@@ -18,9 +18,9 @@ type headerPair struct {
 
 // requestConfig accumulates per-request options. | requestConfig 累加逐请求选项。
 type requestConfig struct {
-	timeout time.Duration
-	headers []headerPair
 	query   url.Values
+	headers []headerPair
+	timeout time.Duration
 }
 
 // RequestOption mutates one request's configuration. | RequestOption 修改单个请求的配置。
@@ -79,9 +79,6 @@ func (c *Client) Send(ctx context.Context, method, rawURL string, body any, opts
 	ctx = context.WithValue(ctx, metaKey{}, meta)
 	target := rawURL
 	if !strings.Contains(rawURL, "://") {
-		if c.opts.BaseURL == nil {
-			return nil, ErrRelativeURL
-		}
 		resolved, err := c.resolveRequestURL(rawURL)
 		if err != nil {
 			return nil, err
@@ -153,7 +150,8 @@ func (c *Client) DoWithMeta(req *http.Request) (*Response, error) {
 	return &Response{Response: resp, Meta: *meta}, nil
 }
 
-// resolveRequestURL resolves a convenience-method URL against BaseURL. | resolveRequestURL 用 BaseURL 解析便捷方法的 URL。
+// resolveRequestURL resolves a convenience-method URL against BaseURL or the
+// first default host. | resolveRequestURL 用 BaseURL 或第一个默认 Host 解析便捷方法的 URL。
 func (c *Client) resolveRequestURL(raw string) (string, error) {
 	parsed, err := url.Parse(raw)
 	if err != nil {
@@ -162,10 +160,16 @@ func (c *Client) resolveRequestURL(raw string) (string, error) {
 	if parsed.IsAbs() {
 		return raw, nil
 	}
-	if c.opts.BaseURL == nil {
+	base := c.opts.BaseURL
+	if base == nil {
+		if hs := c.engine.hosts.Load(); hs != nil {
+			base = hs.firstBaseURL()
+		}
+	}
+	if base == nil {
 		return "", ErrRelativeURL
 	}
-	return c.opts.BaseURL.ResolveReference(parsed).String(), nil
+	return base.ResolveReference(parsed).String(), nil
 }
 
 // finish executes a request and wraps the response with meta. | finish 执行请求并用 meta 包装响应。

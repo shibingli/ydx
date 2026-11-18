@@ -33,6 +33,8 @@ var builtinUserAgents = []string{
 
 // UAPolicy configures User-Agent simulation. | UAPolicy 配置 User-Agent 模拟。
 type UAPolicy struct {
+	// Companion headers are applied with the User-Agent when missing. | Companion 在缺失时随 User-Agent 一起应用。
+	Companion http.Header
 	// Mode selects the strategy; empty means random. | Mode 选择策略；为空表示随机。
 	Mode UAMode
 	// List overrides the built-in User-Agent list. | List 覆盖内置 User-Agent 列表。
@@ -41,8 +43,6 @@ type UAPolicy struct {
 	Weights []int
 	// Force overwrites an explicitly set User-Agent. | Force 覆盖显式设置的 User-Agent。
 	Force bool
-	// Companion headers are applied with the User-Agent when missing. | Companion 在缺失时随 User-Agent 一起应用。
-	Companion http.Header
 }
 
 // WithUserAgent enables User-Agent simulation. | WithUserAgent 启用 User-Agent 模拟。

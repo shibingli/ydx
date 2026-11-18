@@ -16,31 +16,35 @@ import (
 
 // engine is the policy RoundTripper behind a Client. | engine 是 Client 背后的策略 RoundTripper。
 type engine struct {
-	base   http.RoundTripper
-	opts   options
-	rules  atomic.Pointer[RuleSet]
-	hosts  atomic.Pointer[HostSet]
-	budget *retryBudget
-
-	cacheMu    sync.Mutex
+	hooks      Hooks
+	base       http.RoundTripper
 	cacheStore Store
-	ownsCache  bool
+	rules      atomic.Pointer[RuleSet]
+	hosts      atomic.Pointer[HostSet]
+	budget     *retryBudget
+	budgets    map[float64]*retryBudget
+	budgetMu   sync.Mutex
+	closed     atomic.Bool
 
-	flights     *flightGroup
-	mirrors     *mirrorer
-	mirrorDrops atomic.Uint64
+	flights *flightGroup
+	mirrors *mirrorer
 
 	baseTransport *http.Transport
-	tlsMu         sync.Mutex
 	tlsByConfig   map[*TLSConfig]*tlsState
-	tlsStates     []*tlsState
 	hostTLS       map[string]*tlsState
 	defaultTLS    *tlsState
 
-	ua        *UAPolicy
+	ua          *UAPolicy
+	opts        options
+	tlsStates   []*tlsState
+	counters    counters
+	mirrorDrops atomic.Uint64
+
 	uaCounter atomic.Uint64
-	hooks     Hooks
-	counters  counters
+
+	cacheMu   sync.Mutex
+	tlsMu     sync.Mutex
+	ownsCache bool
 }
 
 // newEngine builds the engine and a default transport when none was supplied. | newEngine 构建引擎，并在未提供 Transport 时创建默认传输。
@@ -80,6 +84,7 @@ func newEngine(o options) (*engine, error) {
 		baseTransport: baseTransport,
 		opts:          o,
 		budget:        newRetryBudget(0.1),
+		budgets:       make(map[float64]*retryBudget),
 		flights:       newFlightGroup(),
 		tlsByConfig:   make(map[*TLSConfig]*tlsState),
 		hostTLS:       make(map[string]*tlsState),
@@ -116,6 +121,9 @@ func newEngine(o options) (*engine, error) {
 
 // RoundTrip applies rules, host selection and retries before the base transport. | RoundTrip 在底层传输前应用规则、Host 选择与重试。
 func (e *engine) RoundTrip(req *http.Request) (resp *http.Response, err error) {
+	if e.closed.Load() {
+		return nil, ErrClosed
+	}
 	if req == nil || req.URL == nil {
 		return nil, ErrInvalidConfig
 	}
@@ -203,6 +211,8 @@ func (e *engine) RoundTrip(req *http.Request) (resp *http.Response, err error) {
 			if meta != nil {
 				meta.CacheHit = true
 				meta.Attempts = 0
+				meta.BytesSent = req.ContentLength
+				meta.BytesRead = int64(len(entry.Body))
 				meta.Hops = append(meta.Hops, HopMeta{
 					URL:      safeURL(req.URL),
 					Status:   entry.StatusCode,
@@ -218,6 +228,12 @@ func (e *engine) RoundTrip(req *http.Request) (resp *http.Response, err error) {
 				return nil
 			})
 		}
+	}
+	var ruleCancel context.CancelFunc
+	if rule != nil && rule.Timeout > 0 {
+		ctx, cancel := context.WithTimeout(req.Context(), rule.Timeout)
+		req = req.WithContext(ctx)
+		ruleCancel = cancel
 	}
 	mirrorPolicy, mirroring := e.mirrorFor(rule)
 	preMirror := mirroring && mirrorPolicy.Mode == MirrorUpstream && mirrorPolicy.Parallel && !mirrorPolicy.Sync
@@ -235,7 +251,17 @@ func (e *engine) RoundTrip(req *http.Request) (resp *http.Response, err error) {
 		resp, err = e.execute(req, rule, meta, hosts, key, policy, store, postMirror)
 	}
 	if err != nil {
+		if ruleCancel != nil {
+			ruleCancel()
+		}
 		return nil, err
+	}
+	if ruleCancel != nil {
+		if resp.Body == nil {
+			ruleCancel()
+		} else {
+			resp.Body = &cancelBody{body: resp.Body, cancel: ruleCancel}
+		}
 	}
 	return e.finalizeResponse(req, rule, meta, resp)
 }
@@ -245,7 +271,11 @@ func (e *engine) finalizeResponse(req *http.Request, rule *Rule, meta *Meta, res
 	if resp == nil {
 		return nil, e.wrapError("response", req, "", 0, ErrInvalidRequest)
 	}
-	resp = e.applyTee(rule, resp)
+	// Forward's SSE path applies its own tee while copying; wrapping here would
+	// deliver every chunk twice. | Forward 的 SSE 路径在复制时自行 tee；此处再包装会导致每个分块重复投递。
+	if !(forwardNoDefaultRetry(req.Context()) && isEventStream(resp.Header)) {
+		resp = e.applyTee(rule, resp)
+	}
 	if e.hooks.OnResponse != nil {
 		metaValue := Meta{}
 		if meta != nil {
@@ -302,26 +332,28 @@ func (e *engine) retryPolicy(req *http.Request, rule *Rule, hostCount int) Retry
 // roundTripDirect handles requests without a host pool; the original URL is used. | roundTripDirect 处理无 Host 池的请求，直接使用原 URL。
 func (e *engine) roundTripDirect(req *http.Request, rule *Rule, meta *Meta) (*http.Response, error) {
 	policy := e.retryPolicy(req, rule, 1)
+	budget := e.budgetFor(policy.Budget)
 	attempts := policy.MaxAttempts
 	if !retryableMethod(policy, req.Method) {
 		attempts = 1
 	}
 	var sp *spool
 	var err error
-	if attempts > 1 && req.Body != nil && req.GetBody == nil {
+	if attempts > 1 && req.Body != nil && req.Body != http.NoBody && req.GetBody == nil {
 		sp, err = e.spoolBody(req)
 		if err != nil {
 			return nil, e.wrapError("prepare_body", req, "", 0, err)
 		}
 		defer sp.cleanup()
 	}
-	if attempts == 1 && (rule == nil || len(rule.Headers) == 0) && connModeFrom(req.Context()) != ConnShort {
+	if attempts == 1 && (rule == nil || (len(rule.Headers) == 0 && rule.Rewrite == nil)) &&
+		connModeFrom(req.Context()) != ConnShort && policy.PerAttemptTimeout <= 0 {
 		e.fireAttempt(req.Context(), AttemptInfo{Attempt: 1, Method: req.Method, URL: safeURL(req.URL)})
 		if req.ContentLength > 0 {
 			e.counters.bytesSent.Add(uint64(req.ContentLength))
 		}
 		start := time.Now()
-		resp, err := e.defaultTransport().RoundTrip(req)
+		resp, err := e.transportForURL(req.URL).RoundTrip(req)
 		if err != nil {
 			return nil, e.wrapError("roundtrip", req, "", 1, err)
 		}
@@ -331,10 +363,16 @@ func (e *engine) roundTripDirect(req *http.Request, rule *Rule, meta *Meta) (*ht
 		return e.finishResponse(resp, req, meta, nil, 1, start), nil
 	}
 	var lastErr error
+	attempted := 0
 	for attempt := 1; attempt <= attempts; attempt++ {
-		target := *req.URL
-		out, err := e.cloneAttempt(req, attempt, &target, req.Host, rule, nil, sp)
+		attempted = attempt
+		attemptReq, attemptCancel := attemptWithTimeout(req, policy.PerAttemptTimeout)
+		target := directTarget(attemptReq.URL, rule)
+		out, err := e.cloneAttempt(attemptReq, attempt, target, req.Host, rule, nil, sp)
 		if err != nil {
+			if attemptCancel != nil {
+				attemptCancel()
+			}
 			return nil, e.wrapError("prepare_attempt", req, "", attempt-1, err)
 		}
 		e.fireAttempt(req.Context(), AttemptInfo{Attempt: attempt, Method: req.Method, URL: safeURL(req.URL)})
@@ -342,11 +380,12 @@ func (e *engine) roundTripDirect(req *http.Request, rule *Rule, meta *Meta) (*ht
 			e.counters.bytesSent.Add(uint64(out.ContentLength))
 		}
 		start := time.Now()
-		resp, err := e.defaultTransport().RoundTrip(out)
+		resp, err := e.transportForURL(out.URL).RoundTrip(out)
+		finishAttempt(resp, attemptCancel, err)
 		if err != nil {
 			lastErr = err
 			if attempt >= attempts || policy.DisableNetworkRetry ||
-				!retryableError(err, req.Context()) || !e.budget.allow() {
+				!retryableError(err, req.Context()) || !budget.allow() {
 				break
 			}
 			delay := backoffDelay(policy, attempt)
@@ -362,7 +401,7 @@ func (e *engine) roundTripDirect(req *http.Request, rule *Rule, meta *Meta) (*ht
 			e.counters.bytesReceived.Add(uint64(resp.ContentLength))
 		}
 		if retryStatus(policy, resp.StatusCode) && attempt < attempts {
-			if !e.budget.allow() {
+			if !budget.allow() {
 				return e.finishResponse(resp, req, meta, nil, attempt, start), nil
 			}
 			delay := backoffDelay(policy, attempt)
@@ -385,19 +424,20 @@ func (e *engine) roundTripDirect(req *http.Request, rule *Rule, meta *Meta) (*ht
 	if lastErr == nil {
 		lastErr = ErrRetryExhausted
 	}
-	return nil, e.wrapError("roundtrip", req, "", attempts, errs.Wrap(lastErr, ErrRetryExhausted))
+	return nil, e.wrapError("roundtrip", req, "", attempted, errs.Wrap(lastErr, ErrRetryExhausted))
 }
 
 // roundTripHosts runs the failover attempt loop across a host pool. | roundTripHosts 在 Host 池上执行故障切换尝试循环。
 func (e *engine) roundTripHosts(req *http.Request, rule *Rule, meta *Meta, hosts *HostSet) (*http.Response, error) {
 	policy := e.retryPolicy(req, rule, hosts.Len())
+	budget := e.budgetFor(policy.Budget)
 	attempts := policy.MaxAttempts
 	if !retryableMethod(policy, req.Method) {
 		attempts = 1
 	}
 	var sp *spool
 	var err error
-	if attempts > 1 && req.Body != nil && req.GetBody == nil {
+	if attempts > 1 && req.Body != nil && req.Body != http.NoBody && req.GetBody == nil {
 		sp, err = e.spoolBody(req)
 		if err != nil {
 			return nil, e.wrapError("prepare_body", req, "", 0, err)
@@ -414,8 +454,10 @@ func (e *engine) roundTripHosts(req *http.Request, rule *Rule, meta *Meta, hosts
 		tried = make(map[string]struct{}, hosts.Len())
 	}
 	var lastErr error
+	attempted := 0
 	var lastHost *Host
 	for attempt := 1; attempt <= attempts; attempt++ {
+		attempted = attempt
 		host, pickErr := hosts.Pick(req, tried)
 		if pickErr != nil && errors.Is(pickErr, ErrNoHealthyHosts) && len(tried) > 0 {
 			tried = make(map[string]struct{}, hosts.Len())
@@ -438,7 +480,7 @@ func (e *engine) roundTripHosts(req *http.Request, rule *Rule, meta *Meta, hosts
 			lastErr = transportErr
 			break
 		}
-		if attempt == 1 && attempts == 1 && canPassThroughHost(host, rule, logical, req) {
+		if attempt == 1 && attempts == 1 && policy.PerAttemptTimeout <= 0 && canPassThroughHost(host, rule, logical, req) {
 			e.fireAttempt(req.Context(), AttemptInfo{Attempt: 1, Host: host, Method: req.Method, URL: safeURL(logical)})
 			if req.ContentLength > 0 {
 				e.counters.bytesSent.Add(uint64(req.ContentLength))
@@ -446,7 +488,11 @@ func (e *engine) roundTripHosts(req *http.Request, rule *Rule, meta *Meta, hosts
 			start := time.Now()
 			resp, err := transport.RoundTrip(req)
 			if err != nil {
-				hosts.MarkFailure(host, err)
+				if req.Context().Err() != nil {
+					hosts.Release(host)
+				} else {
+					hosts.MarkFailure(host, err)
+				}
 				return nil, e.wrapError("roundtrip", req, host.Name, 1, err)
 			}
 			if resp.ContentLength > 0 {
@@ -459,9 +505,13 @@ func (e *engine) roundTripHosts(req *http.Request, rule *Rule, meta *Meta, hosts
 			}
 			return e.finishResponse(resp, req, meta, host, 1, start), nil
 		}
+		attemptReq, attemptCancel := attemptWithTimeout(req, policy.PerAttemptTimeout)
 		target := targetURL(logical, host, rule)
-		out, prepErr := e.cloneAttempt(req, attempt, target, originalHost, rule, host, sp)
+		out, prepErr := e.cloneAttempt(attemptReq, attempt, target, originalHost, rule, host, sp)
 		if prepErr != nil {
+			if attemptCancel != nil {
+				attemptCancel()
+			}
 			hosts.MarkFailure(host, prepErr)
 			lastErr = prepErr
 			break
@@ -472,15 +522,20 @@ func (e *engine) roundTripHosts(req *http.Request, rule *Rule, meta *Meta, hosts
 		}
 		start := time.Now()
 		resp, err := transport.RoundTrip(out)
+		finishAttempt(resp, attemptCancel, err)
 		if err != nil {
-			hosts.MarkFailure(host, err)
+			if req.Context().Err() != nil {
+				hosts.Release(host)
+			} else {
+				hosts.MarkFailure(host, err)
+			}
 			lastErr = err
 			if meta != nil {
 				meta.Attempts = attempt
 				meta.Host = host
 			}
 			if attempt >= attempts || policy.DisableNetworkRetry ||
-				!retryableError(err, req.Context()) || !e.budget.allow() {
+				!retryableError(err, req.Context()) || !budget.allow() {
 				break
 			}
 			delay := backoffDelay(policy, attempt)
@@ -496,7 +551,7 @@ func (e *engine) roundTripHosts(req *http.Request, rule *Rule, meta *Meta, hosts
 			e.counters.bytesReceived.Add(uint64(resp.ContentLength))
 		}
 		if retryStatus(policy, resp.StatusCode) && attempt < attempts {
-			if !e.budget.allow() {
+			if !budget.allow() {
 				hosts.MarkFailure(host, errs.Detail(ErrUpstreamStatus, "status %d", resp.StatusCode))
 				return e.finishResponse(resp, req, meta, host, attempt, start), nil
 			}
@@ -530,7 +585,7 @@ func (e *engine) roundTripHosts(req *http.Request, rule *Rule, meta *Meta, hosts
 	if lastHost != nil {
 		hostName = lastHost.Name
 	}
-	return nil, e.wrapError("roundtrip", req, hostName, attempts, errs.Wrap(lastErr, ErrRetryExhausted))
+	return nil, e.wrapError("roundtrip", req, hostName, attempted, errs.Wrap(lastErr, ErrRetryExhausted))
 }
 
 // cloneAttempt clones the request for one attempt without mutating the caller's request. | cloneAttempt 为单次尝试克隆请求，不修改调用方请求。
@@ -606,13 +661,34 @@ func canPassThroughHost(host *Host, rule *Rule, logical *url.URL, req *http.Requ
 	if rule != nil && (len(rule.Headers) > 0 || rule.Rewrite != nil || rule.PreserveHost) {
 		return false
 	}
-	if len(host.Headers) > 0 || host.URL.RawPath != "" {
+	if len(host.Headers) > 0 || host.URL.RawPath != "" || host.URL.RawQuery != "" ||
+		host.URL.Fragment != "" || host.URL.User != nil || host.URL.Opaque != "" {
 		return false
 	}
 	if host.URL.Path != "" && host.URL.Path != "/" {
 		return false
 	}
 	return host.URL.Scheme == logical.Scheme && host.URL.Host == logical.Host
+}
+
+// directTarget applies a rule rewrite without a host base path. | directTarget 在无 Host base path 时应用规则重写。
+func directTarget(logical *url.URL, rule *Rule) *url.URL {
+	target := *logical
+	if rule == nil || rule.Rewrite == nil {
+		return &target
+	}
+	escaped := logical.EscapedPath()
+	if escaped == "" {
+		escaped = "/"
+	}
+	escaped = applyRewrite(rule.Rewrite, escaped)
+	decoded, err := url.PathUnescape(escaped)
+	if err != nil {
+		decoded = escaped
+	}
+	target.RawPath = escaped
+	target.Path = decoded
+	return &target
 }
 
 // targetURL builds the wire URL from the logical URL, the rule rewrite and the host base path. | targetURL 由逻辑 URL、规则重写与 Host base path 构造连接 URL。
@@ -665,6 +741,8 @@ func (e *engine) finishResponse(resp *http.Response, req *http.Request, meta *Me
 	resp.Request = req
 	if meta != nil {
 		meta.Attempts = attempt
+		meta.BytesSent = req.ContentLength
+		meta.BytesRead = resp.ContentLength
 		hostName := ""
 		if host != nil {
 			meta.Host = host

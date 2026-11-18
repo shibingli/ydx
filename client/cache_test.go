@@ -56,6 +56,43 @@ func TestCacheTTLAndVary(t *testing.T) {
 	}
 }
 
+func TestCacheHeadContentLength(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", "1234")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	c, err := New(
+		WithHosts(srv.URL),
+		WithCache(CachePolicy{TTL: time.Minute}),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	for i := 0; i < 2; i++ {
+		resp, err := c.Head(context.Background(), srv.URL+"/x")
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		if resp.ContentLength != 1234 {
+			t.Fatalf("attempt %d: content length %d", i, resp.ContentLength)
+		}
+	}
+}
+
+func TestCacheSkipsConditionalRequests(t *testing.T) {
+	policy := CachePolicy{}.withDefaults()
+	for _, header := range []string{"Range", "If-Range", "If-None-Match", "If-Modified-Since", "If-Match", "If-Unmodified-Since"} {
+		req := httptest.NewRequest(http.MethodGet, "http://svc/x", nil)
+		req.Header.Set(header, "value")
+		if cacheableRequest(req, policy) {
+			t.Fatalf("%s request must not use the cache", header)
+		}
+	}
+}
+
 func TestCacheOversizeBypass(t *testing.T) {
 	payload := strings.Repeat("x", 100)
 	var hits atomic.Int32

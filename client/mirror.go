@@ -34,12 +34,12 @@ const (
 
 // MirrorResult describes one shadow upstream attempt. | MirrorResult 描述一次影子上游尝试。
 type MirrorResult struct {
+	// Err is the shadow failure. | Err 是影子失败。
+	Err error
 	// Target is the shadow base URL. | Target 是影子 base URL。
 	Target string
 	// Status is the shadow response status. | Status 是影子响应状态码。
 	Status int
-	// Err is the shadow failure. | Err 是影子失败。
-	Err error
 	// Duration is the shadow attempt duration. | Duration 是影子尝试耗时。
 	Duration time.Duration
 	// Dropped reports that the payload was dropped. | Dropped 报告载荷是否被丢弃。
@@ -48,30 +48,26 @@ type MirrorResult struct {
 
 // MirrorPolicy configures A shadow replay or B tee mirroring. | MirrorPolicy 配置 A 影子上游重放或 B tee 镜像。
 type MirrorPolicy struct {
-	// Targets are shadow base URLs for Mode A. | Targets 是 Mode A 的影子 base URL。
-	Targets []string
 	// Mode is MirrorUpstream (default) or MirrorTee. | Mode 是 MirrorUpstream（默认）或 MirrorTee。
 	Mode MirrorMode
-	// Percent samples requests deterministically; <=0 means 100. | Percent 确定性抽样；<=0 表示 100。
-	Percent int
-	// Sync waits for shadow requests up to Wait. | Sync 等待影子请求直到 Wait。
-	Sync bool
-	// Parallel starts shadow requests before the primary when possible. | Parallel 尽可能在主流前启动影子请求。
-	Parallel bool
-	// FollowCancel ties shadow lifetime to the caller's context. | FollowCancel 让影子生命周期跟随调用方 context。
-	FollowCancel bool
-	// Wait bounds synchronous mirror waiting; <=0 means 5s. | Wait 限制同步镜像等待；<=0 表示 5s。
-	Wait time.Duration
-	// Timeout bounds one shadow request; <=0 means 5s. | Timeout 限制单个影子请求；<=0 表示 5s。
-	Timeout time.Duration
-	// MaxBodyBytes caps shadow body draining and tee queues; <=0 means 1 MiB. | MaxBodyBytes 限制影子正文排空与 tee 队列；<=0 表示 1 MiB。
-	MaxBodyBytes int64
+	// Targets are shadow base URLs for Mode A. | Targets 是 Mode A 的影子 base URL。
+	Targets []string
 	// StripHeaders lists headers removed from shadow requests; nil uses defaults. | StripHeaders 列出影子请求移除的头；nil 使用默认值。
 	StripHeaders []string
 	// TeeSinks receive primary response chunks in Mode B. | TeeSinks 在 Mode B 接收主流响应块。
 	TeeSinks []Sink
 	// TeeEventSinks receive parsed SSE events in Mode B. | TeeEventSinks 在 Mode B 接收解析后的 SSE 事件。
 	TeeEventSinks []EventSink
+
+	targets []*url.URL
+	// Percent samples requests deterministically; <=0 means 100. | Percent 确定性抽样；<=0 表示 100。
+	Percent int
+	// Wait bounds synchronous mirror waiting; <=0 means 5s. | Wait 限制同步镜像等待；<=0 表示 5s。
+	Wait time.Duration
+	// Timeout bounds one shadow request; <=0 means 5s. | Timeout 限制单个影子请求；<=0 表示 5s。
+	Timeout time.Duration
+	// MaxBodyBytes caps shadow body draining and tee queues; <=0 means 1 MiB. | MaxBodyBytes 限制影子正文排空与 tee 队列；<=0 表示 1 MiB。
+	MaxBodyBytes int64
 	// TeeQueue is each sink queue length; <=0 means 64. | TeeQueue 是每个 sink 队列长度；<=0 表示 64。
 	TeeQueue int
 	// TeeDrop selects DropNewest or DropOldest. | TeeDrop 选择 DropNewest 或 DropOldest。
@@ -79,7 +75,12 @@ type MirrorPolicy struct {
 	// TeeTimeout bounds one sink write; <=0 means 5s. | TeeTimeout 限制单次 sink 写入；<=0 表示 5s。
 	TeeTimeout time.Duration
 
-	targets []*url.URL
+	// Sync waits for shadow requests up to Wait. | Sync 等待影子请求直到 Wait。
+	Sync bool
+	// Parallel starts shadow requests before the primary when possible. | Parallel 尽可能在主流前启动影子请求。
+	Parallel bool
+	// FollowCancel ties shadow lifetime to the caller's context. | FollowCancel 让影子生命周期跟随调用方 context。
+	FollowCancel bool
 }
 
 // defaultMirrorStripHeaders are removed from shadow requests. | defaultMirrorStripHeaders 从影子请求中移除。
@@ -168,11 +169,13 @@ func WithMaxMirrorInflight(n int) Option {
 // mirrorer runs shadow upstream requests with bounded concurrency. | mirrorer 以有界并发运行影子上游请求。
 type mirrorer struct {
 	base   http.RoundTripper
-	sem    chan struct{}
 	ctx    context.Context
+	sem    chan struct{}
 	cancel context.CancelFunc
-	wg     sync.WaitGroup
 	engine *engine
+	wg     sync.WaitGroup
+	mu     sync.Mutex
+	closed bool
 }
 
 // newMirrorer builds a mirrorer; a zero max uses 64. | newMirrorer 构建 mirrorer；max 为 0 时使用 64。
@@ -194,13 +197,34 @@ func (m *mirrorer) Close() {
 	if m == nil {
 		return
 	}
+	m.mu.Lock()
+	m.closed = true
 	m.cancel()
+	m.mu.Unlock()
 	m.wg.Wait()
+}
+
+// active reports whether new shadows may be reserved. | active 报告是否还能预留新影子请求。
+func (m *mirrorer) active() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return !m.closed && m.ctx.Err() == nil
+}
+
+// reserve registers one shadow before Close can start waiting. | reserve 在 Close 开始等待前登记一个影子请求。
+func (m *mirrorer) reserve() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.closed || m.ctx.Err() != nil {
+		return false
+	}
+	m.wg.Add(1)
+	return true
 }
 
 // submit samples and schedules shadow replays. | submit 抽样并调度影子重放。
 func (m *mirrorer) submit(parent context.Context, req *http.Request, logical *url.URL, rule *Rule, policy *MirrorPolicy) {
-	if m == nil || policy == nil || policy.Mode != MirrorUpstream || len(policy.targets) == 0 || m.ctx.Err() != nil {
+	if m == nil || policy == nil || policy.Mode != MirrorUpstream || len(policy.targets) == 0 || !m.active() {
 		return
 	}
 	if !mirrorSampled(logical, rule, policy.Percent) {
@@ -236,7 +260,10 @@ func (m *mirrorer) submit(parent context.Context, req *http.Request, logical *ur
 				})
 			}
 		}
-		m.wg.Add(1)
+		if !m.reserve() {
+			<-m.sem
+			return
+		}
 		local.Add(1)
 		go func(target *url.URL) {
 			defer m.wg.Done()

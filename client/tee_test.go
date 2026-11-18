@@ -56,6 +56,23 @@ func TestTeeSlowSinkDrops(t *testing.T) {
 	}
 }
 
+func TestTeeCloseBounded(t *testing.T) {
+	var drops atomic.Uint64
+	sink := SinkFunc(func(context.Context, []byte) error {
+		time.Sleep(50 * time.Millisecond)
+		return nil
+	})
+	worker := newTeeSinkWorker(sink, 64, DropNewest, 10*time.Millisecond, &drops)
+	for i := 0; i < 50; i++ {
+		worker.enqueue([]byte("x"))
+	}
+	start := time.Now()
+	worker.Close()
+	if elapsed := time.Since(start); elapsed > 500*time.Millisecond {
+		t.Fatalf("Close blocked for %v", elapsed)
+	}
+}
+
 func TestTeeSinkReceives(t *testing.T) {
 	payload := []byte("tee-payload")
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

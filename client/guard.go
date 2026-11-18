@@ -17,18 +17,18 @@ import (
 
 // GuardDecision is the outcome of one guard check. | GuardDecision 是一次守卫检查的结果。
 type GuardDecision struct {
-	// Allowed reports whether the request may proceed. | Allowed 报告请求是否可继续。
-	Allowed bool
-	// Status is the denial status; zero defaults to 403. | Status 是拒绝状态码；0 默认 403。
-	Status int
-	// RuleID identifies the matched WAF or policy rule. | RuleID 标识命中的 WAF 或策略规则。
-	RuleID int
 	// Action is the denial action, such as "deny". | Action 是拒绝动作，例如 "deny"。
 	Action string
 	// Message is a human-readable reason. | Message 是人类可读原因。
 	Message string
 	// Matched lists matched rule or policy names. | Matched 列出命中的规则或策略名。
 	Matched []string
+	// Status is the denial status; zero defaults to 403. | Status 是拒绝状态码；0 默认 403。
+	Status int
+	// RuleID identifies the matched WAF or policy rule. | RuleID 标识命中的 WAF 或策略规则。
+	RuleID int
+	// Allowed reports whether the request may proceed. | Allowed 报告请求是否可继续。
+	Allowed bool
 }
 
 // Guard inspects a logical request before cache, coalescing or host selection. | Guard 在缓存、合并或 Host 选择前检查逻辑请求。
@@ -67,6 +67,12 @@ func (c GuardChain) Check(ctx context.Context, req *http.Request) (GuardDecision
 
 // AccessPolicy is a compiled scheme/host/method/port/CIDR allow-deny policy. | AccessPolicy 是已编译的 scheme/host/method/port/CIDR 允许-拒绝策略。
 type AccessPolicy struct {
+	prepErr     error
+	allowPorts  map[int]bool
+	denyPorts   map[int]bool
+	allowScheme map[string]bool
+	allowMethod map[string]bool
+	denyMethod  map[string]bool
 	// AllowSchemes limits URL schemes; empty allows http and https. | AllowSchemes 限制 URL scheme；为空允许 http 与 https。
 	AllowSchemes []string
 	// AllowHosts lists host globs; empty allows every host. | AllowHosts 列出 Host glob；为空允许全部 Host。
@@ -77,8 +83,6 @@ type AccessPolicy struct {
 	AllowCIDRs []string
 	// DenyCIDRs lists denied remote CIDRs. | DenyCIDRs 列出拒绝的远端 CIDR。
 	DenyCIDRs []string
-	// BlockPrivateIPs rejects loopback, private, link-local, multicast and unspecified addresses. | BlockPrivateIPs 拒绝回环、私网、链路本地、组播与未指定地址。
-	BlockPrivateIPs bool
 	// AllowPorts limits destination ports; empty allows every port. | AllowPorts 限制目标端口；为空允许全部端口。
 	AllowPorts []int
 	// DenyPorts denies destination ports. | DenyPorts 拒绝目标端口。
@@ -87,20 +91,16 @@ type AccessPolicy struct {
 	AllowMethods []string
 	// DenyMethods denies HTTP methods. | DenyMethods 拒绝 HTTP 方法。
 	DenyMethods []string
-	// MaxRequestBytes rejects known-length request bodies above the limit. | MaxRequestBytes 拒绝已知长度超过上限的请求正文。
-	MaxRequestBytes int64
-
-	once        sync.Once
-	prepErr     error
 	allowCIDRs  []netip.Prefix
 	denyCIDRs   []netip.Prefix
 	allowHosts  []string
 	denyHosts   []string
-	allowPorts  map[int]bool
-	denyPorts   map[int]bool
-	allowScheme map[string]bool
-	allowMethod map[string]bool
-	denyMethod  map[string]bool
+	// MaxRequestBytes rejects known-length request bodies above the limit. | MaxRequestBytes 拒绝已知长度超过上限的请求正文。
+	MaxRequestBytes int64
+
+	once sync.Once
+	// BlockPrivateIPs rejects loopback, private, link-local, multicast and unspecified addresses. | BlockPrivateIPs 拒绝回环、私网、链路本地、组播与未指定地址。
+	BlockPrivateIPs bool
 }
 
 // WithGuard sets the client-wide guard. | WithGuard 设置客户端级守卫。

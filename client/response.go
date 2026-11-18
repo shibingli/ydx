@@ -33,27 +33,28 @@ type HopMeta struct {
 type Meta struct {
 	// Rule is the matched rule, when any. | Rule 是命中的规则（如有）。
 	Rule *Rule
-	// Params are the captured path parameters. | Params 是路径参数捕获。
-	Params Params
 	// Host is the selected host, when any. | Host 是选中的 Host（如有）。
 	Host *Host
 	// Guard is the guard decision, when a guard ran. | Guard 是守卫决策（如执行过）。
 	Guard *GuardDecision
-	// Attempts is the number of upstream attempts for the final hop. | Attempts 是最终一跳的上游尝试次数。
-	Attempts int
-	// CacheHit reports whether the response came from cache. | CacheHit 报告响应是否来自缓存。
-	CacheHit bool
-	// Coalesced reports whether the response was shared by request coalescing. | Coalesced 报告响应是否由请求合并共享。
-	Coalesced bool
 	// Hops records the redirect chain in order. | Hops 按顺序记录重定向链。
 	Hops []HopMeta
+	// Params are the captured path parameters. | Params 是路径参数捕获。
+	Params Params
+
+	// hopInline backs the first redirect hop without an allocation. | hopInline 为首次重定向提供无分配存储。
+	hopInline [1]HopMeta
+	// Attempts is the number of upstream attempts for the final hop. | Attempts 是最终一跳的上游尝试次数。
+	Attempts int
 	// BytesSent is the request body bytes written. | BytesSent 是写出的请求正文字节数。
 	BytesSent int64
 	// BytesRead is the response body bytes read. | BytesRead 是读取的响应正文字节数。
 	BytesRead int64
 
-	// hopInline backs the first redirect hop without an allocation. | hopInline 为首次重定向提供无分配存储。
-	hopInline [1]HopMeta
+	// CacheHit reports whether the response came from cache. | CacheHit 报告响应是否来自缓存。
+	CacheHit bool
+	// Coalesced reports whether the response was shared by request coalescing. | Coalesced 报告响应是否由请求合并共享。
+	Coalesced bool
 }
 
 // metaKey is the context key carrying the per-call Meta pointer. | metaKey 是携带每次调用 Meta 指针的 context 键。

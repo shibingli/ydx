@@ -54,6 +54,67 @@ func TestCoalesceSingleUpstream(t *testing.T) {
 	}
 }
 
+func TestCoalesceDoesNotShareRanges(t *testing.T) {
+	var hits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		time.Sleep(30 * time.Millisecond)
+		if r.Header.Get("Range") != "" {
+			w.WriteHeader(http.StatusPartialContent)
+			_, _ = w.Write([]byte("AAAAA"))
+			return
+		}
+		_, _ = w.Write([]byte("0123456789"))
+	}))
+	defer srv.Close()
+
+	c, err := New(WithRule(Rule{
+		Name:     "r",
+		Pattern:  "/x",
+		Coalesce: &CoalescePolicy{MaxBodyBytes: 1 << 20},
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+
+	type result struct {
+		body string
+		err  error
+	}
+	results := make(chan result, 2)
+	var wg sync.WaitGroup
+	for _, rangeHeader := range []string{"", "bytes=0-4"} {
+		wg.Add(1)
+		go func(rangeHeader string) {
+			defer wg.Done()
+			resp, err := c.Get(context.Background(), srv.URL+"/x", WithRequestHeader("Range", rangeHeader))
+			if err != nil {
+				results <- result{err: err}
+				return
+			}
+			data, readErr := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			results <- result{body: string(data), err: readErr}
+		}(rangeHeader)
+	}
+	wg.Wait()
+	close(results)
+	seen := map[string]bool{}
+	for result := range results {
+		if result.err != nil {
+			t.Fatal(result.err)
+		}
+		seen[result.body] = true
+	}
+	if !seen["0123456789"] || !seen["AAAAA"] {
+		t.Fatalf("coalesced range results: %v", seen)
+	}
+	if hits.Load() != 2 {
+		t.Fatalf("upstream hits %d, want 2", hits.Load())
+	}
+}
+
 func TestCoalesceLeaderCancelFallback(t *testing.T) {
 	var hits atomic.Int32
 	release := make(chan struct{})

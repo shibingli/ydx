@@ -13,44 +13,44 @@ import (
 
 // HealthPolicy controls passive and active host health. | HealthPolicy 控制 Host 的被动与主动健康。
 type HealthPolicy struct {
-	// Active enables the periodic active health check. | Active 启用周期性主动健康检查。
-	Active bool
 	// Path is the active health check path; empty means "/". | Path 是主动检查路径；为空表示 "/"。
 	Path string
+	// ExpectStatus lists accepted statuses; empty accepts 2xx. | ExpectStatus 列出可接受状态码；为空接受 2xx。
+	ExpectStatus []int
+	// FailStatus lists statuses the engine treats as host failures. | FailStatus 列出引擎视为 Host 失败的状态码。
+	FailStatus []int
 	// Interval is the active check interval; <=0 means 10s. | Interval 是主动检查间隔；<=0 表示 10s。
 	Interval time.Duration
 	// Timeout is one active check timeout; <=0 means 2s. | Timeout 是单次主动检查超时；<=0 表示 2s。
 	Timeout time.Duration
-	// ExpectStatus lists accepted statuses; empty accepts 2xx. | ExpectStatus 列出可接受状态码；为空接受 2xx。
-	ExpectStatus []int
 	// FailThreshold is the consecutive failure count that opens the circuit; <=0 means 3. | FailThreshold 是打开熔断的连续失败数；<=0 表示 3。
 	FailThreshold int
 	// Cooldown is the initial unhealthy period; <=0 means 1s. | Cooldown 是初始不健康期；<=0 表示 1s。
 	Cooldown time.Duration
 	// MaxCooldown caps exponential cooldown; <=0 means 30s. | MaxCooldown 是冷却上限；<=0 表示 30s。
 	MaxCooldown time.Duration
-	// FailStatus lists statuses the engine treats as host failures. | FailStatus 列出引擎视为 Host 失败的状态码。
-	FailStatus []int
+	// Active enables the periodic active health check. | Active 启用周期性主动健康检查。
+	Active bool
 }
 
 // Host is one upstream base URL with selection and health settings. | Host 是一个带选择与健康设置的上游 base URL。
 type Host struct {
-	// Name identifies the host; empty derives it from URL. | Name 标识 Host；为空时由 URL 推导。
-	Name string
 	// URL is the base URL used for the host. | URL 是该 Host 使用的 base URL。
 	URL *url.URL
-	// Weight is the weighted round-robin weight; <=0 means 1. | Weight 是加权轮询权重；<=0 表示 1。
-	Weight int
-	// MaxInflight caps concurrent requests; 0 means unlimited. | MaxInflight 限制并发请求；0 表示不限制。
-	MaxInflight int
 	// Headers are added to requests sent to this host. | Headers 添加到发往该 Host 的请求。
 	Headers http.Header
-	// Health configures passive and active health. | Health 配置被动与主动健康。
-	Health HealthPolicy
 	// TLS overrides the client TLS configuration for this host. | TLS 为该 Host 覆盖客户端 TLS 配置。
 	TLS *TLSConfig
 
 	entry *hostEntry
+	// Name identifies the host; empty derives it from URL. | Name 标识 Host；为空时由 URL 推导。
+	Name string
+	// Health configures passive and active health. | Health 配置被动与主动健康。
+	Health HealthPolicy
+	// Weight is the weighted round-robin weight; <=0 means 1. | Weight 是加权轮询权重；<=0 表示 1。
+	Weight int
+	// MaxInflight caps concurrent requests; 0 means unlimited. | MaxInflight 限制并发请求；0 表示不限制。
+	MaxInflight int
 }
 
 // IsFailureStatus reports whether code is configured as a host failure. | IsFailureStatus 报告 code 是否配置为 Host 失败。
@@ -68,6 +68,8 @@ func (h *Host) IsFailureStatus(code int) bool {
 
 // HostStats is a point-in-time view of one host. | HostStats 是单个 Host 的时间点视图。
 type HostStats struct {
+	// CooldownUntil is when the host becomes eligible again. | CooldownUntil 是 Host 重新可用的时间。
+	CooldownUntil time.Time
 	// Name is the host name. | Name 是 Host 名称。
 	Name string
 	// Requests is the number of selected requests. | Requests 是被选中的请求数。
@@ -80,8 +82,6 @@ type HostStats struct {
 	Healthy bool
 	// HalfOpen reports whether this host is the current half-open probe. | HalfOpen 报告该 Host 是否处于半开探测。
 	HalfOpen bool
-	// CooldownUntil is when the host becomes eligible again. | CooldownUntil 是 Host 重新可用的时间。
-	CooldownUntil time.Time
 }
 
 // hostEntry is the mutable state of one host. | hostEntry 是单个 Host 的可变状态。
@@ -89,42 +89,44 @@ type hostEntry struct {
 	host *Host
 	set  *HostSet
 
-	inflight    atomic.Int64
-	requests    atomic.Uint64
-	failures    atomic.Uint64
-	consecutive atomic.Int32
+	inflight      atomic.Int64
+	requests      atomic.Uint64
+	failures      atomic.Uint64
+	cooldownUntil atomic.Int64
+	consecutive   atomic.Int32
 
 	healthy       atomic.Bool
 	halfOpen      atomic.Bool
-	cooldownUntil atomic.Int64
 	cooldownLevel atomic.Int32
 }
 
 // HostSetOptions configures a HostSet. | HostSetOptions 配置 HostSet。
 type HostSetOptions struct {
-	// Balance is the selection strategy; empty means weighted. | Balance 是选择策略；为空表示加权。
-	Balance Balance
 	// HashKey derives the consistent-hash key; nil uses the URL path. | HashKey 生成一致性哈希键；nil 使用 URL 路径。
 	HashKey func(*http.Request) string
+	// Balance is the selection strategy; empty means weighted. | Balance 是选择策略；为空表示加权。
+	Balance Balance
 }
 
 // HostSet is a mutable-health, immutable-membership host pool. | HostSet 是成员不可变、健康状态可变的 Host 池。
 type HostSet struct {
-	entries []*hostEntry
-	ring    []int
-	next    atomic.Uint64
-
-	balance Balance
 	hashKey func(*http.Request) string
 	now     func() time.Time
 
+	healthCancel context.CancelFunc
+
+	balance  Balance
+	entries  []*hostEntry
+	ring     []int
+	healthWG sync.WaitGroup
+	next     atomic.Uint64
+
 	failOpen atomic.Uint64
+
+	healthMu sync.Mutex
 	closed   atomic.Bool
 
-	healthMu      sync.Mutex
-	healthCancel  context.CancelFunc
 	healthStarted bool
-	healthWG      sync.WaitGroup
 }
 
 // NewHostSet builds a weighted host pool with default options. | NewHostSet 用默认选项构建加权 Host 池。
@@ -251,6 +253,15 @@ func (hs *HostSet) AnyActive() bool {
 		}
 	}
 	return false
+}
+
+// firstBaseURL returns scheme://host of the first host for relative URLs. | firstBaseURL 返回第一个 Host 的 scheme://host，用于解析相对 URL。
+func (hs *HostSet) firstBaseURL() *url.URL {
+	if hs == nil || hs.closed.Load() || len(hs.entries) == 0 {
+		return nil
+	}
+	first := hs.entries[0].host.URL
+	return &url.URL{Scheme: first.Scheme, Host: first.Host}
 }
 
 // Pick selects an eligible host, applies fail-open when none is healthy, and

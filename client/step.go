@@ -14,28 +14,28 @@ import (
 
 // stepHeaderFunc computes one header from the current variables. | stepHeaderFunc 从当前变量计算一个请求头。
 type stepHeaderFunc struct {
-	key string
 	fn  func(*Vars) string
+	key string
 }
 
 // StepBuilder builds one HTTP pipeline step. | StepBuilder 构建一个 HTTP Pipeline 步骤。
 type StepBuilder struct {
-	name        string
-	method      string
-	target      string
-	headers     http.Header
-	headerFuncs []stepHeaderFunc
-	query       url.Values
 	body        any
+	headers     http.Header
+	query       url.Values
 	bodyFunc    func(*Vars) (io.Reader, error)
 	jsonFunc    func(*Vars) any
 	urlFunc     func(*Vars) string
-	timeout     time.Duration
 	expect      map[int]bool
-	required    bool
 	when        func(*Vars) bool
+	name        string
+	method      string
+	target      string
+	headerFuncs []stepHeaderFunc
 	extractors  []Extractor
+	timeout     time.Duration
 	maxBody     int64
+	required    bool
 }
 
 // Step creates a pipeline step. | Step 创建一个 Pipeline 步骤。

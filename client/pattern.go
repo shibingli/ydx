@@ -18,17 +18,17 @@ const (
 
 // token is one literal, parameter or glob inside a segment. | token 是段内的一个字面量、参数或通配符。
 type token struct {
-	kind  tokenKind
-	text  string
 	regex *regexpx.Regexp
+	text  string
+	kind  tokenKind
 }
 
 // segment is one compiled path segment. | segment 是一个已编译的路径段。
 type segment struct {
 	raw       string
+	catchName string
 	tokens    []token
 	catchAll  bool
-	catchName string
 	trailing  bool
 }
 

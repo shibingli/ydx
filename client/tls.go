@@ -6,6 +6,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"sync/atomic"
@@ -18,42 +19,42 @@ import (
 type TLSConfig struct {
 	// RootCAs replaces the system roots when set. | RootCAs 设置时替换系统根。
 	RootCAs *x509.CertPool
-	// RootCAFiles appends PEM roots from files. | RootCAFiles 追加文件中的 PEM 根证书。
-	RootCAFiles []string
-	// DisableSystemRoots omits the system root pool. | DisableSystemRoots 省略系统根池。
-	DisableSystemRoots bool
+	// GetClientCertificate supplies a client certificate dynamically. | GetClientCertificate 动态提供客户端证书。
+	GetClientCertificate func(*tls.CertificateRequestInfo) (*tls.Certificate, error)
+	// VerifyConnection runs after standard verification and pinning. | VerifyConnection 在标准校验与固定之后运行。
+	VerifyConnection func(tls.ConnectionState) error
 	// CertFile is the client certificate PEM path for mTLS. | CertFile 是 mTLS 客户端证书 PEM 路径。
 	CertFile string
 	// KeyFile is the client private key PEM path for mTLS. | KeyFile 是 mTLS 客户端私钥 PEM 路径。
 	KeyFile string
+	// ServerName overrides SNI and hostname verification. | ServerName 覆盖 SNI 与主机名校验。
+	ServerName string
+	// RootCAFiles appends PEM roots from files. | RootCAFiles 追加文件中的 PEM 根证书。
+	RootCAFiles []string
 	// CertPEM is an in-memory client certificate. | CertPEM 是内存客户端证书。
 	CertPEM []byte
 	// KeyPEM is an in-memory client private key. | KeyPEM 是内存客户端私钥。
 	KeyPEM []byte
 	// Certificates are preloaded client certificates. | Certificates 是预加载客户端证书。
 	Certificates []tls.Certificate
-	// GetClientCertificate supplies a client certificate dynamically. | GetClientCertificate 动态提供客户端证书。
-	GetClientCertificate func(*tls.CertificateRequestInfo) (*tls.Certificate, error)
-	// ServerName overrides SNI and hostname verification. | ServerName 覆盖 SNI 与主机名校验。
-	ServerName string
-	// MinVersion is the minimum TLS version; 0 means TLS 1.2. | MinVersion 是最低 TLS 版本；0 表示 TLS 1.2。
-	MinVersion uint16
-	// MaxVersion is the maximum TLS version; 0 means library default. | MaxVersion 是最高 TLS 版本；0 表示库默认。
-	MaxVersion uint16
 	// CipherSuites limits TLS 1.0-1.2 cipher suites. | CipherSuites 限制 TLS 1.0-1.2 套件。
 	CipherSuites []uint16
 	// CurvePreferences limits key exchange curves. | CurvePreferences 限制密钥交换曲线。
 	CurvePreferences []tls.CurveID
-	// InsecureSkipVerify disables standard verification; an explicit escape hatch. | InsecureSkipVerify 关闭标准校验，是显式逃生口。
-	InsecureSkipVerify bool
 	// PinSHA256 lists base64 SPKI SHA-256 pins. | PinSHA256 列出 base64 SPKI SHA-256 固定值。
 	PinSHA256 []string
-	// PinChain also checks intermediate/chain certificate pins. | PinChain 也校验中间/链证书固定。
-	PinChain bool
-	// VerifyConnection runs after standard verification and pinning. | VerifyConnection 在标准校验与固定之后运行。
-	VerifyConnection func(tls.ConnectionState) error
 	// SessionCacheSize is the client session cache size; 0 means 128, <0 disables. | SessionCacheSize 是客户端会话缓存大小；0 表示 128，<0 禁用。
 	SessionCacheSize int
+	// MinVersion is the minimum TLS version; 0 means TLS 1.2. | MinVersion 是最低 TLS 版本；0 表示 TLS 1.2。
+	MinVersion uint16
+	// MaxVersion is the maximum TLS version; 0 means library default. | MaxVersion 是最高 TLS 版本；0 表示库默认。
+	MaxVersion uint16
+	// DisableSystemRoots omits the system root pool. | DisableSystemRoots 省略系统根池。
+	DisableSystemRoots bool
+	// InsecureSkipVerify disables standard verification; an explicit escape hatch. | InsecureSkipVerify 关闭标准校验，是显式逃生口。
+	InsecureSkipVerify bool
+	// PinChain also checks intermediate/chain certificate pins. | PinChain 也校验中间/链证书固定。
+	PinChain bool
 }
 
 // WithTLS sets the default TLS configuration. | WithTLS 设置默认 TLS 配置。
@@ -89,9 +90,9 @@ func (c *Client) ReloadTLS() error {
 
 // tlsState owns one TLS configuration and its transport snapshot. | tlsState 拥有一份 TLS 配置及其传输快照。
 type tlsState struct {
-	cfg       TLSConfig
 	base      *http.Transport
 	transport atomic.Pointer[http.Transport]
+	cfg       TLSConfig
 }
 
 // newTLSState builds the first TLS config and transport snapshot. | newTLSState 构建首个 TLS 配置与传输快照。
@@ -319,6 +320,19 @@ func (e *engine) transportFor(host *Host) (http.RoundTripper, error) {
 		return e.defaultTLS.current(), nil
 	}
 	return e.base, nil
+}
+
+// transportForURL applies a hostname TLS override for direct requests. | transportForURL 为直连请求应用按主机名的 TLS 覆盖。
+func (e *engine) transportForURL(u *url.URL) http.RoundTripper {
+	if u != nil {
+		if state := e.hostTLS[strings.ToLower(u.Host)]; state != nil {
+			return state.current()
+		}
+		if state := e.hostTLS[strings.ToLower(u.Hostname())]; state != nil {
+			return state.current()
+		}
+	}
+	return e.defaultTransport()
 }
 
 // healthTransport returns the per-host transport for active health checks. | healthTransport 返回主动健康检查使用的逐 Host 传输。

@@ -61,6 +61,20 @@ func TestNewDefaults(t *testing.T) {
 	}
 }
 
+func TestTransportAfterClose(t *testing.T) {
+	c, err := New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Close(); err != nil {
+		t.Fatal(err)
+	}
+	req, _ := http.NewRequest(http.MethodGet, "http://example.com/x", nil)
+	if _, err := c.Transport().RoundTrip(req); !errors.Is(err, ErrClosed) {
+		t.Fatalf("want ErrClosed, got %v", err)
+	}
+}
+
 func TestDoPassthrough(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Test", r.Method)

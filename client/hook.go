@@ -10,24 +10,24 @@ import (
 
 // AttemptInfo describes one upstream attempt. | AttemptInfo 描述一次上游尝试。
 type AttemptInfo struct {
-	// Attempt is the 1-based attempt number. | Attempt 是从 1 开始的尝试序号。
-	Attempt int
 	// Host is the selected host, when any. | Host 是选中的 Host（如有）。
 	Host *Host
 	// Method is the request method. | Method 是请求方法。
 	Method string
 	// URL is the logical request URL without query. | URL 是不含查询的逻辑请求 URL。
 	URL string
+	// Attempt is the 1-based attempt number. | Attempt 是从 1 开始的尝试序号。
+	Attempt int
 }
 
 // RetryInfo describes one retry decision. | RetryInfo 描述一次重试决策。
 type RetryInfo struct {
+	// Reason is a short retry reason. | Reason 是简短重试原因。
+	Reason string
 	// Attempt is the attempt that just failed. | Attempt 是刚失败的尝试序号。
 	Attempt int
 	// Delay is the backoff before the next attempt. | Delay 是下一次尝试前的退避。
 	Delay time.Duration
-	// Reason is a short retry reason. | Reason 是简短重试原因。
-	Reason string
 }
 
 // MirrorInfo identifies one mirror target. | MirrorInfo 标识一个镜像目标。

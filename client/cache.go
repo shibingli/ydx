@@ -17,24 +17,24 @@ import (
 
 // CacheEntry is one immutable cached response variant. | CacheEntry 是一个不可变的缓存响应变体。
 type CacheEntry struct {
+	// Expires is the absolute expiry time; zero means never. | Expires 是绝对过期时间；零值表示不过期。
+	Expires time.Time
+	// Header is the stored response header. | Header 是存储的响应头。
+	Header http.Header
+	// VaryValues records the request header values named by Vary. | VaryValues 记录 Vary 指定的请求头值。
+	VaryValues map[string]string
 	// Status is the response status line. | Status 是响应状态行。
 	Status string
-	// StatusCode is the response status code. | StatusCode 是响应状态码。
-	StatusCode int
 	// Proto is the response protocol line. | Proto 是响应协议行。
 	Proto string
+	// Body is the stored response body. | Body 是存储的响应正文。
+	Body []byte
+	// StatusCode is the response status code. | StatusCode 是响应状态码。
+	StatusCode int
 	// ProtoMajor is the major protocol version. | ProtoMajor 是协议主版本。
 	ProtoMajor int
 	// ProtoMinor is the minor protocol version. | ProtoMinor 是协议次版本。
 	ProtoMinor int
-	// Header is the stored response header. | Header 是存储的响应头。
-	Header http.Header
-	// Body is the stored response body. | Body 是存储的响应正文。
-	Body []byte
-	// Expires is the absolute expiry time; zero means never. | Expires 是绝对过期时间；零值表示不过期。
-	Expires time.Time
-	// VaryValues records the request header values named by Vary. | VaryValues 记录 Vary 指定的请求头值。
-	VaryValues map[string]string
 	// Uncompressed reports whether the response body was transparently decompressed. | Uncompressed 报告响应正文是否被透明解压。
 	Uncompressed bool
 }
@@ -92,33 +92,33 @@ type MemoryOptions struct {
 
 // cacheItem is one intrusive LRU node. | cacheItem 是一个侵入式 LRU 节点。
 type cacheItem struct {
-	key        string
 	entry      *CacheEntry
-	size       int64
 	prev, next *cacheItem
+	key        string
+	size       int64
 }
 
 // cacheShard is one independently locked LRU shard. | cacheShard 是独立加锁的 LRU 分片。
 type cacheShard struct {
-	mu       sync.Mutex
 	items    map[string]*cacheItem
 	head     *cacheItem
 	tail     *cacheItem
 	used     int64
 	capacity int64
+	mu       sync.Mutex
 }
 
 // MemoryStore is the built-in sharded LRU + TTL store. | MemoryStore 是内置分片 LRU + TTL 存储。
 type MemoryStore struct {
-	shards    []*cacheShard
-	maxEntry  int64
 	stop      chan struct{}
+	shards    []*cacheShard
 	wg        sync.WaitGroup
-	closeOnce sync.Once
+	maxEntry  int64
 	hits      atomic.Uint64
 	misses    atomic.Uint64
 	stores    atomic.Uint64
 	evictions atomic.Uint64
+	closeOnce sync.Once
 }
 
 // NewMemoryStore builds a memory store with defaults for zero fields. | NewMemoryStore 为零字段填充默认值后构建内存存储。
@@ -354,24 +354,24 @@ func (s *cacheShard) unlink(item *cacheItem) {
 
 // CachePolicy configures response caching for one rule or the client. | CachePolicy 为单条规则或客户端配置响应缓存。
 type CachePolicy struct {
-	// TTL is the explicit entry lifetime; >0 wins, 0 uses headers, <0 disables. | TTL 是显式条目寿命；>0 优先，0 使用响应头，<0 禁用。
-	TTL time.Duration
-	// Methods lists cacheable methods; nil means GET/HEAD. | Methods 列出可缓存方法；nil 表示 GET/HEAD。
-	Methods []string
-	// StatusCodes lists cacheable statuses; nil means 200/203/204. | StatusCodes 列出可缓存状态码；nil 表示 200/203/204。
-	StatusCodes []int
-	// MaxBodyBytes caps the buffered response body; <=0 means 4 MiB. | MaxBodyBytes 限制缓冲的响应正文；<=0 表示 4 MiB。
-	MaxBodyBytes int64
-	// Vary lists extra request headers that distinguish variants. | Vary 列出区分变体的额外请求头。
-	Vary []string
-	// IgnoreHeaders disables Cache-Control/Expires handling. | IgnoreHeaders 禁用 Cache-Control/Expires 处理。
-	IgnoreHeaders bool
-	// AllowSensitive permits caching requests/responses with credentials or cookies. | AllowSensitive 允许缓存带凭据或 Cookie 的请求/响应。
-	AllowSensitive bool
 	// Store overrides the engine store. | Store 覆盖引擎存储。
 	Store Store
 	// KeyFunc overrides the cache key. | KeyFunc 覆盖缓存键。
 	KeyFunc func(*http.Request) string
+	// Methods lists cacheable methods; nil means GET/HEAD. | Methods 列出可缓存方法；nil 表示 GET/HEAD。
+	Methods []string
+	// StatusCodes lists cacheable statuses; nil means 200/203/204. | StatusCodes 列出可缓存状态码；nil 表示 200/203/204。
+	StatusCodes []int
+	// Vary lists extra request headers that distinguish variants. | Vary 列出区分变体的额外请求头。
+	Vary []string
+	// TTL is the explicit entry lifetime; >0 wins, 0 uses headers, <0 disables. | TTL 是显式条目寿命；>0 优先，0 使用响应头，<0 禁用。
+	TTL time.Duration
+	// MaxBodyBytes caps the buffered response body; <=0 means 4 MiB. | MaxBodyBytes 限制缓冲的响应正文；<=0 表示 4 MiB。
+	MaxBodyBytes int64
+	// IgnoreHeaders disables Cache-Control/Expires handling. | IgnoreHeaders 禁用 Cache-Control/Expires 处理。
+	IgnoreHeaders bool
+	// AllowSensitive permits caching requests/responses with credentials or cookies. | AllowSensitive 允许缓存带凭据或 Cookie 的请求/响应。
+	AllowSensitive bool
 }
 
 // withDefaults fills zero-value cache policy fields. | withDefaults 填充零值缓存策略字段。
@@ -562,6 +562,9 @@ func cacheableRequest(req *http.Request, policy CachePolicy) bool {
 	if strings.Contains(strings.ToLower(req.Header.Get("Accept")), "text/event-stream") {
 		return false
 	}
+	if conditionalRequest(req) {
+		return false
+	}
 	if !policy.AllowSensitive {
 		if req.Header.Get("Authorization") != "" || req.Header.Get("Cookie") != "" {
 			return false
@@ -610,11 +613,17 @@ func (e *engine) storeCacheResponse(resp *http.Response, req *http.Request, key 
 	}
 	_ = resp.Body.Close()
 	resp.Body = io.NopCloser(bytes.NewReader(data))
-	resp.ContentLength = int64(len(data))
 	resp.TransferEncoding = nil
 	resp.Header.Del("Transfer-Encoding")
 	header := resp.Header.Clone()
-	header.Set("Content-Length", strconv.Itoa(len(data)))
+	if req.Method == http.MethodHead {
+		if n, parseErr := strconv.ParseInt(header.Get("Content-Length"), 10, 64); parseErr == nil {
+			resp.ContentLength = n
+		}
+	} else {
+		resp.ContentLength = int64(len(data))
+		header.Set("Content-Length", strconv.Itoa(len(data)))
+	}
 	store.Set(key, &CacheEntry{
 		Status:       resp.Status,
 		StatusCode:   resp.StatusCode,
@@ -639,6 +648,12 @@ func (e *engine) storeCacheResponse(resp *http.Response, req *http.Request, key 
 // cachedResponse materializes a cached entry as a fresh response. | cachedResponse 把缓存条目物化为全新响应。
 func cachedResponse(req *http.Request, entry *CacheEntry) *http.Response {
 	header := entry.Header.Clone()
+	contentLength := int64(len(entry.Body))
+	if req.Method == http.MethodHead || header.Get("Content-Length") != "" {
+		if n, err := strconv.ParseInt(header.Get("Content-Length"), 10, 64); err == nil {
+			contentLength = n
+		}
+	}
 	return &http.Response{
 		Status:        entry.Status,
 		StatusCode:    entry.StatusCode,
@@ -647,7 +662,7 @@ func cachedResponse(req *http.Request, entry *CacheEntry) *http.Response {
 		ProtoMinor:    entry.ProtoMinor,
 		Header:        header,
 		Body:          io.NopCloser(bytes.NewReader(entry.Body)),
-		ContentLength: int64(len(entry.Body)),
+		ContentLength: contentLength,
 		Request:       req,
 		Uncompressed:  entry.Uncompressed,
 	}

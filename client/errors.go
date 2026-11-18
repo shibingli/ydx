@@ -92,6 +92,8 @@ var (
 
 // Error wraps a client operation failure and preserves the cause chain. | Error 包装客户端操作失败并保留原因链。
 type Error struct {
+	// Err is the underlying cause. | Err 是底层原因。
+	Err error
 	// Op is the failed operation. | Op 是失败的操作。
 	Op string
 	// Method is the request method. | Method 是请求方法。
@@ -102,8 +104,6 @@ type Error struct {
 	Host string
 	// Attempts is the number of attempted upstream calls. | Attempts 是已尝试的上游调用次数。
 	Attempts int
-	// Err is the underlying cause. | Err 是底层原因。
-	Err error
 }
 
 // Error implements error. | Error 实现 error 接口。

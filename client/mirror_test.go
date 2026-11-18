@@ -4,6 +4,8 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -49,6 +51,28 @@ func TestMirrorUpstreamAsyncAndNoRecursion(t *testing.T) {
 	if mirrorHits.Load() != 5 {
 		t.Fatalf("mirror hits %d", mirrorHits.Load())
 	}
+}
+
+func TestMirrorCloseRace(t *testing.T) {
+	target := mustURL("http://127.0.0.1:1")
+	policy := &MirrorPolicy{
+		Mode:    MirrorUpstream,
+		Percent: 100,
+		Timeout: time.Millisecond,
+		targets: []*url.URL{target},
+	}
+	m := newMirrorer(http.DefaultTransport, 4)
+	req := httptest.NewRequest(http.MethodGet, "http://logical/x", nil)
+	var wg sync.WaitGroup
+	for i := 0; i < 50; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			m.submit(context.Background(), req, req.URL, nil, policy)
+		}()
+	}
+	m.Close()
+	wg.Wait()
 }
 
 func TestMirrorSync(t *testing.T) {

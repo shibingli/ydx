@@ -10,10 +10,10 @@ import (
 
 // Future is the result of an asynchronous request. | Future 是异步请求的结果。
 type Future struct {
-	done chan struct{}
-	once sync.Once
-	resp *Response
 	err  error
+	done chan struct{}
+	resp *Response
+	once sync.Once
 }
 
 // Wait waits for the future or ctx. | Wait 等待 Future 或 ctx。

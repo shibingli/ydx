@@ -76,7 +76,10 @@ func WithForwardFlushInterval(d time.Duration) ForwardOption {
 	}
 }
 
-// WithForwardMaxBodyBytes caps buffered forwarding bodies. | WithForwardMaxBodyBytes 限制转发的缓冲正文。
+// WithForwardMaxBodyBytes caps forwarded bodies. Known-length responses over
+// the cap fail with ErrResponseTooLarge; unknown-length bodies are truncated
+// at the cap. | WithForwardMaxBodyBytes 限制转发正文。已知长度超限返回
+// ErrResponseTooLarge；未知长度正文在达到上限时截断。
 func WithForwardMaxBodyBytes(n int64) ForwardOption {
 	return func(o *ForwardOptions) error {
 		if n <= 0 {
@@ -173,7 +176,17 @@ func (c *Client) forwardRequest(ctx context.Context, r *http.Request, cfg Forwar
 	}
 	out = out.WithContext(context.WithValue(out.Context(), forwardNoRetryKey{}, true))
 	out = out.WithContext(context.WithValue(out.Context(), forwardPreserveHostKey{}, cfg.PreserveHost))
-	return c.engine.RoundTrip(out)
+	resp, err := c.engine.RoundTrip(out)
+	if err != nil {
+		return nil, err
+	}
+	if cfg.MaxBodyBytes > 0 && resp.ContentLength > cfg.MaxBodyBytes {
+		_ = resp.Body.Close()
+		return nil, errs.Detail(ErrResponseTooLarge,
+			"forward body %d exceeds limit %d | 转发正文 %d 超过限制 %d",
+			resp.ContentLength, cfg.MaxBodyBytes, resp.ContentLength, cfg.MaxBodyBytes)
+	}
+	return resp, nil
 }
 
 // addForwardedHeaders appends X-Forwarded-For/Proto/Host. | addForwardedHeaders 追加 X-Forwarded-For/Proto/Host。
@@ -255,7 +268,11 @@ func (c *Client) writeForwardResponse(w http.ResponseWriter, r *http.Request, re
 	buffer := buffpool.Get(32 << 10)
 	buffer = buffer[:cap(buffer)]
 	defer buffpool.Put(buffer)
-	_, _ = io.CopyBuffer(dst, resp.Body, buffer)
+	body := io.Reader(resp.Body)
+	if cfg.MaxBodyBytes > 0 {
+		body = io.LimitReader(body, cfg.MaxBodyBytes)
+	}
+	_, _ = io.CopyBuffer(dst, body, buffer)
 	for key, values := range resp.Trailer {
 		header[key] = values
 	}
@@ -263,9 +280,9 @@ func (c *Client) writeForwardResponse(w http.ResponseWriter, r *http.Request, re
 
 // forwardFlushWriter flushes at most once per interval. | forwardFlushWriter 每个间隔至多刷新一次。
 type forwardFlushWriter struct {
+	last     time.Time
 	writer   http.ResponseWriter
 	interval time.Duration
-	last     time.Time
 }
 
 // Write writes and periodically flushes. | Write 写入并周期性刷新。

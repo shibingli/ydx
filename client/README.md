@@ -18,7 +18,7 @@
 | TLS | 系统根/私有 CA、mTLS、SPKI 固定、会话复用、按 Host 覆盖、`ReloadTLS` 热更新 |
 | UA | Fixed/Random/Rotate/Weighted，内置桌面/移动 UA，Force 语义，companion headers |
 | 编排 | Pipeline：Serial/Parallel/Step/Func/Vars，JSON/Header/Status/Regexp/Func 提取，FailFast 取消 |
-| 观测 | Hooks、原子 Stats、HostStats、HTTP trace（可选）、ydx/log 结构化日志 |
+| 观测 | Hooks、原子 Stats、HostStats、请求/重试/响应元数据、ydx/log 结构化日志 |
 | 连接 | Long/Short、h2c、连接预热、连接池参数、响应排空复用 |
 
 ## 设计边界

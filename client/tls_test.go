@@ -204,6 +204,22 @@ func TestTLSHostOverride(t *testing.T) {
 	}
 }
 
+func TestTLSDirectHostOverride(t *testing.T) {
+	srv, cert := newTestTLSServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	defer srv.Close()
+	c, err := New(WithHostTLS(mustURL(srv.URL).Host, TLSConfig{
+		RootCAs:            testCertPool(cert),
+		DisableSystemRoots: true,
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	if _, err := c.Get(context.Background(), srv.URL); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestTLSHostnameMismatch(t *testing.T) {
 	srv, cert := newTestTLSServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
 	defer srv.Close()

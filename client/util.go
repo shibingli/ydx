@@ -24,13 +24,15 @@ func headerValue(header http.Header, key string) string {
 // hopByHopSet returns the hop-by-hop headers plus Connection-listed tokens. | hopByHopSet 返回逐跳头以及 Connection 列出的令牌。
 func hopByHopSet(header http.Header) map[string]bool {
 	set := map[string]bool{
-		"Connection":        true,
-		"Proxy-Connection":  true,
-		"Keep-Alive":        true,
-		"Te":                true,
-		"Trailer":           true,
-		"Transfer-Encoding": true,
-		"Upgrade":           true,
+		"Connection":          true,
+		"Proxy-Connection":    true,
+		"Proxy-Authenticate":  true,
+		"Proxy-Authorization": true,
+		"Keep-Alive":          true,
+		"Te":                  true,
+		"Trailer":             true,
+		"Transfer-Encoding":   true,
+		"Upgrade":             true,
 	}
 	for _, value := range header.Values("Connection") {
 		for _, token := range strings.Split(value, ",") {

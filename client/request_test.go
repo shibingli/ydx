@@ -49,6 +49,30 @@ func TestSendBodies(t *testing.T) {
 	}
 }
 
+func TestRelativeURLUsesFirstHost(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/user/42" {
+			t.Errorf("path %q", r.URL.Path)
+		}
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer srv.Close()
+	c, err := New(WithHosts(srv.URL))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	resp, err := c.Get(context.Background(), "/api/user/42")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if string(body) != "ok" {
+		t.Fatalf("body %q", body)
+	}
+}
+
 func TestRequestOptions(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("X-Token") != "abc" {

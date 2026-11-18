@@ -17,26 +17,26 @@ import (
 
 // RetryPolicy controls attempt count, retry triggers and backoff. | RetryPolicy 控制尝试次数、重试触发条件与退避。
 type RetryPolicy struct {
-	// MaxAttempts is the total attempt count; <=0 derives it from the host count. | MaxAttempts 是总尝试次数；<=0 时按 Host 数推导。
-	MaxAttempts int
+	// Backoff overrides the default exponential backoff. | Backoff 覆盖默认指数退避。
+	Backoff func(attempt int) time.Duration
 	// Methods lists retryable methods; nil means idempotent methods (or all when NonIdempotent). | Methods 列出可重试方法；nil 表示幂等方法（NonIdempotent 时表示全部）。
 	Methods []string
 	// StatusCodes lists retryable statuses; nil means 429/502/503/504. | StatusCodes 列出可重试状态码；nil 表示 429/502/503/504。
 	StatusCodes []int
-	// DisableNetworkRetry disables retries for transport errors. | DisableNetworkRetry 禁用传输错误重试。
-	DisableNetworkRetry bool
-	// NonIdempotent permits retrying POST/PATCH when their body is replayable. | NonIdempotent 允许在正文可重放时重试 POST/PATCH。
-	NonIdempotent bool
-	// Backoff overrides the default exponential backoff. | Backoff 覆盖默认指数退避。
-	Backoff func(attempt int) time.Duration
+	// MaxAttempts is the total attempt count; <=0 derives it from the host count. | MaxAttempts 是总尝试次数；<=0 时按 Host 数推导。
+	MaxAttempts int
 	// MaxBackoff caps one backoff or Retry-After delay; <=0 means 1s. | MaxBackoff 限制单次退避或 Retry-After；<=0 表示 1s。
 	MaxBackoff time.Duration
-	// DisableRetryAfter ignores the Retry-After response header. | DisableRetryAfter 忽略 Retry-After 响应头。
-	DisableRetryAfter bool
 	// Budget is the retry token ratio; <=0 means 0.1. | Budget 是重试令牌比例；<=0 表示 0.1。
 	Budget float64
 	// PerAttemptTimeout bounds one attempt including its response body. | PerAttemptTimeout 限制单次尝试（含响应正文）。
 	PerAttemptTimeout time.Duration
+	// DisableNetworkRetry disables retries for transport errors. | DisableNetworkRetry 禁用传输错误重试。
+	DisableNetworkRetry bool
+	// NonIdempotent permits retrying POST/PATCH when their body is replayable. | NonIdempotent 允许在正文可重放时重试 POST/PATCH。
+	NonIdempotent bool
+	// DisableRetryAfter ignores the Retry-After response header. | DisableRetryAfter 忽略 Retry-After 响应头。
+	DisableRetryAfter bool
 }
 
 // defaultRetryStatusCodes is shared by every default retry policy. | defaultRetryStatusCodes 由所有默认重试策略共享。
@@ -130,6 +130,9 @@ func retryableError(err error, parent context.Context) bool {
 	if errors.As(err, &certErr) {
 		return false
 	}
+	if errors.Is(err, ErrTLSPin) || errors.Is(err, ErrTLS) || errors.Is(err, ErrTLSConfig) {
+		return false
+	}
 	var netErr net.Error
 	if errors.As(err, &netErr) {
 		return true
@@ -209,11 +212,50 @@ func sleepContext(ctx context.Context, d time.Duration) error {
 
 // retryBudget is a monotonic token bucket shared by one engine. | retryBudget 是一个引擎共享的单调令牌桶。
 type retryBudget struct {
-	mu       sync.Mutex
+	last     time.Time
 	tokens   float64
 	capacity float64
 	rate     float64
-	last     time.Time
+	mu       sync.Mutex
+}
+
+// attemptWithTimeout bounds one attempt including its response body. | attemptWithTimeout 限制单次尝试（含响应正文）。
+func attemptWithTimeout(req *http.Request, timeout time.Duration) (*http.Request, context.CancelFunc) {
+	if timeout <= 0 {
+		return req, nil
+	}
+	ctx, cancel := context.WithTimeout(req.Context(), timeout)
+	return req.WithContext(ctx), cancel
+}
+
+// finishAttempt cancels the attempt or ties cancellation to the body. | finishAttempt 取消尝试或把取消绑定到响应正文。
+func finishAttempt(resp *http.Response, cancel context.CancelFunc, err error) {
+	if cancel == nil {
+		return
+	}
+	if err != nil || resp == nil || resp.Body == nil {
+		cancel()
+		return
+	}
+	resp.Body = &cancelBody{body: resp.Body, cancel: cancel}
+}
+
+// budgetFor returns the token bucket for a retry ratio. | budgetFor 返回指定重试比例对应的令牌桶。
+func (e *engine) budgetFor(ratio float64) *retryBudget {
+	if ratio <= 0 {
+		ratio = 0.1
+	}
+	if ratio == 0.1 {
+		return e.budget
+	}
+	e.budgetMu.Lock()
+	defer e.budgetMu.Unlock()
+	if budget := e.budgets[ratio]; budget != nil {
+		return budget
+	}
+	budget := newRetryBudget(ratio)
+	e.budgets[ratio] = budget
+	return budget
 }
 
 // newRetryBudget builds a budget from the configured retry ratio. | newRetryBudget 按配置的重试比例构建预算。

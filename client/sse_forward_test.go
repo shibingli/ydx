@@ -178,6 +178,45 @@ func TestSSEEventSink(t *testing.T) {
 	}
 }
 
+func TestForwardSSETeeNotDuplicated(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, "data: one\n\n")
+	}))
+	defer upstream.Close()
+	var calls atomic.Int32
+	sink := SinkFunc(func(context.Context, []byte) error {
+		calls.Add(1)
+		return nil
+	})
+	c, err := New(
+		WithHosts(upstream.URL),
+		WithRule(Rule{
+			Name:    "sse",
+			Pattern: "/events",
+			Mirror:  &MirrorPolicy{Mode: MirrorTee, TeeSinks: []Sink{sink}},
+		}),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	in := httptest.NewRequest(http.MethodGet, "/events", nil)
+	resp, err := c.Forward(context.Background(), in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec := httptest.NewRecorder()
+	if err := c.copySSE(context.Background(), rec, resp, in, ForwardOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, time.Second, func() bool { return calls.Load() > 0 })
+	time.Sleep(50 * time.Millisecond)
+	if calls.Load() != 1 {
+		t.Fatalf("tee called %d times, want 1", calls.Load())
+	}
+}
+
 func TestSSEEventSinkOversizedDoesNotHang(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")

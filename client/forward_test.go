@@ -1,6 +1,8 @@
 package client
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -58,6 +60,45 @@ func TestForwardNoTarget(t *testing.T) {
 	c.Handler().ServeHTTP(rec, req)
 	if rec.Code != http.StatusBadGateway {
 		t.Fatalf("code %d", rec.Code)
+	}
+}
+
+func TestForwardStripsProxyAuthorization(t *testing.T) {
+	var got string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = r.Header.Get("Proxy-Authorization")
+	}))
+	defer upstream.Close()
+	c, err := New(WithHosts(upstream.URL))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	in := httptest.NewRequest(http.MethodGet, upstream.URL+"/x", nil)
+	in.Header.Set("Proxy-Authorization", "Basic c2VjcmV0")
+	resp, err := c.Forward(context.Background(), in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if got != "" {
+		t.Fatalf("proxy credentials leaked: %q", got)
+	}
+}
+
+func TestForwardMaxBodyBytes(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(strings.Repeat("x", 100)))
+	}))
+	defer upstream.Close()
+	c, err := New(WithHosts(upstream.URL))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	in := httptest.NewRequest(http.MethodGet, upstream.URL+"/x", nil)
+	if _, err := c.Forward(context.Background(), in, WithForwardMaxBodyBytes(10)); !errors.Is(err, ErrResponseTooLarge) {
+		t.Fatalf("want ErrResponseTooLarge, got %v", err)
 	}
 }
 

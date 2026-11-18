@@ -41,9 +41,9 @@ func WithEventMaxBytes(n int) EventReaderOption {
 
 // EventReader parses the W3C event stream format. | EventReader 解析 W3C 事件流格式。
 type EventReader struct {
+	lastErr error
 	reader  *bufio.Reader
 	max     int
-	lastErr error
 }
 
 // NewEventReader builds a reader and strips a leading UTF-8 BOM. | NewEventReader 构建 reader 并去除开头 UTF-8 BOM。

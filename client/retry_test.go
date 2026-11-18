@@ -165,6 +165,58 @@ func TestRetryExhausted(t *testing.T) {
 	})
 }
 
+func TestTLSErrorsNotRetried(t *testing.T) {
+	for _, err := range []error{ErrTLSPin, ErrTLS, ErrTLSConfig} {
+		if retryableError(err, context.Background()) {
+			t.Fatalf("%v must not be retried", err)
+		}
+	}
+}
+
+func TestPerAttemptTimeout(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-r.Context().Done():
+		case <-time.After(200 * time.Millisecond):
+		}
+	}))
+	defer srv.Close()
+	c, err := New(
+		WithHosts(srv.URL),
+		WithRetry(RetryPolicy{
+			MaxAttempts:       2,
+			PerAttemptTimeout: 20 * time.Millisecond,
+			Backoff:           func(int) time.Duration { return time.Millisecond },
+		}),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	start := time.Now()
+	if _, err := c.Get(context.Background(), srv.URL+"/slow"); err == nil {
+		t.Fatal("expected per-attempt timeout")
+	}
+	if elapsed := time.Since(start); elapsed > 120*time.Millisecond {
+		t.Fatalf("per-attempt timeout not enforced: %v", elapsed)
+	}
+}
+
+func TestRetryBudgetRatio(t *testing.T) {
+	c, err := New(WithRetry(RetryPolicy{Budget: 0.5}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	budget := c.engine.budgetFor(0.5)
+	if budget == c.engine.budget {
+		t.Fatal("custom budget reused the default bucket")
+	}
+	if budget.rate != 5 {
+		t.Fatalf("budget rate %v, want 5", budget.rate)
+	}
+}
+
 func TestBodySpoolReplay(t *testing.T) {
 	var mu sync.Mutex
 	var bodies []string

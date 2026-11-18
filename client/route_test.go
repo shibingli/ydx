@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"testing"
+	"time"
 )
 
 func TestRulePriorityAndRewrite(t *testing.T) {
@@ -73,6 +74,52 @@ func TestRuleCondition(t *testing.T) {
 	r, _, ok := rs.MatchRequest(req)
 	if !ok || r.Name != "yes" {
 		t.Fatalf("got %v %v", r, ok)
+	}
+}
+
+func TestRuleTimeout(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(150 * time.Millisecond)
+	}))
+	defer srv.Close()
+	c, err := New(
+		WithHosts(srv.URL),
+		WithRule(Rule{Name: "slow", Pattern: "/slow", Timeout: 20 * time.Millisecond}),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	start := time.Now()
+	if _, err := c.Get(context.Background(), srv.URL+"/slow"); err == nil {
+		t.Fatal("expected rule timeout")
+	}
+	if elapsed := time.Since(start); elapsed > 120*time.Millisecond {
+		t.Fatalf("rule timeout not enforced: %v", elapsed)
+	}
+}
+
+func TestRuleRewriteDirect(t *testing.T) {
+	var gotPath string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+	}))
+	defer srv.Close()
+	c, err := New(
+		WithBaseURL(srv.URL),
+		WithRule(Rule{Name: "api", Pattern: "/api/{id}", Rewrite: &Rewrite{StripPrefix: "/api"}}),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	resp, err := c.Get(context.Background(), "/api/42")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if gotPath != "/42" {
+		t.Fatalf("upstream path %q, want /42", gotPath)
 	}
 }
 

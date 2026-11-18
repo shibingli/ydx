@@ -14,6 +14,9 @@ import (
 // cancellation or Close. Calling it again is a no-op. | StartHealth 为集合启动一个主动健康
 // goroutine；ctx 取消或 Close 时退出。重复调用无操作。
 func (hs *HostSet) StartHealth(ctx context.Context, rt http.RoundTripper, logger *log.Logger) {
+	if rt == nil {
+		return
+	}
 	hs.startHealth(ctx, func(*Host) http.RoundTripper { return rt }, logger)
 }
 

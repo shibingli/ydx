@@ -43,22 +43,23 @@ type Group struct {
 	ctx     context.Context
 	client  *Client
 	sem     chan struct{}
-	maxBody int64
-
-	wg      sync.WaitGroup
-	mu      sync.Mutex
 	names   map[string]struct{}
 	results map[string]*StepResult
 	order   []string
 	errs    []error
+
+	wg      sync.WaitGroup
+	maxBody int64
+
+	mu sync.Mutex
 }
 
 // GroupTask is one group task handle. | GroupTask 是一个 Group 任务句柄。
 type GroupTask struct {
-	done   chan struct{}
-	once   sync.Once
-	result *StepResult
 	err    error
+	done   chan struct{}
+	result *StepResult
+	once   sync.Once
 }
 
 // Wait waits for the task or ctx. | Wait 等待任务或 ctx。

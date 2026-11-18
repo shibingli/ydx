@@ -20,26 +20,16 @@ type Rewrite struct {
 
 // Rule binds a path pattern to request policies. | Rule 把路径模式绑定到请求策略。
 type Rule struct {
-	// Name identifies the rule in metadata, hooks and stats. | Name 在元数据、钩子与统计中标识规则。
-	Name string
-	// Methods restricts the rule; empty means every method. | Methods 限制方法；为空表示全部方法。
-	Methods []string
-	// Pattern is the path pattern matched against the logical request URL. | Pattern 是与逻辑请求 URL 匹配的路径模式。
-	Pattern string
+	// Guard overrides the client-wide guard for this rule. | Guard 为该规则覆盖客户端级守卫。
+	Guard Guard
 	// Condition optionally rejects a match after the path matched. | Condition 在路径命中后可选地拒绝该匹配。
 	Condition func(*http.Request) bool
-	// Hosts overrides the default host pool for this rule. | Hosts 覆盖该规则的默认 Host 池。
-	Hosts []string
 	// HostSet is a prebuilt host pool override; it wins over Hosts. | HostSet 是预构建的 Host 池覆盖；优先于 Hosts。
 	HostSet *HostSet
 	// Rewrite rewrites the path before the host base path is joined. | Rewrite 在拼接 Host base path 前重写路径。
 	Rewrite *Rewrite
 	// Headers are added to matching requests. | Headers 添加到命中请求。
 	Headers http.Header
-	// Timeout bounds the request, including its response body. | Timeout 限制请求（含响应正文）的总时长。
-	Timeout time.Duration
-	// PreserveHost keeps the inbound Host header instead of the selected target. | PreserveHost 保留入站 Host 头而非目标 Host。
-	PreserveHost bool
 	// Retry overrides the client-wide retry policy. | Retry 覆盖客户端级重试策略。
 	Retry *RetryPolicy
 	// Cache enables response caching for this rule. | Cache 为该规则启用响应缓存。
@@ -48,10 +38,20 @@ type Rule struct {
 	Coalesce *CoalescePolicy
 	// Mirror configures shadow replay or tee mirroring for this rule. | Mirror 为该规则配置影子重放或 tee 镜像。
 	Mirror *MirrorPolicy
-	// Guard overrides the client-wide guard for this rule. | Guard 为该规则覆盖客户端级守卫。
-	Guard Guard
+	// Name identifies the rule in metadata, hooks and stats. | Name 在元数据、钩子与统计中标识规则。
+	Name string
+	// Pattern is the path pattern matched against the logical request URL. | Pattern 是与逻辑请求 URL 匹配的路径模式。
+	Pattern string
 	// Connection selects the connection mode for this rule. | Connection 为该规则选择连接模式。
 	Connection ConnMode
+	// Methods restricts the rule; empty means every method. | Methods 限制方法；为空表示全部方法。
+	Methods []string
+	// Hosts overrides the default host pool for this rule. | Hosts 覆盖该规则的默认 Host 池。
+	Hosts []string
+	// Timeout bounds the request, including its response body. | Timeout 限制请求（含响应正文）的总时长。
+	Timeout time.Duration
+	// PreserveHost keeps the inbound Host header instead of the selected target. | PreserveHost 保留入站 Host 头而非目标 Host。
+	PreserveHost bool
 }
 
 // patternScore is the deterministic specificity key used to order rules. | patternScore 是用于规则排序的确定性特异性键。

@@ -11,8 +11,8 @@ import (
 
 // Vars is a concurrency-safe variable set shared by pipeline steps. | Vars 是 Pipeline 步骤共享的并发安全变量集合。
 type Vars struct {
-	mu     sync.RWMutex
 	values map[string]any
+	mu     sync.RWMutex
 }
 
 // NewVars creates an empty variable set. | NewVars 创建空变量集合。

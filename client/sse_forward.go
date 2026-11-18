@@ -12,24 +12,24 @@ import (
 
 // ForwardOptions configures Forward and Handler. | ForwardOptions 配置 Forward 与 Handler。
 type ForwardOptions struct {
-	// PreserveHost keeps the inbound Host header. | PreserveHost 保留入站 Host 头。
-	PreserveHost bool
-	// AddForwardedFor appends X-Forwarded-For/Proto/Host. | AddForwardedFor 追加 X-Forwarded-For/Proto/Host。
-	AddForwardedFor bool
+	// StripHeaders lists extra inbound headers to remove. | StripHeaders 列出额外移除的入站头。
+	StripHeaders []string
 	// FlushInterval throttles intermediate flushes; <=0 flushes every chunk. | FlushInterval 限制中间刷新；<=0 表示每块刷新。
 	FlushInterval time.Duration
 	// SSEIdleTimeout bounds the upstream silence; <=0 disables it. | SSEIdleTimeout 限制上游静默；<=0 禁用。
 	SSEIdleTimeout time.Duration
 	// SSEHeartbeat injects ": ping" comments while idle; <=0 disables it. | SSEHeartbeat 在空闲时注入 ": ping"；<=0 禁用。
 	SSEHeartbeat time.Duration
-	// SSEReconnect is reserved for future upstream resume support. | SSEReconnect 预留给未来的上游续传。
-	SSEReconnect bool
 	// BodyTimeout bounds a non-SSE upstream body; <=0 disables it. | BodyTimeout 限制非 SSE 上游正文；<=0 禁用。
 	BodyTimeout time.Duration
 	// MaxBodyBytes caps non-SSE body buffering; <=0 means 8 MiB. | MaxBodyBytes 限制非 SSE 正文缓冲；<=0 表示 8 MiB。
 	MaxBodyBytes int64
-	// StripHeaders lists extra inbound headers to remove. | StripHeaders 列出额外移除的入站头。
-	StripHeaders []string
+	// PreserveHost keeps the inbound Host header. | PreserveHost 保留入站 Host 头。
+	PreserveHost bool
+	// AddForwardedFor appends X-Forwarded-For/Proto/Host. | AddForwardedFor 追加 X-Forwarded-For/Proto/Host。
+	AddForwardedFor bool
+	// SSEReconnect is reserved for future upstream resume support. | SSEReconnect 预留给未来的上游续传。
+	SSEReconnect bool
 }
 
 // ForwardOption mutates ForwardOptions. | ForwardOption 修改 ForwardOptions。
@@ -118,8 +118,8 @@ func (c *Client) copySSE(ctx context.Context, w http.ResponseWriter, resp *http.
 	}
 
 	type streamChunk struct {
-		data []byte
 		err  error
+		data []byte
 	}
 	chunks := make(chan streamChunk, 1)
 	readCtx, cancelRead := context.WithCancel(ctx)
@@ -230,7 +230,7 @@ func (c *Client) mirrorSSE(ctx context.Context, req *http.Request, logical *url.
 
 // submitSSE runs shadow SSE streams under the mirrorer's concurrency limit. | submitSSE 在 mirrorer 并发限制下运行影子 SSE 流。
 func (m *mirrorer) submitSSE(parent context.Context, req *http.Request, logical *url.URL, rule *Rule, policy *MirrorPolicy) {
-	if m == nil || policy == nil || len(policy.targets) == 0 || m.ctx.Err() != nil {
+	if m == nil || policy == nil || len(policy.targets) == 0 || !m.active() {
 		return
 	}
 	if !mirrorSampled(logical, rule, policy.Percent) {
@@ -248,7 +248,7 @@ func (m *mirrorer) submitSSE(parent context.Context, req *http.Request, logical 
 	}
 	var local sync.WaitGroup
 	for _, target := range policy.targets {
-		if m.ctx.Err() != nil {
+		if !m.active() {
 			return
 		}
 		select {
@@ -266,7 +266,10 @@ func (m *mirrorer) submitSSE(parent context.Context, req *http.Request, logical 
 				})
 			}
 		}
-		m.wg.Add(1)
+		if !m.reserve() {
+			<-m.sem
+			return
+		}
 		local.Add(1)
 		go func(target *url.URL) {
 			defer m.wg.Done()

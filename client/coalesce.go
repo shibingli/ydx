@@ -44,17 +44,17 @@ var errCoalesceBypass = errs.New("client: coalesce bypass | client：合并旁�
 
 // flight is one in-progress coalesced request. | flight 是一个进行中的合并请求。
 type flight struct {
+	err    error
 	done   chan struct{}
 	resp   *http.Response
 	body   []byte
-	err    error
 	bypass bool
 }
 
 // flightGroup deduplicates concurrent requests by key. | flightGroup 按键去重并发请求。
 type flightGroup struct {
-	mu      sync.Mutex
 	flights map[string]*flight
+	mu      sync.Mutex
 }
 
 // newFlightGroup builds an empty flight group. | newFlightGroup 构建空的合并组。
@@ -157,7 +157,22 @@ func shouldCoalesce(req *http.Request, policy CoalescePolicy) bool {
 	if strings.Contains(strings.ToLower(req.Header.Get("Cache-Control")), "no-store") {
 		return false
 	}
+	if conditionalRequest(req) {
+		return false
+	}
 	return true
+}
+
+// conditionalRequest reports whether the response may depend on per-request
+// validators or a byte range. | conditionalRequest 报告响应是否可能依赖逐请求校验器或字节范围。
+func conditionalRequest(req *http.Request) bool {
+	if req == nil {
+		return false
+	}
+	header := req.Header
+	return header.Get("Range") != "" || header.Get("If-Range") != "" ||
+		header.Get("If-None-Match") != "" || header.Get("If-Modified-Since") != "" ||
+		header.Get("If-Match") != "" || header.Get("If-Unmodified-Since") != ""
 }
 
 // coalesceKey builds a key that separates methods, URLs, rules and negotiation headers. | coalesceKey 构建区分方法、URL、规则与协商头的键。
