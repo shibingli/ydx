@@ -30,6 +30,8 @@ type Rule struct {
 	Condition func(*http.Request) bool
 	// Hosts overrides the default host pool for this rule. | Hosts 覆盖该规则的默认 Host 池。
 	Hosts []string
+	// HostSet is a prebuilt host pool override; it wins over Hosts. | HostSet 是预构建的 Host 池覆盖；优先于 Hosts。
+	HostSet *HostSet
 	// Rewrite rewrites the path before the host base path is joined. | Rewrite 在拼接 Host base path 前重写路径。
 	Rewrite *Rewrite
 	// Headers are added to matching requests. | Headers 添加到命中请求。
@@ -38,6 +40,8 @@ type Rule struct {
 	Timeout time.Duration
 	// PreserveHost keeps the inbound Host header instead of the selected target. | PreserveHost 保留入站 Host 头而非目标 Host。
 	PreserveHost bool
+	// Retry overrides the client-wide retry policy. | Retry 覆盖客户端级重试策略。
+	Retry *RetryPolicy
 }
 
 // patternScore is the deterministic specificity key used to order rules. | patternScore 是用于规则排序的确定性特异性键。
@@ -107,6 +111,22 @@ func CompileRules(rules ...Rule) (*RuleSet, error) {
 		}
 		rule.Methods = methods
 		rule.Hosts = append([]string(nil), rule.Hosts...)
+		if rule.HostSet == nil && len(rule.Hosts) > 0 {
+			hosts := make([]Host, 0, len(rule.Hosts))
+			for _, raw := range rule.Hosts {
+				parsed, err := url.Parse(raw)
+				if err != nil || !parsed.IsAbs() || parsed.Host == "" ||
+					(parsed.Scheme != "http" && parsed.Scheme != "https") {
+					return nil, errs.Detail(ErrInvalidConfig, "invalid rule host %q | 非法的规则 Host %q", raw, raw)
+				}
+				hosts = append(hosts, Host{URL: parsed, Weight: 1})
+			}
+			hostSet, err := NewHostSet(hosts...)
+			if err != nil {
+				return nil, err
+			}
+			rule.HostSet = hostSet
+		}
 		if rule.Headers != nil {
 			rule.Headers = rule.Headers.Clone()
 		}

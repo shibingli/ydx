@@ -1,6 +1,7 @@
 package client
 
 import (
+	"context"
 	"io"
 	"net/http"
 	"time"
@@ -30,6 +31,12 @@ type HopMeta struct {
 
 // Meta carries client-side request metadata alongside a response. | Meta 随响应携带客户端侧请求元数据。
 type Meta struct {
+	// Rule is the matched rule, when any. | Rule 是命中的规则（如有）。
+	Rule *Rule
+	// Params are the captured path parameters. | Params 是路径参数捕获。
+	Params Params
+	// Host is the selected host, when any. | Host 是选中的 Host（如有）。
+	Host *Host
 	// Attempts is the number of upstream attempts for the final hop. | Attempts 是最终一跳的上游尝试次数。
 	Attempts int
 	// CacheHit reports whether the response came from cache. | CacheHit 报告响应是否来自缓存。
@@ -42,6 +49,18 @@ type Meta struct {
 	BytesSent int64
 	// BytesRead is the response body bytes read. | BytesRead 是读取的响应正文字节数。
 	BytesRead int64
+}
+
+// metaKey is the context key carrying the per-call Meta pointer. | metaKey 是携带每次调用 Meta 指针的 context 键。
+type metaKey struct{}
+
+// metaFromContext returns the Meta pointer stored by Send or DoWithMeta. | metaFromContext 返回 Send 或 DoWithMeta 存入的 Meta 指针。
+func metaFromContext(ctx context.Context) *Meta {
+	if ctx == nil {
+		return nil
+	}
+	meta, _ := ctx.Value(metaKey{}).(*Meta)
+	return meta
 }
 
 // Response wraps http.Response with client metadata and body helpers. | Response 用客户端元数据与正文辅助方法包装 http.Response。

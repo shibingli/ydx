@@ -3,6 +3,7 @@ package client
 import (
 	"bytes"
 	"io"
+	"net/http"
 	"net/url"
 	"os"
 	"strings"
@@ -93,6 +94,81 @@ func prepareBody(v any) (io.ReadCloser, func() (io.ReadCloser, error), string, e
 		}
 		return bytesBody(data), bytesGetBody(data), "application/json", nil
 	}
+}
+
+// spool is a replayable request body snapshot. | spool 是可重放的请求正文快照。
+type spool struct {
+	getBody func() (io.ReadCloser, error)
+	cleanup func()
+}
+
+// spoolBody snapshots a non-replayable request body into memory or a temp file. | spoolBody 把不可重放正文暂存到内存或临时文件。
+func (e *engine) spoolBody(req *http.Request) (*spool, error) {
+	if req == nil || req.Body == nil {
+		return nil, ErrBodyNotReplayable
+	}
+	limit := e.opts.SpoolLimit
+	toDisk := e.opts.SpoolToDisk
+	if limit <= 0 && !toDisk {
+		return nil, ErrBodyNotReplayable
+	}
+	if limit > 0 {
+		data, err := io.ReadAll(io.LimitReader(req.Body, limit+1))
+		if err != nil {
+			_ = req.Body.Close()
+			return nil, err
+		}
+		if int64(len(data)) <= limit {
+			_ = req.Body.Close()
+			getBody := func() (io.ReadCloser, error) {
+				return io.NopCloser(bytes.NewReader(data)), nil
+			}
+			return &spool{getBody: getBody, cleanup: func() {}}, nil
+		}
+		if !toDisk {
+			_ = req.Body.Close()
+			return nil, ErrBodyNotReplayable
+		}
+		return spoolToFile(data, req.Body)
+	}
+	return spoolToFile(nil, req.Body)
+}
+
+// spoolToFile writes the prefix and remaining body into a temp file. | spoolToFile 把前缀与剩余正文写入临时文件。
+func spoolToFile(prefix []byte, rest io.ReadCloser) (*spool, error) {
+	if rest == nil {
+		return nil, ErrBodyNotReplayable
+	}
+	file, err := os.CreateTemp("", "ydx-client-body-*")
+	if err != nil {
+		_ = rest.Close()
+		return nil, err
+	}
+	name := file.Name()
+	cleanup := func() { _ = os.Remove(name) }
+	if len(prefix) > 0 {
+		if _, err := file.Write(prefix); err != nil {
+			_ = file.Close()
+			_ = rest.Close()
+			cleanup()
+			return nil, err
+		}
+	}
+	if _, err := io.Copy(file, rest); err != nil {
+		_ = file.Close()
+		_ = rest.Close()
+		cleanup()
+		return nil, err
+	}
+	_ = rest.Close()
+	if err := file.Close(); err != nil {
+		cleanup()
+		return nil, err
+	}
+	getBody := func() (io.ReadCloser, error) {
+		return os.Open(name)
+	}
+	return &spool{getBody: getBody, cleanup: cleanup}, nil
 }
 
 // prepareFileBody keeps the original file as the primary body and reopens its path

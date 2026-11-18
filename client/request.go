@@ -70,6 +70,8 @@ func (c *Client) Send(ctx context.Context, method, rawURL string, body any, opts
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	meta := &Meta{}
+	ctx = context.WithValue(ctx, metaKey{}, meta)
 	resolved, err := c.resolveRequestURL(rawURL)
 	if err != nil {
 		return nil, err
@@ -105,7 +107,7 @@ func (c *Client) Send(ctx context.Context, method, rawURL string, body any, opts
 		req.URL.RawQuery = query.Encode()
 	}
 	if cfg.timeout <= 0 {
-		return c.finish(req)
+		return c.finish(req, meta)
 	}
 	deadlineCtx, cancel := context.WithTimeout(req.Context(), cfg.timeout)
 	resp, err := c.Do(req.WithContext(deadlineCtx))
@@ -114,7 +116,21 @@ func (c *Client) Send(ctx context.Context, method, rawURL string, body any, opts
 		return nil, err
 	}
 	resp.Body = &cancelBody{body: resp.Body, cancel: cancel}
-	return &Response{Response: resp}, nil
+	return &Response{Response: resp, Meta: *meta}, nil
+}
+
+// DoWithMeta executes req and returns the client metadata alongside the response. | DoWithMeta 执行 req 并返回客户端元数据。
+func (c *Client) DoWithMeta(req *http.Request) (*Response, error) {
+	if req == nil || req.URL == nil {
+		return nil, ErrInvalidRequest
+	}
+	meta := &Meta{}
+	req = req.WithContext(context.WithValue(req.Context(), metaKey{}, meta))
+	resp, err := c.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	return &Response{Response: resp, Meta: *meta}, nil
 }
 
 // resolveRequestURL resolves a convenience-method URL against BaseURL. | resolveRequestURL 用 BaseURL 解析便捷方法的 URL。
@@ -132,8 +148,8 @@ func (c *Client) resolveRequestURL(raw string) (string, error) {
 	return c.opts.BaseURL.ResolveReference(parsed).String(), nil
 }
 
-// finish executes a request and wraps the response. | finish 执行请求并包装响应。
-func (c *Client) finish(req *http.Request) (*Response, error) {
+// finish executes a request and wraps the response with meta. | finish 执行请求并用 meta 包装响应。
+func (c *Client) finish(req *http.Request, meta *Meta) (*Response, error) {
 	resp, err := c.Do(req)
 	if err != nil {
 		return nil, err
@@ -141,7 +157,7 @@ func (c *Client) finish(req *http.Request) (*Response, error) {
 	if resp.Body == nil {
 		resp.Body = http.NoBody
 	}
-	return &Response{Response: resp}, nil
+	return &Response{Response: resp, Meta: *meta}, nil
 }
 
 // Get issues a GET request. | Get 发起 GET 请求。

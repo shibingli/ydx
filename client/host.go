@@ -222,6 +222,14 @@ func normalizeHealth(h HealthPolicy) HealthPolicy {
 	return h
 }
 
+// Len returns the number of hosts. | Len 返回 Host 数量。
+func (hs *HostSet) Len() int {
+	if hs == nil {
+		return 0
+	}
+	return len(hs.entries)
+}
+
 // AnyActive reports whether any host enables active health checks. | AnyActive 报告是否有 Host 启用主动健康检查。
 func (hs *HostSet) AnyActive() bool {
 	if hs == nil {

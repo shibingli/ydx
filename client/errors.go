@@ -1,6 +1,10 @@
 package client
 
-import "github.com/shibingli/ydx/errs"
+import (
+	"strconv"
+
+	"github.com/shibingli/ydx/errs"
+)
 
 // Declared sentinel errors, testable with errors.Is. | 已声明的哨兵错误，可用 errors.Is 判定。
 var (
@@ -46,4 +50,56 @@ var (
 	ErrUnknownBalance = errs.New("client: unknown balance strategy | client：未知的负载均衡策略")
 	// ErrHealthCheck indicates an active health check failure. | ErrHealthCheck 表示主动健康检查失败。
 	ErrHealthCheck = errs.New("client: health check failed | client：健康检查失败")
+	// ErrRetryExhausted indicates every retry attempt failed. | ErrRetryExhausted 表示全部重试尝试失败。
+	ErrRetryExhausted = errs.New("client: retry attempts exhausted | client：重试次数耗尽")
+	// ErrUpstreamStatus indicates a status configured as a host failure. | ErrUpstreamStatus 表示被配置为 Host 失败的状态码。
+	ErrUpstreamStatus = errs.New("client: upstream status failure | client：上游状态失败")
 )
+
+// Error wraps a client operation failure and preserves the cause chain. | Error 包装客户端操作失败并保留原因链。
+type Error struct {
+	// Op is the failed operation. | Op 是失败的操作。
+	Op string
+	// Method is the request method. | Method 是请求方法。
+	Method string
+	// URL is the logical request URL without query. | URL 是不含查询的逻辑请求 URL。
+	URL string
+	// Host is the selected host name, when known. | Host 是已选择的 Host 名（已知时）。
+	Host string
+	// Attempts is the number of attempted upstream calls. | Attempts 是已尝试的上游调用次数。
+	Attempts int
+	// Err is the underlying cause. | Err 是底层原因。
+	Err error
+}
+
+// Error implements error. | Error 实现 error 接口。
+func (e *Error) Error() string {
+	if e == nil {
+		return "<nil>"
+	}
+	message := "client: " + e.Op
+	if e.Method != "" {
+		message += " " + e.Method
+	}
+	if e.URL != "" {
+		message += " " + e.URL
+	}
+	if e.Host != "" {
+		message += " host=" + e.Host
+	}
+	if e.Attempts > 0 {
+		message += " attempts=" + strconv.Itoa(e.Attempts)
+	}
+	if e.Err != nil {
+		message += ": " + e.Err.Error()
+	}
+	return message
+}
+
+// Unwrap returns the underlying cause. | Unwrap 返回底层原因。
+func (e *Error) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Err
+}

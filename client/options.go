@@ -23,6 +23,7 @@ type options struct {
 	Rules         []Rule
 	Hosts         []Host
 	HostSet       *HostSet
+	Retry         *RetryPolicy
 }
 
 // Option mutates the client configuration during New. | Option 在 New 期间修改客户端配置。
