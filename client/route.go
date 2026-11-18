@@ -48,6 +48,8 @@ type Rule struct {
 	Coalesce *CoalescePolicy
 	// Mirror configures shadow replay or tee mirroring for this rule. | Mirror 为该规则配置影子重放或 tee 镜像。
 	Mirror *MirrorPolicy
+	// Guard overrides the client-wide guard for this rule. | Guard 为该规则覆盖客户端级守卫。
+	Guard Guard
 }
 
 // patternScore is the deterministic specificity key used to order rules. | patternScore 是用于规则排序的确定性特异性键。

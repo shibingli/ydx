@@ -37,6 +37,8 @@ type Meta struct {
 	Params Params
 	// Host is the selected host, when any. | Host 是选中的 Host（如有）。
 	Host *Host
+	// Guard is the guard decision, when a guard ran. | Guard 是守卫决策（如执行过）。
+	Guard *GuardDecision
 	// Attempts is the number of upstream attempts for the final hop. | Attempts 是最终一跳的上游尝试次数。
 	Attempts int
 	// CacheHit reports whether the response came from cache. | CacheHit 报告响应是否来自缓存。

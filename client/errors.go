@@ -66,6 +66,8 @@ var (
 	ErrUpgradeUnsupported = errs.New("client: upgrade forwarding is not supported | client：不支持 Upgrade 转发")
 	// ErrBlocked indicates a request rejected by a guard or access policy. | ErrBlocked 表示请求被守卫或访问策略拒绝。
 	ErrBlocked = errs.New("client: request blocked | client：请求被拦截")
+	// ErrGuard indicates a guard execution failure. | ErrGuard 表示守卫执行失败。
+	ErrGuard = errs.New("client: guard failed | client：守卫执行失败")
 )
 
 // Error wraps a client operation failure and preserves the cause chain. | Error 包装客户端操作失败并保留原因链。

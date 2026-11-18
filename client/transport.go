@@ -35,9 +35,13 @@ type engine struct {
 func newEngine(o options) *engine {
 	base := o.Transport
 	if base == nil {
+		dialer := &net.Dialer{Timeout: 5 * time.Second, KeepAlive: 30 * time.Second}
+		if o.AccessPolicy != nil {
+			dialer.Control = o.AccessPolicy.dialControl
+		}
 		base = &http.Transport{
 			Proxy:                 http.ProxyFromEnvironment,
-			DialContext:           (&net.Dialer{Timeout: 5 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
+			DialContext:           dialer.DialContext,
 			ForceAttemptHTTP2:     true,
 			MaxIdleConns:          100,
 			MaxIdleConnsPerHost:   32,
@@ -72,6 +76,22 @@ func (e *engine) RoundTrip(req *http.Request) (*http.Response, error) {
 	if meta != nil {
 		meta.Rule = rule
 		meta.Params = params
+	}
+	if guard := e.guardFor(rule); guard != nil {
+		decision, guardErr := guard.Check(req.Context(), req)
+		if guardErr != nil {
+			return nil, e.wrapError("guard", req, "", 0, errs.Wrap(guardErr, ErrGuard))
+		}
+		if meta != nil {
+			meta.Guard = &decision
+		}
+		if !decision.Allowed {
+			message := decision.Message
+			if message == "" {
+				message = "blocked"
+			}
+			return nil, e.wrapError("guard", req, "", 0, errs.Detail(ErrBlocked, "%s", message))
+		}
 	}
 	hosts := e.hosts.Load()
 	if rule != nil && rule.HostSet != nil {

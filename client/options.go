@@ -29,6 +29,8 @@ type options struct {
 	Coalesce          *CoalescePolicy
 	Mirror            *MirrorPolicy
 	MaxMirrorInflight int
+	Guard             Guard
+	AccessPolicy      *AccessPolicy
 }
 
 // Option mutates the client configuration during New. | Option 在 New 期间修改客户端配置。
