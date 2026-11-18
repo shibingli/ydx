@@ -224,6 +224,14 @@ func normalizeHealth(h HealthPolicy) HealthPolicy {
 	return h
 }
 
+// FailOpen returns the number of fail-open selections. | FailOpen 返回 fail-open 选择次数。
+func (hs *HostSet) FailOpen() uint64 {
+	if hs == nil {
+		return 0
+	}
+	return hs.failOpen.Load()
+}
+
 // Len returns the number of hosts. | Len 返回 Host 数量。
 func (hs *HostSet) Len() int {
 	if hs == nil {

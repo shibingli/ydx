@@ -74,6 +74,8 @@ var (
 	ErrTLS = errs.New("client: TLS failure | client：TLS 失败")
 	// ErrTLSPin indicates an SPKI pin mismatch. | ErrTLSPin 表示 SPKI 固定不匹配。
 	ErrTLSPin = errs.New("client: TLS certificate pin mismatch | client：TLS 证书固定不匹配")
+	// ErrHookPanic indicates a recovered panic in a user hook. | ErrHookPanic 表示用户钩子中恢复的 panic。
+	ErrHookPanic = errs.New("client: hook panicked | client：钩子发生 panic")
 )
 
 // Error wraps a client operation failure and preserves the cause chain. | Error 包装客户端操作失败并保留原因链。

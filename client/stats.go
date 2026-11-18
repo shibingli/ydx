@@ -1,5 +1,76 @@
 package client
 
+import "sync/atomic"
+
+// counters is the engine's atomic counter set. | counters 是引擎的原子计数器集合。
+type counters struct {
+	requests      atomic.Uint64
+	responses     atomic.Uint64
+	errors        atomic.Uint64
+	retries       atomic.Uint64
+	cacheHits     atomic.Uint64
+	cacheMisses   atomic.Uint64
+	cacheStores   atomic.Uint64
+	coalesced     atomic.Uint64
+	mirrors       atomic.Uint64
+	mirrorErrors  atomic.Uint64
+	blocked       atomic.Uint64
+	sseSessions   atomic.Uint64
+	sseEvents     atomic.Uint64
+	bytesSent     atomic.Uint64
+	bytesReceived atomic.Uint64
+	inflight      atomic.Int64
+}
+
+// Stats returns a point-in-time snapshot of client counters. | Stats 返回客户端计数器的时间点快照。
+func (c *Client) Stats() Stats {
+	if c == nil || c.engine == nil {
+		return Stats{}
+	}
+	e := c.engine
+	out := Stats{
+		Requests:      e.counters.requests.Load(),
+		Responses:     e.counters.responses.Load(),
+		Errors:        e.counters.errors.Load(),
+		Retries:       e.counters.retries.Load(),
+		CacheHits:     e.counters.cacheHits.Load(),
+		CacheMisses:   e.counters.cacheMisses.Load(),
+		CacheStores:   e.counters.cacheStores.Load(),
+		Coalesced:     e.counters.coalesced.Load(),
+		Mirrors:       e.counters.mirrors.Load(),
+		MirrorErrors:  e.counters.mirrorErrors.Load(),
+		MirrorDrops:   e.mirrorDrops.Load(),
+		Blocked:       e.counters.blocked.Load(),
+		SSESessions:   e.counters.sseSessions.Load(),
+		SSEEvents:     e.counters.sseEvents.Load(),
+		BytesSent:     e.counters.bytesSent.Load(),
+		BytesReceived: e.counters.bytesReceived.Load(),
+		Inflight:      uint64(e.counters.inflight.Load()),
+	}
+	e.cacheMu.Lock()
+	store := e.cacheStore
+	e.cacheMu.Unlock()
+	if store != nil {
+		out.CacheEvictions = store.Stats().Evictions
+	}
+	if hosts := e.hosts.Load(); hosts != nil {
+		out.FailOpen = hosts.FailOpen()
+	}
+	return out
+}
+
+// HostStats returns a point-in-time snapshot of the default host pool. | HostStats 返回默认 Host 池的时间点快照。
+func (c *Client) HostStats() []HostStats {
+	if c == nil || c.engine == nil {
+		return nil
+	}
+	hosts := c.engine.hosts.Load()
+	if hosts == nil {
+		return nil
+	}
+	return hosts.Stats()
+}
+
 // Stats is a point-in-time view of client counters. | Stats 是客户端计数器的时间点视图。
 type Stats struct {
 	// Requests is the number of accepted requests. | Requests 是已接受的请求数。

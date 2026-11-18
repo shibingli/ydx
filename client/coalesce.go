@@ -214,6 +214,15 @@ func (e *engine) coalesceRoundTrip(req *http.Request, rule *Rule, meta *Meta, ho
 		resp.Header.Del("Transfer-Encoding")
 		return resp, data, true, nil
 	})
+	if e.hooks.OnCoalesce != nil {
+		_ = callHook(func() error {
+			e.hooks.OnCoalesce(req.Context(), req, coalesced)
+			return nil
+		})
+	}
+	if coalesced {
+		e.counters.coalesced.Add(1)
+	}
 	if errors.Is(err, errCoalesceBypass) {
 		return e.execute(req, rule, meta, hosts, key, policy, store, false)
 	}

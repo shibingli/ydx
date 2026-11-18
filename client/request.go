@@ -116,6 +116,7 @@ func (c *Client) Send(ctx context.Context, method, rawURL string, body any, opts
 		return nil, err
 	}
 	resp.Body = &cancelBody{body: resp.Body, cancel: cancel}
+	c.engine.fireComplete(req.Context(), meta)
 	return &Response{Response: resp, Meta: *meta}, nil
 }
 
@@ -130,6 +131,7 @@ func (c *Client) DoWithMeta(req *http.Request) (*Response, error) {
 	if err != nil {
 		return nil, err
 	}
+	c.engine.fireComplete(req.Context(), meta)
 	return &Response{Response: resp, Meta: *meta}, nil
 }
 
@@ -157,6 +159,7 @@ func (c *Client) finish(req *http.Request, meta *Meta) (*Response, error) {
 	if resp.Body == nil {
 		resp.Body = http.NoBody
 	}
+	c.engine.fireComplete(req.Context(), meta)
 	return &Response{Response: resp, Meta: *meta}, nil
 }
 

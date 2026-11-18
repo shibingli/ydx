@@ -627,6 +627,13 @@ func (e *engine) storeCacheResponse(resp *http.Response, req *http.Request, key 
 		VaryValues:   vary,
 		Uncompressed: resp.Uncompressed,
 	})
+	e.counters.cacheStores.Add(1)
+	if e.hooks.OnCacheStore != nil {
+		_ = callHook(func() error {
+			e.hooks.OnCacheStore(req.Context(), req, int64(len(data)))
+			return nil
+		})
+	}
 }
 
 // cachedResponse materializes a cached entry as a fresh response. | cachedResponse 把缓存条目物化为全新响应。

@@ -172,6 +172,7 @@ type mirrorer struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
+	engine *engine
 }
 
 // newMirrorer builds a mirrorer; a zero max uses 64. | newMirrorer 构建 mirrorer；max 为 0 时使用 64。
@@ -209,6 +210,9 @@ func (m *mirrorer) submit(parent context.Context, req *http.Request, logical *ur
 	if req.Body != nil && req.Body != http.NoBody {
 		getBody = req.GetBody
 		if getBody == nil {
+			for _, target := range policy.targets {
+				m.drop(target.String(), "body not replayable")
+			}
 			return
 		}
 	}
@@ -220,7 +224,17 @@ func (m *mirrorer) submit(parent context.Context, req *http.Request, logical *ur
 		select {
 		case m.sem <- struct{}{}:
 		default:
+			m.drop(target.String(), "mirror inflight limit")
 			return
+		}
+		if m.engine != nil {
+			m.engine.counters.mirrors.Add(1)
+			if m.engine.hooks.OnMirrorStart != nil {
+				_ = callHook(func() error {
+					m.engine.hooks.OnMirrorStart(parent, MirrorInfo{Target: target.String()})
+					return nil
+				})
+			}
 		}
 		m.wg.Add(1)
 		local.Add(1)
@@ -238,6 +252,16 @@ func (m *mirrorer) submit(parent context.Context, req *http.Request, logical *ur
 
 // run executes one shadow request against target. | run 对一个目标执行影子请求。
 func (m *mirrorer) run(parent context.Context, req *http.Request, logical *url.URL, rule *Rule, policy *MirrorPolicy, target *url.URL, getBody func() (io.ReadCloser, error)) {
+	if m.engine != nil {
+		defer func() {
+			if m.engine.hooks.OnMirrorDone != nil {
+				_ = callHook(func() error {
+					m.engine.hooks.OnMirrorDone(parent, MirrorInfo{Target: target.String()})
+					return nil
+				})
+			}
+		}()
+	}
 	ctx := m.ctx
 	if policy.FollowCancel && parent != nil {
 		ctx = parent
@@ -265,9 +289,26 @@ func (m *mirrorer) run(parent context.Context, req *http.Request, logical *url.U
 	out.GetBody = getBody
 	resp, err := m.base.RoundTrip(out)
 	if err != nil {
+		if m.engine != nil {
+			m.engine.counters.mirrorErrors.Add(1)
+		}
 		return
 	}
 	drainAndClose(resp.Body, policy.MaxBodyBytes)
+}
+
+// drop records a dropped mirror payload. | drop 记录丢弃的镜像载荷。
+func (m *mirrorer) drop(target, reason string) {
+	if m == nil || m.engine == nil {
+		return
+	}
+	m.engine.mirrorDrops.Add(1)
+	if m.engine.hooks.OnMirrorDrop != nil {
+		_ = callHook(func() error {
+			m.engine.hooks.OnMirrorDrop(context.Background(), MirrorInfo{Target: target}, reason)
+			return nil
+		})
+	}
 }
 
 // mirrorSampled reports whether the request is selected by Percent. | mirrorSampled 报告请求是否被 Percent 选中。

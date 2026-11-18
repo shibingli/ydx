@@ -36,6 +36,11 @@ type engine struct {
 	tlsStates     []*tlsState
 	hostTLS       map[string]*tlsState
 	defaultTLS    *tlsState
+
+	ua        *UAPolicy
+	uaCounter atomic.Uint64
+	hooks     Hooks
+	counters  counters
 }
 
 // newEngine builds the engine and a default transport when none was supplied. | newEngine 构建引擎，并在未提供 Transport 时创建默认传输。
@@ -95,14 +100,38 @@ func newEngine(o options) (*engine, error) {
 		mirrorBase = eng.defaultTLS.current()
 	}
 	eng.mirrors = newMirrorer(mirrorBase, o.MaxMirrorInflight)
+	eng.mirrors.engine = eng
 	eng.rules.Store(&RuleSet{})
 	return eng, nil
 }
 
 // RoundTrip applies rules, host selection and retries before the base transport. | RoundTrip 在底层传输前应用规则、Host 选择与重试。
-func (e *engine) RoundTrip(req *http.Request) (*http.Response, error) {
+func (e *engine) RoundTrip(req *http.Request) (resp *http.Response, err error) {
 	if req == nil || req.URL == nil {
 		return nil, ErrInvalidConfig
+	}
+	req = req.Clone(req.Context())
+	e.applyUA(req)
+	e.counters.requests.Add(1)
+	e.counters.inflight.Add(1)
+	defer e.counters.inflight.Add(-1)
+	defer func() {
+		if err != nil {
+			e.counters.errors.Add(1)
+			var clientErr *Error
+			if !errors.As(err, &clientErr) {
+				clientErr = e.wrapError("roundtrip", req, "", 0, err)
+				err = clientErr
+			}
+			e.fireError(req.Context(), clientErr)
+			return
+		}
+		if resp != nil {
+			e.counters.responses.Add(1)
+		}
+	}()
+	if hookErr := e.fireRequest(req.Context(), req); hookErr != nil {
+		return nil, e.wrapError("hook", req, "", 0, hookErr)
 	}
 	meta := metaFromContext(req.Context())
 	rules := e.rules.Load()
@@ -115,6 +144,9 @@ func (e *engine) RoundTrip(req *http.Request) (*http.Response, error) {
 		meta.Rule = rule
 		meta.Params = params
 	}
+	if hookErr := e.fireRoute(req.Context(), req, rule, params); hookErr != nil {
+		return nil, e.wrapError("hook", req, "", 0, hookErr)
+	}
 	if guard := e.guardFor(rule); guard != nil {
 		decision, guardErr := guard.Check(req.Context(), req)
 		if guardErr != nil {
@@ -124,6 +156,13 @@ func (e *engine) RoundTrip(req *http.Request) (*http.Response, error) {
 			meta.Guard = &decision
 		}
 		if !decision.Allowed {
+			e.counters.blocked.Add(1)
+			if e.hooks.OnBlocked != nil {
+				_ = callHook(func() error {
+					e.hooks.OnBlocked(req.Context(), req, decision)
+					return nil
+				})
+			}
 			message := decision.Message
 			if message == "" {
 				message = "blocked"
@@ -140,6 +179,13 @@ func (e *engine) RoundTrip(req *http.Request) (*http.Response, error) {
 	if caching && cacheableRequest(req, policy) {
 		key, _ = cacheKey(req, rule, &policy)
 		if entry, ok := store.Get(key); ok && entry.matches(req) {
+			e.counters.cacheHits.Add(1)
+			if e.hooks.OnCacheHit != nil {
+				_ = callHook(func() error {
+					e.hooks.OnCacheHit(req.Context(), req)
+					return nil
+				})
+			}
 			if meta != nil {
 				meta.CacheHit = true
 				meta.Attempts = 0
@@ -149,7 +195,14 @@ func (e *engine) RoundTrip(req *http.Request) (*http.Response, error) {
 					CacheHit: true,
 				})
 			}
-			return e.applyTee(rule, cachedResponse(req, entry)), nil
+			return e.finalizeResponse(req, rule, meta, cachedResponse(req, entry))
+		}
+		e.counters.cacheMisses.Add(1)
+		if e.hooks.OnCacheMiss != nil {
+			_ = callHook(func() error {
+				e.hooks.OnCacheMiss(req.Context(), req)
+				return nil
+			})
 		}
 	}
 	mirrorPolicy, mirroring := e.mirrorFor(rule)
@@ -162,8 +215,6 @@ func (e *engine) RoundTrip(req *http.Request) (*http.Response, error) {
 		}
 	}
 	postMirror := mirroring && mirrorPolicy.Mode == MirrorUpstream && !preMirror
-	var resp *http.Response
-	var err error
 	if coalescePolicy, ok := e.coalesceFor(rule); ok && shouldCoalesce(req, coalescePolicy) {
 		resp, err = e.coalesceRoundTrip(req, rule, meta, hosts, key, policy, store, coalescePolicy, postMirror)
 	} else {
@@ -172,7 +223,26 @@ func (e *engine) RoundTrip(req *http.Request) (*http.Response, error) {
 	if err != nil {
 		return nil, err
 	}
-	return e.applyTee(rule, resp), nil
+	return e.finalizeResponse(req, rule, meta, resp)
+}
+
+// finalizeResponse applies tee mirroring and the response hook. | finalizeResponse 应用 tee 镜像与响应钩子。
+func (e *engine) finalizeResponse(req *http.Request, rule *Rule, meta *Meta, resp *http.Response) (*http.Response, error) {
+	if resp == nil {
+		return nil, e.wrapError("response", req, "", 0, ErrInvalidRequest)
+	}
+	resp = e.applyTee(rule, resp)
+	metaValue := Meta{}
+	if meta != nil {
+		metaValue = *meta
+	}
+	if hookErr := e.fireResponse(req.Context(), &Response{Response: resp, Meta: metaValue}); hookErr != nil {
+		if resp.Body != nil {
+			_ = resp.Body.Close()
+		}
+		return nil, e.wrapError("hook", req, "", 0, hookErr)
+	}
+	return resp, nil
 }
 
 // execute runs the attempt loop and stores a cacheable response. | execute 执行尝试循环并存储可缓存响应。
@@ -236,6 +306,10 @@ func (e *engine) roundTripDirect(req *http.Request, rule *Rule, meta *Meta) (*ht
 		if err != nil {
 			return nil, e.wrapError("prepare_attempt", req, "", attempt-1, err)
 		}
+		e.fireAttempt(req.Context(), AttemptInfo{Attempt: attempt, Method: req.Method, URL: safeURL(req.URL)})
+		if out.ContentLength > 0 {
+			e.counters.bytesSent.Add(uint64(out.ContentLength))
+		}
 		start := time.Now()
 		resp, err := e.defaultTransport().RoundTrip(out)
 		if err != nil {
@@ -244,11 +318,17 @@ func (e *engine) roundTripDirect(req *http.Request, rule *Rule, meta *Meta) (*ht
 				!retryableError(err, req.Context()) || !e.budget.allow() {
 				break
 			}
-			if err := sleepContext(req.Context(), backoffDelay(policy, attempt)); err != nil {
+			delay := backoffDelay(policy, attempt)
+			e.counters.retries.Add(1)
+			e.fireRetry(req.Context(), RetryInfo{Attempt: attempt, Delay: delay, Reason: "network"})
+			if err := sleepContext(req.Context(), delay); err != nil {
 				lastErr = err
 				break
 			}
 			continue
+		}
+		if resp.ContentLength > 0 {
+			e.counters.bytesReceived.Add(uint64(resp.ContentLength))
 		}
 		if retryStatus(policy, resp.StatusCode) && attempt < attempts {
 			if !e.budget.allow() {
@@ -261,6 +341,8 @@ func (e *engine) roundTripDirect(req *http.Request, rule *Rule, meta *Meta) (*ht
 				}
 			}
 			drainAndClose(resp.Body, 64<<10)
+			e.counters.retries.Add(1)
+			e.fireRetry(req.Context(), RetryInfo{Attempt: attempt, Delay: delay, Reason: "status"})
 			if err := sleepContext(req.Context(), delay); err != nil {
 				lastErr = err
 				break
@@ -313,6 +395,7 @@ func (e *engine) roundTripHosts(req *http.Request, rule *Rule, meta *Meta, hosts
 		}
 		tried[host.Name] = struct{}{}
 		lastHost = host
+		e.fireHost(req.Context(), req, host)
 		target := targetURL(logical, host, rule)
 		out, prepErr := e.cloneAttempt(req, attempt, target, originalHost, rule, host, sp)
 		if prepErr != nil {
@@ -325,6 +408,10 @@ func (e *engine) roundTripHosts(req *http.Request, rule *Rule, meta *Meta, hosts
 			hosts.MarkFailure(host, transportErr)
 			lastErr = transportErr
 			break
+		}
+		e.fireAttempt(req.Context(), AttemptInfo{Attempt: attempt, Host: host, Method: req.Method, URL: safeURL(logical)})
+		if out.ContentLength > 0 {
+			e.counters.bytesSent.Add(uint64(out.ContentLength))
 		}
 		start := time.Now()
 		resp, err := transport.RoundTrip(out)
@@ -339,11 +426,17 @@ func (e *engine) roundTripHosts(req *http.Request, rule *Rule, meta *Meta, hosts
 				!retryableError(err, req.Context()) || !e.budget.allow() {
 				break
 			}
-			if err := sleepContext(req.Context(), backoffDelay(policy, attempt)); err != nil {
+			delay := backoffDelay(policy, attempt)
+			e.counters.retries.Add(1)
+			e.fireRetry(req.Context(), RetryInfo{Attempt: attempt, Delay: delay, Reason: "network"})
+			if err := sleepContext(req.Context(), delay); err != nil {
 				lastErr = err
 				break
 			}
 			continue
+		}
+		if resp.ContentLength > 0 {
+			e.counters.bytesReceived.Add(uint64(resp.ContentLength))
 		}
 		if retryStatus(policy, resp.StatusCode) && attempt < attempts {
 			if !e.budget.allow() {
@@ -358,6 +451,8 @@ func (e *engine) roundTripHosts(req *http.Request, rule *Rule, meta *Meta, hosts
 				}
 			}
 			drainAndClose(resp.Body, 64<<10)
+			e.counters.retries.Add(1)
+			e.fireRetry(req.Context(), RetryInfo{Attempt: attempt, Delay: delay, Reason: "status"})
 			if err := sleepContext(req.Context(), delay); err != nil {
 				lastErr = err
 				break
@@ -518,7 +613,7 @@ func safeURL(u *url.URL) string {
 }
 
 // wrapError builds a client error without leaking query or credentials. | wrapError 构建不泄露查询与凭据的客户端错误。
-func (e *engine) wrapError(op string, req *http.Request, host string, attempts int, err error) error {
+func (e *engine) wrapError(op string, req *http.Request, host string, attempts int, err error) *Error {
 	if err == nil {
 		err = ErrRetryExhausted
 	}

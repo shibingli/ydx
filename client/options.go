@@ -33,6 +33,8 @@ type options struct {
 	AccessPolicy      *AccessPolicy
 	TLSConfig         *TLSConfig
 	HostTLS           map[string]TLSConfig
+	UserAgent         *UAPolicy
+	Hooks             Hooks
 }
 
 // Option mutates the client configuration during New. | Option 在 New 期间修改客户端配置。

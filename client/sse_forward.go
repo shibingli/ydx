@@ -240,6 +240,9 @@ func (m *mirrorer) submitSSE(parent context.Context, req *http.Request, logical 
 	if req.Body != nil && req.Body != http.NoBody {
 		getBody = req.GetBody
 		if getBody == nil {
+			for _, target := range policy.targets {
+				m.drop(target.String(), "body not replayable")
+			}
 			return
 		}
 	}
@@ -251,7 +254,17 @@ func (m *mirrorer) submitSSE(parent context.Context, req *http.Request, logical 
 		select {
 		case m.sem <- struct{}{}:
 		default:
+			m.drop(target.String(), "mirror inflight limit")
 			return
+		}
+		if m.engine != nil {
+			m.engine.counters.mirrors.Add(1)
+			if m.engine.hooks.OnMirrorStart != nil {
+				_ = callHook(func() error {
+					m.engine.hooks.OnMirrorStart(parent, MirrorInfo{Target: target.String()})
+					return nil
+				})
+			}
 		}
 		m.wg.Add(1)
 		local.Add(1)
@@ -269,6 +282,16 @@ func (m *mirrorer) submitSSE(parent context.Context, req *http.Request, logical 
 
 // runSSE consumes one shadow SSE stream to EOF or timeout. | runSSE 消费一条影子 SSE 流直到 EOF 或超时。
 func (m *mirrorer) runSSE(parent context.Context, req *http.Request, logical *url.URL, rule *Rule, policy *MirrorPolicy, target *url.URL, getBody func() (io.ReadCloser, error)) {
+	if m.engine != nil {
+		defer func() {
+			if m.engine.hooks.OnMirrorDone != nil {
+				_ = callHook(func() error {
+					m.engine.hooks.OnMirrorDone(parent, MirrorInfo{Target: target.String()})
+					return nil
+				})
+			}
+		}()
+	}
 	ctx := m.ctx
 	if policy.FollowCancel && parent != nil {
 		ctx = parent
@@ -298,6 +321,9 @@ func (m *mirrorer) runSSE(parent context.Context, req *http.Request, logical *ur
 	out.GetBody = getBody
 	resp, err := m.base.RoundTrip(out)
 	if err != nil {
+		if m.engine != nil {
+			m.engine.counters.mirrorErrors.Add(1)
+		}
 		return
 	}
 	defer resp.Body.Close()

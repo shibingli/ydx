@@ -109,6 +109,13 @@ func (c *Client) OpenStream(ctx context.Context, req *http.Request, opts ...Stre
 	if err := stream.open(ctx); err != nil {
 		return nil, err
 	}
+	c.engine.counters.sseSessions.Add(1)
+	if c.engine.hooks.OnStreamStart != nil {
+		_ = callHook(func() error {
+			c.engine.hooks.OnStreamStart(ctx, req)
+			return nil
+		})
+	}
 	return stream, nil
 }
 
@@ -180,6 +187,13 @@ func (s *Stream) Next(ctx context.Context) (Event, error) {
 			}
 			if event.Retry > 0 {
 				s.retryHint = event.Retry
+			}
+			s.client.engine.counters.sseEvents.Add(1)
+			if s.client.engine.hooks.OnStreamEvent != nil {
+				_ = callHook(func() error {
+					s.client.engine.hooks.OnStreamEvent(ctx, event)
+					return nil
+				})
 			}
 			return event, nil
 		}
@@ -275,6 +289,12 @@ func (s *Stream) Close() error {
 		return nil
 	}
 	s.closeBody()
+	if s.client != nil && s.client.engine.hooks.OnStreamEnd != nil {
+		_ = callHook(func() error {
+			s.client.engine.hooks.OnStreamEnd(context.Background(), nil)
+			return nil
+		})
+	}
 	return nil
 }
 
