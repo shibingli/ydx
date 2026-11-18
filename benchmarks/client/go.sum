@@ -31,8 +31,8 @@ github.com/shibingli/ydx/base64 v0.1.15 h1:wsDMB9Q5iItcfSTTnIj0T8wLbUW3at7P7uBEk
 github.com/shibingli/ydx/base64 v0.1.15/go.mod h1:4gKutBj99uBB9WW9LZL9LyyR6VR+werR+YtekqWPFZU=
 github.com/shibingli/ydx/buffpool v0.1.6 h1:f6EmcJUBcPvp5Ip/Vs5plnd5A+InTTMKSHQ0CEMt6qY=
 github.com/shibingli/ydx/buffpool v0.1.6/go.mod h1:gDfq71KMonwawV+mw65UZhVfqgGh3e7ssgQdoJzuwNg=
-github.com/shibingli/ydx/client v0.1.2 h1:Nh3ON1HGSWBzvT4w5DV90odv3PATie8WfgvjQvH1DrY=
-github.com/shibingli/ydx/client v0.1.2/go.mod h1:+3bLLlvOJ8LsN9QQNKo9gh31Dl19GC3TcPAtxtV7ZzA=
+github.com/shibingli/ydx/client v0.1.3 h1:5M18VHSy8hPkMsu6YzP0CEbgyPlg01WA5WxChqD6YPA=
+github.com/shibingli/ydx/client v0.1.3/go.mod h1:+3bLLlvOJ8LsN9QQNKo9gh31Dl19GC3TcPAtxtV7ZzA=
 github.com/shibingli/ydx/errs v0.1.6 h1:cFpsRCMMRVOHBNPCLwwih5pxedJWKutfN+03Uh4/LrQ=
 github.com/shibingli/ydx/errs v0.1.6/go.mod h1:UkzIWBtT3x0FbFm4q0iqBuidwUDcwmfoEB7yoVkrDEE=
 github.com/shibingli/ydx/json v0.1.20 h1:ffp21mWYiXi9HrHo8jsXZH130wjKILusejkESeEqaMw=
