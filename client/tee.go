@@ -211,6 +211,7 @@ func startSSEEventPump(workers []*eventSinkWorker) *sseEventPump {
 	pump := &sseEventPump{writer: writer, done: make(chan struct{}), workers: workers}
 	go func() {
 		defer close(pump.done)
+		defer reader.Close()
 		events := NewEventReader(reader)
 		for {
 			event, err := events.Next()

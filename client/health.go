@@ -14,7 +14,12 @@ import (
 // cancellation or Close. Calling it again is a no-op. | StartHealth 为集合启动一个主动健康
 // goroutine；ctx 取消或 Close 时退出。重复调用无操作。
 func (hs *HostSet) StartHealth(ctx context.Context, rt http.RoundTripper, logger *log.Logger) {
-	if hs == nil || rt == nil || hs.closed.Load() || !hs.AnyActive() {
+	hs.startHealth(ctx, func(*Host) http.RoundTripper { return rt }, logger)
+}
+
+// startHealth launches active checks with a per-host transport selector. | startHealth 用逐 Host 传输选择器启动主动检查。
+func (hs *HostSet) startHealth(ctx context.Context, choose func(*Host) http.RoundTripper, logger *log.Logger) {
+	if hs == nil || choose == nil || hs.closed.Load() || !hs.AnyActive() {
 		return
 	}
 	hs.healthMu.Lock()
@@ -30,11 +35,11 @@ func (hs *HostSet) StartHealth(ctx context.Context, rt http.RoundTripper, logger
 	hs.healthCancel = cancel
 	hs.healthWG.Add(1)
 	hs.healthMu.Unlock()
-	go hs.healthLoop(ctx, rt, logger)
+	go hs.healthLoop(ctx, choose, logger)
 }
 
 // healthLoop periodically checks every active host from one goroutine. | healthLoop 用单个 goroutine 周期性检查每个主动 Host。
-func (hs *HostSet) healthLoop(ctx context.Context, rt http.RoundTripper, logger *log.Logger) {
+func (hs *HostSet) healthLoop(ctx context.Context, choose func(*Host) http.RoundTripper, logger *log.Logger) {
 	defer hs.healthWG.Done()
 	interval := hs.minHealthInterval()
 	if interval <= 0 {
@@ -60,7 +65,7 @@ func (hs *HostSet) healthLoop(ctx context.Context, rt http.RoundTripper, logger 
 					continue
 				}
 				next[i] = now.Add(entry.host.Health.Interval)
-				hs.checkHost(ctx, rt, entry, logger)
+				hs.checkHost(ctx, choose(entry.host), entry, logger)
 			}
 		}
 	}
@@ -68,6 +73,13 @@ func (hs *HostSet) healthLoop(ctx context.Context, rt http.RoundTripper, logger 
 
 // checkHost performs one active health request and records the outcome. | checkHost 执行一次主动健康请求并记录结果。
 func (hs *HostSet) checkHost(ctx context.Context, rt http.RoundTripper, entry *hostEntry, logger *log.Logger) {
+	if rt == nil {
+		hs.recordFailure(entry, ErrHealthCheck)
+		if logger != nil {
+			logger.Warn("client: health transport unavailable | client：健康检查传输不可用", log.Str("host", entry.host.Name))
+		}
+		return
+	}
 	target := *entry.host.URL
 	target.Path = joinHealthPath(target.Path, entry.host.Health.Path)
 	target.RawQuery = ""

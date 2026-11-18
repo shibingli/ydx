@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 )
 
@@ -165,6 +166,29 @@ func TestUAWeightedAndBuiltin(t *testing.T) {
 	defer mu.Unlock()
 	if !strings.Contains(got[len(got)-1], "Mozilla") {
 		t.Fatalf("builtin UA %q", got[len(got)-1])
+	}
+}
+
+func TestUANilHeader(t *testing.T) {
+	var got atomic.Value
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got.Store(r.Header.Get("User-Agent"))
+	}))
+	defer srv.Close()
+	c, err := New(WithHosts(srv.URL), WithUserAgent(UAPolicy{Mode: UAFixed, List: []string{"custom-agent"}, Force: true}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	req, _ := http.NewRequest(http.MethodGet, srv.URL, nil)
+	req.Header = nil
+	resp, err := c.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if got.Load() != "custom-agent" {
+		t.Fatalf("ua %v", got.Load())
 	}
 }
 

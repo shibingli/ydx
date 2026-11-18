@@ -1,6 +1,7 @@
 package client
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -174,6 +175,46 @@ func TestSSEEventSink(t *testing.T) {
 	defer mu.Unlock()
 	if len(events) != 2 || events[0].Name != "tick" || string(events[0].Data) != "one" || string(events[1].Data) != "two" {
 		t.Fatalf("events %+v", events)
+	}
+}
+
+func TestSSEEventSinkOversizedDoesNotHang(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: "))
+		_, _ = w.Write(bytes.Repeat([]byte("x"), 2<<20))
+		_, _ = w.Write([]byte("\n\n"))
+	}))
+	defer upstream.Close()
+
+	sink := EventSinkFunc(func(context.Context, Event) error { return nil })
+	c, err := New(WithRule(Rule{
+		Name:    "sse",
+		Pattern: "/events",
+		Mirror:  &MirrorPolicy{Mode: MirrorTee, TeeEventSinks: []EventSink{sink}},
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	resp, err := http.Get(upstream.URL + "/events")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	rec := httptest.NewRecorder()
+	in := httptest.NewRequest(http.MethodGet, "/events", nil)
+	done := make(chan error, 1)
+	go func() {
+		done <- c.copySSE(context.Background(), rec, resp, in, ForwardOptions{})
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("oversized SSE event hung the event pump")
 	}
 }
 

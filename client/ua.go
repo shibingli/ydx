@@ -98,6 +98,9 @@ func (e *engine) applyUA(req *http.Request) {
 		return
 	}
 	policy := e.ua
+	if req.Header == nil {
+		req.Header = make(http.Header)
+	}
 	if !policy.Force && req.Header.Get("User-Agent") != "" {
 		return
 	}

@@ -56,7 +56,7 @@ func New(opts ...Option) (*Client, error) {
 	}
 	if hs != nil {
 		eng.hosts.Store(hs)
-		hs.StartHealth(context.Background(), eng.base, cfg.Logger)
+		hs.startHealth(context.Background(), eng.healthTransport, cfg.Logger)
 	}
 	hc := &http.Client{
 		Transport:     eng,

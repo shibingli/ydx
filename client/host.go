@@ -484,7 +484,7 @@ func (c *Client) UpdateHosts(hosts ...Host) error {
 		return err
 	}
 	old := c.engine.hosts.Swap(hs)
-	hs.StartHealth(context.Background(), c.engine.base, c.opts.Logger)
+	hs.startHealth(context.Background(), c.engine.healthTransport, c.opts.Logger)
 	if old != nil {
 		_ = old.Close()
 	}

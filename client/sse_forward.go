@@ -319,7 +319,11 @@ func (m *mirrorer) runSSE(parent context.Context, req *http.Request, logical *ur
 		out.Body = body
 	}
 	out.GetBody = getBody
-	resp, err := m.base.RoundTrip(out)
+	base := m.base
+	if m.engine != nil {
+		base = m.engine.defaultTransport()
+	}
+	resp, err := base.RoundTrip(out)
 	if err != nil {
 		if m.engine != nil {
 			m.engine.counters.mirrorErrors.Add(1)

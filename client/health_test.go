@@ -55,6 +55,37 @@ func TestActiveHealth(t *testing.T) {
 	}
 }
 
+func TestActiveHealthTLS(t *testing.T) {
+	var hits atomic.Int32
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+	}))
+	defer srv.Close()
+	hs, err := NewHostSet(Host{
+		Name: "tls",
+		URL:  mustURL(srv.URL),
+		Health: HealthPolicy{
+			Active:        true,
+			Path:          "/health",
+			Interval:      10 * time.Millisecond,
+			Timeout:       100 * time.Millisecond,
+			FailThreshold: 1,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, err := New(
+		WithHostSet(hs),
+		WithTLS(TLSConfig{InsecureSkipVerify: true, DisableSystemRoots: true}),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	waitFor(t, 2*time.Second, func() bool { return hits.Load() > 0 })
+}
+
 func TestStartHealthNoActive(t *testing.T) {
 	hs, err := NewHostSet(Host{Name: "a", URL: mustURL("http://a")})
 	if err != nil {

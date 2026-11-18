@@ -321,6 +321,15 @@ func (e *engine) transportFor(host *Host) (http.RoundTripper, error) {
 	return e.base, nil
 }
 
+// healthTransport returns the per-host transport for active health checks. | healthTransport 返回主动健康检查使用的逐 Host 传输。
+func (e *engine) healthTransport(host *Host) http.RoundTripper {
+	transport, err := e.transportFor(host)
+	if err != nil {
+		return nil
+	}
+	return transport
+}
+
 // defaultTransport returns the transport used without a host pool. | defaultTransport 返回无 Host 池时使用的传输。
 func (e *engine) defaultTransport() http.RoundTripper {
 	if e.defaultTLS != nil {
