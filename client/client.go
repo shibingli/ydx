@@ -25,7 +25,12 @@ func New(opts ...Option) (*Client, error) {
 			return nil, err
 		}
 	}
+	rules, err := CompileRules(cfg.Rules...)
+	if err != nil {
+		return nil, err
+	}
 	eng := newEngine(cfg)
+	eng.rules.Store(rules)
 	hc := &http.Client{
 		Transport:     eng,
 		Jar:           cfg.Jar,

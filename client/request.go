@@ -70,7 +70,11 @@ func (c *Client) Send(ctx context.Context, method, rawURL string, body any, opts
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	req, err := http.NewRequestWithContext(ctx, method, rawURL, rc)
+	resolved, err := c.resolveRequestURL(rawURL)
+	if err != nil {
+		return nil, err
+	}
+	req, err := http.NewRequestWithContext(ctx, method, resolved, rc)
 	if err != nil {
 		return nil, errs.Wrap(err, ErrInvalidRequest)
 	}
@@ -111,6 +115,21 @@ func (c *Client) Send(ctx context.Context, method, rawURL string, body any, opts
 	}
 	resp.Body = &cancelBody{body: resp.Body, cancel: cancel}
 	return &Response{Response: resp}, nil
+}
+
+// resolveRequestURL resolves a convenience-method URL against BaseURL. | resolveRequestURL 用 BaseURL 解析便捷方法的 URL。
+func (c *Client) resolveRequestURL(raw string) (string, error) {
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return "", errs.Wrap(err, ErrInvalidRequest)
+	}
+	if parsed.IsAbs() {
+		return raw, nil
+	}
+	if c.opts.BaseURL == nil {
+		return "", ErrRelativeURL
+	}
+	return c.opts.BaseURL.ResolveReference(parsed).String(), nil
 }
 
 // finish executes a request and wraps the response. | finish 执行请求并包装响应。

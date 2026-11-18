@@ -5,13 +5,15 @@ import (
 	"net"
 	"net/http"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
 // engine is the policy RoundTripper behind a Client. | engine 是 Client 背后的策略 RoundTripper。
 type engine struct {
-	base http.RoundTripper
-	opts options
+	base  http.RoundTripper
+	opts  options
+	rules atomic.Pointer[RuleSet]
 }
 
 // newEngine builds the engine and a default transport when none was supplied. | newEngine 构建引擎，并在未提供 Transport 时创建默认传输。
@@ -29,7 +31,9 @@ func newEngine(o options) *engine {
 			ExpectContinueTimeout: time.Second,
 		}
 	}
-	return &engine{base: base, opts: o}
+	eng := &engine{base: base, opts: o}
+	eng.rules.Store(&RuleSet{})
+	return eng
 }
 
 // RoundTrip forwards the request through the configured transport. | RoundTrip 通过配置的传输转发请求。

@@ -2,6 +2,7 @@ package client
 
 import (
 	"net/http"
+	"net/url"
 	"time"
 
 	"github.com/shibingli/ydx/errs"
@@ -18,6 +19,8 @@ type options struct {
 	SpoolToDisk   bool
 	Jar           http.CookieJar
 	CheckRedirect func(*http.Request, []*http.Request) error
+	BaseURL       *url.URL
+	Rules         []Rule
 }
 
 // Option mutates the client configuration during New. | Option 在 New 期间修改客户端配置。
