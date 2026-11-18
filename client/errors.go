@@ -18,4 +18,20 @@ var (
 	ErrBodyConsumed = errs.New("client: response body already consumed | client：响应正文已被消费")
 	// ErrResponseTooLarge indicates a response body exceeded its configured cap. | ErrResponseTooLarge 表示响应正文超过配置上限。
 	ErrResponseTooLarge = errs.New("client: response body too large | client：响应正文过大")
+	// ErrBadPattern indicates an invalid path pattern. | ErrBadPattern 表示非法的路径模式。
+	ErrBadPattern = errs.New("client: invalid path pattern | client：非法的路径模式")
+	// ErrDuplicateParam indicates a duplicate parameter name. | ErrDuplicateParam 表示重复的参数名。
+	ErrDuplicateParam = errs.New("client: duplicate path parameter | client：重复的路径参数")
+	// ErrParamName indicates an invalid parameter name. | ErrParamName 表示非法的参数名。
+	ErrParamName = errs.New("client: invalid path parameter name | client：非法的路径参数名")
+	// ErrWildcardPosition indicates a catch-all not in the final segment. | ErrWildcardPosition 表示捕获通配符不在最后一段。
+	ErrWildcardPosition = errs.New("client: wildcard must be in the last segment | client：通配符必须位于最后一段")
+	// ErrEscapeSequence indicates an unsupported escape sequence. | ErrEscapeSequence 表示不支持的转义序列。
+	ErrEscapeSequence = errs.New("client: unsupported escape sequence | client：不支持的转义序列")
+	// ErrDanglingEscape indicates a trailing backslash. | ErrDanglingEscape 表示末尾悬空反斜杠。
+	ErrDanglingEscape = errs.New("client: dangling escape at end of segment | client：段末尾存在悬空转义符")
+	// ErrMissingParam indicates a missing value during Expand. | ErrMissingParam 表示 Expand 缺少参数值。
+	ErrMissingParam = errs.New("client: missing path parameter | client：缺少路径参数")
+	// ErrParamValue indicates a path parameter value rejected by its regex. | ErrParamValue 表示路径参数值未通过正则校验。
+	ErrParamValue = errs.New("client: invalid path parameter value | client：非法的路径参数值")
 )
