@@ -213,11 +213,19 @@ func TestPipelineFuncAndHooks(t *testing.T) {
 
 func TestPipelineParallelFailFastCancelsSiblings(t *testing.T) {
 	var slowCanceled atomic.Bool
+	slowStarted := make(chan struct{})
+	var slowOnce sync.Once
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/fail":
+			// Wait until the sibling request is active so cancellation is observable. | 等待兄弟请求已启动，确保可观察取消。
+			select {
+			case <-slowStarted:
+			case <-time.After(time.Second):
+			}
 			w.WriteHeader(http.StatusInternalServerError)
 		case "/slow":
+			slowOnce.Do(func() { close(slowStarted) })
 			select {
 			case <-r.Context().Done():
 				slowCanceled.Store(true)
