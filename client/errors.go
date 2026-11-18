@@ -78,6 +78,16 @@ var (
 	ErrHookPanic = errs.New("client: hook panicked | client：钩子发生 panic")
 	// ErrBusy indicates the async concurrency limit is full. | ErrBusy 表示异步并发已满。
 	ErrBusy = errs.New("client: async concurrency limit reached | client：异步并发已达上限")
+	// ErrExtract indicates a failed pipeline extraction. | ErrExtract 表示 Pipeline 提取失败。
+	ErrExtract = errs.New("client: extract value failed | client：提取值失败")
+	// ErrPipelineStatus indicates an unexpected pipeline step status. | ErrPipelineStatus 表示 Pipeline 步骤状态异常。
+	ErrPipelineStatus = errs.New("client: pipeline status mismatch | client：Pipeline 状态不匹配")
+	// ErrPipelineBodyTooLarge indicates an oversized pipeline body. | ErrPipelineBodyTooLarge 表示 Pipeline 正文过大。
+	ErrPipelineBodyTooLarge = errs.New("client: pipeline body too large | client：Pipeline 正文过大")
+	// ErrPipelineStream indicates an SSE or infinite stream inside a pipeline. | ErrPipelineStream 表示 Pipeline 中出现 SSE 或无限流。
+	ErrPipelineStream = errs.New("client: stream is not allowed in a pipeline | client：Pipeline 不允许流式响应")
+	// ErrPipelineStep indicates an invalid pipeline step or graph. | ErrPipelineStep 表示非法的 Pipeline 步骤或结构。
+	ErrPipelineStep = errs.New("client: invalid pipeline step | client：非法的 Pipeline 步骤")
 )
 
 // Error wraps a client operation failure and preserves the cause chain. | Error 包装客户端操作失败并保留原因链。
