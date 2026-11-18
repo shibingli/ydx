@@ -64,6 +64,21 @@
 //	)
 //	result, err := plan.Run(ctx, c)
 //
+// # Rule-level UA and tracing | 规则级 UA 与追踪
+//
+//	c, err := client.New(
+//		client.WithTrace(true),
+//		client.WithRule(client.Rule{
+//			Name:    "mobile",
+//			Pattern: "/m/{path:*}",
+//			UA:      &client.UAPolicy{Mode: client.UAFixed, List: []string{"custom-ua"}, Force: true},
+//		}),
+//	)
+//
+// Absolute URLs connect directly by default; use WithRewriteAll(true) to route
+// them through the default host pool. | 绝对 URL 默认直连；用 WithRewriteAll(true)
+// 可强制走默认 Host 池。
+//
 // # TLS | TLS
 //
 //	c, err := client.New(
