@@ -98,6 +98,14 @@ func (c *Client) Close() error {
 	if hs := c.engine.hosts.Load(); hs != nil {
 		_ = hs.Close()
 	}
+	c.engine.cacheMu.Lock()
+	store := c.engine.cacheStore
+	owned := c.engine.ownsCache
+	c.engine.cacheStore = nil
+	c.engine.cacheMu.Unlock()
+	if store != nil && owned {
+		_ = store.Close()
+	}
 	c.engine.closeIdleConnections()
 	return nil
 }

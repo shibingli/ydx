@@ -42,6 +42,8 @@ type Rule struct {
 	PreserveHost bool
 	// Retry overrides the client-wide retry policy. | Retry 覆盖客户端级重试策略。
 	Retry *RetryPolicy
+	// Cache enables response caching for this rule. | Cache 为该规则启用响应缓存。
+	Cache *CachePolicy
 }
 
 // patternScore is the deterministic specificity key used to order rules. | patternScore 是用于规则排序的确定性特异性键。

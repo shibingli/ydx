@@ -21,6 +21,10 @@ type engine struct {
 	rules  atomic.Pointer[RuleSet]
 	hosts  atomic.Pointer[HostSet]
 	budget *retryBudget
+
+	cacheMu    sync.Mutex
+	cacheStore Store
+	ownsCache  bool
 }
 
 // newEngine builds the engine and a default transport when none was supplied. | newEngine 构建引擎，并在未提供 Transport 时创建默认传输。
@@ -63,10 +67,34 @@ func (e *engine) RoundTrip(req *http.Request) (*http.Response, error) {
 	if rule != nil && rule.HostSet != nil {
 		hosts = rule.HostSet
 	}
-	if hosts == nil || hosts.Len() == 0 {
-		return e.roundTripDirect(req, rule, meta)
+	policy, store, caching := e.cacheFor(rule)
+	var key string
+	if caching && cacheableRequest(req, policy) {
+		key, _ = cacheKey(req, rule, &policy)
+		if entry, ok := store.Get(key); ok && entry.matches(req) {
+			if meta != nil {
+				meta.CacheHit = true
+				meta.Attempts = 0
+				meta.Hops = append(meta.Hops, HopMeta{
+					URL:      safeURL(req.URL),
+					Status:   entry.StatusCode,
+					CacheHit: true,
+				})
+			}
+			return cachedResponse(req, entry), nil
+		}
 	}
-	return e.roundTripHosts(req, rule, meta, hosts)
+	var resp *http.Response
+	var err error
+	if hosts == nil || hosts.Len() == 0 {
+		resp, err = e.roundTripDirect(req, rule, meta)
+	} else {
+		resp, err = e.roundTripHosts(req, rule, meta, hosts)
+	}
+	if err == nil && key != "" && resp != nil && cacheableStatus(policy, resp.StatusCode) {
+		e.storeCacheResponse(resp, req, key, policy, store)
+	}
+	return resp, err
 }
 
 // retryPolicy resolves the rule policy, the client policy, or the default. | retryPolicy 依次解析规则策略、客户端策略与默认策略。

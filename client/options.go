@@ -24,6 +24,8 @@ type options struct {
 	Hosts         []Host
 	HostSet       *HostSet
 	Retry         *RetryPolicy
+	Cache         *CachePolicy
+	CacheStore    Store
 }
 
 // Option mutates the client configuration during New. | Option 在 New 期间修改客户端配置。
