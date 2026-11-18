@@ -97,7 +97,11 @@ func (e *engine) RoundTrip(req *http.Request) (*http.Response, error) {
 	mirrorPolicy, mirroring := e.mirrorFor(rule)
 	preMirror := mirroring && mirrorPolicy.Mode == MirrorUpstream && mirrorPolicy.Parallel && !mirrorPolicy.Sync
 	if preMirror {
-		e.mirrors.submit(req.Context(), req, req.URL, rule, mirrorPolicy)
+		if strings.Contains(strings.ToLower(req.Header.Get("Accept")), "text/event-stream") {
+			e.mirrors.submitSSE(req.Context(), req, req.URL, rule, mirrorPolicy)
+		} else {
+			e.mirrors.submit(req.Context(), req, req.URL, rule, mirrorPolicy)
+		}
 	}
 	postMirror := mirroring && mirrorPolicy.Mode == MirrorUpstream && !preMirror
 	var resp *http.Response
@@ -127,26 +131,33 @@ func (e *engine) execute(req *http.Request, rule *Rule, meta *Meta, hosts *HostS
 	}
 	if err == nil && scheduleMirror {
 		if mirrorPolicy, ok := e.mirrorFor(rule); ok && mirrorPolicy.Mode == MirrorUpstream {
-			e.mirrors.submit(req.Context(), req, req.URL, rule, mirrorPolicy)
+			if isEventStream(resp.Header) {
+				e.mirrors.submitSSE(req.Context(), req, req.URL, rule, mirrorPolicy)
+			} else {
+				e.mirrors.submit(req.Context(), req, req.URL, rule, mirrorPolicy)
+			}
 		}
 	}
 	return resp, err
 }
 
 // retryPolicy resolves the rule policy, the client policy, or the default. | retryPolicy 依次解析规则策略、客户端策略与默认策略。
-func (e *engine) retryPolicy(rule *Rule, hostCount int) RetryPolicy {
+func (e *engine) retryPolicy(req *http.Request, rule *Rule, hostCount int) RetryPolicy {
 	if rule != nil && rule.Retry != nil {
 		return rule.Retry.withDefaults(hostCount)
 	}
 	if e.opts.Retry != nil {
 		return e.opts.Retry.withDefaults(hostCount)
 	}
+	if req != nil && forwardNoDefaultRetry(req.Context()) {
+		return RetryPolicy{MaxAttempts: 1}.withDefaults(hostCount)
+	}
 	return defaultRetryPolicy(hostCount)
 }
 
 // roundTripDirect handles requests without a host pool; the original URL is used. | roundTripDirect 处理无 Host 池的请求，直接使用原 URL。
 func (e *engine) roundTripDirect(req *http.Request, rule *Rule, meta *Meta) (*http.Response, error) {
-	policy := e.retryPolicy(rule, 1)
+	policy := e.retryPolicy(req, rule, 1)
 	attempts := policy.MaxAttempts
 	if !retryableMethod(policy, req.Method) {
 		attempts = 1
@@ -208,7 +219,7 @@ func (e *engine) roundTripDirect(req *http.Request, rule *Rule, meta *Meta) (*ht
 
 // roundTripHosts runs the failover attempt loop across a host pool. | roundTripHosts 在 Host 池上执行故障切换尝试循环。
 func (e *engine) roundTripHosts(req *http.Request, rule *Rule, meta *Meta, hosts *HostSet) (*http.Response, error) {
-	policy := e.retryPolicy(rule, hosts.Len())
+	policy := e.retryPolicy(req, rule, hosts.Len())
 	attempts := policy.MaxAttempts
 	if !retryableMethod(policy, req.Method) {
 		attempts = 1
@@ -312,7 +323,11 @@ func (e *engine) cloneAttempt(req *http.Request, attempt int, target *url.URL, o
 	out.URL = target
 	out.RequestURI = ""
 	if host != nil {
-		if rule != nil && rule.PreserveHost {
+		preserve := rule != nil && rule.PreserveHost
+		if forwardPreserveHost(out.Context()) {
+			preserve = true
+		}
+		if preserve {
 			out.Host = originalHost
 		} else {
 			out.Host = target.Host

@@ -62,6 +62,10 @@ var (
 	ErrSSEIdle = errs.New("client: event stream idle timeout | client：事件流空闲超时")
 	// ErrStreamMode indicates mixed Next and Raw calls on a stream. | ErrStreamMode 表示流上混用 Next 与 Raw。
 	ErrStreamMode = errs.New("client: stream mode conflict | client：流模式冲突")
+	// ErrUpgradeUnsupported indicates an inbound HTTP Upgrade request. | ErrUpgradeUnsupported 表示入站 HTTP Upgrade 请求。
+	ErrUpgradeUnsupported = errs.New("client: upgrade forwarding is not supported | client：不支持 Upgrade 转发")
+	// ErrBlocked indicates a request rejected by a guard or access policy. | ErrBlocked 表示请求被守卫或访问策略拒绝。
+	ErrBlocked = errs.New("client: request blocked | client：请求被拦截")
 )
 
 // Error wraps a client operation failure and preserves the cause chain. | Error 包装客户端操作失败并保留原因链。
