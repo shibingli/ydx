@@ -7,7 +7,19 @@ import (
 
 	"github.com/shibingli/ydx/errs"
 	"github.com/shibingli/ydx/json"
+	"github.com/shibingli/ydx/xml"
 )
+
+// XMLBody marks a value that should be encoded as XML. | XMLBody 标记应按 XML 编码的值。
+type XMLBody struct {
+	// Value is the value passed to ydx/xml.Marshal. | Value 是传给 ydx/xml.Marshal 的值。
+	Value any
+}
+
+// XML returns a request body encoded as XML. | XML 返回按 XML 编码的请求正文。
+func XML(v any) XMLBody {
+	return XMLBody{Value: v}
+}
 
 // prepareBody classifies a request body into a reader, a replay function and an
 // optional content type. | prepareBody 把请求正文归类为 reader、重放函数与可选 Content-Type。
@@ -42,6 +54,12 @@ func prepareBody(v any) (io.ReadCloser, func() (io.ReadCloser, error), string, e
 		return body, nil, "", nil
 	case io.Reader:
 		return io.NopCloser(body), nil, "", nil
+	case XMLBody:
+		data, err := xml.Marshal(body.Value)
+		if err != nil {
+			return nil, nil, "", errs.Wrap(err, ErrEncodeBody)
+		}
+		return bytesBody(data), bytesGetBody(data), "application/xml", nil
 	default:
 		data, err := json.Marshal(v)
 		if err != nil {

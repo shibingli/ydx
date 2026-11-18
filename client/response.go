@@ -8,6 +8,7 @@ import (
 	"github.com/shibingli/ydx/buffpool"
 	"github.com/shibingli/ydx/errs"
 	"github.com/shibingli/ydx/json"
+	"github.com/shibingli/ydx/xml"
 )
 
 // defaultResponseLimit is the default in-memory response body cap (4 MiB). | defaultResponseLimit 是默认内存响应正文上限（4 MiB）。
@@ -82,6 +83,15 @@ func (r *Response) JSON(v any) error {
 		return err
 	}
 	return json.Unmarshal(data, v)
+}
+
+// XML decodes the body as XML. | XML 把正文按 XML 解码。
+func (r *Response) XML(v any) error {
+	data, err := r.Bytes()
+	if err != nil {
+		return err
+	}
+	return xml.Unmarshal(data, v)
 }
 
 // String reads the body as a string. | String 把正文读取为字符串。
