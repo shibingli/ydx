@@ -296,66 +296,26 @@ func wrapReader(r io.Reader) io.ReadCloser {
 	return io.NopCloser(r)
 }
 
-// byteBody is a closable bytes.Reader in one allocation. | byteBody 是一个单次分配的可关闭 bytes.Reader。
-type byteBody struct {
-	reader bytes.Reader
-}
-
-// newByteBody wraps a byte slice without copying. | newByteBody 以不复制的方式包装字节切片。
-func newByteBody(b []byte) *byteBody {
-	body := &byteBody{}
-	body.reader.Reset(b)
-	return body
-}
-
-// Read reads from the byte slice. | Read 从字节切片读取。
-func (b *byteBody) Read(p []byte) (int, error) {
-	return b.reader.Read(p)
-}
-
-// Close implements io.Closer. | Close 实现 io.Closer。
-func (b *byteBody) Close() error { return nil }
-
 // bytesBody wraps a byte slice in a reader without copying. | bytesBody 以不复制的方式把字节切片包装为 reader。
 func bytesBody(b []byte) io.ReadCloser {
-	return newByteBody(b)
+	return io.NopCloser(bytes.NewReader(b))
 }
 
 // bytesGetBody returns a replay function over the same byte slice. | bytesGetBody 返回同一字节切片上的重放函数。
 func bytesGetBody(b []byte) func() (io.ReadCloser, error) {
 	return func() (io.ReadCloser, error) {
-		return newByteBody(b), nil
+		return io.NopCloser(bytes.NewReader(b)), nil
 	}
 }
 
-// stringReaderBody is a closable strings.Reader in one allocation. | stringReaderBody 是一个单次分配的可关闭 strings.Reader。
-type stringReaderBody struct {
-	reader strings.Reader
-}
-
-// newStringBody wraps a string without converting it to a byte slice. | newStringBody 以不复制的方式包装字符串。
-func newStringBody(s string) *stringReaderBody {
-	body := &stringReaderBody{}
-	body.reader.Reset(s)
-	return body
-}
-
-// Read reads from the string. | Read 从字符串读取。
-func (b *stringReaderBody) Read(p []byte) (int, error) {
-	return b.reader.Read(p)
-}
-
-// Close implements io.Closer. | Close 实现 io.Closer。
-func (b *stringReaderBody) Close() error { return nil }
-
 // stringBody wraps a string in a reader without converting it to a byte slice. | stringBody 以不复制的方式把字符串包装为 reader。
 func stringBody(s string) io.ReadCloser {
-	return newStringBody(s)
+	return io.NopCloser(strings.NewReader(s))
 }
 
 // stringGetBody returns a replay function over the same string. | stringGetBody 返回同一字符串上的重放函数。
 func stringGetBody(s string) func() (io.ReadCloser, error) {
 	return func() (io.ReadCloser, error) {
-		return newStringBody(s), nil
+		return io.NopCloser(strings.NewReader(s)), nil
 	}
 }
