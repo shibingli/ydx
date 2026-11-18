@@ -3,7 +3,9 @@ package client
 import (
 	"context"
 	"net/http"
+	"sync"
 	"sync/atomic"
+	"time"
 )
 
 // Client is a policy-driven HTTP client compatible with http.Client.Do. | Client 是兼容 http.Client.Do 的策略化 HTTP 客户端。
@@ -12,6 +14,11 @@ type Client struct {
 	engine *engine
 	opts   options
 	closed atomic.Bool
+
+	rootCtx    context.Context
+	rootCancel context.CancelFunc
+	asyncSem   chan struct{}
+	asyncWG    sync.WaitGroup
 }
 
 // New creates a Client from functional options. | New 根据函数式选项创建 Client。
@@ -56,7 +63,19 @@ func New(opts ...Option) (*Client, error) {
 		Jar:           cfg.Jar,
 		CheckRedirect: cfg.CheckRedirect,
 	}
-	return &Client{hc: hc, engine: eng, opts: cfg}, nil
+	rootCtx, rootCancel := context.WithCancel(context.Background())
+	maxAsync := cfg.MaxAsync
+	if maxAsync <= 0 {
+		maxAsync = 1024
+	}
+	return &Client{
+		hc:         hc,
+		engine:     eng,
+		opts:       cfg,
+		rootCtx:    rootCtx,
+		rootCancel: rootCancel,
+		asyncSem:   make(chan struct{}, maxAsync),
+	}, nil
 }
 
 // Do sends req and returns the response, following standard http.Client semantics. | Do 发送 req 并返回响应，遵循标准 http.Client 语义。
@@ -99,11 +118,19 @@ func (c *Client) Transport() http.RoundTripper {
 	return c.engine
 }
 
-// Close releases idle connections and rejects new requests. | Close 释放空闲连接并拒绝新请求。
+// Close releases resources and waits up to five seconds for async requests. | Close 释放资源并最多等待异步请求五秒。
 func (c *Client) Close() error {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	return c.CloseContext(ctx)
+}
+
+// CloseContext releases resources and waits for async requests within ctx. | CloseContext 释放资源并在 ctx 内等待异步请求。
+func (c *Client) CloseContext(ctx context.Context) error {
 	if c == nil || !c.closed.CompareAndSwap(false, true) {
 		return nil
 	}
+	c.rootCancel()
 	if hs := c.engine.hosts.Load(); hs != nil {
 		_ = hs.Close()
 	}
@@ -118,5 +145,18 @@ func (c *Client) Close() error {
 		_ = store.Close()
 	}
 	c.engine.closeIdleConnections()
-	return nil
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	done := make(chan struct{})
+	go func() {
+		c.asyncWG.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }

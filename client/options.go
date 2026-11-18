@@ -35,6 +35,9 @@ type options struct {
 	HostTLS           map[string]TLSConfig
 	UserAgent         *UAPolicy
 	Hooks             Hooks
+	MaxAsync          int
+	ConnMode          ConnMode
+	H2C               bool
 }
 
 // Option mutates the client configuration during New. | Option 在 New 期间修改客户端配置。
@@ -45,6 +48,8 @@ func defaultOptions() options {
 	return options{
 		MaxParallel: 32,
 		SpoolLimit:  1 << 20,
+		MaxAsync:    1024,
+		ConnMode:    ConnLong,
 	}
 }
 

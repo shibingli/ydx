@@ -50,6 +50,8 @@ type Rule struct {
 	Mirror *MirrorPolicy
 	// Guard overrides the client-wide guard for this rule. | Guard 为该规则覆盖客户端级守卫。
 	Guard Guard
+	// Connection selects the connection mode for this rule. | Connection 为该规则选择连接模式。
+	Connection ConnMode
 }
 
 // patternScore is the deterministic specificity key used to order rules. | patternScore 是用于规则排序的确定性特异性键。
@@ -148,6 +150,9 @@ func CompileRules(rules ...Rule) (*RuleSet, error) {
 				return nil, err
 			}
 			rule.Mirror = prepared
+		}
+		if rule.Connection != "" && !validConnMode(rule.Connection) {
+			return nil, errs.Detail(ErrInvalidConfig, "unknown rule connection mode %q | 未知规则连接模式 %q", rule.Connection, rule.Connection)
 		}
 		rs.entries = append(rs.entries, ruleEntry{
 			rule:    &rule,

@@ -76,6 +76,8 @@ var (
 	ErrTLSPin = errs.New("client: TLS certificate pin mismatch | client：TLS 证书固定不匹配")
 	// ErrHookPanic indicates a recovered panic in a user hook. | ErrHookPanic 表示用户钩子中恢复的 panic。
 	ErrHookPanic = errs.New("client: hook panicked | client：钩子发生 panic")
+	// ErrBusy indicates the async concurrency limit is full. | ErrBusy 表示异步并发已满。
+	ErrBusy = errs.New("client: async concurrency limit reached | client：异步并发已达上限")
 )
 
 // Error wraps a client operation failure and preserves the cause chain. | Error 包装客户端操作失败并保留原因链。

@@ -66,6 +66,15 @@ func newEngine(o options) (*engine, error) {
 	} else if tr, ok := base.(*http.Transport); ok {
 		baseTransport = tr
 	}
+	if o.H2C {
+		if baseTransport == nil {
+			return nil, errs.Detail(ErrInvalidConfig, "H2C needs an *http.Transport | H2C 需要 *http.Transport")
+		}
+		protocols := new(http.Protocols)
+		protocols.SetHTTP2(true)
+		protocols.SetUnencryptedHTTP2(true)
+		baseTransport.Protocols = protocols
+	}
 	eng := &engine{
 		base:          base,
 		baseTransport: baseTransport,
@@ -147,6 +156,7 @@ func (e *engine) RoundTrip(req *http.Request) (resp *http.Response, err error) {
 	if hookErr := e.fireRoute(req.Context(), req, rule, params); hookErr != nil {
 		return nil, e.wrapError("hook", req, "", 0, hookErr)
 	}
+	req = req.WithContext(context.WithValue(req.Context(), connModeKey{}, e.connectionMode(rule)))
 	if guard := e.guardFor(rule); guard != nil {
 		decision, guardErr := guard.Check(req.Context(), req)
 		if guardErr != nil {
@@ -492,6 +502,7 @@ func (e *engine) cloneAttempt(req *http.Request, attempt int, target *url.URL, o
 			out.Host = target.Host
 		}
 	}
+	out.Close = connModeFrom(out.Context()) == ConnShort
 	out.Header = req.Header.Clone()
 	if out.Header == nil {
 		out.Header = make(http.Header)

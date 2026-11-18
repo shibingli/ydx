@@ -1,0 +1,103 @@
+package client
+
+import (
+	"context"
+	"net/http"
+	"sync"
+
+	"github.com/shibingli/ydx/errs"
+)
+
+// Future is the result of an asynchronous request. | Future 是异步请求的结果。
+type Future struct {
+	done chan struct{}
+	once sync.Once
+	resp *Response
+	err  error
+}
+
+// Wait waits for the future or ctx. | Wait 等待 Future 或 ctx。
+func (f *Future) Wait(ctx context.Context) (*Response, error) {
+	if f == nil {
+		return nil, ErrInvalidRequest
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	select {
+	case <-f.done:
+		return f.resp, f.err
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+// Done returns a channel closed when the future completes. | Done 返回 Future 完成时关闭的通道。
+func (f *Future) Done() <-chan struct{} {
+	if f == nil {
+		closed := make(chan struct{})
+		close(closed)
+		return closed
+	}
+	return f.done
+}
+
+// complete finishes the future exactly once. | complete 只完成 Future 一次。
+func (f *Future) complete(resp *Response, err error) {
+	f.once.Do(func() {
+		f.resp = resp
+		f.err = err
+		close(f.done)
+	})
+}
+
+// Submit starts an asynchronous request under the client async limit. | Submit 在客户端异步限制下启动异步请求。
+func (c *Client) Submit(ctx context.Context, req *http.Request, cb func(*Response, error)) *Future {
+	future := &Future{done: make(chan struct{})}
+	if c == nil || c.closed.Load() {
+		future.complete(nil, ErrClosed)
+		return future
+	}
+	if req == nil || req.URL == nil {
+		future.complete(nil, ErrInvalidRequest)
+		return future
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	select {
+	case c.asyncSem <- struct{}{}:
+	default:
+		future.complete(nil, ErrBusy)
+		return future
+	}
+	runCtx, cancel := context.WithCancel(ctx)
+	stop := context.AfterFunc(c.rootCtx, cancel)
+	c.asyncWG.Add(1)
+	go func() {
+		defer c.asyncWG.Done()
+		defer func() { <-c.asyncSem }()
+		defer cancel()
+		defer stop()
+		resp, err := c.DoWithMeta(req.WithContext(runCtx))
+		future.complete(resp, err)
+		if cb != nil {
+			func() {
+				defer func() { _ = recover() }()
+				cb(resp, err)
+			}()
+		}
+	}()
+	return future
+}
+
+// WithMaxAsync sets the async concurrency limit. | WithMaxAsync 设置异步并发上限。
+func WithMaxAsync(n int) Option {
+	return func(o *options) error {
+		if n <= 0 {
+			return errs.Detail(ErrInvalidConfig, "max async must be positive | 最大异步并发必须为正")
+		}
+		o.MaxAsync = n
+		return nil
+	}
+}
