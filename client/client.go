@@ -31,6 +31,17 @@ func New(opts ...Option) (*Client, error) {
 	}
 	eng := newEngine(cfg)
 	eng.rules.Store(rules)
+	hs := cfg.HostSet
+	if hs == nil && len(cfg.Hosts) > 0 {
+		hs, err = NewHostSet(cfg.Hosts...)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if hs != nil {
+		eng.hosts.Store(hs)
+		hs.StartHealth(context.Background(), eng.base, cfg.Logger)
+	}
 	hc := &http.Client{
 		Transport:     eng,
 		Jar:           cfg.Jar,
@@ -83,6 +94,9 @@ func (c *Client) Transport() http.RoundTripper {
 func (c *Client) Close() error {
 	if c == nil || !c.closed.CompareAndSwap(false, true) {
 		return nil
+	}
+	if hs := c.engine.hosts.Load(); hs != nil {
+		_ = hs.Close()
 	}
 	c.engine.closeIdleConnections()
 	return nil

@@ -36,4 +36,14 @@ var (
 	ErrMissingParam = errs.New("client: missing path parameter | client：缺少路径参数")
 	// ErrParamValue indicates a path parameter value rejected by its regex. | ErrParamValue 表示路径参数值未通过正则校验。
 	ErrParamValue = errs.New("client: invalid path parameter value | client：非法的路径参数值")
+	// ErrNoHosts indicates an empty host pool. | ErrNoHosts 表示空的 Host 池。
+	ErrNoHosts = errs.New("client: no hosts configured | client：未配置 Host")
+	// ErrNoHealthyHosts indicates no host is currently selectable. | ErrNoHealthyHosts 表示当前没有可选择的 Host。
+	ErrNoHealthyHosts = errs.New("client: no healthy hosts | client：没有健康的 Host")
+	// ErrDuplicateHost indicates duplicate host names. | ErrDuplicateHost 表示重复的 Host 名。
+	ErrDuplicateHost = errs.New("client: duplicate host name | client：重复的 Host 名")
+	// ErrUnknownBalance indicates an unsupported Balance value. | ErrUnknownBalance 表示不支持的 Balance 值。
+	ErrUnknownBalance = errs.New("client: unknown balance strategy | client：未知的负载均衡策略")
+	// ErrHealthCheck indicates an active health check failure. | ErrHealthCheck 表示主动健康检查失败。
+	ErrHealthCheck = errs.New("client: health check failed | client：健康检查失败")
 )

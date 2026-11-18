@@ -21,6 +21,8 @@ type options struct {
 	CheckRedirect func(*http.Request, []*http.Request) error
 	BaseURL       *url.URL
 	Rules         []Rule
+	Hosts         []Host
+	HostSet       *HostSet
 }
 
 // Option mutates the client configuration during New. | Option 在 New 期间修改客户端配置。

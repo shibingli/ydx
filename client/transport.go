@@ -14,6 +14,7 @@ type engine struct {
 	base  http.RoundTripper
 	opts  options
 	rules atomic.Pointer[RuleSet]
+	hosts atomic.Pointer[HostSet]
 }
 
 // newEngine builds the engine and a default transport when none was supplied. | newEngine 构建引擎，并在未提供 Transport 时创建默认传输。
