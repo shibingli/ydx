@@ -18,6 +18,8 @@ import (
 type CacheEntry struct {
 	// Expires is the absolute expiry time; zero means never. | Expires 是绝对过期时间；零值表示不过期。
 	Expires time.Time
+	// StoredAt is when the entry was accepted by the store. | StoredAt 是条目写入存储的时间。
+	StoredAt time.Time
 	// Header is the stored response header. | Header 是存储的响应头。
 	Header http.Header
 	// VaryValues records the request header values named by Vary. | VaryValues 记录 Vary 指定的请求头值。
@@ -402,16 +404,18 @@ func (p CachePolicy) withDefaults() CachePolicy {
 
 // WithCache sets the client-wide cache policy. | WithCache 设置客户端级缓存策略。
 func WithCache(policy CachePolicy) Option {
-	policy.Methods = append([]string(nil), policy.Methods...)
-	policy.StatusCodes = append([]int(nil), policy.StatusCodes...)
-	policy.Vary = append([]string(nil), policy.Vary...)
+	policy.Methods = cloneSlice(policy.Methods)
+	policy.StatusCodes = cloneSlice(policy.StatusCodes)
+	policy.Vary = cloneSlice(policy.Vary)
 	return func(o *options) error {
 		o.Cache = &policy
 		return nil
 	}
 }
 
-// WithCacheStore sets the client-wide cache backend. | WithCacheStore 设置客户端级缓存后端。
+// WithCacheStore sets the client-wide cache backend. A policy is still required:
+// pair it with WithCache or Rule.Cache to enable reads and writes. | WithCacheStore
+// 设置客户端级缓存后端。仍需要策略：与 WithCache 或 Rule.Cache 配合才会读写缓存。
 func WithCacheStore(store Store) Option {
 	return func(o *options) error {
 		if store == nil {
@@ -436,37 +440,70 @@ func (m *multiReadCloser) Close() error {
 	return m.closer.Close()
 }
 
+// cacheControl joins every Cache-Control field line before matching directives. | cacheControl
+// 先合并全部 Cache-Control 字段行再匹配指令。
+func cacheControl(header http.Header) string {
+	return strings.ToLower(strings.Join(header.Values("Cache-Control"), ","))
+}
+
 // cacheTTL resolves the entry lifetime from policy and response headers. | cacheTTL 从策略与响应头解析条目寿命。
 func cacheTTL(header http.Header, policy CachePolicy) (time.Duration, bool) {
 	if !policy.IgnoreHeaders {
-		control := strings.ToLower(header.Get("Cache-Control"))
-		if strings.Contains(control, "no-store") || strings.Contains(control, "private") {
+		control := cacheControl(header)
+		if strings.Contains(control, "no-store") || strings.Contains(control, "private") ||
+			strings.Contains(control, "no-cache") {
 			return 0, false
 		}
 	}
-	if policy.TTL > 0 {
-		return policy.TTL, true
+	var ttl time.Duration
+	switch {
+	case policy.TTL > 0:
+		ttl = policy.TTL
+	case policy.TTL < 0 || policy.IgnoreHeaders:
+		return 0, false
+	default:
+		found := false
+		control := cacheControl(header)
+		for _, part := range strings.Split(control, ",") {
+			part = strings.TrimSpace(part)
+			if strings.HasPrefix(part, "max-age=") {
+				if seconds, err := strconv.Atoi(strings.TrimPrefix(part, "max-age=")); err == nil && seconds > 0 {
+					ttl = time.Duration(seconds) * time.Second
+					found = true
+					break
+				}
+			}
+		}
+		if !found {
+			if expires := header.Get("Expires"); expires != "" {
+				if when, err := http.ParseTime(expires); err == nil {
+					if delay := time.Until(when); delay > 0 {
+						ttl = delay
+						found = true
+					}
+				}
+			}
+		}
+		if !found {
+			return 0, false
+		}
 	}
-	if policy.TTL < 0 || policy.IgnoreHeaders {
+	if !policy.IgnoreHeaders {
+		if age := header.Get("Age"); age != "" {
+			if seconds, err := strconv.Atoi(age); err == nil && seconds > 0 {
+				ttl -= time.Duration(seconds) * time.Second
+			}
+		}
+		if date := header.Get("Date"); date != "" {
+			if when, err := http.ParseTime(date); err == nil {
+				ttl -= time.Since(when)
+			}
+		}
+	}
+	if ttl <= 0 {
 		return 0, false
 	}
-	control := strings.ToLower(header.Get("Cache-Control"))
-	for _, part := range strings.Split(control, ",") {
-		part = strings.TrimSpace(part)
-		if strings.HasPrefix(part, "max-age=") {
-			if seconds, err := strconv.Atoi(strings.TrimPrefix(part, "max-age=")); err == nil && seconds > 0 {
-				return time.Duration(seconds) * time.Second, true
-			}
-		}
-	}
-	if expires := header.Get("Expires"); expires != "" {
-		if when, err := http.ParseTime(expires); err == nil {
-			if delay := time.Until(when); delay > 0 {
-				return delay, true
-			}
-		}
-	}
-	return 0, false
+	return ttl, true
 }
 
 // varyValues records the request values named by Vary and policy extras. | varyValues 记录 Vary 与策略额外项指定的请求值。
@@ -518,6 +555,12 @@ func cacheBypassed(ctx context.Context) bool {
 func (e *engine) ensureCacheStore() Store {
 	if e.opts.CacheStore != nil {
 		return e.opts.CacheStore
+	}
+	e.cacheMu.RLock()
+	existing := e.cacheStore
+	e.cacheMu.RUnlock()
+	if existing != nil {
+		return existing
 	}
 	e.cacheMu.Lock()
 	defer e.cacheMu.Unlock()
@@ -574,7 +617,7 @@ func cacheReadable(req *http.Request, policy CachePolicy) bool {
 	if !allowed {
 		return false
 	}
-	control := strings.ToLower(req.Header.Get("Cache-Control"))
+	control := cacheControl(req.Header)
 	if strings.Contains(control, "no-store") || strings.Contains(control, "no-cache") {
 		return false
 	}
@@ -606,7 +649,7 @@ func cacheWritable(req *http.Request, policy CachePolicy) bool {
 			break
 		}
 	}
-	if !allowed || strings.Contains(strings.ToLower(req.Header.Get("Cache-Control")), "no-store") ||
+	if !allowed || strings.Contains(cacheControl(req.Header), "no-store") ||
 		strings.Contains(strings.ToLower(req.Header.Get("Accept")), "text/event-stream") ||
 		conditionalRequest(req) {
 		return false
@@ -637,7 +680,7 @@ func (e *engine) storeCacheResponse(resp *http.Response, req *http.Request, key 
 	if resp == nil || resp.Body == nil || isEventStream(resp.Header) || !cacheWritable(req, policy) {
 		return
 	}
-	if !policy.AllowSensitive && resp.Header.Get("Set-Cookie") != "" {
+	if !policy.AllowSensitive && len(resp.Header.Values("Set-Cookie")) > 0 {
 		return
 	}
 	vary, ok := varyValues(resp.Header, req, policy.Vary)
@@ -649,7 +692,7 @@ func (e *engine) storeCacheResponse(resp *http.Response, req *http.Request, key 
 		return
 	}
 	max := policy.MaxBodyBytes
-	data, err := io.ReadAll(io.LimitReader(resp.Body, max+1))
+	data, err := io.ReadAll(io.LimitReader(resp.Body, saturatingPlusOne(max)))
 	if err != nil {
 		resp.Body = &multiReadCloser{Reader: io.MultiReader(bytes.NewReader(data), resp.Body), closer: resp.Body}
 		return
@@ -680,6 +723,7 @@ func (e *engine) storeCacheResponse(resp *http.Response, req *http.Request, key 
 		Header:       header,
 		Body:         data,
 		Expires:      time.Now().Add(ttl),
+		StoredAt:     time.Now(),
 		VaryValues:   vary,
 		Uncompressed: resp.Uncompressed,
 	})
@@ -697,6 +741,16 @@ func cachedResponse(req *http.Request, entry *CacheEntry) *http.Response {
 	header := entry.Header.Clone()
 	if header == nil {
 		header = make(http.Header)
+	}
+	if !entry.StoredAt.IsZero() {
+		age := int64(time.Since(entry.StoredAt).Seconds())
+		if age < 0 {
+			age = 0
+		}
+		if stored, err := strconv.ParseInt(header.Get("Age"), 10, 64); err == nil && stored > 0 {
+			age += stored
+		}
+		header.Set("Age", strconv.FormatInt(age, 10))
 	}
 	contentLength := int64(len(entry.Body))
 	if req.Method == http.MethodHead || header.Get("Content-Length") != "" {

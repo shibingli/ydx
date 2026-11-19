@@ -34,6 +34,7 @@ type engine struct {
 
 	baseTransport *http.Transport
 	h2c           *http.Transport
+	scheme        *schemeTransport
 	tlsByConfig   map[*TLSConfig]*tlsState
 	hostTLS       map[string]*tlsState
 	defaultTLS    *tlsState
@@ -46,8 +47,8 @@ type engine struct {
 
 	uaCounter atomic.Uint64
 
-	cacheMu     sync.Mutex
-	tlsMu       sync.Mutex
+	cacheMu     sync.RWMutex
+	tlsMu       sync.RWMutex
 	ruleHostsMu sync.Mutex
 	ruleHosts   map[*HostSet]struct{}
 	ownsCache   bool
@@ -120,6 +121,13 @@ func newEngine(o options) (*engine, error) {
 		}
 		eng.hostTLS[strings.ToLower(host)] = state
 		eng.tlsStates = append(eng.tlsStates, state)
+	}
+	if h2cTransport != nil {
+		secure := http.RoundTripper(baseTransport)
+		if eng.defaultTLS != nil {
+			secure = eng.defaultTLS.current()
+		}
+		eng.scheme = &schemeTransport{plain: h2cTransport, secure: secure, secureState: eng.defaultTLS}
 	}
 	mirrorBase := http.RoundTripper(base)
 	if eng.defaultTLS != nil {
@@ -262,7 +270,7 @@ func (e *engine) RoundTrip(req *http.Request) (resp *http.Response, err error) {
 			return resp, tripErr
 		}
 	}
-	if e.ua != nil {
+	if e.ua != nil && uaApplies(req, e.ua) {
 		req = req.Clone(req.Context())
 		e.applyUA(req, e.ua)
 	}
@@ -302,20 +310,10 @@ func (e *engine) RoundTrip(req *http.Request) (resp *http.Response, err error) {
 		meta.Mirrors = nil
 		meta.MirrorResults = nil
 	}
+	var trace *traceTimings
 	if meta != nil && e.opts.Trace {
-		hopStart := time.Now()
-		defer func() { meta.Timings.Total = time.Since(hopStart) }()
-		var dnsStart, connectStart, tlsStart time.Time
-		trace := &httptrace.ClientTrace{
-			DNSStart:             func(httptrace.DNSStartInfo) { dnsStart = time.Now() },
-			DNSDone:              func(httptrace.DNSDoneInfo) { meta.Timings.DNS = time.Since(dnsStart) },
-			ConnectStart:         func(string, string) { connectStart = time.Now() },
-			ConnectDone:          func(string, string, error) { meta.Timings.Connect = time.Since(connectStart) },
-			TLSHandshakeStart:    func() { tlsStart = time.Now() },
-			TLSHandshakeDone:     func(tls.ConnectionState, error) { meta.Timings.TLSHandshake = time.Since(tlsStart) },
-			GotFirstResponseByte: func() { meta.Timings.TTFB = time.Since(hopStart) },
-		}
-		req = req.WithContext(httptrace.WithClientTrace(req.Context(), trace))
+		trace = newTraceTimings()
+		req = req.WithContext(httptrace.WithClientTrace(req.Context(), trace.clientTrace()))
 	}
 	rules := e.rules.Load()
 	var rule *Rule
@@ -331,7 +329,7 @@ func (e *engine) RoundTrip(req *http.Request) (resp *http.Response, err error) {
 		meta.Rule = rule
 		meta.Params = params
 	}
-	if rule != nil && rule.UA != nil {
+	if rule != nil && rule.UA != nil && uaApplies(req, rule.UA) {
 		req = req.Clone(req.Context())
 		e.applyUA(req, rule.UA)
 	}
@@ -412,6 +410,9 @@ func (e *engine) RoundTrip(req *http.Request) (resp *http.Response, err error) {
 					CacheHit: true,
 				})
 			}
+			if trace != nil {
+				meta.Timings = trace.finish()
+			}
 			return e.finalizeResponse(req, rule, meta, cachedResponse(req, entry))
 		}
 		e.counters.cacheMisses.Add(1)
@@ -467,8 +468,6 @@ func (e *engine) RoundTrip(req *http.Request) (resp *http.Response, err error) {
 		}
 		mirrorSpool = spooled
 		defer spooled.release()
-		req.GetBody = spooled.getBody
-		req.ContentLength = spooled.length
 	}
 	preMirror := mirroring && mirrorPolicy.Mode == MirrorUpstream && mirrorPolicy.Parallel && !mirrorPolicy.Sync
 	if preMirror {
@@ -517,6 +516,9 @@ func (e *engine) RoundTrip(req *http.Request) (resp *http.Response, err error) {
 		} else {
 			resp.Body = &cancelBody{body: resp.Body, cancel: ruleCancel}
 		}
+	}
+	if trace != nil {
+		meta.Timings = trace.finish()
 	}
 	return e.finalizeResponse(req, rule, meta, resp)
 }
@@ -597,9 +599,14 @@ func (e *engine) roundTripDirect(req *http.Request, rule *Rule, meta *Meta, sp *
 	if sp == nil && attempts > 1 && req.Body != nil && req.Body != http.NoBody && req.GetBody == nil {
 		sp, err = e.spoolBody(req)
 		if err != nil {
-			return nil, e.wrapError("prepare_body", req, "", 0, err)
+			if errors.Is(err, errSpoolDowngrade) {
+				attempts = 1
+			} else {
+				return nil, e.wrapError("prepare_body", req, "", 0, err)
+			}
+		} else {
+			ownedSpool = true
 		}
-		ownedSpool = true
 	}
 	if ownedSpool {
 		defer sp.release()
@@ -710,9 +717,14 @@ func (e *engine) roundTripHosts(req *http.Request, rule *Rule, meta *Meta, hosts
 	if sp == nil && attempts > 1 && req.Body != nil && req.Body != http.NoBody && req.GetBody == nil {
 		sp, err = e.spoolBody(req)
 		if err != nil {
-			return nil, e.wrapError("prepare_body", req, "", 0, err)
+			if errors.Is(err, errSpoolDowngrade) {
+				attempts = 1
+			} else {
+				return nil, e.wrapError("prepare_body", req, "", 0, err)
+			}
+		} else {
+			ownedSpool = true
 		}
-		ownedSpool = true
 	}
 	if ownedSpool {
 		defer sp.release()
@@ -723,15 +735,22 @@ func (e *engine) roundTripHosts(req *http.Request, rule *Rule, meta *Meta, hosts
 		originalHost = logical.Host
 	}
 	var tried map[string]struct{}
-	if attempts > 1 {
-		tried = make(map[string]struct{}, hosts.Len())
-	}
 	var lastErr error
 	attempted := 0
 	var lastHost *Host
 	for attempt := 1; attempt <= attempts; attempt++ {
 		attempted = attempt
 		host, pickErr := hosts.Pick(req, tried)
+		if pickErr != nil && errors.Is(pickErr, ErrClosed) {
+			// A hot reload retired the pool after this request snapshotted it;
+			// retry against the replacement instead of failing the request. | 热更新
+			// 在请求快照后退役了该池；改用替换池重试，避免请求失败。
+			if current := e.hosts.Load(); current != nil && current != hosts && current.Len() > 0 {
+				hosts = current
+				tried = nil
+				host, pickErr = hosts.Pick(req, nil)
+			}
+		}
 		if pickErr != nil && errors.Is(pickErr, ErrNoHealthyHosts) && len(tried) > 0 {
 			tried = make(map[string]struct{}, hosts.Len())
 			host, pickErr = hosts.Pick(req, tried)
@@ -830,6 +849,10 @@ func (e *engine) roundTripHosts(req *http.Request, rule *Rule, meta *Meta, hosts
 				lastErr = err
 				break
 			}
+			if tried == nil {
+				tried = make(map[string]struct{}, hosts.Len())
+			}
+			tried[host.Name] = struct{}{}
 			continue
 		}
 		if resp.ContentLength > 0 {
@@ -857,6 +880,10 @@ func (e *engine) roundTripHosts(req *http.Request, rule *Rule, meta *Meta, hosts
 				lastErr = err
 				break
 			}
+			if tried == nil {
+				tried = make(map[string]struct{}, hosts.Len())
+			}
+			tried[host.Name] = struct{}{}
 			continue
 		}
 		rewriteRedirectLocation(resp, out.URL, host, rule)
@@ -877,6 +904,29 @@ func (e *engine) roundTripHosts(req *http.Request, rule *Rule, meta *Meta, hosts
 	return nil, e.wrapError("roundtrip", req, hostName, attempted, errs.Wrap(lastErr, ErrRetryExhausted))
 }
 
+// crossHostRedirect reports whether req is a redirect hop to a different host
+// or port. | crossHostRedirect 报告 req 是否跳到不同主机或端口的重定向。
+func crossHostRedirect(req *http.Request) bool {
+	if req == nil || req.Response == nil || req.Response.Request == nil || req.URL == nil {
+		return false
+	}
+	previous := req.Response.Request.URL
+	if previous == nil {
+		return false
+	}
+	return !strings.EqualFold(previous.Host, req.URL.Host)
+}
+
+// isSensitiveRedirectHeader reports headers Go strips on cross-domain redirects. | isSensitiveRedirectHeader
+// 报告跨域重定向时 Go 会剥离的头。
+func isSensitiveRedirectHeader(name string) bool {
+	switch http.CanonicalHeaderKey(name) {
+	case "Authorization", "Cookie", "Cookie2", "Proxy-Authorization", "Www-Authenticate":
+		return true
+	}
+	return false
+}
+
 // cloneAttempt clones the request for one attempt without mutating the caller's request. | cloneAttempt 为单次尝试克隆请求，不修改调用方请求。
 func (e *engine) cloneAttempt(req *http.Request, attempt int, target *url.URL, originalHost string, rule *Rule, host *Host, sp *spool) (*http.Request, error) {
 	out := req.Clone(req.Context())
@@ -885,6 +935,7 @@ func (e *engine) cloneAttempt(req *http.Request, attempt int, target *url.URL, o
 	if req.Trailer != nil {
 		out.Trailer = req.Trailer
 	}
+	skipSensitive := crossHostRedirect(req)
 	if host != nil {
 		explicitHost := req.Host != "" && (!strings.EqualFold(req.Host, req.URL.Host) || explicitHostFrom(req.Context()))
 		preserve := (rule != nil && rule.PreserveHost) || explicitHost
@@ -898,12 +949,15 @@ func (e *engine) cloneAttempt(req *http.Request, attempt int, target *url.URL, o
 		}
 	}
 	out.Close = req.Close || connModeFrom(out.Context()) == ConnShort
-	out.Header = req.Header.Clone()
+	// Request.Clone already deep-copied Header. | Request.Clone 已深拷贝 Header。
 	if out.Header == nil {
 		out.Header = make(http.Header)
 	}
 	if rule != nil {
 		for key, values := range rule.Headers {
+			if skipSensitive && isSensitiveRedirectHeader(key) {
+				continue
+			}
 			if strings.EqualFold(key, "Host") {
 				if len(values) > 0 {
 					out.Host = values[len(values)-1]
@@ -921,6 +975,9 @@ func (e *engine) cloneAttempt(req *http.Request, attempt int, target *url.URL, o
 	}
 	if host != nil {
 		for key, values := range host.Headers {
+			if skipSensitive && isSensitiveRedirectHeader(key) {
+				continue
+			}
 			if strings.EqualFold(key, "Host") {
 				if len(values) > 0 {
 					out.Host = values[len(values)-1]
@@ -951,6 +1008,8 @@ func (e *engine) cloneAttempt(req *http.Request, attempt int, target *url.URL, o
 	case req.Body == nil:
 		out.Body = nil
 		out.GetBody = nil
+	case req.Body == http.NoBody:
+		out.Body = http.NoBody
 	case attempt == 1:
 		out.Body = req.Body
 	case req.GetBody != nil:
@@ -1097,10 +1156,32 @@ func targetURL(logical *url.URL, host *Host, rule *Rule) *url.URL {
 	}
 	target.RawPath = joinBasePath(baseEscaped, escaped)
 	target.Path = joinBasePath(basePath, decoded)
-	target.RawQuery = logical.RawQuery
-	target.ForceQuery = logical.ForceQuery
+	target.RawQuery, target.ForceQuery = mergeQueries(host.URL, logical)
 	target.Fragment = ""
 	return &target
+}
+
+// mergeQueries combines a host base URL query with the logical request query. | mergeQueries
+// 合并 Host base URL 查询与逻辑请求查询。
+func mergeQueries(host, logical *url.URL) (string, bool) {
+	hostQuery, hostForce := "", false
+	logicalQuery, logicalForce := "", false
+	if host != nil {
+		hostQuery, hostForce = host.RawQuery, host.ForceQuery
+	}
+	if logical != nil {
+		logicalQuery, logicalForce = logical.RawQuery, logical.ForceQuery
+	}
+	switch {
+	case hostQuery == "" && logicalQuery == "":
+		return "", hostForce || logicalForce
+	case hostQuery == "":
+		return logicalQuery, logicalForce
+	case logicalQuery == "":
+		return hostQuery, hostForce || logicalForce
+	default:
+		return hostQuery + "&" + logicalQuery, false
+	}
 }
 
 // joinBasePath joins a host base path with a request path. | joinBasePath 拼接 Host base path 与请求路径。
@@ -1208,6 +1289,97 @@ func (e *engine) closeIdleConnections() {
 	if e.h2c != nil {
 		e.h2c.CloseIdleConnections()
 	}
+}
+
+// traceTimings collects httptrace callbacks under a mutex; the callbacks may
+// run concurrently and may fire after RoundTrip returns. | traceTimings 在互斥锁
+// 下收集 httptrace 回调；这些回调可能并发执行，也可能在 RoundTrip 返回后触发。
+type traceTimings struct {
+	hopStart time.Time
+	dnsStart time.Time
+	tlsStart time.Time
+	connects map[string]time.Time
+	timings  Timings
+	mu       sync.Mutex
+	finished bool
+}
+
+// newTraceTimings starts one hop's timing collection. | newTraceTimings 开始一跳的计时收集。
+func newTraceTimings() *traceTimings {
+	return &traceTimings{hopStart: time.Now(), connects: make(map[string]time.Time, 2)}
+}
+
+// clientTrace builds the guarded httptrace callbacks. | clientTrace 构建带保护的 httptrace 回调。
+func (t *traceTimings) clientTrace() *httptrace.ClientTrace {
+	return &httptrace.ClientTrace{
+		DNSStart: func(httptrace.DNSStartInfo) {
+			t.mu.Lock()
+			if !t.finished {
+				t.dnsStart = time.Now()
+			}
+			t.mu.Unlock()
+		},
+		DNSDone: func(httptrace.DNSDoneInfo) {
+			t.mu.Lock()
+			if !t.finished && !t.dnsStart.IsZero() {
+				t.timings.DNS = time.Since(t.dnsStart)
+			}
+			t.mu.Unlock()
+		},
+		ConnectStart: func(network, addr string) {
+			t.mu.Lock()
+			if !t.finished {
+				t.connects[network+"\x00"+addr] = time.Now()
+			}
+			t.mu.Unlock()
+		},
+		ConnectDone: func(network, addr string, _ error) {
+			key := network + "\x00" + addr
+			t.mu.Lock()
+			if !t.finished {
+				if start, ok := t.connects[key]; ok {
+					if elapsed := time.Since(start); elapsed > t.timings.Connect {
+						t.timings.Connect = elapsed
+					}
+					delete(t.connects, key)
+				}
+			}
+			t.mu.Unlock()
+		},
+		TLSHandshakeStart: func() {
+			t.mu.Lock()
+			if !t.finished {
+				t.tlsStart = time.Now()
+			}
+			t.mu.Unlock()
+		},
+		TLSHandshakeDone: func(tls.ConnectionState, error) {
+			t.mu.Lock()
+			if !t.finished && !t.tlsStart.IsZero() {
+				t.timings.TLSHandshake = time.Since(t.tlsStart)
+			}
+			t.mu.Unlock()
+		},
+		GotFirstResponseByte: func() {
+			t.mu.Lock()
+			if !t.finished {
+				t.timings.TTFB = time.Since(t.hopStart)
+			}
+			t.mu.Unlock()
+		},
+	}
+}
+
+// finish freezes the timings snapshot; later callbacks become no-ops. | finish
+// 冻结计时快照；后续回调不再生效。
+func (t *traceTimings) finish() Timings {
+	t.mu.Lock()
+	t.finished = true
+	t.timings.Total = time.Since(t.hopStart)
+	out := t.timings
+	t.connects = nil
+	t.mu.Unlock()
+	return out
 }
 
 // cancelBody cancels a request-scoped context when the body is exhausted or closed. | cancelBody 在正文读完或关闭时取消请求级 context。

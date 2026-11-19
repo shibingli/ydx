@@ -201,6 +201,7 @@ func NewHostSetWithOptions(opts HostSetOptions, hosts ...Host) (*HostSet, error)
 		}
 		host.Health = normalizeHealth(host.Health)
 		host.Health.FailStatus = append([]int(nil), host.Health.FailStatus...)
+		host.Health.ExpectStatus = append([]int(nil), host.Health.ExpectStatus...)
 		entry := &hostEntry{host: &host, set: hs}
 		entry.healthy.Store(true)
 		host.entry = entry
@@ -266,6 +267,14 @@ func (hs *HostSet) AnyActive() bool {
 		}
 	}
 	return false
+}
+
+// options returns the immutable selection settings. | options 返回不可变的选择设置。
+func (hs *HostSet) options() HostSetOptions {
+	if hs == nil {
+		return HostSetOptions{}
+	}
+	return HostSetOptions{HashKey: hs.hashKey, Balance: hs.balance, Wait: hs.wait}
 }
 
 // firstBaseURL returns scheme://host of the first host for relative URLs. | firstBaseURL 返回第一个 Host 的 scheme://host，用于解析相对 URL。
@@ -422,7 +431,26 @@ func (hs *HostSet) pickOnce(req *http.Request, exclude map[string]struct{}) (*Ho
 		return nil, ErrNoHealthyHosts
 	}
 	entry := hs.entries[index]
-	for !entry.acquire() {
+	for {
+		claimed := false
+		if !entry.healthy.Load() {
+			claimed = entry.halfOpen.CompareAndSwap(false, true)
+			if !claimed && !failOpen {
+				eligible[index] = false
+				index = hs.choose(req, eligible)
+				if index < 0 {
+					return nil, ErrNoHealthyHosts
+				}
+				entry = hs.entries[index]
+				continue
+			}
+		}
+		if entry.acquire() {
+			break
+		}
+		if claimed {
+			entry.halfOpen.Store(false)
+		}
 		eligible[index] = false
 		index = hs.choose(req, eligible)
 		if index < 0 {
@@ -465,7 +493,9 @@ func hostSelectable(entry *hostEntry, exclude map[string]struct{}) bool {
 	return entry.host.MaxInflight == 0 || entry.inflight.Load() < int64(entry.host.MaxInflight)
 }
 
-// eligible reports whether the host may be selected now, claiming a half-open probe. | eligible 报告 Host 当前是否可选，并占用半开探测。
+// eligible reports whether the host may be selected now; a half-open claim is
+// taken only for the host that is finally chosen. | eligible 报告 Host 当前是否
+// 可选；只为最终选中的 Host 占用半开探测。
 func (e *hostEntry) eligible(now time.Time) bool {
 	if e.healthy.Load() {
 		return true
@@ -474,10 +504,7 @@ func (e *hostEntry) eligible(now time.Time) bool {
 		return false
 	}
 	until := e.cooldownUntil.Load()
-	if until == 0 || now.UnixNano() < until {
-		return false
-	}
-	return e.halfOpen.CompareAndSwap(false, true)
+	return until != 0 && now.UnixNano() >= until
 }
 
 // MarkSuccess records a successful request and releases its in-flight slot. | MarkSuccess 记录成功请求并释放在途名额。
@@ -648,7 +675,10 @@ func WithHosts(hosts ...string) Option {
 	}
 }
 
-// WithHostSet sets a prebuilt default host pool. | WithHostSet 设置预构建的默认 Host 池。
+// WithHostSet sets a prebuilt default host pool. The client takes ownership and
+// closes it on Close; do not share one pool between clients. | WithHostSet 设置
+// 预构建的默认 Host 池。客户端接管所有权并在 Close 时关闭；不要在多个客户端间
+// 共享同一 Host 池。
 func WithHostSet(hs *HostSet) Option {
 	return func(o *options) error {
 		if hs == nil {
@@ -665,20 +695,29 @@ func (c *Client) UpdateHosts(hosts ...Host) error {
 		return ErrClosed
 	}
 	c.lifecycleMu.Lock()
-	defer c.lifecycleMu.Unlock()
 	if c.closed.Load() {
+		c.lifecycleMu.Unlock()
 		return ErrClosed
 	}
-	hs, err := NewHostSet(hosts...)
+	opts := HostSetOptions{}
+	if current := c.engine.hosts.Load(); current != nil {
+		opts = current.options()
+	}
+	hs, err := NewHostSetWithOptions(opts, hosts...)
 	if err != nil {
+		c.lifecycleMu.Unlock()
 		return err
 	}
+	c.engine.bare.Store(false)
 	old := c.engine.hosts.Swap(hs)
 	hs.startHealth(context.Background(), c.engine.healthTransport, c.opts.Logger)
 	c.engine.pruneTLS()
+	c.engine.bare.Store(isBareEngine(c.opts, c.engine.rules.Load(), hs))
+	c.lifecycleMu.Unlock()
+	// Close outside lifecycleMu so a hung health check cannot block Close. | 在
+	// lifecycleMu 之外关闭旧池，避免健康检查卡住 Close。
 	if old != nil {
 		_ = old.Close()
 	}
-	c.engine.bare.Store(isBareEngine(c.opts, c.engine.rules.Load(), hs))
 	return nil
 }

@@ -544,3 +544,78 @@ func TestForwardMaxBodyIgnoresNotModified(t *testing.T) {
 		t.Fatalf("status %d", resp.StatusCode)
 	}
 }
+
+func TestForwardUnannouncedTrailer(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("body"))
+		w.(http.Flusher).Flush()
+		w.Header().Set(http.TrailerPrefix+"X-Foo", "bar")
+	}))
+	defer upstream.Close()
+	c, err := New(WithHosts(upstream.URL), WithoutCookieJar())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	down := httptest.NewServer(c.Handler())
+	defer down.Close()
+	resp, err := http.Get(down.URL + "/x")
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "body" {
+		t.Fatalf("body %q", data)
+	}
+	if got := resp.Trailer.Get("X-Foo"); got != "bar" {
+		t.Fatalf("trailer %q", got)
+	}
+}
+
+func TestForwardSanitizesSpoofedForwardedHeaders(t *testing.T) {
+	type forwarded struct {
+		proto     string
+		host      string
+		forwarded string
+	}
+	seen := make(chan forwarded, 1)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen <- forwarded{
+			proto:     r.Header.Get("X-Forwarded-Proto"),
+			host:      r.Header.Get("X-Forwarded-Host"),
+			forwarded: r.Header.Get("Forwarded"),
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer upstream.Close()
+	c, err := New(WithHosts(upstream.URL), WithoutCookieJar())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	in := httptest.NewRequest(http.MethodGet, "http://svc/x", nil)
+	in.Host = "svc"
+	in.Header.Set("X-Forwarded-Proto", "https")
+	in.Header.Set("X-Forwarded-Host", "evil.example")
+	in.Header.Set("Forwarded", "host=evil.example")
+	resp, err := c.Forward(context.Background(), in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	got := <-seen
+	if got.proto != "http" {
+		t.Fatalf("X-Forwarded-Proto %q", got.proto)
+	}
+	if got.host != "svc" {
+		t.Fatalf("X-Forwarded-Host %q", got.host)
+	}
+	if got.forwarded != "" {
+		t.Fatalf("Forwarded header leaked: %q", got.forwarded)
+	}
+}

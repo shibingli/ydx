@@ -37,7 +37,7 @@ func (p CoalescePolicy) withDefaults() CoalescePolicy {
 
 // WithCoalesce sets the client-wide coalescing policy. | WithCoalesce 设置客户端级请求合并策略。
 func WithCoalesce(policy CoalescePolicy) Option {
-	policy.Methods = append([]string(nil), policy.Methods...)
+	policy.Methods = cloneSlice(policy.Methods)
 	return func(o *options) error {
 		o.Coalesce = &policy
 		return nil
@@ -92,7 +92,21 @@ func (g *flightGroup) Do(ctx context.Context, key string, leader func() (*http.R
 	g.mu.Unlock()
 
 	resp, body, shareable, err := leader()
-	current.resp, current.body, current.err = resp, body, err
+	current.body = body
+	current.err = err
+	if resp != nil {
+		// Snapshot before closing done so followers never read a header map the
+		// leader's caller or response hook may mutate later. | 在关闭 done 前快照，
+		// 避免 follower 读取 leader 调用方或响应钩子随后修改的 Header。
+		snapshot := *resp
+		if resp.Header != nil {
+			snapshot.Header = resp.Header.Clone()
+		}
+		if resp.Trailer != nil {
+			snapshot.Trailer = resp.Trailer.Clone()
+		}
+		current.resp = &snapshot
+	}
 	switch {
 	case err != nil:
 		current.bypass = errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
@@ -150,7 +164,7 @@ func (e *engine) coalesceFor(rule *Rule) (CoalescePolicy, bool) {
 
 // shouldCoalesce reports whether the request may join a flight. | shouldCoalesce 报告请求是否可加入合并。
 func shouldCoalesce(req *http.Request, policy CoalescePolicy) bool {
-	if req == nil || req.URL == nil || req.Body != nil {
+	if req == nil || req.URL == nil || (req.Body != nil && req.Body != http.NoBody) {
 		return false
 	}
 	allowed := false
@@ -207,6 +221,9 @@ func coalesceKey(req *http.Request, rule *Rule) string {
 	builder.WriteByte(0)
 	if rule != nil {
 		builder.WriteString(rule.Name)
+		builder.WriteByte(0)
+		var id [20]byte
+		_, _ = builder.Write(strconv.AppendUint(id[:0], rule.id, 10))
 	}
 	builder.WriteByte(0)
 	builder.WriteString(req.Host)
@@ -238,8 +255,13 @@ func (e *engine) coalesceRoundTrip(req *http.Request, rule *Rule, meta *Meta, ho
 		if isEventStream(resp.Header) {
 			return resp, nil, false, nil
 		}
+		if len(resp.Header.Values("Set-Cookie")) > 0 {
+			// A per-client cookie must never be shared with followers. | 逐客户端
+			// Cookie 不得共享给 follower。
+			return resp, nil, false, nil
+		}
 		max := coalescePolicy.MaxBodyBytes
-		data, readErr := io.ReadAll(io.LimitReader(resp.Body, max+1))
+		data, readErr := io.ReadAll(io.LimitReader(resp.Body, saturatingPlusOne(max)))
 		if readErr != nil {
 			resp.Body = &multiReadCloser{Reader: io.MultiReader(bytes.NewReader(data), resp.Body), closer: resp.Body}
 			return resp, nil, false, nil
@@ -259,6 +281,15 @@ func (e *engine) coalesceRoundTrip(req *http.Request, rule *Rule, meta *Meta, ho
 		resp.Header.Del("Transfer-Encoding")
 		return resp, data, true, nil
 	})
+	if errors.Is(err, errCoalesceBypass) {
+		if e.hooks.OnCoalesce != nil {
+			_ = callHook(func() error {
+				e.hooks.OnCoalesce(req.Context(), req, false)
+				return nil
+			})
+		}
+		return e.execute(req, rule, meta, hosts, key, policy, store, false, sp)
+	}
 	if e.hooks.OnCoalesce != nil {
 		_ = callHook(func() error {
 			e.hooks.OnCoalesce(req.Context(), req, coalesced)
@@ -267,9 +298,6 @@ func (e *engine) coalesceRoundTrip(req *http.Request, rule *Rule, meta *Meta, ho
 	}
 	if coalesced {
 		e.counters.coalesced.Add(1)
-	}
-	if errors.Is(err, errCoalesceBypass) {
-		return e.execute(req, rule, meta, hosts, key, policy, store, false, sp)
 	}
 	if err != nil {
 		return nil, err

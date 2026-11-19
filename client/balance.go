@@ -123,28 +123,24 @@ func chooseRandom(eligible []bool) int {
 	return -1
 }
 
-// chooseHash picks an eligible host by the FNV-1a hash of the request key. | chooseHash 按请求键的 FNV-1a 哈希选择可用 Host。
+// chooseHash picks an eligible host with rendezvous hashing, so adding or
+// removing a host only remaps keys owned by that host. | chooseHash 使用会合哈希
+// 选择可用 Host；增删 Host 只会重映射属于该 Host 的键。
 func (hs *HostSet) chooseHash(req *http.Request, eligible []bool) int {
-	count := 0
-	for _, ok := range eligible {
-		if ok {
-			count++
-		}
-	}
-	if count == 0 {
-		return -1
-	}
-	pick := int(fnv64aString(safeHashKey(hs.hashKey, req)) % uint64(count))
+	base := fnv64aString(safeHashKey(hs.hashKey, req))
+	best := -1
+	var bestScore uint64
 	for index, ok := range eligible {
 		if !ok {
 			continue
 		}
-		if pick == 0 {
-			return index
+		score := fnv64aUpdate(base, hs.entries[index].host.Name)
+		if best < 0 || score > bestScore {
+			best = index
+			bestScore = score
 		}
-		pick--
 	}
-	return -1
+	return best
 }
 
 // safeHashKey invokes a user hash key function with panic isolation. | safeHashKey 以 panic 隔离调用用户哈希键函数。

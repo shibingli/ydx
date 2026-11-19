@@ -2,6 +2,7 @@ package client
 
 import (
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/shibingli/ydx/errs"
@@ -37,6 +38,9 @@ func cacheKey(req *http.Request, rule *Rule, policy *CachePolicy) (key string, e
 	builder.WriteByte(0)
 	if rule != nil {
 		builder.WriteString(rule.Name)
+		builder.WriteByte(0)
+		var id [20]byte
+		_, _ = builder.Write(strconv.AppendUint(id[:0], rule.id, 10))
 	}
 	builder.WriteByte(0)
 	builder.WriteString(headerValue(req.Header, "Accept-Encoding"))

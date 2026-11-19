@@ -88,15 +88,16 @@ func (c *Client) send(ctx context.Context, method, rawURL string, body any, cfg 
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	relative := !strings.Contains(rawURL, "://")
-	state := &responseState{Context: ctx, useDefaultHosts: relative}
+	hasScheme := rawURLHasScheme(rawURL)
+	useDefaultHosts := !hasScheme && !strings.HasPrefix(rawURL, "//")
+	state := &responseState{Context: ctx, useDefaultHosts: useDefaultHosts}
 	state.response.Meta.Hops = state.response.Meta.hopInline[:0]
-	if strings.Contains(rawURL, "://") && !strings.ContainsAny(rawURL, "?#@%") {
+	if hasScheme && !strings.ContainsAny(rawURL, "?#@%") {
 		state.response.Meta.urlHint = rawURL
 	}
 	ctx = state
 	target := rawURL
-	if !strings.Contains(rawURL, "://") {
+	if !hasScheme {
 		resolved, err := c.resolveRequestURL(rawURL)
 		if err != nil {
 			if rc != nil {
@@ -116,7 +117,7 @@ func (c *Client) send(ctx context.Context, method, rawURL string, body any, cfg 
 		}
 		return nil, errs.Wrap(err, ErrInvalidRequest)
 	}
-	if relative {
+	if useDefaultHosts {
 		state.defaultHost = req.URL.Host
 	}
 	if rc != nil && length >= 0 {
@@ -207,6 +208,34 @@ func (c *Client) resolveRequestURL(raw string) (string, error) {
 		return "", ErrRelativeURL
 	}
 	return base.ResolveReference(parsed).String(), nil
+}
+
+// rawURLHasScheme reports whether raw starts with an RFC 3986 scheme followed
+// by a colon. It distinguishes absolute URLs from relative references without
+// parsing, so a query containing "://" stays relative. | rawURLHasScheme 报告
+// raw 是否以 RFC 3986 scheme 加冒号开头；无需解析即可区分绝对 URL 与相对引用，
+// 查询串中出现 "://" 仍按相对引用处理。
+func rawURLHasScheme(raw string) bool {
+	if raw == "" {
+		return false
+	}
+	first := raw[0]
+	if (first < 'a' || first > 'z') && (first < 'A' || first > 'Z') {
+		return false
+	}
+	for i := 1; i < len(raw); i++ {
+		ch := raw[i]
+		switch {
+		case ch == ':':
+			return true
+		case ch >= 'a' && ch <= 'z', ch >= 'A' && ch <= 'Z', ch >= '0' && ch <= '9',
+			ch == '+', ch == '-', ch == '.':
+			continue
+		default:
+			return false
+		}
+	}
+	return false
 }
 
 // explicitHostKey marks a request whose Host header was explicitly set. | explicitHostKey 标记显式设置 Host 头的请求。

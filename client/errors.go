@@ -121,7 +121,12 @@ func redactRequestError(err error, u *url.URL) error {
 	replacements := []struct{ from, to string }{
 		{u.String(), safeURL(u)},
 		{u.Redacted(), safeURL(u)},
-		{u.RequestURI(), u.EscapedPath()},
+	}
+	// A bare host URL has RequestURI "/" and an empty path; replacing "/" with
+	// "" would corrupt every slash in the message. | 裸主机 URL 的 RequestURI
+	// 为 "/"、路径为空；把 "/" 替换为空会破坏文案中的所有斜杠。
+	if u.EscapedPath() != "" || u.RawQuery != "" {
+		replacements = append(replacements, struct{ from, to string }{u.RequestURI(), u.EscapedPath()})
 	}
 	var urlErr *url.Error
 	if errors.As(err, &urlErr) {
@@ -130,8 +135,10 @@ func redactRequestError(err error, u *url.URL) error {
 			replacements = append(replacements,
 				struct{ from, to string }{urlErr.URL, safe},
 				struct{ from, to string }{parsed.Redacted(), safe},
-				struct{ from, to string }{parsed.RequestURI(), parsed.EscapedPath()},
 			)
+			if parsed.EscapedPath() != "" || parsed.RawQuery != "" {
+				replacements = append(replacements, struct{ from, to string }{parsed.RequestURI(), parsed.EscapedPath()})
+			}
 		}
 	}
 	redact := func(text string) string {

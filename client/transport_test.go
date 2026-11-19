@@ -625,3 +625,35 @@ func TestTransportErrorRedactsURL(t *testing.T) {
 		t.Fatalf("url.Error type lost: %T", err)
 	}
 }
+
+func TestHostBasePathRedirectPathAbsolute(t *testing.T) {
+	var paths []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.URL.Path)
+		switch r.URL.Path {
+		case "/base/start":
+			http.Redirect(w, r, "/base/next", http.StatusFound)
+		case "/base/next":
+			_, _ = w.Write([]byte("ok"))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+	c, err := New(WithHosts(srv.URL+"/base"), WithoutCookieJar())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	resp, err := c.Get(context.Background(), "/start")
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := resp.Bytes()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "ok" {
+		t.Fatalf("body %q paths %v", data, paths)
+	}
+}

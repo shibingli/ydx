@@ -105,10 +105,11 @@ func (c *Client) ReloadTLS() error {
 		return ErrClosed
 	}
 	c.lifecycleMu.Lock()
-	defer c.lifecycleMu.Unlock()
 	if c.closed.Load() {
+		c.lifecycleMu.Unlock()
 		return ErrClosed
 	}
+	c.lifecycleMu.Unlock()
 	return c.engine.reloadTLS()
 }
 
@@ -360,6 +361,12 @@ func (e *engine) stateFor(cfg *TLSConfig) (*tlsState, error) {
 	if cfg == nil {
 		return nil, errs.Detail(ErrTLSConfig, "nil host TLS | 空 Host TLS")
 	}
+	e.tlsMu.RLock()
+	existing := e.tlsByConfig[cfg]
+	e.tlsMu.RUnlock()
+	if existing != nil {
+		return existing, nil
+	}
 	e.tlsMu.Lock()
 	defer e.tlsMu.Unlock()
 	if state := e.tlsByConfig[cfg]; state != nil {
@@ -391,25 +398,45 @@ func (e *engine) transportFor(host *Host) (http.RoundTripper, error) {
 			}
 			return state.current(), nil
 		}
-		if state := e.hostTLS[strings.ToLower(host.URL.Host)]; state != nil {
-			return state.current(), nil
-		}
-		if state := e.hostTLS[strings.ToLower(host.URL.Hostname())]; state != nil {
+		if state := lookupHostTLS(e.hostTLS, host.URL); state != nil {
 			return state.current(), nil
 		}
 	}
 	return e.defaultTransport(), nil
 }
 
+// lookupHostTLS resolves a host override by host:port, hostname, or the
+// scheme's default port. | lookupHostTLS 按 host:port、主机名或 scheme 默认端口
+// 解析 Host TLS 覆盖。
+func lookupHostTLS(states map[string]*tlsState, u *url.URL) *tlsState {
+	if u == nil || len(states) == 0 {
+		return nil
+	}
+	if state := states[strings.ToLower(u.Host)]; state != nil {
+		return state
+	}
+	host := strings.ToLower(u.Hostname())
+	if state := states[host]; state != nil {
+		return state
+	}
+	if u.Port() == "" {
+		switch strings.ToLower(u.Scheme) {
+		case "https":
+			return states[host+":443"]
+		case "http":
+			return states[host+":80"]
+		}
+	}
+	return nil
+}
+
 // transportForURL applies a hostname TLS override for direct requests. | transportForURL 为直连请求应用按主机名的 TLS 覆盖。
 func (e *engine) transportForURL(u *url.URL) http.RoundTripper {
-	if u != nil {
-		if state := e.hostTLS[strings.ToLower(u.Host)]; state != nil {
-			return state.current()
-		}
-		if state := e.hostTLS[strings.ToLower(u.Hostname())]; state != nil {
-			return state.current()
-		}
+	if len(e.hostTLS) == 0 {
+		return e.defaultTransport()
+	}
+	if state := lookupHostTLS(e.hostTLS, u); state != nil {
+		return state.current()
 	}
 	return e.defaultTransport()
 }
@@ -486,12 +513,8 @@ func (e *engine) healthTransport(host *Host) http.RoundTripper {
 
 // defaultTransport returns the transport used without a host pool. | defaultTransport 返回无 Host 池时使用的传输。
 func (e *engine) defaultTransport() http.RoundTripper {
-	if e.h2c != nil {
-		secure := http.RoundTripper(e.baseTransport)
-		if e.defaultTLS != nil {
-			secure = e.defaultTLS.current()
-		}
-		return &schemeTransport{plain: e.h2c, secure: secure}
+	if e.scheme != nil {
+		return e.scheme
 	}
 	if e.defaultTLS != nil {
 		return e.defaultTLS.current()
@@ -503,8 +526,9 @@ func (e *engine) defaultTransport() http.RoundTripper {
 // requests to the secure transport. | schemeTransport 把明文请求交给 h2c 传输，
 // TLS 请求交给安全传输。
 type schemeTransport struct {
-	plain  http.RoundTripper
-	secure http.RoundTripper
+	plain       http.RoundTripper
+	secure      http.RoundTripper
+	secureState *tlsState
 }
 
 // RoundTrip dispatches by URL scheme. | RoundTrip 按 URL scheme 分派。
@@ -512,7 +536,13 @@ func (s *schemeTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	if req != nil && req.URL != nil && req.URL.Scheme == "http" {
 		return s.plain.RoundTrip(req)
 	}
-	return s.secure.RoundTrip(req)
+	secure := s.secure
+	if s.secureState != nil {
+		if current := s.secureState.current(); current != nil {
+			secure = current
+		}
+	}
+	return secure.RoundTrip(req)
 }
 
 // CloseIdleConnections closes both underlying transports. | CloseIdleConnections 关闭两个底层传输的空闲连接。
@@ -520,16 +550,22 @@ func (s *schemeTransport) CloseIdleConnections() {
 	if closer, ok := s.plain.(interface{ CloseIdleConnections() }); ok {
 		closer.CloseIdleConnections()
 	}
-	if closer, ok := s.secure.(interface{ CloseIdleConnections() }); ok {
+	secure := s.secure
+	if s.secureState != nil {
+		if current := s.secureState.current(); current != nil {
+			secure = current
+		}
+	}
+	if closer, ok := secure.(interface{ CloseIdleConnections() }); ok {
 		closer.CloseIdleConnections()
 	}
 }
 
 // reloadTLS reloads every known TLS state. | reloadTLS 重新加载全部已知 TLS 状态。
 func (e *engine) reloadTLS() error {
-	e.tlsMu.Lock()
+	e.tlsMu.RLock()
 	states := append([]*tlsState(nil), e.tlsStates...)
-	e.tlsMu.Unlock()
+	e.tlsMu.RUnlock()
 	var first error
 	for _, state := range states {
 		if err := state.reload(); err != nil && first == nil {
@@ -541,9 +577,9 @@ func (e *engine) reloadTLS() error {
 
 // closeTLSIdle releases idle connections for every TLS transport. | closeTLSIdle 释放全部 TLS 传输的空闲连接。
 func (e *engine) closeTLSIdle() {
-	e.tlsMu.Lock()
+	e.tlsMu.RLock()
 	states := append([]*tlsState(nil), e.tlsStates...)
-	e.tlsMu.Unlock()
+	e.tlsMu.RUnlock()
 	for _, state := range states {
 		if tr := state.current(); tr != nil {
 			tr.CloseIdleConnections()

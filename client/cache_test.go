@@ -431,3 +431,170 @@ func TestCacheSkipsURLUserinfo(t *testing.T) {
 		t.Fatalf("URL userinfo used cache: hits=%d", hits.Load())
 	}
 }
+
+func TestCacheSeparatesRulesWithSameName(t *testing.T) {
+	var aHits, bHits atomic.Int32
+	a := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		aHits.Add(1)
+		_, _ = w.Write([]byte("A"))
+	}))
+	defer a.Close()
+	b := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		bHits.Add(1)
+		_, _ = w.Write([]byte("B"))
+	}))
+	defer b.Close()
+	cache := func() *CachePolicy { return &CachePolicy{TTL: time.Minute} }
+	c, err := New(
+		WithRules(
+			Rule{
+				Pattern:   "/x",
+				Condition: func(r *http.Request) bool { return r.Header.Get("X-Target") == "a" },
+				Hosts:     []string{a.URL},
+				Cache:     cache(),
+			},
+			Rule{
+				Pattern:   "/x",
+				Condition: func(r *http.Request) bool { return r.Header.Get("X-Target") == "b" },
+				Hosts:     []string{b.URL},
+				Cache:     cache(),
+			},
+		),
+		WithoutCookieJar(),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	get := func(target string) string {
+		resp, err := c.Get(context.Background(), "http://svc/x", WithRequestHeader("X-Target", target))
+		if err != nil {
+			t.Fatal(err)
+		}
+		data, err := resp.Bytes()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(data)
+	}
+	if got := get("a"); got != "A" {
+		t.Fatalf("rule a body %q", got)
+	}
+	if got := get("b"); got != "B" {
+		t.Fatalf("rule b body %q", got)
+	}
+	if aHits.Load() != 1 || bHits.Load() != 1 {
+		t.Fatalf("hits a=%d b=%d", aHits.Load(), bHits.Load())
+	}
+}
+
+func TestCacheHonorsAge(t *testing.T) {
+	var hits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		w.Header().Set("Cache-Control", "max-age=60")
+		w.Header().Set("Age", "600")
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer srv.Close()
+	c, err := New(WithHosts(srv.URL), WithCache(CachePolicy{TTL: time.Minute}), WithoutCookieJar())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	for i := 0; i < 2; i++ {
+		resp, err := c.Get(context.Background(), srv.URL+"/x")
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = resp.Body.Close()
+	}
+	if hits.Load() != 2 {
+		t.Fatalf("stale Age response cached: hits=%d", hits.Load())
+	}
+}
+
+func TestCacheMaxInt64BodyLimit(t *testing.T) {
+	var hits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer srv.Close()
+	c, err := New(
+		WithHosts(srv.URL),
+		WithCache(CachePolicy{TTL: time.Minute, MaxBodyBytes: int64(^uint64(0) >> 1)}),
+		WithoutCookieJar(),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	for i := 0; i < 2; i++ {
+		resp, err := c.Get(context.Background(), srv.URL+"/x")
+		if err != nil {
+			t.Fatal(err)
+		}
+		data, err := resp.Bytes()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(data) != "ok" {
+			t.Fatalf("body %q", data)
+		}
+	}
+	if hits.Load() != 1 {
+		t.Fatalf("cache hits %d", hits.Load())
+	}
+}
+
+func TestCacheSkipsResponseNoCache(t *testing.T) {
+	var hits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		w.Header().Set("Cache-Control", "no-cache")
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer srv.Close()
+	c, err := New(WithHosts(srv.URL), WithCache(CachePolicy{TTL: time.Minute}), WithoutCookieJar())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	for i := 0; i < 2; i++ {
+		resp, err := c.Get(context.Background(), srv.URL+"/x")
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = resp.Body.Close()
+	}
+	if hits.Load() != 2 {
+		t.Fatalf("response no-cache cached: hits=%d", hits.Load())
+	}
+}
+
+func TestCacheHonorsMultiLineNoStore(t *testing.T) {
+	var hits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		w.Header().Add("Cache-Control", "max-age=60")
+		w.Header().Add("Cache-Control", "no-store")
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer srv.Close()
+	c, err := New(WithHosts(srv.URL), WithCache(CachePolicy{TTL: time.Minute}), WithoutCookieJar())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	for i := 0; i < 2; i++ {
+		resp, err := c.Get(context.Background(), srv.URL+"/x")
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = resp.Body.Close()
+	}
+	if hits.Load() != 2 {
+		t.Fatalf("multi-line no-store cached: hits=%d", hits.Load())
+	}
+}

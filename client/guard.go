@@ -87,7 +87,10 @@ type AccessPolicy struct {
 	denyMethod  map[string]bool
 	// AllowSchemes limits URL schemes; empty allows http and https. | AllowSchemes 限制 URL scheme；为空允许 http 与 https。
 	AllowSchemes []string
-	// AllowHosts lists host globs; empty allows every host. | AllowHosts 列出 Host glob；为空允许全部 Host。
+	// AllowHosts lists host globs; empty allows every host. Matching lowercases
+	// hostnames and removes trailing root dots; IDNA conversion is not applied. |
+	// AllowHosts 列出 Host glob；为空允许全部 Host。匹配时主机名转小写并去掉末尾根点；
+	// 不做 IDNA 转换。
 	AllowHosts []string
 	// DenyHosts lists host globs checked after AllowHosts. | DenyHosts 列出在 AllowHosts 之后检查的 Host glob。
 	DenyHosts []string
@@ -111,7 +114,12 @@ type AccessPolicy struct {
 	MaxRequestBytes int64
 
 	once sync.Once
-	// BlockPrivateIPs rejects loopback, private, link-local, multicast and unspecified addresses. | BlockPrivateIPs 拒绝回环、私网、链路本地、组播与未指定地址。
+	// BlockPrivateIPs rejects loopback, private, link-local, multicast and
+	// unspecified addresses. Dial-time recheck applies to the built-in transport
+	// without an HTTP proxy; rule-level policies and custom transports receive the
+	// pre-flight resolution check only. | BlockPrivateIPs 拒绝回环、私网、链路本地、
+	// 组播与未指定地址。拨号期复检仅适用于未使用 HTTP 代理的内置传输；规则级策略与
+	// 自定义传输只做请求前的解析检查。
 	BlockPrivateIPs bool
 }
 
@@ -129,7 +137,11 @@ func WithAccessPolicy(policy *AccessPolicy) Option {
 		if policy == nil {
 			return errs.Detail(ErrInvalidConfig, "nil access policy | 空访问策略")
 		}
-		o.AccessPolicy = cloneAccessPolicy(policy)
+		cloned := cloneAccessPolicy(policy)
+		if err := cloned.prepare(); err != nil {
+			return err
+		}
+		o.AccessPolicy = cloned
 		return nil
 	}
 }
@@ -213,7 +225,7 @@ func (p *AccessPolicy) Check(ctx context.Context, req *http.Request) (GuardDecis
 	} else if scheme != "http" && scheme != "https" {
 		return denyDecision(http.StatusForbidden, "scheme "+scheme+" denied"), nil
 	}
-	host := strings.ToLower(req.URL.Hostname())
+	host := canonicalGuardHost(req.URL.Hostname())
 	if len(p.allowHosts) > 0 && !matchAnyHost(p.allowHosts, host) {
 		return denyDecision(http.StatusForbidden, "host "+host+" not allowed"), nil
 	}
@@ -407,10 +419,40 @@ func denyDecision(status int, message string) GuardDecision {
 	}
 }
 
-// isPrivateIP reports whether ip is loopback, private, link-local, multicast or unspecified. | isPrivateIP 报告 ip 是否为回环、私网、链路本地、组播或未指定地址。
+// canonicalGuardHost lowercases a host and removes trailing root dots. | canonicalGuardHost
+// 把主机名转小写并去掉末尾根点。
+func canonicalGuardHost(host string) string {
+	host = strings.ToLower(host)
+	for strings.HasSuffix(host, ".") {
+		host = strings.TrimSuffix(host, ".")
+	}
+	return host
+}
+
+// isPrivateIP reports whether ip is loopback, private, link-local, multicast,
+// unspecified or otherwise non-public. | isPrivateIP 报告 ip 是否为回环、私网、
+// 链路本地、组播、未指定或其它非公网地址。
 func isPrivateIP(ip netip.Addr) bool {
-	return ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() ||
-		ip.IsLinkLocalMulticast() || ip.IsMulticast() || ip.IsUnspecified()
+	if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() ||
+		ip.IsLinkLocalMulticast() || ip.IsMulticast() || ip.IsUnspecified() {
+		return true
+	}
+	if ip.Is4() {
+		b := ip.As4()
+		switch {
+		case b[0] == 0: // 0.0.0.0/8
+			return true
+		case b[0] == 100 && b[1] >= 64 && b[1] <= 127: // 100.64.0.0/10
+			return true
+		case b[0] == 192 && b[1] == 0 && b[2] == 0: // 192.0.0.0/24
+			return true
+		case b[0] == 198 && (b[1] == 18 || b[1] == 19): // 198.18.0.0/15
+			return true
+		case b[0] >= 240: // 240.0.0.0/4
+			return true
+		}
+	}
+	return false
 }
 
 // matchAnyHost reports whether host matches any glob. | matchAnyHost 报告 host 是否匹配任一 glob。

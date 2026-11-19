@@ -45,7 +45,11 @@ func (h Hooks) empty() bool {
 		h.OnStreamEnd == nil && h.OnError == nil && h.OnComplete == nil
 }
 
-// Hooks is the ordered callback set; nil fields are free. | Hooks 是有序回调集合；nil 字段零开销。
+// Hooks is the ordered callback set; nil fields are free. Engine hooks run
+// inside request goroutines; they must not call Client.Close or CloseContext
+// synchronously, because Close waits for those goroutines. | Hooks 是有序回调
+// 集合；nil 字段零开销。引擎钩子在请求 goroutine 内运行；不得同步调用
+// Client.Close 或 CloseContext，因为 Close 会等待这些 goroutine。
 type Hooks struct {
 	// OnRequest runs before routing; an error aborts the request. | OnRequest 在路由前运行；错误会中止请求。
 	OnRequest func(context.Context, *http.Request) error

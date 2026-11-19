@@ -61,6 +61,47 @@ func TestBalanceHash(t *testing.T) {
 	}
 }
 
+func TestBalanceHashConsistentOnExclusion(t *testing.T) {
+	hs, err := NewHostSetWithOptions(HostSetOptions{
+		Balance: BalanceHash,
+		HashKey: func(r *http.Request) string { return r.URL.Path },
+	},
+		Host{Name: "a", URL: mustURL("http://a")},
+		Host{Name: "b", URL: mustURL("http://b")},
+		Host{Name: "c", URL: mustURL("http://c")},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer hs.Close()
+	paths := []string{"/a", "/b", "/c", "/d", "/e", "/f", "/g", "/h"}
+	before := make(map[string]string, len(paths))
+	for _, path := range paths {
+		req := httptest.NewRequest(http.MethodGet, "http://svc"+path, nil)
+		host, err := hs.Pick(req, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		hs.Release(host)
+		before[path] = host.Name
+	}
+	exclude := map[string]struct{}{"c": {}}
+	for _, path := range paths {
+		if before[path] == "c" {
+			continue
+		}
+		req := httptest.NewRequest(http.MethodGet, "http://svc"+path, nil)
+		host, err := hs.Pick(req, exclude)
+		if err != nil {
+			t.Fatal(err)
+		}
+		hs.Release(host)
+		if host.Name != before[path] {
+			t.Fatalf("%s moved from %s to %s when c was excluded", path, before[path], host.Name)
+		}
+	}
+}
+
 func TestBalanceOrdered(t *testing.T) {
 	hs, err := NewHostSetWithOptions(HostSetOptions{Balance: BalanceOrdered},
 		Host{Name: "a", URL: mustURL("http://a")},

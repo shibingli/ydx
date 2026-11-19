@@ -35,6 +35,52 @@ func TestEventReader(t *testing.T) {
 	}
 }
 
+func TestEventReaderResetsEventTypeWithoutData(t *testing.T) {
+	r := NewEventReader(strings.NewReader("event: stale\n\ndata: x\n\n"))
+	event, err := r.Next()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if event.Name != "" {
+		t.Fatalf("stale event name leaked: %q", event.Name)
+	}
+	if string(event.Data) != "x" {
+		t.Fatalf("data %q", event.Data)
+	}
+}
+
+func TestEventReaderRetryOverflowIgnored(t *testing.T) {
+	r := NewEventReader(strings.NewReader("retry: 9223372036855\ndata: x\n\n"))
+	event, err := r.Next()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if event.RetrySet {
+		t.Fatalf("overflowing retry accepted: %v", event.Retry)
+	}
+	if string(event.Data) != "x" {
+		t.Fatalf("data %q", event.Data)
+	}
+}
+
+func TestOpenStreamClosedClosesBody(t *testing.T) {
+	var closed atomic.Bool
+	c, err := New(WithoutCookieJar())
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = c.Close()
+	req := mustRequest(t, http.MethodGet, "http://example.com/events", "")
+	req.Body = closeTrackingBody{closed: &closed}
+	req.GetBody = nil
+	if _, err := c.OpenStream(context.Background(), req); !errors.Is(err, ErrClosed) {
+		t.Fatalf("open stream error %v", err)
+	}
+	if !closed.Load() {
+		t.Fatal("request body was not closed")
+	}
+}
+
 func TestEventReaderCRAndIgnoredFields(t *testing.T) {
 	src := "data: x\r\rdata: y\r\nid: bad\x00id\r\nretry: abc\r\nunknown: z\r\n\r\n"
 	r := NewEventReader(strings.NewReader(src))

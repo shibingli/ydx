@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -130,5 +131,62 @@ func TestConnectMethod(t *testing.T) {
 	}
 	if method != http.MethodConnect {
 		t.Fatalf("method %q", method)
+	}
+}
+
+func TestSendRelativeQueryContainingScheme(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.URL.RequestURI(); got != "/echo?q=http://example.com/a" {
+			t.Errorf("request uri %q", got)
+		}
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer srv.Close()
+	c, err := New(WithBaseURL(srv.URL), WithoutCookieJar())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	resp, err := c.Get(context.Background(), "/echo?q=http://example.com/a")
+	if err != nil {
+		t.Fatalf("relative query with scheme: %v", err)
+	}
+	data, err := resp.Bytes()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "ok" {
+		t.Fatalf("body %q", data)
+	}
+}
+
+func TestSendProtocolRelativeKeepsExplicitHost(t *testing.T) {
+	var targetHits, defaultHits atomic.Int32
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		targetHits.Add(1)
+		_, _ = w.Write([]byte("target"))
+	}))
+	defer target.Close()
+	def := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defaultHits.Add(1)
+		_, _ = w.Write([]byte("default"))
+	}))
+	defer def.Close()
+	c, err := New(WithBaseURL(def.URL), WithHosts(def.URL), WithoutCookieJar())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	raw := "//" + target.Listener.Addr().String() + "/x"
+	resp, err := c.Get(context.Background(), raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := resp.Bytes()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "target" || targetHits.Load() != 1 || defaultHits.Load() != 0 {
+		t.Fatalf("body %q target=%d default=%d", data, targetHits.Load(), defaultHits.Load())
 	}
 }

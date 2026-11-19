@@ -55,14 +55,17 @@ func (f *Future) complete(resp *Response, err error) {
 func (c *Client) Submit(ctx context.Context, req *http.Request, cb func(*Response, error)) *Future {
 	future := &Future{done: make(chan struct{})}
 	if c == nil {
+		closeRequestBody(req)
 		future.complete(nil, ErrClosed)
 		return future
 	}
 	if c.engine == nil {
+		closeRequestBody(req)
 		future.complete(nil, ErrInvalidConfig)
 		return future
 	}
 	if req == nil || req.URL == nil {
+		closeRequestBody(req)
 		future.complete(nil, ErrInvalidRequest)
 		return future
 	}
@@ -72,6 +75,7 @@ func (c *Client) Submit(ctx context.Context, req *http.Request, cb func(*Respons
 	c.asyncMu.Lock()
 	if c.closed.Load() {
 		c.asyncMu.Unlock()
+		closeRequestBody(req)
 		future.complete(nil, ErrClosed)
 		return future
 	}
@@ -88,9 +92,24 @@ func (c *Client) Submit(ctx context.Context, req *http.Request, cb func(*Respons
 	c.asyncMu.Unlock()
 	go func() {
 		defer func() { <-c.asyncSem }()
-		defer cancel()
-		defer stop()
+		transferred := false
+		defer func() {
+			if !transferred {
+				stop()
+				cancel()
+			}
+		}()
 		resp, err := c.DoWithMeta(req.WithContext(runCtx))
+		if err == nil && resp != nil && resp.Body != nil {
+			// Keep the request context alive until the body is closed so a
+			// Future.Wait caller can read the response. | 保持请求 context 直到正文
+			// 关闭，使 Future.Wait 的调用方可以读取响应。
+			resp.Body = &cancelBody{body: resp.Body, cancel: func() {
+				stop()
+				cancel()
+			}}
+			transferred = true
+		}
 		future.complete(resp, err)
 		// Release the close barrier before running user code so a callback that
 		// calls Close cannot wait on its own goroutine. | 先释放关闭屏障再执行用户

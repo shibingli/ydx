@@ -1,6 +1,7 @@
 package client
 
 import (
+	"bytes"
 	"context"
 	"io"
 	"net/http"
@@ -229,6 +230,63 @@ func TestMirrorSpoolsNonReplayableBody(t *testing.T) {
 	resp.Body.Close()
 	if primaryBody != "payload" || mirrorBody != "payload" {
 		t.Fatalf("primary %q mirror %q", primaryBody, mirrorBody)
+	}
+}
+
+func TestMirrorSpoolDoesNotMutateRequest(t *testing.T) {
+	const size = 2 << 20
+	var primarySize, mirrorSize atomic.Int64
+	primary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n, _ := io.Copy(io.Discard, r.Body)
+		primarySize.Store(n)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer primary.Close()
+	mirror := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n, _ := io.Copy(io.Discard, r.Body)
+		mirrorSize.Store(n)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer mirror.Close()
+	c, err := New(
+		WithRule(Rule{
+			Pattern: "/x",
+			Mirror: &MirrorPolicy{
+				Targets: []string{mirror.URL},
+				Percent: 100,
+				Sync:    true,
+				Wait:    time.Second,
+				Timeout: time.Second,
+			},
+		}),
+		WithoutCookieJar(),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	req, err := http.NewRequest(http.MethodPost, primary.URL+"/x",
+		io.LimitReader(bytes.NewReader(make([]byte, size)), size))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.ContentLength = -1
+	if req.GetBody != nil {
+		t.Fatal("test request unexpectedly replayable")
+	}
+	resp, err := c.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if req.GetBody != nil {
+		t.Fatal("mirror spool mutated caller GetBody")
+	}
+	if req.ContentLength != -1 {
+		t.Fatalf("mirror spool mutated caller ContentLength: %d", req.ContentLength)
+	}
+	if primarySize.Load() != size || mirrorSize.Load() != size {
+		t.Fatalf("primary=%d mirror=%d", primarySize.Load(), mirrorSize.Load())
 	}
 }
 

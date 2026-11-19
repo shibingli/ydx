@@ -1,7 +1,10 @@
 package waf
 
 import (
+	"bytes"
 	"context"
+	"errors"
+	"io"
 	"net/http"
 	"strconv"
 
@@ -12,6 +15,34 @@ import (
 
 // ErrNilEngine indicates a missing underlying WAF instance. | ErrNilEngine 表示缺少底层 WAF 实例。
 var ErrNilEngine = errs.New("client/waf: nil WAF engine | client/waf：空 WAF 引擎")
+
+// ErrBodyInspect indicates that the request body could not be buffered for
+// inspection. | ErrBodyInspect 表示无法为检查缓冲请求正文。
+var ErrBodyInspect = errs.New("client/waf: body inspection failed | client/waf：请求正文检查失败")
+
+// maxInspectBody bounds the request-body prefix buffered for inspection. | maxInspectBody
+// 限制为检查而缓冲的请求正文前缀。
+const maxInspectBody = 1 << 20
+
+// replayBody replays a buffered prefix before continuing with the original
+// body. | replayBody 先重放缓存的正文前缀，再继续读取原始正文。
+type replayBody struct {
+	prefix []byte
+	rest   io.ReadCloser
+}
+
+// Read reads the prefix first, then the original body. | Read 先读前缀，再读原始正文。
+func (b *replayBody) Read(p []byte) (int, error) {
+	if len(b.prefix) > 0 {
+		n := copy(p, b.prefix)
+		b.prefix = b.prefix[n:]
+		return n, nil
+	}
+	return b.rest.Read(p)
+}
+
+// Close closes the original body. | Close 关闭原始正文。
+func (b *replayBody) Close() error { return b.rest.Close() }
 
 // Options configures the WAF guard. | Options 配置 WAF 守卫。
 type Options struct {
@@ -44,20 +75,37 @@ func (g *Guard) Check(ctx context.Context, req *http.Request) (client.GuardDecis
 	if g == nil || g.engine == nil {
 		return client.GuardDecision{Allowed: false, Status: http.StatusServiceUnavailable, Message: "nil WAF guard"}, ErrNilEngine
 	}
-	inspectBody := g.inspectBody
-	if inspectBody && req != nil {
-		if _, capped := req.Body.(interface{ LimitedBody() }); capped {
-			// Let the access policy enforce its streaming cap; consuming the
-			// capped body here would turn a 413 into a body-loss fail-open. | 让访问
-			// 策略执行流式上限；此处消费带限正文会把 413 变成丢失正文的放行。
-			inspectBody = false
-		}
-	}
 	var restore func()
-	if !inspectBody && req != nil && req.Body != nil && req.Body != http.NoBody {
+	if g.inspectBody && req != nil && req.Body != nil && req.Body != http.NoBody {
+		// Buffer a bounded prefix for inspection and replay it before the
+		// original stream so the upstream still receives every byte. | 为检查缓冲
+		// 有界前缀，并在原始流之前重放，确保上游仍收到全部字节。
 		original := req.Body
+		originalLength := req.ContentLength
+		prefix, readErr := io.ReadAll(io.LimitReader(original, maxInspectBody))
+		if readErr != nil {
+			_ = original.Close()
+			if errors.Is(readErr, client.ErrRequestTooLarge) {
+				return client.GuardDecision{}, readErr
+			}
+			return client.GuardDecision{}, errs.Wrap(readErr, ErrBodyInspect)
+		}
+		req.Body = io.NopCloser(bytes.NewReader(prefix))
+		req.ContentLength = int64(len(prefix))
+		restore = func() {
+			req.Body = &replayBody{prefix: prefix, rest: original}
+			req.ContentLength = originalLength
+		}
+		defer restore()
+	} else if req != nil && req.Body != nil && req.Body != http.NoBody {
+		original := req.Body
+		originalLength := req.ContentLength
 		req.Body = http.NoBody
-		restore = func() { req.Body = original }
+		req.ContentLength = 0
+		restore = func() {
+			req.Body = original
+			req.ContentLength = originalLength
+		}
 		defer restore()
 	}
 	decision, err := g.engine.Evaluate(req)

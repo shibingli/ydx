@@ -105,18 +105,51 @@ func isEventStream(header http.Header) bool {
 	if header == nil {
 		return false
 	}
-	mediaType, _, err := mime.ParseMediaType(header.Get("Content-Type"))
-	if err != nil {
+	value := header.Get("Content-Type")
+	if value == "" {
 		return false
 	}
-	return strings.EqualFold(mediaType, "text/event-stream")
+	// Avoid mime.ParseMediaType's parameter map for the common no-parameter
+	// case, and skip it entirely for non-SSE media types. | 常见无参数场景避开
+	// mime.ParseMediaType 的参数 map，非 SSE 媒体类型直接返回。
+	if semicolon := strings.IndexByte(value, ';'); semicolon >= 0 {
+		if !strings.EqualFold(strings.TrimSpace(value[:semicolon]), "text/event-stream") {
+			return false
+		}
+		mediaType, _, err := mime.ParseMediaType(value)
+		return err == nil && strings.EqualFold(mediaType, "text/event-stream")
+	}
+	return strings.EqualFold(strings.TrimSpace(value), "text/event-stream")
+}
+
+// saturatingPlusOne returns n+1 without overflowing; MaxInt64 stays MaxInt64. | saturatingPlusOne
+// 返回 n+1 且不溢出；MaxInt64 保持 MaxInt64。
+func saturatingPlusOne(n int64) int64 {
+	if n == int64(^uint64(0)>>1) {
+		return n
+	}
+	return n + 1
+}
+
+// cloneSlice copies a slice while preserving the distinction between nil and
+// an empty non-nil slice. | cloneSlice 复制切片并保留 nil 与空非 nil 切片的区别。
+func cloneSlice[T any](values []T) []T {
+	if values == nil {
+		return nil
+	}
+	out := make([]T, len(values))
+	copy(out, values)
+	return out
 }
 
 // fnv64aString hashes a string with FNV-1a without allocations. | fnv64aString 用无分配的 FNV-1a 哈希字符串。
 func fnv64aString(s string) uint64 {
-	const offset = uint64(14695981039346656037)
+	return fnv64aUpdate(14695981039346656037, s)
+}
+
+// fnv64aUpdate continues an FNV-1a 64-bit hash over s. | fnv64aUpdate 在 s 上继续 64 位 FNV-1a 哈希。
+func fnv64aUpdate(hash uint64, s string) uint64 {
 	const prime = uint64(1099511628211)
-	hash := offset
 	for i := 0; i < len(s); i++ {
 		hash ^= uint64(s[i])
 		hash *= prime

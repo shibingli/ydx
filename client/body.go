@@ -40,7 +40,10 @@ type MultipartFile struct {
 	Reader io.Reader
 }
 
-// MultipartBody marks a multipart/form-data request body. | MultipartBody 标记 multipart/form-data 请求正文。
+// MultipartBody marks a multipart/form-data request body. File parts are read
+// fully into memory while the body is prepared; use a streaming Body for large
+// uploads. | MultipartBody 标记 multipart/form-data 请求正文。准备正文时文件分片
+// 会完整读入内存；大文件上传请使用流式 Body。
 type MultipartBody struct {
 	// Fields are regular form fields. | Fields 是普通表单字段。
 	Fields url.Values
@@ -205,6 +208,11 @@ func prepareBodyInfo(v any) (io.ReadCloser, func() (io.ReadCloser, error), strin
 	}
 }
 
+// errSpoolDowngrade signals that a body was restored after exceeding the
+// in-memory spool limit and should be sent once without retry. | errSpoolDowngrade
+// 表示正文超过内存暂存上限后已恢复，应只发送一次而不重试。
+var errSpoolDowngrade = errs.New("client: body spool downgraded | client：正文暂存已降级")
+
 // spool is a replayable request body snapshot. | spool 是可重放的请求正文快照。
 type spool struct {
 	getBody func() (io.ReadCloser, error)
@@ -287,7 +295,7 @@ func (e *engine) spoolBodyWith(req *http.Request, toDisk bool) (*spool, error) {
 		if max > 0 && max < readLimit {
 			readLimit = max
 		}
-		data, err := io.ReadAll(io.LimitReader(req.Body, readLimit+1))
+		data, err := io.ReadAll(io.LimitReader(req.Body, saturatingPlusOne(readLimit)))
 		if err != nil {
 			_ = req.Body.Close()
 			return nil, err
@@ -309,7 +317,7 @@ func (e *engine) spoolBodyWith(req *http.Request, toDisk bool) (*spool, error) {
 			// Preserve the bytes already read and let the caller downgrade to a
 			// single streaming attempt. | 保留已读字节，让调用方降级为单次流式尝试。
 			req.Body = &multiReadCloser{Reader: io.MultiReader(bytes.NewReader(data), req.Body), closer: req.Body}
-			return nil, ErrBodyNotReplayable
+			return nil, errSpoolDowngrade
 		}
 		return spoolToFile(data, req.Body, max)
 	}
@@ -348,7 +356,7 @@ func spoolToFile(prefix []byte, rest io.ReadCloser, max int64) (*spool, error) {
 	}
 	var source io.Reader = rest
 	if remaining >= 0 {
-		source = io.LimitReader(rest, remaining+1)
+		source = io.LimitReader(rest, saturatingPlusOne(remaining))
 	}
 	copied, err := io.Copy(file, source)
 	if err != nil {

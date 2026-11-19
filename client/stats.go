@@ -49,9 +49,9 @@ func (c *Client) Stats() Stats {
 		Inflight:      uint64(e.counters.inflight.Load()),
 		TLSInsecure:   e.counters.tlsInsecure.Load(),
 	}
-	e.cacheMu.Lock()
+	e.cacheMu.RLock()
 	store := e.cacheStore
-	e.cacheMu.Unlock()
+	e.cacheMu.RUnlock()
 	if store != nil {
 		out.CacheEvictions = store.Stats().Evictions
 	}
@@ -87,7 +87,9 @@ type Stats struct {
 	CacheHits uint64
 	// CacheMisses is the number of cache misses. | CacheMisses 是缓存未命中数。
 	CacheMisses uint64
-	// CacheStores is the number of responses stored in cache. | CacheStores 是写入缓存的响应数。
+	// CacheStores is the number of responses offered to the cache store; a custom
+	// or size-limited store may still reject an entry. | CacheStores 是提交给缓存
+	// 存储的响应数；自定义或受限存储仍可能拒绝条目。
 	CacheStores uint64
 	// CacheEvictions is the number of evicted cache entries. | CacheEvictions 是被驱逐的缓存条目数。
 	CacheEvictions uint64

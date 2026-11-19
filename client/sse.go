@@ -8,6 +8,9 @@ import (
 	"time"
 )
 
+// maxSSERetry caps a server-suggested reconnect delay. | maxSSERetry 限制服务器建议的重连延迟。
+const maxSSERetry = 24 * time.Hour
+
 // Event is one parsed server-sent event. | Event 是一个已解析的服务器发送事件。
 type Event struct {
 	// ID is the event id, used for Last-Event-ID reconnects. | ID 是事件 id，用于 Last-Event-ID 重连。
@@ -89,6 +92,9 @@ func (r *EventReader) Next() (Event, error) {
 		}
 		if line == "" {
 			if len(data) == 0 {
+				// The event-type buffer is reset when nothing is dispatched. | 未分发
+				// 事件时重置事件类型缓冲。
+				name = ""
 				continue
 			}
 			if data[len(data)-1] == '\n' {
@@ -118,7 +124,8 @@ func (r *EventReader) Next() (Event, error) {
 			}
 		case "retry":
 			if isDigits(value) {
-				if millis, err := strconv.Atoi(value); err == nil {
+				if millis, err := strconv.Atoi(value); err == nil &&
+					int64(millis) <= int64(maxSSERetry/time.Millisecond) {
 					retry = time.Duration(millis) * time.Millisecond
 					retrySet = true
 				}

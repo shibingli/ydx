@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/shibingli/ydx/errs"
@@ -25,7 +26,10 @@ type Rule struct {
 	Guard Guard
 	// Condition optionally rejects a match after the path matched. | Condition 在路径命中后可选地拒绝该匹配。
 	Condition func(*http.Request) bool
-	// HostSet is a prebuilt host pool override; it wins over Hosts. | HostSet 是预构建的 Host 池覆盖；优先于 Hosts。
+	// HostSet is a prebuilt host pool override; it wins over Hosts. The client
+	// takes ownership and closes it on Close or when a rule stops referencing it. |
+	// HostSet 是预构建的 Host 池覆盖；优先于 Hosts。客户端接管所有权，并在 Close
+	// 或规则不再引用时关闭它。
 	HostSet *HostSet
 	// Rewrite rewrites the path before the host base path is joined. | Rewrite 在拼接 Host base path 前重写路径。
 	Rewrite *Rewrite
@@ -49,13 +53,23 @@ type Rule struct {
 	Methods []string
 	// Hosts overrides the default host pool for this rule. | Hosts 覆盖该规则的默认 Host 池。
 	Hosts []string
-	// Timeout bounds the request, including its response body. | Timeout 限制请求（含响应正文）的总时长。
+	// Timeout bounds the request, including its response body. Forward treats it as
+	// an upstream response-header timeout. | Timeout 限制请求（含响应正文）的总时长；
+	// Forward 将其视为上游响应头超时。
 	Timeout time.Duration
 	// UA overrides the client User-Agent policy for this rule. | UA 为该规则覆盖客户端 User-Agent 策略。
 	UA *UAPolicy
 	// PreserveHost keeps the inbound Host header instead of the selected target. | PreserveHost 保留入站 Host 头而非目标 Host。
 	PreserveHost bool
+
+	// id distinguishes compiled rules with equal names in cache and coalesce
+	// keys. | id 在缓存与合并键中区分同名规则。
+	id uint64
 }
+
+// ruleIDCounter assigns a process-unique identity to every compiled rule. | ruleIDCounter
+// 为每条已编译规则分配进程内唯一标识。
+var ruleIDCounter atomic.Uint64
 
 // patternScore is the deterministic specificity key used to order rules. | patternScore 是用于规则排序的确定性特异性键。
 type patternScore struct {
@@ -143,7 +157,7 @@ func CompileRules(rules ...Rule) (*RuleSet, error) {
 		if err := validateRewrite(rule.Rewrite); err != nil {
 			return nil, err
 		}
-		methods := append([]string(nil), rule.Methods...)
+		methods := cloneSlice(rule.Methods)
 		for _, method := range methods {
 			if method == "" {
 				return nil, errs.Detail(ErrInvalidConfig, "empty rule method | 空规则方法")
@@ -195,28 +209,33 @@ func CompileRules(rules ...Rule) (*RuleSet, error) {
 				return nil, errs.Detail(ErrInvalidConfig, "negative rule max attempts | 规则最大尝试次数为负")
 			}
 			retry := *rule.Retry
-			retry.Methods = append([]string(nil), retry.Methods...)
-			retry.StatusCodes = append([]int(nil), retry.StatusCodes...)
+			retry.Methods = cloneSlice(retry.Methods)
+			retry.StatusCodes = cloneSlice(retry.StatusCodes)
 			rule.Retry = &retry
 		}
 		if rule.Cache != nil {
 			cache := *rule.Cache
-			cache.Methods = append([]string(nil), cache.Methods...)
-			cache.StatusCodes = append([]int(nil), cache.StatusCodes...)
-			cache.Vary = append([]string(nil), cache.Vary...)
+			cache.Methods = cloneSlice(cache.Methods)
+			cache.StatusCodes = cloneSlice(cache.StatusCodes)
+			cache.Vary = cloneSlice(cache.Vary)
 			rule.Cache = &cache
 		}
 		if rule.Coalesce != nil {
 			coalesce := *rule.Coalesce
-			coalesce.Methods = append([]string(nil), coalesce.Methods...)
+			coalesce.Methods = cloneSlice(coalesce.Methods)
 			rule.Coalesce = &coalesce
 		}
 		if access, ok := rule.Guard.(*AccessPolicy); ok {
-			rule.Guard = cloneAccessPolicy(access)
+			cloned := cloneAccessPolicy(access)
+			if err := cloned.prepare(); err != nil {
+				return nil, err
+			}
+			rule.Guard = cloned
 		}
 		if rule.Connection != "" && !validConnMode(rule.Connection) {
 			return nil, errs.Detail(ErrInvalidConfig, "unknown rule connection mode %q | 未知规则连接模式 %q", rule.Connection, rule.Connection)
 		}
+		rule.id = ruleIDCounter.Add(1)
 		rs.entries = append(rs.entries, ruleEntry{
 			rule:    &rule,
 			pattern: pattern,
@@ -257,12 +276,16 @@ func (rs *RuleSet) Match(method, path string) (*Rule, Params, bool) {
 	if rs == nil {
 		return nil, Params{}, false
 	}
+	pathSegments, pathOK := splitMatchPath(path)
+	if !pathOK {
+		return nil, Params{}, false
+	}
 	for i := range rs.entries {
 		entry := &rs.entries[i]
 		if !methodAllowed(entry.methods, method) {
 			continue
 		}
-		if params, ok := entry.pattern.Match(path); ok {
+		if params, ok := entry.pattern.matchSegments(pathSegments); ok {
 			return entry.rule, params, true
 		}
 	}
@@ -287,12 +310,16 @@ func (rs *RuleSet) matchRequest(req *http.Request) (rule *Rule, params Params, o
 		}
 	}()
 	path := matchPath(req.URL)
+	pathSegments, pathOK := splitMatchPath(path)
+	if !pathOK {
+		return nil, Params{}, false, nil
+	}
 	for i := range rs.entries {
 		entry := &rs.entries[i]
 		if !methodAllowed(entry.methods, req.Method) {
 			continue
 		}
-		matched, matchOK := entry.pattern.Match(path)
+		matched, matchOK := entry.pattern.matchSegments(pathSegments)
 		if !matchOK {
 			continue
 		}
@@ -424,26 +451,41 @@ func WithRules(rules ...Rule) Option {
 	}
 }
 
-// UpdateRules atomically replaces the client's compiled rule snapshot. | UpdateRules 原子替换客户端已编译的规则快照。
+// UpdateRules atomically replaces the client's compiled rule snapshot. A rule
+// host pool no longer referenced by the new snapshot is closed; an in-flight
+// request that already selected it may fall back to the default pool or fail
+// with ErrClosed. | UpdateRules 原子替换客户端已编译的规则快照。新快照不再引用的
+// 规则 Host 池会被关闭；已选中它的在途请求可能回退到默认池或返回 ErrClosed。
 func (c *Client) UpdateRules(rules ...Rule) error {
 	if c == nil || c.engine == nil {
 		return ErrClosed
 	}
 	c.lifecycleMu.Lock()
-	defer c.lifecycleMu.Unlock()
 	if c.closed.Load() {
+		c.lifecycleMu.Unlock()
 		return ErrClosed
 	}
 	rs, err := CompileRules(rules...)
 	if err != nil {
+		c.lifecycleMu.Unlock()
 		return err
 	}
 	rs.detachDefaultHostSet(c.engine.hosts.Load())
+	// Disable the policy-free fast path before publishing rules so a concurrent
+	// request cannot observe new rules while bare is still true. | 发布规则前先
+	// 关闭无策略快路径，避免并发请求在 bare 仍为 true 时绕过新规则。
+	c.engine.bare.Store(false)
 	c.engine.rules.Store(rs)
 	c.engine.registerRuleHosts(rs)
-	c.engine.retireRuleHosts(rs)
+	retired := c.engine.retireRuleHosts(rs)
 	c.engine.pruneTLS()
 	c.engine.bare.Store(isBareEngine(c.opts, rs, c.engine.hosts.Load()))
+	c.lifecycleMu.Unlock()
+	// Close retired pools outside lifecycleMu so health shutdown cannot block
+	// Client.Close. | 在 lifecycleMu 之外关闭退役池，避免健康检查关闭阻塞 Client.Close。
+	for _, hs := range retired {
+		_ = hs.Close()
+	}
 	return nil
 }
 
@@ -483,9 +525,9 @@ func (e *engine) registerRuleHosts(rs *RuleSet) {
 }
 
 // retireRuleHosts closes rule host pools no longer referenced by active rules. | retireRuleHosts 关闭不再被活动规则引用的规则 Host 池。
-func (e *engine) retireRuleHosts(rs *RuleSet) {
+func (e *engine) retireRuleHosts(rs *RuleSet) []*HostSet {
 	if e == nil || rs == nil {
-		return
+		return nil
 	}
 	active := make(map[*HostSet]struct{})
 	for _, hs := range rs.hostSets() {
@@ -502,9 +544,7 @@ func (e *engine) retireRuleHosts(rs *RuleSet) {
 		}
 	}
 	e.ruleHostsMu.Unlock()
-	for _, hs := range retired {
-		_ = hs.Close()
-	}
+	return retired
 }
 
 // closeRuleHosts closes every rule-owned host pool. | closeRuleHosts 关闭全部规则持有的 Host 池。

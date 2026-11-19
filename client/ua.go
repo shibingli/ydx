@@ -99,6 +99,22 @@ func prepareUA(policy *UAPolicy) (*UAPolicy, error) {
 	return &prepared, nil
 }
 
+// uaApplies reports whether applying policy would change req. | uaApplies 报告应用策略是否会改变 req。
+func uaApplies(req *http.Request, policy *UAPolicy) bool {
+	if req == nil || policy == nil {
+		return false
+	}
+	if policy.Force || req.Header.Get("User-Agent") == "" {
+		return true
+	}
+	for key := range policy.Companion {
+		if req.Header.Get(key) == "" {
+			return true
+		}
+	}
+	return false
+}
+
 // applyUA sets the User-Agent on a request clone. | applyUA 在请求克隆上设置 User-Agent。
 func (e *engine) applyUA(req *http.Request, policy *UAPolicy) {
 	if req == nil || policy == nil {

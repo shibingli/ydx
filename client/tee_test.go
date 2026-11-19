@@ -56,6 +56,51 @@ func TestTeeSlowSinkDrops(t *testing.T) {
 	}
 }
 
+type sharedTeeSink struct {
+	writes atomic.Int32
+	closes atomic.Int32
+}
+
+func (s *sharedTeeSink) WriteChunk(context.Context, []byte) error {
+	s.writes.Add(1)
+	return nil
+}
+
+func (s *sharedTeeSink) Close() error {
+	s.closes.Add(1)
+	return nil
+}
+
+func TestTeeSharedSinkNotClosed(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("payload"))
+	}))
+	defer srv.Close()
+	sink := &sharedTeeSink{}
+	c, err := New(
+		WithHosts(srv.URL),
+		WithMirror(MirrorPolicy{Mode: MirrorTee, TeeSinks: []Sink{sink}}),
+		WithoutCookieJar(),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	for i := 0; i < 2; i++ {
+		resp, err := c.Get(context.Background(), srv.URL+"/x")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := resp.Discard(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	waitFor(t, time.Second, func() bool { return sink.writes.Load() >= 2 })
+	if got := sink.closes.Load(); got != 0 {
+		t.Fatalf("shared sink closed %d times", got)
+	}
+}
+
 func TestTeeCloseBounded(t *testing.T) {
 	var drops atomic.Uint64
 	sink := SinkFunc(func(context.Context, []byte) error {

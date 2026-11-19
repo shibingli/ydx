@@ -80,15 +80,20 @@ type Stream struct {
 	rawMode bool
 }
 
-// OpenStream opens an SSE request through the client engine. | OpenStream 通过客户端引擎打开 SSE 请求。
+// OpenStream opens an SSE request through the client engine. Redirects are not
+// followed; a 3xx response reports ErrSSEProtocol. | OpenStream 通过客户端引擎
+// 打开 SSE 请求。不会跟随重定向；3xx 响应返回 ErrSSEProtocol。
 func (c *Client) OpenStream(ctx context.Context, req *http.Request, opts ...StreamOption) (*Stream, error) {
 	if c == nil || c.engine == nil {
+		closeRequestBody(req)
 		return nil, ErrInvalidConfig
 	}
 	if c.closed.Load() {
+		closeRequestBody(req)
 		return nil, ErrClosed
 	}
 	if req == nil || req.URL == nil {
+		closeRequestBody(req)
 		return nil, ErrInvalidRequest
 	}
 	if ctx == nil {
@@ -96,14 +101,17 @@ func (c *Client) OpenStream(ctx context.Context, req *http.Request, opts ...Stre
 	}
 	resolved, err := c.resolveRequestURL(req.URL.String())
 	if err != nil {
+		closeRequestBody(req)
 		return nil, err
 	}
 	parsed, err := url.Parse(resolved)
 	if err != nil {
+		closeRequestBody(req)
 		return nil, errs.Wrap(err, ErrInvalidRequest)
 	}
 	template := req.Clone(ctx)
-	if !strings.Contains(req.URL.String(), "://") {
+	raw := req.URL.String()
+	if !rawURLHasScheme(raw) && !strings.HasPrefix(raw, "//") {
 		template = template.WithContext(context.WithValue(template.Context(), useDefaultHostsKey{}, true))
 	}
 	template.URL = parsed
@@ -292,6 +300,13 @@ func (s *Stream) Next(ctx context.Context) (Event, error) {
 
 // readEvent waits for one event with an optional idle timeout. | readEvent 在可选空闲超时下等待一个事件。
 func (s *Stream) readEvent(ctx context.Context, reader *EventReader, body io.ReadCloser) (Event, error) {
+	// Without an idle timeout and without a cancellable context there is
+	// nothing to select on; read inline instead of spawning a goroutine per
+	// event. | 无空闲超时且 ctx 不可取消时无需 select，直接读取，避免每个事件
+	// 创建 goroutine。
+	if s.opts.IdleTimeout <= 0 && ctx.Done() == nil {
+		return reader.Next()
+	}
 	type result struct {
 		err   error
 		event Event

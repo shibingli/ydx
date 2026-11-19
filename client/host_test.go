@@ -320,3 +320,130 @@ func TestRuleHostSetSharedWithDefaultFollowsUpdate(t *testing.T) {
 		t.Fatalf("body %q", data)
 	}
 }
+
+func TestHotReloadRetriesHostPick(t *testing.T) {
+	oldSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("old"))
+	}))
+	defer oldSrv.Close()
+	newSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("new"))
+	}))
+	defer newSrv.Close()
+	var c *Client
+	var err error
+	c, err = New(
+		WithHosts(oldSrv.URL),
+		WithCache(CachePolicy{TTL: time.Minute}),
+		WithHooks(Hooks{OnCacheMiss: func(context.Context, *http.Request) {
+			_ = c.UpdateHosts(Host{Name: "new", URL: mustURL(newSrv.URL)})
+		}}),
+		WithoutCookieJar(),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	resp, err := c.Get(context.Background(), "/x")
+	if err != nil {
+		t.Fatalf("request failed after hot reload: %v", err)
+	}
+	data, err := resp.Bytes()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "new" {
+		t.Fatalf("body %q", data)
+	}
+}
+
+func TestUpdateHostsPreservesOptions(t *testing.T) {
+	initial, err := NewHostSetWithOptions(HostSetOptions{Balance: BalanceOrdered},
+		Host{Name: "a", URL: mustURL("http://a")},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, err := New(WithHostSet(initial), WithoutCookieJar())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	if err := c.UpdateHosts(Host{Name: "b", URL: mustURL("http://b")}); err != nil {
+		t.Fatal(err)
+	}
+	next := c.engine.hosts.Load()
+	if next == nil || next.balance != BalanceOrdered {
+		t.Fatalf("balance after update %q", next.balance)
+	}
+}
+
+func TestHostBaseURLQueryMerged(t *testing.T) {
+	var got atomic.Value
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got.Store(r.URL.RawQuery)
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer srv.Close()
+	c, err := New(WithHosts(srv.URL+"?key=K"), WithoutCookieJar())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	resp, err := c.Get(context.Background(), "/x?q=1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if value := got.Load(); value != "key=K&q=1" {
+		t.Fatalf("raw query %q", value)
+	}
+}
+
+func TestHostSetClonesExpectStatus(t *testing.T) {
+	expected := []int{http.StatusOK}
+	hs, err := NewHostSet(Host{
+		Name:   "a",
+		URL:    mustURL("http://a"),
+		Health: HealthPolicy{ExpectStatus: expected},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer hs.Close()
+	expected[0] = http.StatusInternalServerError
+	if got := hs.entries[0].host.Health.ExpectStatus[0]; got != http.StatusOK {
+		t.Fatalf("ExpectStatus aliased caller slice: %d", got)
+	}
+}
+
+func TestHalfOpenProbeClaimsOnlySelectedHost(t *testing.T) {
+	hs, err := NewHostSetWithOptions(HostSetOptions{Balance: BalanceOrdered},
+		Host{Name: "a", URL: mustURL("http://a"), Health: HealthPolicy{FailThreshold: 1, Cooldown: time.Second}},
+		Host{Name: "b", URL: mustURL("http://b"), Health: HealthPolicy{FailThreshold: 1, Cooldown: time.Second}},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer hs.Close()
+	past := time.Now().Add(-time.Second).UnixNano()
+	for _, entry := range hs.entries {
+		entry.healthy.Store(false)
+		entry.cooldownUntil.Store(past)
+	}
+	req := httptest.NewRequest(http.MethodGet, "http://svc/x", nil)
+	host, err := hs.Pick(req, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if host.Name != "a" {
+		t.Fatalf("picked %q", host.Name)
+	}
+	if !hs.entries[0].halfOpen.Load() {
+		t.Fatal("selected host did not claim a half-open probe")
+	}
+	if hs.entries[1].halfOpen.Load() {
+		t.Fatal("unselected host kept a half-open claim")
+	}
+	hs.Release(host)
+}

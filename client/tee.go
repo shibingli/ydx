@@ -11,19 +11,26 @@ import (
 	"github.com/shibingli/ydx/errs"
 )
 
-// Sink receives raw response chunks from tee mirroring. | Sink 接收 tee 镜像的原始响应块。
+// Sink receives raw response chunks from tee mirroring. Sinks are shared by
+// every response using the policy and may be called concurrently; chunks are
+// read-only and the client never calls Close. | Sink 接收 tee 镜像的原始响应块。
+// Sink 被使用该策略的所有响应共享，可能被并发调用；chunk 只读，客户端不会调用
+// Close。
 type Sink interface {
 	// WriteChunk consumes one chunk. | WriteChunk 消费一个块。
 	WriteChunk(ctx context.Context, chunk []byte) error
-	// Close releases the sink. | Close 释放 sink。
+	// Close releases the sink; the owner calls it. | Close 释放 sink；由所有者调用。
 	Close() error
 }
 
-// EventSink receives parsed SSE events from tee mirroring. | EventSink 接收 tee 镜像解析后的事件。
+// EventSink receives parsed SSE events from tee mirroring. EventSinks are
+// shared by every stream using the policy and may be called concurrently; the
+// client never calls Close. | EventSink 接收 tee 镜像解析后的事件。EventSink 被
+// 使用该策略的所有流共享，可能被并发调用；客户端不会调用 Close。
 type EventSink interface {
 	// WriteEvent consumes one event. | WriteEvent 消费一个事件。
 	WriteEvent(ctx context.Context, event Event) error
-	// Close releases the sink. | Close 释放 sink。
+	// Close releases the sink; the owner calls it. | Close 释放 sink；由所有者调用。
 	Close() error
 }
 
@@ -48,15 +55,6 @@ func callSinkChunk(sink Sink, ctx context.Context, chunk []byte) (err error) {
 	return sink.WriteChunk(ctx, chunk)
 }
 
-// closeSink invokes a user Sink.Close with panic isolation. | closeSink 以 panic 隔离调用用户 Sink.Close。
-func closeSink(sink Sink) {
-	if sink == nil {
-		return
-	}
-	defer func() { _ = recover() }()
-	_ = sink.Close()
-}
-
 // callSinkEvent invokes a user EventSink with panic isolation. | callSinkEvent 以 panic 隔离调用用户 EventSink。
 func callSinkEvent(sink EventSink, ctx context.Context, event Event) (err error) {
 	defer func() {
@@ -65,15 +63,6 @@ func callSinkEvent(sink EventSink, ctx context.Context, event Event) (err error)
 		}
 	}()
 	return sink.WriteEvent(ctx, event)
-}
-
-// closeEventSink invokes a user EventSink.Close with panic isolation. | closeEventSink 以 panic 隔离调用用户 EventSink.Close。
-func closeEventSink(sink EventSink) {
-	if sink == nil {
-		return
-	}
-	defer func() { _ = recover() }()
-	_ = sink.Close()
 }
 
 // SinkFunc adapts a function into a Sink. | SinkFunc 把函数适配为 Sink。
@@ -156,7 +145,6 @@ func (w *teeSinkWorker) enqueue(chunk []byte) bool {
 // run consumes chunks until Close. | run 消费块直到 Close。
 func (w *teeSinkWorker) run() {
 	defer close(w.done)
-	defer closeSink(w.sink)
 	for chunk := range w.ch {
 		ctx, cancel := context.WithTimeout(context.Background(), w.timeout)
 		err := callSinkChunk(w.sink, ctx, chunk)
@@ -251,7 +239,6 @@ func (w *eventSinkWorker) enqueue(event Event) bool {
 // run consumes events until Close. | run 消费事件直到 Close。
 func (w *eventSinkWorker) run() {
 	defer close(w.done)
-	defer closeEventSink(w.sink)
 	for event := range w.ch {
 		ctx, cancel := context.WithTimeout(context.Background(), w.timeout)
 		err := callSinkEvent(w.sink, ctx, event)

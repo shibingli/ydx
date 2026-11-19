@@ -60,7 +60,8 @@ type MirrorPolicy struct {
 	TeeEventSinks []EventSink
 
 	targets []*url.URL
-	// Percent samples requests deterministically; <=0 means 100. | Percent 确定性抽样；<=0 表示 100。
+	// Percent samples requests deterministically; 0 means 100 and negative values
+	// are rejected. | Percent 确定性抽样；0 表示 100，负值会被拒绝。
 	Percent int
 	// Wait bounds synchronous mirror waiting; <=0 means 5s. | Wait 限制同步镜像等待；<=0 表示 5s。
 	Wait time.Duration
@@ -306,7 +307,7 @@ func (m *mirrorer) submit(parent context.Context, req *http.Request, logical *ur
 		return
 	}
 	var getBody func() (io.ReadCloser, error)
-	if req.Body != nil && req.Body != http.NoBody {
+	if sp == nil && req.Body != nil && req.Body != http.NoBody {
 		getBody = req.GetBody
 		if getBody == nil {
 			for _, target := range policy.targets {
@@ -350,7 +351,7 @@ func (m *mirrorer) submit(parent context.Context, req *http.Request, logical *ur
 			if sp != nil {
 				defer sp.release()
 			}
-			m.run(parent, req, logical, rule, policy, target, getBody)
+			m.run(parent, req, logical, rule, policy, target, getBody, sp)
 		}(target)
 	}
 	if policy.Sync {
@@ -359,7 +360,7 @@ func (m *mirrorer) submit(parent context.Context, req *http.Request, logical *ur
 }
 
 // run executes one shadow request against target. | run 对一个目标执行影子请求。
-func (m *mirrorer) run(parent context.Context, req *http.Request, logical *url.URL, rule *Rule, policy *MirrorPolicy, target *url.URL, getBody func() (io.ReadCloser, error)) {
+func (m *mirrorer) run(parent context.Context, req *http.Request, logical *url.URL, rule *Rule, policy *MirrorPolicy, target *url.URL, getBody func() (io.ReadCloser, error), sp *spool) {
 	start := time.Now()
 	result := MirrorResult{Target: target.String()}
 	defer func() {
@@ -396,22 +397,32 @@ func (m *mirrorer) run(parent context.Context, req *http.Request, logical *url.U
 	out.URL = targetURL(logical, &Host{URL: target}, rule)
 	out.RequestURI = ""
 	out.Host = out.URL.Host
-	out.Header = req.Header.Clone()
+	// Request.Clone already deep-copied Header. | Request.Clone 已深拷贝 Header。
 	if out.Header == nil {
 		out.Header = make(http.Header)
 	}
 	for _, name := range policy.StripHeaders {
 		out.Header.Del(name)
 	}
-	if getBody != nil {
+	switch {
+	case sp != nil:
+		body, err := sp.open()
+		if err != nil {
+			result.Err = err
+			return
+		}
+		out.Body = body
+		out.ContentLength = sp.length
+		out.GetBody = nil
+	case getBody != nil:
 		body, err := getBody()
 		if err != nil {
 			result.Err = err
 			return
 		}
 		out.Body = body
+		out.GetBody = getBody
 	}
-	out.GetBody = getBody
 	base := m.base
 	if m.engine != nil {
 		base = m.engine.transportForURL(out.URL)

@@ -16,6 +16,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"testing"
@@ -349,5 +350,21 @@ func TestTLSCallbacksPanicIsolated(t *testing.T) {
 	}
 	if _, err := cfg.GetClientCertificate(&tls.CertificateRequestInfo{}); !errors.Is(err, ErrTLSConfig) {
 		t.Fatalf("certificate error %v", err)
+	}
+}
+
+func TestHostTLSDefaultPortOverride(t *testing.T) {
+	c, err := New(WithHostTLS("example.com:443", TLSConfig{}), WithoutCookieJar())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	state := c.engine.hostTLS["example.com:443"]
+	if state == nil {
+		t.Fatal("host TLS state missing")
+	}
+	got := c.engine.transportForURL(&url.URL{Scheme: "https", Host: "example.com"})
+	if got != state.current() {
+		t.Fatal("default-port host TLS override was not applied")
 	}
 }

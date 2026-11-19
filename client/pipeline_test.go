@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -310,5 +312,59 @@ func TestPipelineHEADPreservesContentLength(t *testing.T) {
 	step := result.Steps["head"]
 	if step == nil || step.Response.ContentLength != 456 || step.Response.Header.Get("Content-Length") != "456" {
 		t.Fatalf("step %+v", step)
+	}
+}
+
+func TestStepReleasesSlotOnSendPanic(t *testing.T) {
+	c, err := New(
+		WithTransport(roundTripFunc(func(*http.Request) (*http.Response, error) {
+			panic("boom")
+		})),
+		WithoutCookieJar(),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	shared := &runShared{
+		client:  c,
+		vars:    NewVars(),
+		results: make(map[string]*StepResult),
+		limit:   make(chan struct{}, 1),
+	}
+	rs := &runState{ctx: context.Background(), shared: shared}
+	step := Step("s").GET("http://example.com/x")
+	func() {
+		defer func() { _ = recover() }()
+		_ = step.run(rs)
+	}()
+	if len(shared.limit) != 0 {
+		t.Fatal("pipeline step leaked its concurrency slot")
+	}
+}
+
+func TestStepBodySetterOrder(t *testing.T) {
+	var got atomic.Value
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		data, _ := io.ReadAll(r.Body)
+		got.Store(string(data))
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	c, err := New(WithoutCookieJar())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	p := NewPipeline(PipelineOptions{},
+		Step("s").POST(srv.URL+"/x").
+			JSON(map[string]string{"a": "b"}).
+			Body(strings.NewReader("raw")),
+	)
+	if _, err := p.Run(context.Background(), c); err != nil {
+		t.Fatal(err)
+	}
+	if value := got.Load(); value != "raw" {
+		t.Fatalf("body %q, want last setter to win", value)
 	}
 }

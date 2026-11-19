@@ -1,6 +1,7 @@
 package client
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
@@ -90,6 +91,111 @@ func TestStreamingBodyNoSilentEmptyRetry(t *testing.T) {
 	req.GetBody = nil
 	if _, err := c.Do(req); !errors.Is(err, ErrBodyNotReplayable) {
 		t.Fatalf("want ErrBodyNotReplayable, got %v", err)
+	}
+}
+
+func TestEmptyRetryStatusCodesDisableStatusRetry(t *testing.T) {
+	var hits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer srv.Close()
+	c, err := New(
+		WithHosts(srv.URL),
+		WithRetry(RetryPolicy{
+			MaxAttempts: 2,
+			Methods:     []string{http.MethodGet},
+			StatusCodes: []int{},
+			Backoff:     func(int) time.Duration { return 0 },
+		}),
+		WithoutCookieJar(),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	resp, err := c.Get(context.Background(), srv.URL+"/x")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if hits.Load() != 1 {
+		t.Fatalf("empty StatusCodes still retried: hits=%d", hits.Load())
+	}
+}
+
+func TestRetryLargeBodyDowngradesToSingleAttempt(t *testing.T) {
+	var hits atomic.Int32
+	var received atomic.Int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		n, _ := io.Copy(io.Discard, r.Body)
+		received.Store(n)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	c, err := New(
+		WithHosts(srv.URL),
+		WithRetry(RetryPolicy{
+			MaxAttempts: 2,
+			Methods:     []string{http.MethodPut},
+			Backoff:     func(int) time.Duration { return 0 },
+		}),
+		WithoutCookieJar(),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	const size = 2 << 20
+	body := io.LimitReader(bytes.NewReader(make([]byte, size)), size)
+	resp, err := c.Put(context.Background(), srv.URL+"/x", body)
+	if err != nil {
+		t.Fatalf("large one-shot body should be sent once: %v", err)
+	}
+	_ = resp.Body.Close()
+	if hits.Load() != 1 || received.Load() != size {
+		t.Fatalf("hits=%d received=%d", hits.Load(), received.Load())
+	}
+}
+
+func TestRetryReplaysNoBody(t *testing.T) {
+	var hits atomic.Int32
+	rt := roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if hits.Add(1) == 1 {
+			return nil, errors.New("temporary failure")
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       http.NoBody,
+			Request:    req,
+		}, nil
+	})
+	c, err := New(
+		WithTransport(rt),
+		WithRetry(RetryPolicy{
+			MaxAttempts: 2,
+			Methods:     []string{http.MethodGet},
+			Backoff:     func(int) time.Duration { return 0 },
+		}),
+		WithoutCookieJar(),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	req := mustRequest(t, http.MethodGet, "http://example.com/x", "")
+	req.Body = http.NoBody
+	req.GetBody = nil
+	resp, err := c.Do(req)
+	if err != nil {
+		t.Fatalf("retry with empty body: %v", err)
+	}
+	resp.Body.Close()
+	if hits.Load() != 2 {
+		t.Fatalf("attempts %d, want 2", hits.Load())
 	}
 }
 

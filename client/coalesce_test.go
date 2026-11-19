@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -299,6 +300,9 @@ func TestCoalesceOversizeBypass(t *testing.T) {
 	if hits.Load() != 2 {
 		t.Fatalf("hits %d, want 2", hits.Load())
 	}
+	if got := c.Stats().Coalesced; got != 0 {
+		t.Fatalf("bypass follower counted as coalesced: %d", got)
+	}
 }
 
 func TestCoalescePostAndAuthKey(t *testing.T) {
@@ -402,5 +406,152 @@ func TestCoalesceHEADPreservesContentLength(t *testing.T) {
 			t.Fatalf("content length %d header %q", out.resp.ContentLength, out.resp.Header.Get("Content-Length"))
 		}
 		_ = out.resp.Body.Close()
+	}
+}
+
+func TestShouldCoalesceAcceptsNoBody(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "http://svc/x", nil)
+	req.Body = http.NoBody
+	if !shouldCoalesce(req, (CoalescePolicy{}).withDefaults()) {
+		t.Fatal("http.NoBody request should be coalescable")
+	}
+}
+
+func TestCoalesceSeparatesRulesWithSameName(t *testing.T) {
+	type ruleCtxKey struct{}
+	condition := func(target string) func(*http.Request) bool {
+		return func(r *http.Request) bool {
+			value, _ := r.Context().Value(ruleCtxKey{}).(string)
+			return value == target
+		}
+	}
+	var aHits, bHits atomic.Int32
+	a := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		aHits.Add(1)
+		time.Sleep(100 * time.Millisecond)
+		_, _ = w.Write([]byte("A"))
+	}))
+	defer a.Close()
+	b := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		bHits.Add(1)
+		time.Sleep(100 * time.Millisecond)
+		_, _ = w.Write([]byte("B"))
+	}))
+	defer b.Close()
+	policy := func() *CoalescePolicy { return &CoalescePolicy{MaxBodyBytes: 1 << 20} }
+	c, err := New(
+		WithRules(
+			Rule{Pattern: "/x", Condition: condition("a"), Hosts: []string{a.URL}, Coalesce: policy()},
+			Rule{Pattern: "/x", Condition: condition("b"), Hosts: []string{b.URL}, Coalesce: policy()},
+		),
+		WithoutCookieJar(),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+
+	type outcome struct {
+		target string
+		body   string
+		err    error
+	}
+	start := make(chan struct{})
+	results := make(chan outcome, 2)
+	var wg sync.WaitGroup
+	for _, target := range []string{"a", "b"} {
+		wg.Add(1)
+		go func(target string) {
+			defer wg.Done()
+			<-start
+			ctx := context.WithValue(context.Background(), ruleCtxKey{}, target)
+			resp, err := c.Get(ctx, "http://svc/x")
+			if err != nil {
+				results <- outcome{target: target, err: err}
+				return
+			}
+			data, readErr := io.ReadAll(resp.Body)
+			_ = resp.Body.Close()
+			results <- outcome{target: target, body: string(data), err: readErr}
+		}(target)
+	}
+	close(start)
+	wg.Wait()
+	close(results)
+	for out := range results {
+		if out.err != nil {
+			t.Fatal(out.err)
+		}
+		if out.body != strings.ToUpper(out.target) {
+			t.Fatalf("target %s got body %q", out.target, out.body)
+		}
+	}
+	if aHits.Load() != 1 || bHits.Load() != 1 {
+		t.Fatalf("hits a=%d b=%d", aHits.Load(), bHits.Load())
+	}
+}
+
+func TestEmptyCoalesceMethodsPreserved(t *testing.T) {
+	c, err := New(WithCoalesce(CoalescePolicy{Methods: []string{}}), WithoutCookieJar())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	if c.opts.Coalesce == nil || c.opts.Coalesce.Methods == nil {
+		t.Fatal("empty Methods were normalized to nil")
+	}
+}
+
+func TestCoalesceDoesNotShareSetCookie(t *testing.T) {
+	var hits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := hits.Add(1)
+		time.Sleep(100 * time.Millisecond)
+		http.SetCookie(w, &http.Cookie{Name: "session", Value: strconv.Itoa(int(n)), Path: "/"})
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer srv.Close()
+	c, err := New(WithCoalesce(CoalescePolicy{}), WithoutCookieJar())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	type outcome struct {
+		cookie string
+		err    error
+	}
+	results := make(chan outcome, 2)
+	start := make(chan struct{})
+	for i := 0; i < 2; i++ {
+		go func() {
+			<-start
+			resp, err := c.Get(context.Background(), srv.URL+"/x")
+			if err != nil {
+				results <- outcome{err: err}
+				return
+			}
+			cookies := resp.Cookies()
+			_ = resp.Body.Close()
+			if len(cookies) != 1 {
+				results <- outcome{err: fmt.Errorf("cookies %d", len(cookies))}
+				return
+			}
+			results <- outcome{cookie: cookies[0].Value}
+		}()
+	}
+	close(start)
+	seen := make(map[string]bool, 2)
+	for i := 0; i < 2; i++ {
+		out := <-results
+		if out.err != nil {
+			t.Fatal(out.err)
+		}
+		seen[out.cookie] = true
+	}
+	if hits.Load() != 2 {
+		t.Fatalf("coalesced Set-Cookie responses shared upstream hit: %d", hits.Load())
+	}
+	if len(seen) != 2 {
+		t.Fatalf("followers shared Set-Cookie values: %v", seen)
 	}
 }

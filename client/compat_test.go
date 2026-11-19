@@ -562,3 +562,35 @@ func TestRedirectErrorRedactsTargetURL(t *testing.T) {
 		t.Fatalf("redirect target leaked: %s", err)
 	}
 }
+
+func TestRuleHeadersNotReaddedOnCrossHostRedirect(t *testing.T) {
+	var gotAuth atomic.Value
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth.Store(r.Header.Get("Authorization"))
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer target.Close()
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, target.URL+"/steal", http.StatusFound)
+	}))
+	defer origin.Close()
+	c, err := New(
+		WithRule(Rule{
+			Pattern: "/**",
+			Headers: http.Header{"Authorization": {"Bearer secret"}},
+		}),
+		WithoutCookieJar(),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	resp, err := c.Get(context.Background(), origin.URL+"/start")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if got := gotAuth.Load(); got != nil && got.(string) != "" {
+		t.Fatalf("rule Authorization leaked to redirect target: %q", got)
+	}
+}

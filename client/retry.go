@@ -24,7 +24,9 @@ type RetryPolicy struct {
 	Methods []string
 	// StatusCodes lists retryable statuses; nil means 429/502/503/504. | StatusCodes 列出可重试状态码；nil 表示 429/502/503/504。
 	StatusCodes []int
-	// MaxAttempts is the total attempt count; <=0 derives it from the host count. | MaxAttempts 是总尝试次数；<=0 时按 Host 数推导。
+	// MaxAttempts is the total attempt count; <=0 derives it from the host count
+	// and values above 10 are capped at 10. | MaxAttempts 是总尝试次数；<=0 时按 Host
+	// 数推导，大于 10 时按 10 封顶。
 	MaxAttempts int
 	// MaxBackoff caps one backoff or Retry-After delay; <=0 means 1s. | MaxBackoff 限制单次退避或 Retry-After；<=0 表示 1s。
 	MaxBackoff time.Duration
@@ -79,8 +81,8 @@ func defaultRetryPolicy(hostCount int) RetryPolicy {
 
 // WithRetry sets the client-wide retry policy. | WithRetry 设置客户端级重试策略。
 func WithRetry(policy RetryPolicy) Option {
-	policy.Methods = append([]string(nil), policy.Methods...)
-	policy.StatusCodes = append([]int(nil), policy.StatusCodes...)
+	policy.Methods = cloneSlice(policy.Methods)
+	policy.StatusCodes = cloneSlice(policy.StatusCodes)
 	return func(o *options) error {
 		if policy.MaxAttempts < 0 {
 			return errs.Detail(ErrInvalidConfig, "negative max attempts | 最大尝试次数为负")

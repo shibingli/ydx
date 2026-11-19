@@ -16,7 +16,9 @@ import (
 type ForwardOptions struct {
 	// StripHeaders lists extra inbound headers to remove. | StripHeaders 列出额外移除的入站头。
 	StripHeaders []string
-	// FlushInterval throttles intermediate flushes; <=0 flushes every chunk. | FlushInterval 限制中间刷新；<=0 表示每块刷新。
+	// FlushInterval throttles intermediate flushes; <=0 flushes every SSE chunk and
+	// disables intermediate flushes for normal responses. | FlushInterval 限制中间
+	// 刷新；<=0 时 SSE 每块刷新，普通响应不做中间刷新。
 	FlushInterval time.Duration
 	// SSEIdleTimeout bounds the upstream silence; <=0 disables it. | SSEIdleTimeout 限制上游静默；<=0 禁用。
 	SSEIdleTimeout time.Duration
@@ -270,7 +272,7 @@ func (m *mirrorer) submitSSE(parent context.Context, req *http.Request, logical 
 		return
 	}
 	var getBody func() (io.ReadCloser, error)
-	if req.Body != nil && req.Body != http.NoBody {
+	if sp == nil && req.Body != nil && req.Body != http.NoBody {
 		getBody = req.GetBody
 		if getBody == nil {
 			for _, target := range policy.targets {
@@ -314,7 +316,7 @@ func (m *mirrorer) submitSSE(parent context.Context, req *http.Request, logical 
 			if sp != nil {
 				defer sp.release()
 			}
-			m.runSSE(parent, req, logical, rule, policy, target, getBody)
+			m.runSSE(parent, req, logical, rule, policy, target, getBody, sp)
 		}(target)
 	}
 	if policy.Sync {
@@ -323,7 +325,7 @@ func (m *mirrorer) submitSSE(parent context.Context, req *http.Request, logical 
 }
 
 // runSSE consumes one shadow SSE stream to EOF or timeout. | runSSE 消费一条影子 SSE 流直到 EOF 或超时。
-func (m *mirrorer) runSSE(parent context.Context, req *http.Request, logical *url.URL, rule *Rule, policy *MirrorPolicy, target *url.URL, getBody func() (io.ReadCloser, error)) {
+func (m *mirrorer) runSSE(parent context.Context, req *http.Request, logical *url.URL, rule *Rule, policy *MirrorPolicy, target *url.URL, getBody func() (io.ReadCloser, error), sp *spool) {
 	start := time.Now()
 	result := MirrorResult{Target: target.String()}
 	defer func() {
@@ -360,7 +362,7 @@ func (m *mirrorer) runSSE(parent context.Context, req *http.Request, logical *ur
 	out.URL = targetURL(logical, &Host{URL: target}, rule)
 	out.RequestURI = ""
 	out.Host = out.URL.Host
-	out.Header = req.Header.Clone()
+	// Request.Clone already deep-copied Header. | Request.Clone 已深拷贝 Header。
 	if out.Header == nil {
 		out.Header = make(http.Header)
 	}
@@ -369,15 +371,25 @@ func (m *mirrorer) runSSE(parent context.Context, req *http.Request, logical *ur
 	}
 	out.Header.Set("Accept", "text/event-stream")
 	out.Header.Set("Accept-Encoding", "identity")
-	if getBody != nil {
+	switch {
+	case sp != nil:
+		body, err := sp.open()
+		if err != nil {
+			result.Err = err
+			return
+		}
+		out.Body = body
+		out.ContentLength = sp.length
+		out.GetBody = nil
+	case getBody != nil:
 		body, err := getBody()
 		if err != nil {
 			result.Err = err
 			return
 		}
 		out.Body = body
+		out.GetBody = getBody
 	}
-	out.GetBody = getBody
 	base := m.base
 	if m.engine != nil {
 		base = m.engine.transportForURL(out.URL)

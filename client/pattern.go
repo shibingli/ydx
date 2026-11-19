@@ -294,6 +294,12 @@ func (p *Pattern) Match(path string) (Params, bool) {
 	if !ok {
 		return Params{}, false
 	}
+	return p.matchSegments(pathSegments)
+}
+
+// matchSegments matches an already-split path, letting a rule set split once
+// for every rule. | matchSegments 匹配已切分的路径，使规则集只需切分一次。
+func (p *Pattern) matchSegments(pathSegments []string) (Params, bool) {
 	if len(p.segments) == 0 {
 		if len(pathSegments) == 0 {
 			return Params{}, true

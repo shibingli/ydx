@@ -78,7 +78,10 @@ func buildForwardOptions(opts ...ForwardOption) (ForwardOptions, error) {
 	return cfg, nil
 }
 
-// WithForwardAddForwardedFor toggles X-Forwarded-* headers. | WithForwardAddForwardedFor 开关 X-Forwarded-* 头。
+// WithForwardAddForwardedFor toggles X-Forwarded-* headers. When enabled,
+// X-Forwarded-Host/Proto are overwritten from the actual request and the
+// Forwarded header is removed. | WithForwardAddForwardedFor 开关 X-Forwarded-* 头。
+// 启用时按实际请求覆盖 X-Forwarded-Host/Proto，并移除 Forwarded 头。
 func WithForwardAddForwardedFor(ok bool) ForwardOption {
 	return func(o *ForwardOptions) error {
 		o.AddForwardedFor = ok
@@ -87,7 +90,9 @@ func WithForwardAddForwardedFor(ok bool) ForwardOption {
 }
 
 // WithForwardFlushInterval sets the normal-response flush interval; <=0 disables
-// intermediate flushes. | WithForwardFlushInterval 设置普通响应刷新间隔；<=0 关闭中间刷新。
+// intermediate flushes for normal responses while SSE still flushes every
+// chunk. | WithForwardFlushInterval 设置普通响应刷新间隔；<=0 时普通响应不做
+// 中间刷新，SSE 仍逐块刷新。
 func WithForwardFlushInterval(d time.Duration) ForwardOption {
 	return func(o *ForwardOptions) error {
 		o.FlushInterval = d
@@ -128,8 +133,12 @@ func WithForwardBodyTimeout(d time.Duration) ForwardOption {
 }
 
 // Forward forwards one inbound request and returns the upstream response. It does
-// not follow redirects or apply the cookie jar. | Forward 转发一个入站请求并返回上游响应；不跟随
-// 重定向，也不应用 Cookie 罐。
+// not follow redirects or apply the cookie jar. Absolute-form inbound targets
+// are honored when no host pool or rule host set applies, so an untrusted
+// deployment should combine Handler with an AccessPolicy. | Forward 转发一个
+// 入站请求并返回上游响应；不跟随重定向，也不应用 Cookie 罐。没有 Host 池或规则
+// Host 池时，绝对形式入站目标会被直接使用；不可信部署应将 Handler 与 AccessPolicy
+// 配合使用。
 func (c *Client) Forward(ctx context.Context, r *http.Request, opts ...ForwardOption) (*http.Response, error) {
 	cfg, err := buildForwardOptions(opts...)
 	if err != nil {
@@ -207,7 +216,7 @@ func (c *Client) forwardRequest(ctx context.Context, r *http.Request, cfg Forwar
 	out.TransferEncoding = nil
 	out.URL = &url.URL{Scheme: scheme, Host: host, Path: path, RawPath: rawPath, RawQuery: query, ForceQuery: r.URL.ForceQuery}
 	out.Trailer = r.Trailer
-	out.Header = r.Header.Clone()
+	// Request.Clone already deep-copied Header. | Request.Clone 已深拷贝 Header。
 	if out.Header == nil {
 		out.Header = make(http.Header)
 	}
@@ -229,9 +238,10 @@ func (c *Client) forwardRequest(ctx context.Context, r *http.Request, cfg Forwar
 	if cfg.AddForwardedFor {
 		addForwardedHeaders(out, r, scheme)
 	}
-	out = out.WithContext(context.WithValue(out.Context(), useDefaultHostsKey{}, true))
-	out = out.WithContext(context.WithValue(out.Context(), forwardNoRetryKey{}, true))
-	out = out.WithContext(context.WithValue(out.Context(), forwardPreserveHostKey{}, cfg.PreserveHost))
+	ctx = context.WithValue(out.Context(), useDefaultHostsKey{}, true)
+	ctx = context.WithValue(ctx, forwardNoRetryKey{}, true)
+	ctx = context.WithValue(ctx, forwardPreserveHostKey{}, cfg.PreserveHost)
+	out = out.WithContext(ctx)
 	resp, err := c.engine.RoundTrip(out)
 	if err != nil {
 		return nil, err
@@ -304,13 +314,19 @@ func addForwardedHeaders(out, in *http.Request, scheme string) {
 		} else {
 			out.Header.Set("X-Forwarded-For", clientIP)
 		}
+	} else {
+		out.Header.Del("X-Forwarded-For")
 	}
-	if out.Header.Get("X-Forwarded-Proto") == "" {
-		out.Header.Set("X-Forwarded-Proto", scheme)
-	}
-	if out.Header.Get("X-Forwarded-Host") == "" && in.Host != "" {
+	// Overwrite client-supplied forwarding metadata so the upstream cannot be
+	// tricked into trusting a spoofed proxy hop. | 覆盖客户端提供的转发元数据，
+	// 避免上游信任伪造的代理跳。
+	out.Header.Set("X-Forwarded-Proto", scheme)
+	if in.Host != "" {
 		out.Header.Set("X-Forwarded-Host", in.Host)
+	} else {
+		out.Header.Del("X-Forwarded-Host")
 	}
+	out.Header.Del("Forwarded")
 }
 
 // Handler returns a reverse-proxy http.Handler using the client engine. | Handler 返回使用客户端引擎的反向代理 http.Handler。
@@ -352,7 +368,9 @@ func (c *Client) writeForwardResponse(w http.ResponseWriter, r *http.Request, re
 			header.Add(key, value)
 		}
 	}
+	announced := make(map[string]bool, len(resp.Trailer))
 	for key := range resp.Trailer {
+		announced[key] = true
 		header.Add("Trailer", key)
 	}
 	w.WriteHeader(resp.StatusCode)
@@ -374,8 +392,19 @@ func (c *Client) writeForwardResponse(w http.ResponseWriter, r *http.Request, re
 		body = io.LimitReader(body, cfg.MaxBodyBytes)
 	}
 	_, _ = io.CopyBuffer(dst, body, buffer)
+	unannounced := false
 	for key, values := range resp.Trailer {
-		header[key] = values
+		if announced[key] {
+			header[key] = values
+			continue
+		}
+		// Trailers first seen at EOF must use the TrailerPrefix form. | 正文结束
+		// 时才出现的 trailer 必须使用 TrailerPrefix 形式。
+		header[http.TrailerPrefix+key] = values
+		unannounced = true
+	}
+	if unannounced {
+		_ = flushResponseWriter(w)
 	}
 }
 

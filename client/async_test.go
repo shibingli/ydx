@@ -133,6 +133,60 @@ func TestSubmitCloseRace(t *testing.T) {
 	wg.Wait()
 }
 
+func TestSubmitClosedClosesBody(t *testing.T) {
+	var closed atomic.Bool
+	c, err := New(WithoutCookieJar())
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = c.Close()
+	req := mustRequest(t, http.MethodGet, "http://example.com/x", "")
+	req.Body = closeTrackingBody{closed: &closed}
+	req.GetBody = nil
+	future := c.Submit(context.Background(), req, nil)
+	if _, err := future.Wait(context.Background()); !errors.Is(err, ErrClosed) {
+		t.Fatalf("wait error %v", err)
+	}
+	if !closed.Load() {
+		t.Fatal("request body was not closed")
+	}
+}
+
+func TestSubmitKeepsBodyAlive(t *testing.T) {
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", "5")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("he"))
+		w.(http.Flusher).Flush()
+		<-release
+		_, _ = w.Write([]byte("llo"))
+	}))
+	defer srv.Close()
+	c, err := New(WithHosts(srv.URL), WithoutCookieJar())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	future := c.Submit(context.Background(), mustRequest(t, http.MethodGet, srv.URL+"/x", ""), nil)
+	resp, err := future.Wait(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Give the async goroutine time to finish and (before the fix) cancel the
+	// request context while the body is still unread. | 给异步 goroutine 时间结束；
+	// 修复前它会在正文未读完时取消请求 context。
+	time.Sleep(20 * time.Millisecond)
+	close(release)
+	data, err := resp.Bytes()
+	if err != nil {
+		t.Fatalf("body read after async completion: %v", err)
+	}
+	if string(data) != "hello" {
+		t.Fatalf("body %q", data)
+	}
+}
+
 func TestSubmitCallbackCanClose(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte("ok"))

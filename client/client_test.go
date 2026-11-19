@@ -45,6 +45,22 @@ func mustRequest(t *testing.T, method, rawURL, body string) *http.Request {
 	return req
 }
 
+func TestTransportErrorRedactionKeepsSlash(t *testing.T) {
+	rt := roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return nil, errors.New("dial tcp 1.2.3.4:80: i/o timeout")
+	})
+	c, err := New(WithTransport(rt), WithoutCookieJar())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	if _, err := c.Get(context.Background(), "http://example.com"); err == nil {
+		t.Fatal("expected transport error")
+	} else if !strings.Contains(err.Error(), "i/o timeout") {
+		t.Fatalf("redaction corrupted error text: %v", err)
+	}
+}
+
 func TestNewDefaults(t *testing.T) {
 	c, err := New()
 	if err != nil {

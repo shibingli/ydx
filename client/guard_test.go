@@ -204,3 +204,41 @@ func TestGuardPanicFailsClosed(t *testing.T) {
 		t.Fatalf("error %v", err)
 	}
 }
+
+func TestNewRejectsInvalidAccessPolicy(t *testing.T) {
+	if _, err := New(WithAccessPolicy(&AccessPolicy{AllowCIDRs: []string{"bad"}})); err == nil {
+		t.Fatal("invalid client access policy accepted")
+	}
+	if _, err := New(WithRule(Rule{
+		Pattern: "/**",
+		Guard:   &AccessPolicy{AllowCIDRs: []string{"bad"}},
+	})); err == nil {
+		t.Fatal("invalid rule access policy accepted")
+	}
+}
+
+func TestAccessPolicyDeniesTrailingDotHost(t *testing.T) {
+	p := &AccessPolicy{DenyHosts: []string{"metadata.google.internal"}}
+	req := mustRequest(t, http.MethodGet, "http://metadata.google.internal./x", "")
+	decision, err := p.Check(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decision.Allowed {
+		t.Fatal("trailing-dot host bypassed the deny list")
+	}
+}
+
+func TestBlockPrivateIPsBlocksThisNetwork(t *testing.T) {
+	p := &AccessPolicy{BlockPrivateIPs: true}
+	for _, raw := range []string{"http://0.0.0.1/x", "http://100.64.0.1/x"} {
+		req := mustRequest(t, http.MethodGet, raw, "")
+		decision, err := p.Check(context.Background(), req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if decision.Allowed {
+			t.Fatalf("%s bypassed BlockPrivateIPs", raw)
+		}
+	}
+}

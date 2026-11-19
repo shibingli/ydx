@@ -103,24 +103,31 @@ func (s *StepBuilder) Query(key, value string) *StepBuilder {
 func (s *StepBuilder) JSON(value any) *StepBuilder {
 	s.body = value
 	s.jsonFunc = nil
+	s.bodyFunc = nil
 	return s
 }
 
 // JSONFunc computes the JSON body from variables. | JSONFunc 从变量计算 JSON 正文。
 func (s *StepBuilder) JSONFunc(fn func(*Vars) any) *StepBuilder {
 	s.jsonFunc = fn
+	s.body = nil
+	s.bodyFunc = nil
 	return s
 }
 
 // Body sets a streaming request body. | Body 设置流式请求正文。
 func (s *StepBuilder) Body(reader io.Reader) *StepBuilder {
 	s.body = reader
+	s.jsonFunc = nil
+	s.bodyFunc = nil
 	return s
 }
 
 // BodyFunc computes a streaming body from variables. | BodyFunc 从变量计算流式正文。
 func (s *StepBuilder) BodyFunc(fn func(*Vars) (io.Reader, error)) *StepBuilder {
 	s.bodyFunc = fn
+	s.body = nil
+	s.jsonFunc = nil
 	return s
 }
 
@@ -247,8 +254,10 @@ func (s *StepBuilder) run(rs *runState) error {
 	if err := rs.acquire(ctx); err != nil {
 		return s.finish(rs, start, 0, nil, nil, nil, err)
 	}
-	resp, err := rs.shared.client.Send(ctx, s.method, target, body, options...)
-	rs.release()
+	resp, err := func() (*Response, error) {
+		defer rs.release()
+		return rs.shared.client.Send(ctx, s.method, target, body, options...)
+	}()
 	if err != nil {
 		return s.finish(rs, start, 0, nil, nil, nil, err)
 	}
@@ -292,7 +301,7 @@ func (s *StepBuilder) run(rs *runState) error {
 	for _, extractor := range s.extractors {
 		if err := extractor.apply(extractContext{
 			Status: resp.StatusCode,
-			Header: resp.Header.Clone(),
+			Header: resp.Header,
 			Body:   data,
 		}, vars); err != nil {
 			result.Err = err
