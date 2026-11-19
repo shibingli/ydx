@@ -598,6 +598,12 @@ func (p *AccessPolicy) allowIP(ip netip.Addr) bool {
 	if !ip.IsValid() {
 		return false
 	}
+	// Prefix.Contains rejects zoned IPv6 addresses, so strip the zone before
+	// CIDR checks while preserving it for the actual dial address. | Prefix.Contains
+	// 会拒绝带 zone 的 IPv6 地址；CIDR 检查前先剥离 zone，实际拨号地址仍保留 zone。
+	if ip.Is6() && ip.Zone() != "" {
+		ip = ip.WithZone("")
+	}
 	if p.BlockPrivateIPs && isPrivateIP(ip) {
 		return false
 	}
@@ -665,6 +671,11 @@ func denyDecision(status int, message string) GuardDecision {
 // Unicode 与 punycode 形式可一致比较。
 func canonicalGuardHost(host string) string {
 	host = strings.ToLower(host)
+	// An IPv6 zone is not part of the host name used for allow/deny matching. |
+	// IPv6 zone 不属于用于 allow/deny 匹配的主机名。
+	if zone := strings.IndexByte(host, '%'); zone >= 0 {
+		host = host[:zone]
+	}
 	for strings.HasSuffix(host, ".") {
 		host = strings.TrimSuffix(host, ".")
 	}

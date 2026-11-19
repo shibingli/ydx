@@ -314,6 +314,59 @@ func TestNewRejectsInvalidAccessPolicy(t *testing.T) {
 	}
 }
 
+func TestAccessPolicyHostMatchStripsIPv6Zone(t *testing.T) {
+	policy := &AccessPolicy{DenyHosts: []string{"fe80::1"}}
+	req := mustRequest(t, http.MethodGet, "http://[fe80::1%25eth0]/x", "")
+	decision, err := policy.Check(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decision.Allowed {
+		t.Fatal("zoned IPv6 host bypassed deny host")
+	}
+}
+
+func TestAccessPolicyCIDRStripsIPv6Zone(t *testing.T) {
+	zoned := netip.MustParseAddr("2001:db8::1%eth0")
+	deny := &AccessPolicy{DenyCIDRs: []string{"2001:db8::/32"}}
+	if err := deny.prepare(); err != nil {
+		t.Fatal(err)
+	}
+	if deny.allowIP(zoned) {
+		t.Fatal("deny CIDR bypassed by IPv6 zone")
+	}
+	allow := &AccessPolicy{AllowCIDRs: []string{"2001:db8::/32"}}
+	if err := allow.prepare(); err != nil {
+		t.Fatal(err)
+	}
+	if !allow.allowIP(zoned) {
+		t.Fatal("allow CIDR rejected zoned IPv6 address")
+	}
+}
+
+func TestAccessPolicyCheckDeniesZonedIPv6CIDR(t *testing.T) {
+	policy := &AccessPolicy{DenyCIDRs: []string{"2001:db8::/32"}}
+	req := mustRequest(t, http.MethodGet, "http://[2001:db8::1%25eth0]/x", "")
+	decision, err := policy.Check(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decision.Allowed {
+		t.Fatal("zoned IPv6 bypassed deny CIDR in Check")
+	}
+}
+
+func TestDialControlStripsIPv6Zone(t *testing.T) {
+	policy := &AccessPolicy{DenyCIDRs: []string{"2001:db8::/32"}}
+	if err := policy.prepare(); err != nil {
+		t.Fatal(err)
+	}
+	err := policy.dialControl("tcp", "[2001:db8::1%eth0]:443", nil)
+	if !errors.Is(err, ErrBlocked) {
+		t.Fatalf("want ErrBlocked, got %v", err)
+	}
+}
+
 func TestAccessPolicyDeniesIDNHost(t *testing.T) {
 	p := &AccessPolicy{DenyHosts: []string{"metadata.google.internal"}}
 	req := mustRequest(t, http.MethodGet, "http://ｍｅｔａｄａｔａ.google.internal/x", "")
