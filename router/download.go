@@ -235,8 +235,13 @@ func (c *Ctx) autoETag(o DownloadOptions, size int64) {
 	if o.ETag != "" || o.ModTime.IsZero() || size < 0 || c.Writer.Header().Get("ETag") != "" {
 		return
 	}
-	tag := strconv.FormatInt(o.ModTime.Unix(), 16) + "-" + strconv.FormatInt(size, 16)
-	c.SetHeader("ETag", quoteETag(tag))
+	c.SetHeader("ETag", quoteETag(derivedETag(o.ModTime, size)))
+}
+
+// derivedETag builds the nginx-style strong validator "hex(mtime)-hex(size)". | derivedETag 构建
+// nginx 风格的强验证器 "hex(mtime)-hex(size)"。
+func derivedETag(modTime time.Time, size int64) string {
+	return strconv.FormatInt(modTime.Unix(), 16) + "-" + strconv.FormatInt(size, 16)
 }
 
 // quoteETag wraps a bare validator in quotes; an already quoted or weak tag is kept as-is. | quoteETag 给裸验证器加引号；已带引号或弱标签的原样保留。

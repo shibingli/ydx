@@ -378,6 +378,61 @@ func (c *Ctx) Flush() {
 	}
 }
 
+// ctxResponseWriter mirrors responses written directly to c.Writer into the Ctx accounting
+// fields, so middleware that inspects Ctx.Written or Ctx.StatusCode after Next sees the truth
+// for handlers that delegate to net/http helpers such as http.ServeContent or http.FileServer. |
+// ctxResponseWriter 把直接写入 c.Writer 的响应同步进 Ctx 的记账字段，使在 Next 之后检查
+// Ctx.Written 或 Ctx.StatusCode 的中间件，对委托给 http.ServeContent 或 http.FileServer 的
+// 处理器也能看到真实状态。
+//
+// ReaderFrom is forwarded when the underlying writer supports it, preserving sendfile-style
+// copies; Unwrap lets http.ResponseController reach the original writer. | 底层写入器支持
+// ReaderFrom 时会转发，保留 sendfile 式拷贝；Unwrap 让 http.ResponseController 能取到原始写入器。
+type ctxResponseWriter struct {
+	http.ResponseWriter
+	ctx *Ctx
+}
+
+// WriteHeader implements http.ResponseWriter. | WriteHeader 实现 http.ResponseWriter。
+func (w *ctxResponseWriter) WriteHeader(code int) {
+	if w.ctx.flags&ctxWritten == 0 {
+		w.ctx.status = code
+		w.ctx.flags |= ctxWritten
+	}
+	w.ResponseWriter.WriteHeader(code)
+}
+
+// Write implements http.ResponseWriter. | Write 实现 http.ResponseWriter。
+func (w *ctxResponseWriter) Write(b []byte) (int, error) {
+	if w.ctx.flags&ctxWritten == 0 {
+		w.WriteHeader(http.StatusOK)
+	}
+	return w.ResponseWriter.Write(b)
+}
+
+// ReadFrom implements io.ReaderFrom. | ReadFrom 实现 io.ReaderFrom。
+func (w *ctxResponseWriter) ReadFrom(r io.Reader) (int64, error) {
+	if w.ctx.flags&ctxWritten == 0 {
+		w.WriteHeader(http.StatusOK)
+	}
+	if rf, ok := w.ResponseWriter.(io.ReaderFrom); ok {
+		return rf.ReadFrom(r)
+	}
+	return io.Copy(w.ResponseWriter, r)
+}
+
+// Flush implements http.Flusher when the underlying writer supports it. | 底层写入器支持时，
+// Flush 实现 http.Flusher。
+func (w *ctxResponseWriter) Flush() {
+	if f, ok := w.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
+// Unwrap returns the underlying writer for http.ResponseController. | Unwrap 返回底层写入器，
+// 供 http.ResponseController 使用。
+func (w *ctxResponseWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
+
 // String writes plain text. | String 输出纯文本。
 func (c *Ctx) String(code int, s string) error {
 	c.SetHeader("Content-Type", "text/plain; charset=utf-8")

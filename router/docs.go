@@ -22,4 +22,14 @@
 //	r.Use(cors.CORS(o))
 //
 //	native := router.Adapt(mux, cors.CORS(o))
+//
+// Static assets and single-page applications use the same dual entry. SPA history mode is
+// registered as a router-wide fallback: registered routes always win, unmatched page-like
+// GET/HEAD requests receive the index document, and /api-style prefixes stay with the backend: |
+// 静态资源与单页应用同样具备双入口。SPA 的 history 模式注册为路由器级兜底：已注册路由始终优先，
+// 未命中且形如页面的 GET/HEAD 请求得到入口文档，/api 这类前缀保留给后端：
+//
+//	r.SPA("/", "dist", router.WithSPAExclude("/api"))
+//
+//	native := router.NewSPAHandler(afs.NewOS("dist"), router.WithSPAExclude("/api"))
 package router

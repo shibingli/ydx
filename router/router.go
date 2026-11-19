@@ -84,7 +84,11 @@ type Router struct {
 	// 不必每个请求都去抢注册锁（并触碰其缓存行）。
 	state    atomic.Pointer[serveState]
 	rawTable *rawTable
-	options  Options
+	// spa is the single-page-application fallback, consulted only when routing misses.
+	// It is replaced only during wiring and published through serveState. | spa 是单页应用兜底，
+	// 仅在路由未命中时查询。它只在装配期替换，并通过 serveState 发布。
+	spa     *spaHandler
+	options Options
 
 	routes   []RouteInfo
 	groups   []*Group
@@ -111,7 +115,9 @@ type Router struct {
 type serveState struct {
 	// raw is the immutable lookup table for context-free static routes; nil means none. | raw 是
 	// 无上下文静态路由的不可变查找表；nil 表示没有此类路由。
-	raw      *rawTable
+	raw *rawTable
+	// spa is the SPA fallback handler; nil means none. | spa 是 SPA 兜底处理器；nil 表示没有。
+	spa      *spaHandler
 	globalMW []Middleware
 	// hasPanicHandler is the hot-path copy of the opt-in panic handler check; the function value
 	// itself is only loaded when a panic actually happens. | hasPanicHandler 是可选 panic 处理器
@@ -133,6 +139,7 @@ func (r *Router) publishStateLocked() {
 		hasPanicHandler:   r.options.PanicHandler != nil,
 		hasCustomNotFound: r.options.NotFound != nil,
 		raw:               r.rawTable,
+		spa:               r.spa,
 		broken:            r.brokenFlag,
 	})
 }
@@ -377,8 +384,7 @@ func (r *Router) StaticFS(urlPrefix string, fs afero.Fs) {
 		orig := c.Request.URL.Path
 		c.Request.URL.Path = "/" + c.Param("filepath")
 		defer func() { c.Request.URL.Path = orig }()
-		srv.ServeHTTP(c.Writer, c.Request)
-		c.SetStatus(http.StatusOK)
+		srv.ServeHTTP(&ctxResponseWriter{ResponseWriter: c.Writer, ctx: c}, c.Request)
 	})
 }
 
@@ -519,7 +525,10 @@ func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	// Global middleware disables the shortcut too, exactly like the custom-404 case: access logs,
 	// rate limits and security headers must see the 404. | 全局中间件同样禁用该捷径，与自定义 404
 	// 情形一致：访问日志、限流与安全头必须看到这次 404。
-	if entry == nil && !state.hasCustomNotFound && len(state.globalMW) == 0 && r.tree.rootReject(path) {
+	// A configured SPA must see paths whose first byte matches no root edge; otherwise the
+	// shortcut would answer 404 for exactly the deep links the SPA exists to serve. | 配置了 SPA
+	// 时必须让这类路径继续走兜底：否则该捷径会对 SPA 本应承接的深链直接返回 404。
+	if entry == nil && state.spa == nil && !state.hasCustomNotFound && len(state.globalMW) == 0 && r.tree.rootReject(path) {
 		r.releaseContext(c)
 		w.Header()["Content-Type"] = plainTextContentType
 		w.WriteHeader(http.StatusNotFound)
@@ -756,16 +765,35 @@ func (r *Router) runChain(c *Ctx, state *serveState, chain []HandlerFunc) {
 // serveNotFound answers 404, through the custom handler when one is configured. | serveNotFound 应答
 // 404；配置了自定义处理器时经它应答。
 func (r *Router) serveNotFound(c *Ctx, state *serveState) {
-	if r.options.NotFound != nil {
-		r.setChain(c, state.globalMW, nil, r.options.NotFound)
-		c.Next()
+	if state.spa == nil {
+		if r.options.NotFound != nil {
+			r.setChain(c, state.globalMW, nil, r.options.NotFound)
+			c.Next()
+			return
+		}
+		// The default 404 must run the global chain too: otherwise access logs, rate limits and
+		// security headers silently stop applying to exactly the traffic an attacker generates most.
+		// | 默认 404 也必须经过全局链：否则访问日志、限流与安全头会对攻击者最容易制造的那类流量
+		// 悄悄失效。
+		r.runFallback(c, state, func(cc *Ctx) {
+			writeFallback(cc, http.StatusNotFound, notFoundBody)
+		})
 		return
 	}
-	// The default 404 must run the global chain too: otherwise access logs, rate limits and
-	// security headers silently stop applying to exactly the traffic an attacker generates most.
-	// | 默认 404 也必须经过全局链：否则访问日志、限流与安全头会对攻击者最容易制造的那类流量
-	// 悄悄失效。
+	// The SPA runs inside the global chain as well: a static response is normal traffic and must
+	// pass through access logs, security headers and compression exactly like a route response.
+	// When it declines (excluded prefix, missing asset, non-GET), the custom 404 or the default
+	// fallback answers in the same chain. | SPA 也在全局链内执行：静态响应属于正常流量，必须与
+	// 路由响应一样经过访问日志、安全头与压缩。当它拒绝处理（排除前缀、缺失资源、非 GET）时，
+	// 自定义 404 或默认兜底在同一条链内应答。
 	r.runFallback(c, state, func(cc *Ctx) {
+		if state.spa.serve(&ctxResponseWriter{ResponseWriter: cc.Writer, ctx: cc}, cc.Request) {
+			return
+		}
+		if r.options.NotFound != nil {
+			r.options.NotFound(cc)
+			return
+		}
 		writeFallback(cc, http.StatusNotFound, notFoundBody)
 	})
 }

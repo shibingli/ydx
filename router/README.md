@@ -19,8 +19,8 @@ YD 路由与原生 `net/http`。
 - 路由组：`Group` 前缀与组级中间件。
 - 中间件：`Use`、`New` 选项、`Adapt` 包裹原生 `http.Handler`。
 - 处理器形态：`HandlerFunc`（带 `*Ctx`）与 `HandlerFuncRaw`（原生 `http.ResponseWriter`）。
-- 静态文件、模板渲染、下载、上传、自动 OPTIONS、最大 Body 限制、自定义 404/405/panic
-  处理器。
+- 静态文件、静态资源与 SPA（history 模式）部署、模板渲染、下载、上传、自动 OPTIONS、
+  最大 Body 限制、自定义 404/405/panic 处理器。
 - 路由表内省：`Routes()` / `RouteInfo`，供 OpenAPI 文档生成。
 - `Router` 实现 `http.Handler`。
 
@@ -91,6 +91,52 @@ handler := router.Adapt(mux, func(c *router.Ctx) {
 _ = http.ListenAndServe(":8080", handler)
 ```
 
+## 静态资源与 SPA 部署
+
+`Static` / `StaticFS` / `Group.StaticFS` 把本地目录或任意 `afero` 文件系统挂到指定前缀，
+保留 `http.FileServer` 语义（Range、Last-Modified、If-Modified-Since）。
+
+SPA 部署使用 `SPA` / `SPAFS`。它与路由表共存：先匹配路由，未命中时才交给 SPA，因此
+`/api/users` 这类已注册接口不会被前端深链抢走。
+
+```go
+r := router.New()
+r.GET("/api/health", health)
+
+// 根路径托管 dist；/api 前缀不参与回退
+r.SPA("/", "dist", router.WithSPAExclude("/api"))
+```
+
+原生 `net/http` 入口：
+
+```go
+h := router.NewSPAHandler(afs.NewOS("dist"), router.WithSPAExclude("/api"))
+http.Handle("/", h)
+```
+
+> `NewSPAHandler` 直接按请求路径读取文件系统根；用 `http.StripPrefix("/app", h)` 挂到前缀下时，
+> 目录补尾斜杠的 301 会基于剥离后的路径生成（`/app/docs` → `/docs/`），因此前缀挂载优先使用
+> `SPAFS`。需要完整中间件链与自定义 404 时也使用 `SPAFS`。
+
+行为约定：
+
+- 已存在的文件按原样输出，支持 Range、ETag、Last-Modified、If-None-Match /
+  If-Modified-Since 与 HEAD，并附带 `X-Content-Type-Options: nosniff`。
+- 未命中文件且最后一段不含扩展名的 GET/HEAD 请求（如 `/users/1`）以 200 返回入口文档，
+  即 history 模式；带扩展名的资源缺失直接 404，不会把损坏的 bundle 引用变成 HTML。
+- `WithSPAExclude("/api")` 按分段边界排除前缀（`/api` 覆盖 `/api/users`，不覆盖
+  `/apiary`），同时匹配完整请求路径与挂载相对路径，因此前缀挂载下仍写 `/api` 即可。
+  被排除路径继续交给路由自定义 404 或默认 404，也不会从 SPA 文件系统读取文件。
+- 入口文档（含子目录中的入口）默认 `Cache-Control: no-cache`，部署更新在下一次导航即可见；
+  文件名含内容哈希（如 `app-4f3a2b1c.js`、`main.4f3a2b1c.chunk.js`）的资源自动使用
+  `public, max-age=31536000, immutable`。可用 `WithSPAIndexCacheControl` /
+  `WithSPAAssetCacheControl` 覆盖。
+- 目录请求保持文件服务器语义：缺少尾斜杠时 301 补齐，存在目录入口文档时输出，绝不列举目录。
+- 每台路由器只允许挂载一套 SPA；重复挂载或 nil 文件系统会记录装配错误，由 `Validate()`
+  报告，且路由器在修复装配前对所有请求返回 500。入口文档缺失会在装配期记录一条告警。
+- 挂载到 `/app` 等前缀时，构建产物的资源基路径需与之一致（Vite 的 `base: "/app/"`），
+  否则入口文档里的绝对资源地址不会命中该挂载。
+
 ## 多实例与路由前缀
 
 - `Router` 实例彼此独立，不共享路由表；同一个 Router 内的 method + pattern 必须唯一，
@@ -104,6 +150,7 @@ _ = http.ListenAndServe(":8080", handler)
 ## 应用场景
 
 - **REST API**：路径参数、通配、路由组与统一中间件。
+- **前端部署**：同进程托管 SPA 构建产物，history 深链回退与 API 前缀排除开箱即用。
 - **高吞吐网关**：静态路由零分配分发，参数/通配路径也保持零分配。
 - **混合前缀资源**：`/avatar/:id.jpg`、`/report/:id-xx.png` 等 CDN 风格路径。
 - **渐进迁移**：既有 `net/http` 处理器通过 `Adapt` 接入 YD 中间件，无需重写路由表。
