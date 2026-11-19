@@ -40,10 +40,11 @@ type MultipartFile struct {
 	Reader io.Reader
 }
 
-// MultipartBody marks a multipart/form-data request body. File parts are
-// streamed through a pipe; the request is one-shot and has unknown
-// Content-Length. | MultipartBody 标记 multipart/form-data 请求正文。文件分片通过
-// 管道流式发送；请求为一次性且 Content-Length 未知。
+// MultipartBody marks a multipart/form-data request body. Known payloads up to
+// 1 MiB are buffered; larger payloads stream through a pipe and are one-shot
+// with unknown Content-Length. | MultipartBody 标记 multipart/form-data 请求正文。
+// 已知且不超过 1 MiB 的载荷会缓冲；更大的载荷通过管道流式发送，为一次性且
+// Content-Length 未知。
 type MultipartBody struct {
 	// Fields are regular form fields. | Fields 是普通表单字段。
 	Fields url.Values
@@ -120,9 +121,16 @@ type multipartField struct {
 	values []string
 }
 
-// prepareMultipartBody validates and streams fields and files without buffering
-// file contents in memory. | prepareMultipartBody 校验并以流式发送字段与文件，
-// 不再把文件内容整体缓冲到内存。
+// multipartBufferLimit is the largest known multipart payload buffered in
+// memory; larger payloads stream through a pipe. | multipartBufferLimit 是可在
+// 内存中缓冲的 multipart 载荷上限；更大的载荷通过管道流式发送。
+const multipartBufferLimit = 1 << 20
+
+// prepareMultipartBody validates and encodes fields and files. Known payloads up
+// to multipartBufferLimit are buffered for lower latency; larger or unknown
+// payloads stream without buffering file contents. | prepareMultipartBody 校验并
+// 编码字段与文件。已知且不超过 multipartBufferLimit 的载荷在内存中缓冲以获得更低
+// 延迟；更大或未知的载荷流式发送，不缓冲文件内容。
 func prepareMultipartBody(body MultipartBody) (io.ReadCloser, func() (io.ReadCloser, error), string, int64, error) {
 	files := make([]multipartFilePart, 0, len(body.Files))
 	fields := make([]multipartField, 0, len(body.Fields))
@@ -161,6 +169,46 @@ func prepareMultipartBody(body MultipartBody) (io.ReadCloser, func() (io.ReadClo
 			contentType: contentType,
 		})
 	}
+	if size, known := multipartFilesSize(files); known && size <= multipartBufferLimit {
+		return prepareMultipartBuffered(fields, files)
+	}
+	return prepareMultipartStream(fields, files)
+}
+
+// prepareMultipartBuffered encodes a bounded multipart body into memory. | prepareMultipartBuffered
+// 把有界 multipart 正文编码到内存。
+func prepareMultipartBuffered(fields []multipartField, files []multipartFilePart) (io.ReadCloser, func() (io.ReadCloser, error), string, int64, error) {
+	var buffer bytes.Buffer
+	writer := multipart.NewWriter(&buffer)
+	for _, field := range fields {
+		for _, value := range field.values {
+			if err := writer.WriteField(field.key, value); err != nil {
+				return nil, nil, "", 0, errs.Wrap(err, ErrEncodeBody)
+			}
+		}
+	}
+	for _, file := range files {
+		part, err := writer.CreatePart(map[string][]string{
+			"Content-Disposition": {file.disposition},
+			"Content-Type":        {file.contentType},
+		})
+		if err != nil {
+			return nil, nil, "", 0, errs.Wrap(err, ErrEncodeBody)
+		}
+		if _, err := io.Copy(part, file.reader); err != nil {
+			return nil, nil, "", 0, errs.Wrap(err, ErrEncodeBody)
+		}
+	}
+	if err := writer.Close(); err != nil {
+		return nil, nil, "", 0, errs.Wrap(err, ErrEncodeBody)
+	}
+	data := buffer.Bytes()
+	return bytesBody(data), bytesGetBody(data), writer.FormDataContentType(), int64(len(data)), nil
+}
+
+// prepareMultipartStream streams fields and files through a pipe. | prepareMultipartStream
+// 通过管道流式发送字段与文件。
+func prepareMultipartStream(fields []multipartField, files []multipartFilePart) (io.ReadCloser, func() (io.ReadCloser, error), string, int64, error) {
 	reader, pipeWriter := io.Pipe()
 	writer := multipart.NewWriter(pipeWriter)
 	contentType := writer.FormDataContentType()
@@ -196,6 +244,50 @@ func prepareMultipartBody(body MultipartBody) (io.ReadCloser, func() (io.ReadClo
 		_ = pipeWriter.Close()
 	}()
 	return &multipartStreamBody{reader: reader, done: done}, nil, contentType, -1, nil
+}
+
+// multipartFilesSize sums known remaining file sizes. | multipartFilesSize 汇总
+// 已知的文件剩余字节数。
+func multipartFilesSize(files []multipartFilePart) (int64, bool) {
+	var total int64
+	for _, file := range files {
+		size, ok := multipartReaderSize(file.reader)
+		if !ok {
+			return 0, false
+		}
+		total += size
+		if total < 0 {
+			return 0, false
+		}
+	}
+	return total, true
+}
+
+// multipartReaderSize reports the remaining bytes of common replayable readers. | multipartReaderSize
+// 返回常见可重放 reader 的剩余字节数。
+func multipartReaderSize(reader io.Reader) (int64, bool) {
+	if lener, ok := reader.(interface{ Len() int }); ok {
+		return int64(lener.Len()), true
+	}
+	if file, ok := reader.(*os.File); ok {
+		info, err := file.Stat()
+		if err != nil || !info.Mode().IsRegular() {
+			return 0, false
+		}
+		offset, err := file.Seek(0, io.SeekCurrent)
+		if err != nil || offset < 0 || offset > info.Size() {
+			return 0, false
+		}
+		return info.Size() - offset, true
+	}
+	if seeker, ok := reader.(readerAtSeeker); ok {
+		offset, size, err := readerRange(seeker)
+		if err != nil || size < offset {
+			return 0, false
+		}
+		return size - offset, true
+	}
+	return 0, false
 }
 
 // prepareBody classifies a request body into a reader, a replay function and an

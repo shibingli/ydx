@@ -9,7 +9,7 @@
 | HTTP 方法 | GET/HEAD/POST/PUT/PATCH/DELETE/OPTIONS/TRACE/CONNECT + 自定义方法；CONNECT 的 2xx Body 即隧道流 |
 | 路径规则 | `:id`、`{id}`、`:id(regex)`、`{id:regex}`、段内 `*.jpg`、末段 `*path`、多参数；`Expand` 反向生成 URL |
 | Host 池 | 加权/最少在途/随机/一致性哈希/顺序；被动健康、冷却/半开、可选主动检查、fail-open、换 Host 重试；`MaxInflight` 满时等待（`HostSetOptions.Wait`） |
-| 请求体 | `[]byte`/string/JSON/XML/Form/Multipart/文件/Reader；Multipart 通过管道流式发送；重试/镜像时按上限 spool（可选落盘，`SpoolMaxBytes` 总量上限）；GET/直通路径零额外 clone |
+| 请求体 | `[]byte`/string/JSON/XML/Form/Multipart/文件/Reader；Multipart 已知 ≤1 MiB 缓冲、更大流式；重试/镜像时按上限 spool（可选落盘，`SpoolMaxBytes` 总量上限）；GET/直通路径零额外 clone |
 | 缓存 | 可选内置分片 LRU+TTL，支持 `Cache-Control`、`Age`/`Date`、`Expires`、`Vary`、自定义 `Store`/Key |
 | 重定向/Cookie | 默认内存 Cookie Jar，301/302/303/307/308 自动带入 Set-Cookie；`CheckRedirect`/`Jar` 保持标准语义；`WithoutCookieJar` 可关闭；Host base path 的 Location 自动还原到逻辑路径 |
 | 请求合并 | 相同并发 GET/HEAD 合并（singleflight）；超大/不可共享响应自动 bypass |

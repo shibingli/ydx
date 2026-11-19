@@ -289,7 +289,7 @@ func TestPrepareBodyMultipart(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer body.Close()
-	if getBody != nil || length != -1 || !strings.HasPrefix(contentType, "multipart/form-data; boundary=") {
+	if getBody == nil || length <= 0 || !strings.HasPrefix(contentType, "multipart/form-data; boundary=") {
 		t.Fatalf("content type %q length %d getBody %t", contentType, length, getBody != nil)
 	}
 	mediaType, params, err := mime.ParseMediaType(contentType)
@@ -376,6 +376,39 @@ func TestSendMultipartEndToEnd(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := resp.Discard(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestMultipartHybridThreshold(t *testing.T) {
+	small := bytes.Repeat([]byte("x"), 64<<10)
+	body, getBody, _, length, err := prepareBodyInfo(Multipart(nil,
+		MultipartFile{Field: "file", Reader: bytes.NewReader(small)},
+	))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if getBody == nil || length <= 0 {
+		t.Fatalf("small multipart should be buffered: getBody %t length %d", getBody != nil, length)
+	}
+	if err := body.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	large := bytes.Repeat([]byte("x"), 2<<20)
+	body, getBody, _, length, err = prepareBodyInfo(Multipart(nil,
+		MultipartFile{Field: "file", Reader: bytes.NewReader(large)},
+	))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if getBody != nil || length != -1 {
+		t.Fatalf("large multipart should stream: getBody %t length %d", getBody != nil, length)
+	}
+	if _, err := io.Copy(io.Discard, body); err != nil {
+		t.Fatal(err)
+	}
+	if err := body.Close(); err != nil {
 		t.Fatal(err)
 	}
 }
