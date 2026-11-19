@@ -10,6 +10,10 @@
 // 默认客户端带内存 Cookie Jar，301/302/303/307/308 跳转会自动带入 Set-Cookie；
 // 可用 WithoutCookieJar 关闭。
 //
+// Multipart request bodies buffer known payloads up to 1 MiB and stream larger
+// bodies through a pipe. | Multipart 请求正文对已知且不超过 1 MiB 的载荷缓冲，
+// 更大的载荷通过管道流式发送。
+//
 // # Basic usage | 基本用法
 //
 //	c, err := client.New(client.WithBaseURL("https://api.example.com"))
