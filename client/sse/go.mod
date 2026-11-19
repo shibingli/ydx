@@ -3,7 +3,7 @@ module github.com/shibingli/ydx/client/sse
 go 1.27.4
 
 require (
-	github.com/shibingli/ydx/client v0.1.8
+	github.com/shibingli/ydx/client v0.1.13
 	github.com/shibingli/ydx/errs v0.1.6
 	github.com/shibingli/ydx/sse v0.1.13
 )
@@ -20,5 +20,6 @@ require (
 	github.com/shibingli/ydx/sysinfo v0.1.6 // indirect
 	github.com/shibingli/ydx/xml v0.1.3 // indirect
 	github.com/spf13/afero v1.15.0 // indirect
+	golang.org/x/net v0.62.0 // indirect
 	golang.org/x/text v0.44.0 // indirect
 )

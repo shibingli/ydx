@@ -3,7 +3,7 @@ module github.com/shibingli/ydx/client/waf
 go 1.27.4
 
 require (
-	github.com/shibingli/ydx/client v0.1.8
+	github.com/shibingli/ydx/client v0.1.13
 	github.com/shibingli/ydx/errs v0.1.6
 	github.com/shibingli/ydx/waf v0.1.11
 )
@@ -22,6 +22,7 @@ require (
 	github.com/shibingli/ydx/xml v0.1.3 // indirect
 	github.com/spf13/afero v1.15.0 // indirect
 	github.com/tetratelabs/wazero v1.12.0 // indirect
+	golang.org/x/net v0.62.0 // indirect
 	golang.org/x/sys v0.50.0 // indirect
 	golang.org/x/text v0.44.0 // indirect
 )

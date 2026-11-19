@@ -47,9 +47,9 @@ GOWORK=off go test -bench '^BenchmarkGET_ShortConn/ydx$' \
 - OS：Windows 11 Pro for Workstations 10.0.28000
 - CPU：Intel Core i9-10980HK
 - Go：1.27.4 windows/amd64
-- 客户端库版本见 `go.mod`（当前 `client v0.1.12`）
+- 客户端库版本见 `go.mod`（当前 `client v0.1.13`）
 
-## 结果（client v0.1.12）
+## 结果（client v0.1.13）
 
 `-benchtime=500ms`、聚焦 ydx 场景 `-count=10`、其他客户端同轮高样本；`benchstat` 95% 置信区间。Windows 笔记本计时噪声较大，分配次数稳定，版本对比以分配与回归趋势为主要依据。
 
@@ -104,8 +104,9 @@ GOWORK=off go test -bench '^BenchmarkGET_ShortConn/ydx$' \
 | GET 1 MiB | ~1191.9µ / 68 allocs | 919.6µ / 68 allocs | **840.3µ / 68 allocs** |
 | GET ShortConn | 534.1µ / 151 allocs | 520.8µ / 149 allocs | **521.9µ / 150 allocs** |
 
-client v0.1.12 的直通热路径与 v0.1.11 保持一致；Multipart 小载荷改为内存缓冲，
-大载荷继续流式。直通热路径无分配回退，时间差异在 Windows 噪声范围内。关键优化：SSE 行解析缓冲复用、无 tee SSE 内联转发、coalesce 分片与键构造、Guard DNS 缓存、单 Host 快路径、Header/Response 复用、未配置 UA 时跳过 clone、显式 ContentLength 等。
+client v0.1.13 的直通热路径与 v0.1.11 保持一致；v0.1.12 引入 Multipart 小载荷
+内存缓冲、大载荷流式，v0.1.13 为 AccessPolicy IPv6 zone 修复。直通热路径无分配
+回退，时间差异在 Windows 噪声范围内。关键优化：SSE 行解析缓冲复用、无 tee SSE 内联转发、coalesce 分片与键构造、Guard DNS 缓存、单 Host 快路径、Header/Response 复用、未配置 UA 时跳过 clone、显式 ContentLength 等。
 
 “功能全开”（规则 + 缓存 + 合并 + 镜像）没有跨库可比对象，其正确性由 `client` 包测试覆盖；本表只测直通热路径，避免把不同语义的实现放在一起比较。基准中的 ydx 客户端使用 `WithoutCookieJar()`，避免默认 Cookie Jar 的额外语义影响直通对比；并显式 `WithRewriteAll(true)`，让绝对 URL 仍走 Host 池，以覆盖 Host 选择快路径。
 
