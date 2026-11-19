@@ -9,7 +9,7 @@ require (
 	github.com/shibingli/ydx/json v0.1.20
 	github.com/shibingli/ydx/log v0.1.14
 	github.com/shibingli/ydx/regexpx v0.1.14
-	github.com/shibingli/ydx/router v0.1.16
+	github.com/shibingli/ydx/router v0.1.17
 	github.com/shibingli/ydx/xml v0.1.3
 	github.com/tetratelabs/wazero v1.12.0
 )

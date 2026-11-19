@@ -6,7 +6,7 @@ require (
 	github.com/shibingli/ydx/afs v0.1.8
 	github.com/shibingli/ydx/errs v0.1.6
 	github.com/shibingli/ydx/json v0.1.20
-	github.com/shibingli/ydx/router v0.1.16
+	github.com/shibingli/ydx/router v0.1.17
 	github.com/spf13/afero v1.15.0
 	github.com/spf13/viper v1.21.0
 )

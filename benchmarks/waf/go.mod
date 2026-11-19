@@ -24,7 +24,7 @@ require (
 	github.com/shibingli/ydx/json v0.1.20 // indirect
 	github.com/shibingli/ydx/protocol v0.1.7 // indirect
 	github.com/shibingli/ydx/regexpx v0.1.14 // indirect
-	github.com/shibingli/ydx/router v0.1.16 // indirect
+	github.com/shibingli/ydx/router v0.1.17 // indirect
 	github.com/shibingli/ydx/sysinfo v0.1.6 // indirect
 	github.com/shibingli/ydx/xml v0.1.3 // indirect
 	github.com/spf13/afero v1.15.0 // indirect

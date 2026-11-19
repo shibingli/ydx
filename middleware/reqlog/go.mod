@@ -4,7 +4,7 @@ go 1.27.4
 
 require (
 	github.com/shibingli/ydx/buffpool v0.1.6
-	github.com/shibingli/ydx/router v0.1.16
+	github.com/shibingli/ydx/router v0.1.17
 )
 
 require (

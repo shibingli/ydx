@@ -39,7 +39,7 @@ require (
 	github.com/shibingli/ydx/afs v0.1.8 // indirect
 	github.com/shibingli/ydx/config v0.1.10 // indirect
 	github.com/shibingli/ydx/protocol v0.1.7 // indirect
-	github.com/shibingli/ydx/router v0.1.16 // indirect
+	github.com/shibingli/ydx/router v0.1.17 // indirect
 	github.com/shibingli/ydx/sysinfo v0.1.6 // indirect
 	github.com/spf13/afero v1.15.0 // indirect
 	github.com/spf13/cast v1.10.0 // indirect

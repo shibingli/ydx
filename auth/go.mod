@@ -9,7 +9,7 @@ require (
 	github.com/shibingli/ydx/guomi v0.1.4
 	github.com/shibingli/ydx/json v0.1.20
 	github.com/shibingli/ydx/log v0.1.14
-	github.com/shibingli/ydx/router v0.1.16
+	github.com/shibingli/ydx/router v0.1.17
 	github.com/shibingli/ydx/xml v0.1.3
 	golang.org/x/crypto v0.58.0
 	golang.org/x/sys v0.50.0

@@ -13,7 +13,7 @@ require (
 	github.com/shibingli/ydx/middleware/ratelimit v0.1.15
 	github.com/shibingli/ydx/middleware/recovery v0.1.17
 	github.com/shibingli/ydx/middleware/requestid v0.1.17
-	github.com/shibingli/ydx/router v0.1.16
+	github.com/shibingli/ydx/router v0.1.17
 	golang.org/x/time v0.16.0
 )
 

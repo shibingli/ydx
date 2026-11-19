@@ -14,7 +14,7 @@ require (
 	github.com/shibingli/ydx/auth v0.1.6
 	github.com/shibingli/ydx/base64 v0.1.15
 	github.com/shibingli/ydx/json v0.1.20
-	github.com/shibingli/ydx/router v0.1.16
+	github.com/shibingli/ydx/router v0.1.17
 	golang.org/x/oauth2 v0.37.0
 )
 

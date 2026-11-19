@@ -8,7 +8,7 @@ require (
 	github.com/gofiber/fiber/v3 v3.6.1
 	github.com/julienschmidt/httprouter v1.3.0
 	github.com/labstack/echo/v4 v4.16.0
-	github.com/shibingli/ydx/router v0.1.16
+	github.com/shibingli/ydx/router v0.1.17
 	github.com/shibingli/ydx/websocket v0.1.18
 	github.com/valyala/fasthttp v1.75.0
 )
