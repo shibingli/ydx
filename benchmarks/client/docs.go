@@ -4,9 +4,12 @@
 // github.com/shibingli/ydx/client 不依赖基准专用代码。
 //
 // The benchmarks compare net/http, ydx/client, resty v2, req v3 and fasthttp on
-// small GET, parallel GET, JSON POST, 1 MiB responses, short connections and TLS. |
-// 基准在小型 GET、并发 GET、JSON POST、1 MiB 响应、短连接与 TLS 上对比
-// net/http、ydx/client、resty v2、req v3 与 fasthttp。
+// small GET, parallel GET, JSON POST, 1 MiB responses, short connections and TLS.
+// Extended ydx-only benchmarks cover SSE parsing/forwarding, multipart uploads,
+// guard DNS caching and coalescing. | 基准在小型 GET、并发 GET、JSON POST、
+// 1 MiB 响应、短连接与 TLS 上对比 net/http、ydx/client、resty v2、req v3 与
+// fasthttp。额外的 ydx 专项基准覆盖 SSE 解析/转发、multipart 上传、Guard DNS
+// 缓存与请求合并。
 //
 // Run with | 运行方式：
 //
