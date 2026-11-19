@@ -47,9 +47,9 @@ GOWORK=off go test -bench '^BenchmarkGET_ShortConn/ydx$' \
 - OS：Windows 11 Pro for Workstations 10.0.28000
 - CPU：Intel Core i9-10980HK
 - Go：1.27.4 windows/amd64
-- 客户端库版本见 `go.mod`（当前 `client v0.1.11`）
+- 客户端库版本见 `go.mod`（当前 `client v0.1.12`）
 
-## 结果（client v0.1.11）
+## 结果（client v0.1.12）
 
 `-benchtime=500ms`、聚焦 ydx 场景 `-count=10`、其他客户端同轮高样本；`benchstat` 95% 置信区间。Windows 笔记本计时噪声较大，分配次数稳定，版本对比以分配与回归趋势为主要依据。
 
@@ -84,13 +84,13 @@ GOWORK=off go test -bench '^BenchmarkGET_ShortConn/ydx$' \
 | SSE Forward（32 事件） | 172.4µ | 10.96Ki | 107 | — |
 | Guard Check（DNS 缓存命中） | 1.127µ | 278 | 8 | — |
 | Coalesce Parallel | 28.5µ | 7.37Ki | 81 | — |
-| Multipart Upload / 1MiB | 3.86ms | 11.1Ki | 148 | 272 |
-| Multipart Upload / 8MiB | 28.8ms | 24.5Ki | 379 | 291 |
+| Multipart Upload / 1MiB | 1.85ms | 1.07Mi | 124 | 566 |
+| Multipart Upload / 8MiB | 31.1ms | 25.9Ki | 382 | 270 |
 
 说明：
 
 - `BenchmarkGuardCheckCached` 预热后命中 30s DNS TTL 缓存；首次解析仍执行真实 DNS 查询。
-- v0.1.11 的 multipart 全量走流式路径，`1MiB/op` 仅约 11 KiB 分配；工作区的下一版将加入“≤1 MiB 缓冲、更大流式”的阈值混合，发布后需同步更新本模块依赖并复测。
+- v0.1.12 起 multipart 对已知且 ≤1 MiB 的载荷缓冲，更大载荷流式发送；表中 1MiB 行是缓冲路径（约 1.07 MiB 分配，换取低延迟），8MiB 行是流式路径（分配保持约 26 KiB）。
 - 扩展场景可在同一台机器上做版本间对比；跨机器比较请使用 `benchstat`，并优先看分配次数与 `B/op`。
 
 ### 版本趋势（历史）
@@ -104,7 +104,8 @@ GOWORK=off go test -bench '^BenchmarkGET_ShortConn/ydx$' \
 | GET 1 MiB | ~1191.9µ / 68 allocs | 919.6µ / 68 allocs | **840.3µ / 68 allocs** |
 | GET ShortConn | 534.1µ / 151 allocs | 520.8µ / 149 allocs | **521.9µ / 150 allocs** |
 
-直通热路径无分配回退，时间差异在 Windows 噪声范围内。关键优化：SSE 行解析缓冲复用、无 tee SSE 内联转发、coalesce 分片与键构造、Guard DNS 缓存、单 Host 快路径、Header/Response 复用、未配置 UA 时跳过 clone、显式 ContentLength 等。
+client v0.1.12 的直通热路径与 v0.1.11 保持一致；Multipart 小载荷改为内存缓冲，
+大载荷继续流式。直通热路径无分配回退，时间差异在 Windows 噪声范围内。关键优化：SSE 行解析缓冲复用、无 tee SSE 内联转发、coalesce 分片与键构造、Guard DNS 缓存、单 Host 快路径、Header/Response 复用、未配置 UA 时跳过 clone、显式 ContentLength 等。
 
 “功能全开”（规则 + 缓存 + 合并 + 镜像）没有跨库可比对象，其正确性由 `client` 包测试覆盖；本表只测直通热路径，避免把不同语义的实现放在一起比较。基准中的 ydx 客户端使用 `WithoutCookieJar()`，避免默认 Cookie Jar 的额外语义影响直通对比；并显式 `WithRewriteAll(true)`，让绝对 URL 仍走 Host 池，以覆盖 Host 选择快路径。
 

@@ -5,7 +5,7 @@ go 1.27.4
 require (
 	github.com/go-resty/resty/v2 v2.17.2
 	github.com/imroc/req/v3 v3.61.0
-	github.com/shibingli/ydx/client v0.1.11
+	github.com/shibingli/ydx/client v0.1.12
 	github.com/valyala/fasthttp v1.75.0
 )
 
