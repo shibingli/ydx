@@ -12,8 +12,10 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+	"time"
 
 	"github.com/shibingli/ydx/errs"
+	"golang.org/x/net/idna"
 )
 
 // GuardDecision is the outcome of one guard check. | GuardDecision 是一次守卫检查的结果。
@@ -44,6 +46,175 @@ type GuardFunc func(ctx context.Context, req *http.Request) (GuardDecision, erro
 // Check calls f. | Check 调用 f。
 func (f GuardFunc) Check(ctx context.Context, req *http.Request) (GuardDecision, error) {
 	return f(ctx, req)
+}
+
+// dialPoliciesKey carries the effective IP-check policies for one request. | dialPoliciesKey
+// 携带单个请求生效的 IP 检查策略。
+type dialPoliciesKey struct{}
+
+// dialPoliciesFrom returns the request's effective IP-check policies. | dialPoliciesFrom
+// 返回请求生效的 IP 检查策略。
+func dialPoliciesFrom(ctx context.Context) []*AccessPolicy {
+	if ctx == nil {
+		return nil
+	}
+	policies, _ := ctx.Value(dialPoliciesKey{}).([]*AccessPolicy)
+	return policies
+}
+
+// dialPoliciesFor resolves the IP-check policies that apply to rule. | dialPoliciesFor
+// 解析适用于 rule 的 IP 检查策略。
+func dialPoliciesFor(o options, rule *Rule) []*AccessPolicy {
+	var policies []*AccessPolicy
+	appendPolicy := func(policy *AccessPolicy) {
+		if policy == nil || !policy.needsIPCheck() {
+			return
+		}
+		if err := policy.prepare(); err != nil {
+			return
+		}
+		policies = append(policies, policy)
+	}
+	appendPolicy(o.AccessPolicy)
+	guard := o.Guard
+	if rule != nil && rule.Guard != nil {
+		guard = rule.Guard
+	}
+	appendGuardPolicies(guard, appendPolicy)
+	return policies
+}
+
+// appendGuardPolicies walks a guard or chain and reports AccessPolicy members. | appendGuardPolicies
+// 遍历守卫或链并报告其中的 AccessPolicy。
+func appendGuardPolicies(guard Guard, appendPolicy func(*AccessPolicy)) {
+	switch typed := guard.(type) {
+	case *AccessPolicy:
+		appendPolicy(typed)
+	case GuardChain:
+		for _, child := range typed {
+			appendGuardPolicies(child, appendPolicy)
+		}
+	}
+}
+
+// hasIPCheckPolicies reports whether any configured policy needs IP checks. | hasIPCheckPolicies
+// 报告任一已配置策略是否需要 IP 检查。
+func hasIPCheckPolicies(o options, rules *RuleSet) bool {
+	if o.AccessPolicy != nil && o.AccessPolicy.needsIPCheck() {
+		return true
+	}
+	guardHasIPCheck := func(guard Guard) bool {
+		found := false
+		appendGuardPolicies(guard, func(policy *AccessPolicy) {
+			if policy.needsIPCheck() {
+				found = true
+			}
+		})
+		return found
+	}
+	if guardHasIPCheck(o.Guard) {
+		return true
+	}
+	if rules != nil {
+		for i := range rules.entries {
+			if guardHasIPCheck(rules.entries[i].rule.Guard) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// installGuardedDial installs per-request policy dialing and proxy fail-closed
+// behavior on a transport. | installGuardedDial 在传输上安装逐请求策略拨号与代理
+// 失败关闭行为。
+func installGuardedDial(transport *http.Transport, dialer *net.Dialer) {
+	transport.DialContext = guardedDialContext(dialer)
+	if transport.Proxy == nil {
+		return
+	}
+	proxy := transport.Proxy
+	transport.Proxy = func(req *http.Request) (*url.URL, error) {
+		if len(dialPoliciesFrom(req.Context())) == 0 {
+			return proxy(req)
+		}
+		resolved, err := proxy(req)
+		if err != nil {
+			return nil, err
+		}
+		if resolved != nil {
+			return nil, errs.Detail(ErrBlocked, "IP guard cannot use an HTTP proxy | IP 守卫不能使用 HTTP 代理")
+		}
+		return nil, nil
+	}
+}
+
+// guardedDialContext resolves and pins the checked address before dialing. | guardedDialContext
+// 在拨号前解析并固定已检查的地址。
+func guardedDialContext(dialer *net.Dialer) func(context.Context, string, string) (net.Conn, error) {
+	return func(ctx context.Context, network, addr string) (net.Conn, error) {
+		policies := dialPoliciesFrom(ctx)
+		if len(policies) == 0 {
+			return dialer.DialContext(ctx, network, addr)
+		}
+		host, port, err := net.SplitHostPort(addr)
+		if err != nil {
+			return dialer.DialContext(ctx, network, addr)
+		}
+		if ip, parseErr := netip.ParseAddr(host); parseErr == nil {
+			if !dialPoliciesAllow(policies, ip) {
+				return nil, errs.Detail(ErrBlocked, "dial address %s denied | 拨号地址 %s 被拒绝", ip, ip)
+			}
+			return dialer.DialContext(ctx, network, addr)
+		}
+		addresses, err := net.DefaultResolver.LookupNetIP(ctx, "ip", host)
+		if err != nil {
+			return nil, errs.WrapDetail(err, ErrBlocked, "resolve %s", host)
+		}
+		allowed := 0
+		var lastErr error
+		for _, ip := range addresses {
+			if !dialPoliciesAllow(policies, ip) {
+				continue
+			}
+			allowed++
+			conn, dialErr := dialer.DialContext(ctx, network, net.JoinHostPort(ip.Unmap().String(), port))
+			if dialErr == nil {
+				return conn, nil
+			}
+			lastErr = dialErr
+		}
+		if allowed == 0 {
+			return nil, errs.Detail(ErrBlocked, "address for %s denied | %s 的地址被拒绝", host, host)
+		}
+		if lastErr == nil {
+			lastErr = ErrNoHealthyHosts
+		}
+		return nil, lastErr
+	}
+}
+
+// dialPoliciesAllow reports whether every policy allows ip. | dialPoliciesAllow
+// 报告是否所有策略都允许 ip。
+func dialPoliciesAllow(policies []*AccessPolicy, ip netip.Addr) bool {
+	for _, policy := range policies {
+		if !policy.allowIP(ip) {
+			return false
+		}
+	}
+	return true
+}
+
+// validateIPGuard rejects rule policies that a custom transport cannot guard. | validateIPGuard
+// 拒绝自定义传输无法执行 IP 守卫的规则策略。
+func (e *engine) validateIPGuard(rules *RuleSet) error {
+	if e == nil || e.ipGuard {
+		return nil
+	}
+	if hasIPCheckPolicies(e.opts, rules) {
+		return errs.Detail(ErrInvalidConfig, "IP guard requires an *http.Transport without custom dialers | IP 守卫需要未自定义拨号器的 *http.Transport")
+	}
+	return nil
 }
 
 // callGuard invokes a guard with panic isolation and fails closed. | callGuard 以 panic 隔离调用守卫并失败关闭。
@@ -88,9 +259,9 @@ type AccessPolicy struct {
 	// AllowSchemes limits URL schemes; empty allows http and https. | AllowSchemes 限制 URL scheme；为空允许 http 与 https。
 	AllowSchemes []string
 	// AllowHosts lists host globs; empty allows every host. Matching lowercases
-	// hostnames and removes trailing root dots; IDNA conversion is not applied. |
-	// AllowHosts 列出 Host glob；为空允许全部 Host。匹配时主机名转小写并去掉末尾根点；
-	// 不做 IDNA 转换。
+	// hostnames, removes trailing root dots and applies IDNA lookup mapping. |
+	// AllowHosts 列出 Host glob；为空允许全部 Host。匹配时主机名转小写、去掉末尾
+	// 根点并应用 IDNA lookup 映射。
 	AllowHosts []string
 	// DenyHosts lists host globs checked after AllowHosts. | DenyHosts 列出在 AllowHosts 之后检查的 Host glob。
 	DenyHosts []string
@@ -113,13 +284,23 @@ type AccessPolicy struct {
 	// MaxRequestBytes rejects known-length request bodies above the limit. | MaxRequestBytes 拒绝已知长度超过上限的请求正文。
 	MaxRequestBytes int64
 
-	once sync.Once
+	dnsMu    sync.Mutex
+	dnsCache map[string]dnsCacheEntry
+	dnsTTL   time.Duration
+	resolver func(context.Context, string, string) ([]netip.Addr, error)
+	once     sync.Once
+	// DNSCacheTTL caches host resolutions for this policy; <0 disables caching
+	// and 0 means 30s. | DNSCacheTTL 为该策略缓存主机解析结果；<0 禁用缓存，
+	// 0 表示 30s。
+	DNSCacheTTL time.Duration
 	// BlockPrivateIPs rejects loopback, private, link-local, multicast and
-	// unspecified addresses. Dial-time recheck applies to the built-in transport
-	// without an HTTP proxy; rule-level policies and custom transports receive the
-	// pre-flight resolution check only. | BlockPrivateIPs 拒绝回环、私网、链路本地、
-	// 组播与未指定地址。拨号期复检仅适用于未使用 HTTP 代理的内置传输；规则级策略与
-	// 自定义传输只做请求前的解析检查。
+	// unspecified addresses. Client-wide and rule-level policies are rechecked at
+	// dial time on the built-in transport; requests with IP checks fail closed when
+	// an HTTP proxy is configured. Custom transports must be an *http.Transport
+	// without custom dialers, otherwise construction/update is rejected. |
+	// BlockPrivateIPs 拒绝回环、私网、链路本地、组播与未指定地址。客户端级与规则级
+	// 策略在內置传输的拨号期复检；启用 IP 检查时若配置 HTTP 代理则失败关闭。自定义
+	// 传输必须是无自定义拨号器的 *http.Transport，否则构造或更新会被拒绝。
 	BlockPrivateIPs bool
 }
 
@@ -163,6 +344,7 @@ func cloneAccessPolicy(policy *AccessPolicy) *AccessPolicy {
 		DenyMethods:     append([]string(nil), policy.DenyMethods...),
 		MaxRequestBytes: policy.MaxRequestBytes,
 		BlockPrivateIPs: policy.BlockPrivateIPs,
+		DNSCacheTTL:     policy.DNSCacheTTL,
 	}
 	return cloned
 }
@@ -173,11 +355,19 @@ func (p *AccessPolicy) prepare() error {
 		return nil
 	}
 	p.once.Do(func() {
+		switch {
+		case p.DNSCacheTTL < 0:
+			p.dnsTTL = 0
+		case p.DNSCacheTTL == 0:
+			p.dnsTTL = 30 * time.Second
+		default:
+			p.dnsTTL = p.DNSCacheTTL
+		}
 		p.allowScheme = stringSet(p.AllowSchemes, true)
 		p.allowMethod = stringSet(p.AllowMethods, false)
 		p.denyMethod = stringSet(p.DenyMethods, false)
-		p.allowHosts = lowerAll(p.AllowHosts)
-		p.denyHosts = lowerAll(p.DenyHosts)
+		p.allowHosts = canonicalGuardPatterns(p.AllowHosts)
+		p.denyHosts = canonicalGuardPatterns(p.DenyHosts)
 		p.allowPorts = intSet(p.AllowPorts)
 		p.denyPorts = intSet(p.DenyPorts)
 		for _, pattern := range append(append([]string(nil), p.allowHosts...), p.denyHosts...) {
@@ -340,7 +530,7 @@ func (p *AccessPolicy) checkHostIPs(ctx context.Context, host string) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	addresses, err := net.DefaultResolver.LookupNetIP(ctx, "ip", host)
+	addresses, err := p.lookupHostIPs(ctx, host)
 	if err != nil {
 		return errs.WrapDetail(err, ErrBlocked, "resolve %s", host)
 	}
@@ -350,6 +540,56 @@ func (p *AccessPolicy) checkHostIPs(ctx context.Context, host string) error {
 		}
 	}
 	return nil
+}
+
+// dnsCacheEntry is one cached resolution. | dnsCacheEntry 是一次缓存的解析结果。
+type dnsCacheEntry struct {
+	expires   time.Time
+	addresses []netip.Addr
+}
+
+// lookupHostIPs resolves host with a bounded per-policy TTL cache. | lookupHostIPs
+// 以受限于策略的有界 TTL 缓存解析主机。
+func (p *AccessPolicy) lookupHostIPs(ctx context.Context, host string) ([]netip.Addr, error) {
+	ttl := p.dnsTTL
+	if ttl > 0 {
+		p.dnsMu.Lock()
+		entry, ok := p.dnsCache[host]
+		p.dnsMu.Unlock()
+		if ok && time.Now().Before(entry.expires) {
+			return entry.addresses, nil
+		}
+	}
+	var (
+		addresses []netip.Addr
+		err       error
+	)
+	if p.resolver != nil {
+		addresses, err = p.resolver(ctx, "ip", host)
+	} else {
+		addresses, err = net.DefaultResolver.LookupNetIP(ctx, "ip", host)
+	}
+	if err != nil {
+		return nil, err
+	}
+	if ttl > 0 {
+		p.dnsMu.Lock()
+		if p.dnsCache == nil {
+			p.dnsCache = make(map[string]dnsCacheEntry)
+		}
+		if len(p.dnsCache) >= 256 {
+			for key := range p.dnsCache {
+				delete(p.dnsCache, key)
+				break
+			}
+		}
+		p.dnsCache[host] = dnsCacheEntry{
+			expires:   time.Now().Add(ttl),
+			addresses: append([]netip.Addr(nil), addresses...),
+		}
+		p.dnsMu.Unlock()
+	}
+	return addresses, nil
 }
 
 // allowIP reports whether ip passes private and CIDR checks. | allowIP 报告 ip 是否通过私网与 CIDR 检查。
@@ -419,12 +659,17 @@ func denyDecision(status int, message string) GuardDecision {
 	}
 }
 
-// canonicalGuardHost lowercases a host and removes trailing root dots. | canonicalGuardHost
-// 把主机名转小写并去掉末尾根点。
+// canonicalGuardHost lowercases a host, removes trailing root dots and applies
+// the IDNA lookup mapping so Unicode and punycode forms compare equal. |
+// canonicalGuardHost 把主机名转小写、去掉末尾根点，并应用 IDNA lookup 映射，使
+// Unicode 与 punycode 形式可一致比较。
 func canonicalGuardHost(host string) string {
 	host = strings.ToLower(host)
 	for strings.HasSuffix(host, ".") {
 		host = strings.TrimSuffix(host, ".")
+	}
+	if ascii, err := idna.Lookup.ToASCII(host); err == nil {
+		return strings.ToLower(ascii)
 	}
 	return host
 }
@@ -516,14 +761,21 @@ func stringSet(values []string, lower bool) map[string]bool {
 	return set
 }
 
-// lowerAll lowercases every value. | lowerAll 把全部值转为小写。
-func lowerAll(values []string) []string {
+// canonicalGuardPatterns lowercases host globs and IDNA-normalizes literals. | canonicalGuardPatterns
+// 把 Host glob 转小写，并对无通配符的字面量做 IDNA 归一化。
+func canonicalGuardPatterns(values []string) []string {
 	if len(values) == 0 {
 		return nil
 	}
 	out := make([]string, len(values))
 	for i, value := range values {
-		out[i] = strings.ToLower(value)
+		value = strings.ToLower(value)
+		if !strings.ContainsAny(value, "*?[\\]") {
+			if ascii, err := idna.Lookup.ToASCII(value); err == nil {
+				value = strings.ToLower(ascii)
+			}
+		}
+		out[i] = value
 	}
 	return out
 }

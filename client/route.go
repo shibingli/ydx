@@ -27,9 +27,10 @@ type Rule struct {
 	// Condition optionally rejects a match after the path matched. | Condition 在路径命中后可选地拒绝该匹配。
 	Condition func(*http.Request) bool
 	// HostSet is a prebuilt host pool override; it wins over Hosts. The client
-	// takes ownership and closes it on Close or when a rule stops referencing it. |
-	// HostSet 是预构建的 Host 池覆盖；优先于 Hosts。客户端接管所有权，并在 Close
-	// 或规则不再引用时关闭它。
+	// takes ownership and closes it on Close; a pool a rule stops referencing only
+	// stops active health checks and is retained for in-flight requests. | HostSet
+	// 是预构建的 Host 池覆盖；优先于 Hosts。客户端接管所有权并在 Close 时关闭；
+	// 规则不再引用的池只停止主动健康检查，并保留给在途请求。
 	HostSet *HostSet
 	// Rewrite rewrites the path before the host base path is joined. | Rewrite 在拼接 Host base path 前重写路径。
 	Rewrite *Rewrite
@@ -452,10 +453,10 @@ func WithRules(rules ...Rule) Option {
 }
 
 // UpdateRules atomically replaces the client's compiled rule snapshot. A rule
-// host pool no longer referenced by the new snapshot is closed; an in-flight
-// request that already selected it may fall back to the default pool or fail
-// with ErrClosed. | UpdateRules 原子替换客户端已编译的规则快照。新快照不再引用的
-// 规则 Host 池会被关闭；已选中它的在途请求可能回退到默认池或返回 ErrClosed。
+// host pool no longer referenced by the new snapshot stops active health checks
+// but remains usable by in-flight requests until Client.Close. | UpdateRules
+// 原子替换客户端已编译的规则快照。新快照不再引用的规则 Host 池会停止主动健康
+// 检查，但在 Client.Close 前仍可供在途请求使用。
 func (c *Client) UpdateRules(rules ...Rule) error {
 	if c == nil || c.engine == nil {
 		return ErrClosed
@@ -470,6 +471,10 @@ func (c *Client) UpdateRules(rules ...Rule) error {
 		c.lifecycleMu.Unlock()
 		return err
 	}
+	if err := c.engine.validateIPGuard(rs); err != nil {
+		c.lifecycleMu.Unlock()
+		return err
+	}
 	rs.detachDefaultHostSet(c.engine.hosts.Load())
 	// Disable the policy-free fast path before publishing rules so a concurrent
 	// request cannot observe new rules while bare is still true. | 发布规则前先
@@ -477,15 +482,10 @@ func (c *Client) UpdateRules(rules ...Rule) error {
 	c.engine.bare.Store(false)
 	c.engine.rules.Store(rs)
 	c.engine.registerRuleHosts(rs)
-	retired := c.engine.retireRuleHosts(rs)
+	c.engine.retireRuleHosts(rs)
 	c.engine.pruneTLS()
 	c.engine.bare.Store(isBareEngine(c.opts, rs, c.engine.hosts.Load()))
 	c.lifecycleMu.Unlock()
-	// Close retired pools outside lifecycleMu so health shutdown cannot block
-	// Client.Close. | 在 lifecycleMu 之外关闭退役池，避免健康检查关闭阻塞 Client.Close。
-	for _, hs := range retired {
-		_ = hs.Close()
-	}
 	return nil
 }
 
@@ -524,10 +524,13 @@ func (e *engine) registerRuleHosts(rs *RuleSet) {
 	}
 }
 
-// retireRuleHosts closes rule host pools no longer referenced by active rules. | retireRuleHosts 关闭不再被活动规则引用的规则 Host 池。
-func (e *engine) retireRuleHosts(rs *RuleSet) []*HostSet {
+// retireRuleHosts stops health checks for rule host pools no longer referenced
+// by active rules and retains them for in-flight requests until Client.Close. |
+// retireRuleHosts 停止不再被活动规则引用的规则 Host 池的健康检查，并保留它们供
+// 在途请求使用，直到 Client.Close。
+func (e *engine) retireRuleHosts(rs *RuleSet) {
 	if e == nil || rs == nil {
-		return nil
+		return
 	}
 	active := make(map[*HostSet]struct{})
 	for _, hs := range rs.hostSets() {
@@ -543,8 +546,11 @@ func (e *engine) retireRuleHosts(rs *RuleSet) []*HostSet {
 			retired = append(retired, hs)
 		}
 	}
+	e.retiredHosts = append(e.retiredHosts, retired...)
 	e.ruleHostsMu.Unlock()
-	return retired
+	for _, hs := range retired {
+		hs.stopHealth()
+	}
 }
 
 // closeRuleHosts closes every rule-owned host pool. | closeRuleHosts 关闭全部规则持有的 Host 池。
@@ -553,11 +559,13 @@ func (e *engine) closeRuleHosts(ctx context.Context) {
 		return
 	}
 	e.ruleHostsMu.Lock()
-	sets := make([]*HostSet, 0, len(e.ruleHosts))
+	sets := make([]*HostSet, 0, len(e.ruleHosts)+len(e.retiredHosts))
 	for hs := range e.ruleHosts {
 		sets = append(sets, hs)
 	}
+	sets = append(sets, e.retiredHosts...)
 	e.ruleHosts = make(map[*HostSet]struct{})
+	e.retiredHosts = nil
 	e.ruleHostsMu.Unlock()
 	for _, hs := range sets {
 		_ = hs.CloseContext(ctx)

@@ -80,9 +80,12 @@ type Stream struct {
 	rawMode bool
 }
 
-// OpenStream opens an SSE request through the client engine. Redirects are not
-// followed; a 3xx response reports ErrSSEProtocol. | OpenStream 通过客户端引擎
-// 打开 SSE 请求。不会跟随重定向；3xx 响应返回 ErrSSEProtocol。
+// OpenStream opens an SSE request through the client engine. Up to ten
+// redirects are followed, honoring CheckRedirect and stripping sensitive
+// headers across hosts; a final 3xx without a usable Location reports
+// ErrSSEProtocol. | OpenStream 通过客户端引擎打开 SSE 请求。最多跟随十次
+// 重定向，遵循 CheckRedirect，并在跨主机时剥离敏感头；最终 3xx 无可用的
+// Location 时返回 ErrSSEProtocol。
 func (c *Client) OpenStream(ctx context.Context, req *http.Request, opts ...StreamOption) (*Stream, error) {
 	if c == nil || c.engine == nil {
 		closeRequestBody(req)
@@ -150,72 +153,155 @@ func (c *Client) OpenStream(ctx context.Context, req *http.Request, opts ...Stre
 	return stream, nil
 }
 
+// maxStreamRedirects bounds redirect following for an SSE stream. | maxStreamRedirects
+// 限制 SSE 流跟随重定向的次数。
+const maxStreamRedirects = 10
+
+// isStreamRedirect reports whether status is a redirect status. | isStreamRedirect
+// 报告 status 是否为重定向状态码。
+func isStreamRedirect(status int) bool {
+	switch status {
+	case http.StatusMovedPermanently, http.StatusFound, http.StatusSeeOther,
+		http.StatusTemporaryRedirect, http.StatusPermanentRedirect:
+		return true
+	}
+	return false
+}
+
 // open issues one SSE request and validates the response. | open 发起一次 SSE 请求并校验响应。
 func (s *Stream) open(ctx context.Context) error {
-	req := s.template.Clone(ctx)
-	if s.reconnects > 0 && req.Body != nil && req.Body != http.NoBody {
-		if req.GetBody == nil {
-			return ErrBodyNotReplayable
-		}
-		body, err := req.GetBody()
-		if err != nil {
-			return errs.Wrap(err, ErrBodyNotReplayable)
-		}
-		req.Body = body
-	}
-	if s.lastID != "" {
-		req.Header.Set("Last-Event-ID", s.lastID)
-	}
 	meta := &Meta{}
-	req = req.WithContext(context.WithValue(req.Context(), streamRequestKey{}, true))
-	req = req.WithContext(context.WithValue(req.Context(), metaKey{}, meta))
 	var jar http.CookieJar
 	if s.client.hc != nil {
 		jar = s.client.hc.Jar
 	}
-	if jar != nil {
-		for _, cookie := range jar.Cookies(req.URL) {
-			req.AddCookie(cookie)
+	template := s.template.Clone(ctx)
+	via := make([]*http.Request, 0, 4)
+	for redirects := 0; ; redirects++ {
+		req := template.Clone(ctx)
+		if (redirects > 0 || s.reconnects > 0) && req.Body != nil && req.Body != http.NoBody {
+			if req.GetBody == nil {
+				return ErrBodyNotReplayable
+			}
+			body, err := req.GetBody()
+			if err != nil {
+				return errs.Wrap(err, ErrBodyNotReplayable)
+			}
+			req.Body = body
+			req.ContentLength = template.ContentLength
 		}
-	}
-	resp, err := s.client.engine.RoundTrip(req)
-	if err != nil {
-		return err
-	}
-	if jar != nil {
-		jar.SetCookies(req.URL, resp.Cookies())
-	}
-	if s.closed.Load() {
-		if resp.Body != nil {
+		if s.lastID != "" {
+			req.Header.Set("Last-Event-ID", s.lastID)
+		}
+		req = req.WithContext(context.WithValue(req.Context(), streamRequestKey{}, true))
+		req = req.WithContext(context.WithValue(req.Context(), metaKey{}, meta))
+		if jar != nil {
+			for _, cookie := range jar.Cookies(req.URL) {
+				req.AddCookie(cookie)
+			}
+		}
+		resp, err := s.client.engine.RoundTrip(req)
+		if err != nil {
+			return err
+		}
+		if jar != nil {
+			jar.SetCookies(req.URL, resp.Cookies())
+		}
+		if s.closed.Load() {
+			if resp.Body != nil {
+				_ = resp.Body.Close()
+			}
+			return ErrClosed
+		}
+		if isStreamRedirect(resp.StatusCode) {
+			if redirects >= maxStreamRedirects {
+				drainAndClose(resp.Body, 64<<10)
+				return &Error{
+					Op:       "open_stream",
+					Method:   req.Method,
+					URL:      safeURL(req.URL),
+					Attempts: 1,
+					Err:      errs.Detail(ErrSSEProtocol, "too many redirects | 重定向次数过多"),
+				}
+			}
+			location, locationErr := resp.Location()
+			if locationErr != nil || location == nil {
+				drainAndClose(resp.Body, 64<<10)
+				return &Error{
+					Op:       "open_stream",
+					Method:   req.Method,
+					URL:      safeURL(req.URL),
+					Attempts: 1,
+					Err:      errs.Detail(ErrSSEProtocol, "redirect without Location | 重定向缺少 Location"),
+				}
+			}
+			if location.Scheme != "http" && location.Scheme != "https" {
+				drainAndClose(resp.Body, 64<<10)
+				return errs.Detail(ErrSSEProtocol, "redirect scheme %q | 重定向 scheme %q", location.Scheme, location.Scheme)
+			}
+			if !strings.EqualFold(req.URL.Host, location.Host) {
+				for _, name := range []string{
+					"Authorization", "Cookie", "Cookie2", "Proxy-Authorization", "Last-Event-ID",
+				} {
+					template.Header.Del(name)
+				}
+			}
+			switch {
+			case resp.StatusCode == http.StatusSeeOther,
+				(resp.StatusCode == http.StatusMovedPermanently || resp.StatusCode == http.StatusFound) &&
+					template.Method != http.MethodGet && template.Method != http.MethodHead:
+				template.Method = http.MethodGet
+				template.Body = nil
+				template.GetBody = nil
+				template.ContentLength = 0
+				template.Header.Del("Content-Type")
+			case resp.StatusCode == http.StatusTemporaryRedirect || resp.StatusCode == http.StatusPermanentRedirect:
+				if template.Body != nil && template.Body != http.NoBody && template.GetBody == nil {
+					drainAndClose(resp.Body, 64<<10)
+					return ErrBodyNotReplayable
+				}
+			}
+			template.URL = location
+			template.Host = ""
+			next := template.Clone(ctx)
+			next.Response = resp
+			via = append(via, req)
+			if s.client.opts.CheckRedirect != nil {
+				if err := safeCheckRedirect(s.client.opts.CheckRedirect)(next, via); err != nil {
+					drainAndClose(resp.Body, 64<<10)
+					return err
+				}
+			}
+			drainAndClose(resp.Body, 64<<10)
+			continue
+		}
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			drainAndClose(resp.Body, 64<<10)
+			return &Error{
+				Op:       "open_stream",
+				Method:   req.Method,
+				URL:      safeURL(req.URL),
+				Attempts: 1,
+				Err:      errs.Detail(ErrSSEProtocol, "status %d", resp.StatusCode),
+			}
+		}
+		if !isEventStream(resp.Header) {
 			_ = resp.Body.Close()
+			return errs.Detail(ErrSSEProtocol, "content type %q", resp.Header.Get("Content-Type"))
 		}
-		return ErrClosed
-	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		drainAndClose(resp.Body, 64<<10)
-		return &Error{
-			Op:       "open_stream",
-			Method:   req.Method,
-			URL:      safeURL(req.URL),
-			Attempts: 1,
-			Err:      errs.Detail(ErrSSEProtocol, "status %d", resp.StatusCode),
+		s.mu.Lock()
+		if s.closed.Load() {
+			s.mu.Unlock()
+			_ = resp.Body.Close()
+			return ErrClosed
 		}
-	}
-	if !isEventStream(resp.Header) {
-		_ = resp.Body.Close()
-		return errs.Detail(ErrSSEProtocol, "content type %q", resp.Header.Get("Content-Type"))
-	}
-	s.mu.Lock()
-	if s.closed.Load() {
+		s.template = template
+		s.body = resp.Body
+		s.reader = nil
+		s.meta = meta
 		s.mu.Unlock()
-		_ = resp.Body.Close()
-		return ErrClosed
+		return nil
 	}
-	s.body = resp.Body
-	s.reader = nil
-	s.meta = meta
-	s.mu.Unlock()
-	return nil
 }
 
 // Next returns the next event, reconnecting when configured. | Next 返回下一个事件，并在配置时重连。

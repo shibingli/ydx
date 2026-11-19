@@ -48,7 +48,7 @@ func New(opts ...Option) (*Client, error) {
 			return nil, err
 		}
 	}
-	eng, err := newEngine(cfg)
+	eng, err := newEngine(cfg, rules)
 	if err != nil {
 		return nil, err
 	}
@@ -144,6 +144,17 @@ func (c *Client) Transport() http.RoundTripper {
 		return nil
 	}
 	return c.engine
+}
+
+// CloseAsync starts Close in a new goroutine and returns immediately. Hooks and
+// callbacks that run inside client goroutines should use it instead of blocking
+// Close. | CloseAsync 在新的 goroutine 中启动 Close 并立即返回。运行在客户端
+// goroutine 内的钩子与回调应使用它，而不是阻塞式 Close。
+func (c *Client) CloseAsync() {
+	if c == nil {
+		return
+	}
+	go func() { _ = c.Close() }()
 }
 
 // Close releases resources and waits up to five seconds for async requests. | Close 释放资源并最多等待异步请求五秒。

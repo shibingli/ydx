@@ -177,6 +177,43 @@ func TestSendRelativeWithBaseURL(t *testing.T) {
 	}
 }
 
+func TestUpdateRulesRetainsRuleHostSetForInflight(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("old"))
+	}))
+	defer srv.Close()
+	var c *Client
+	var err error
+	c, err = New(
+		WithRule(Rule{
+			Pattern: "/x",
+			Hosts:   []string{srv.URL},
+			Cache:   &CachePolicy{TTL: time.Minute},
+		}),
+		WithHooks(Hooks{OnCacheMiss: func(context.Context, *http.Request) {
+			if updateErr := c.UpdateRules(); updateErr != nil {
+				t.Errorf("update rules: %v", updateErr)
+			}
+		}}),
+		WithoutCookieJar(),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	resp, err := c.Get(context.Background(), "http://svc/x")
+	if err != nil {
+		t.Fatalf("in-flight request lost its retired rule host pool: %v", err)
+	}
+	data, err := resp.Bytes()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "old" {
+		t.Fatalf("body %q", data)
+	}
+}
+
 func TestUpdateRules(t *testing.T) {
 	c, err := New(WithRule(Rule{Name: "old", Pattern: "/old"}))
 	if err != nil {

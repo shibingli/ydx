@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -205,6 +207,101 @@ func TestGuardPanicFailsClosed(t *testing.T) {
 	}
 }
 
+func TestAccessPolicyCachesDNS(t *testing.T) {
+	var calls atomic.Int32
+	p := &AccessPolicy{
+		BlockPrivateIPs: true,
+		DNSCacheTTL:     time.Minute,
+		resolver: func(context.Context, string, string) ([]netip.Addr, error) {
+			calls.Add(1)
+			return []netip.Addr{netip.MustParseAddr("93.184.216.34")}, nil
+		},
+	}
+	if err := p.prepare(); err != nil {
+		t.Fatal(err)
+	}
+	req := mustRequest(t, http.MethodGet, "http://example.com/x", "")
+	for i := 0; i < 2; i++ {
+		decision, err := p.Check(context.Background(), req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !decision.Allowed {
+			t.Fatal("public address denied")
+		}
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("resolver calls %d, want 1", calls.Load())
+	}
+}
+
+func TestGuardedDialBlocksPrivateIP(t *testing.T) {
+	policy := &AccessPolicy{BlockPrivateIPs: true}
+	if err := policy.prepare(); err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.WithValue(context.Background(), dialPoliciesKey{}, []*AccessPolicy{policy})
+	conn, err := guardedDialContext(&net.Dialer{Timeout: time.Second})(ctx, "tcp", "localhost:80")
+	if conn != nil {
+		_ = conn.Close()
+	}
+	if !errors.Is(err, ErrBlocked) {
+		t.Fatalf("want ErrBlocked, got %v", err)
+	}
+}
+
+func TestGuardedDialAllowsCIDR(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	policy := &AccessPolicy{AllowCIDRs: []string{"127.0.0.0/8"}}
+	if err := policy.prepare(); err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.WithValue(context.Background(), dialPoliciesKey{}, []*AccessPolicy{policy})
+	_, port, err := net.SplitHostPort(listener.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn, err := guardedDialContext(&net.Dialer{Timeout: time.Second})(ctx, "tcp", "localhost:"+port)
+	if err != nil {
+		t.Fatalf("guarded dial: %v", err)
+	}
+	_ = conn.Close()
+}
+
+func TestNewRejectsIPGuardOnCustomTransport(t *testing.T) {
+	custom := roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: http.NoBody}, nil
+	})
+	if _, err := New(WithTransport(custom), WithAccessPolicy(&AccessPolicy{BlockPrivateIPs: true})); err == nil {
+		t.Fatal("custom RoundTripper accepted with IP guard")
+	}
+	tr := &http.Transport{DialContext: (&net.Dialer{Timeout: time.Second}).DialContext}
+	if _, err := New(WithTransport(tr), WithAccessPolicy(&AccessPolicy{BlockPrivateIPs: true})); err == nil {
+		t.Fatal("custom DialContext accepted with IP guard")
+	}
+}
+
+func TestUpdateRulesRejectsIPGuardOnCustomTransport(t *testing.T) {
+	custom := roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: http.NoBody}, nil
+	})
+	c, err := New(WithTransport(custom), WithoutCookieJar())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	if err := c.UpdateRules(Rule{
+		Pattern: "/**",
+		Guard:   &AccessPolicy{BlockPrivateIPs: true},
+	}); err == nil {
+		t.Fatal("custom transport accepted a later IP-guard rule")
+	}
+}
+
 func TestNewRejectsInvalidAccessPolicy(t *testing.T) {
 	if _, err := New(WithAccessPolicy(&AccessPolicy{AllowCIDRs: []string{"bad"}})); err == nil {
 		t.Fatal("invalid client access policy accepted")
@@ -214,6 +311,30 @@ func TestNewRejectsInvalidAccessPolicy(t *testing.T) {
 		Guard:   &AccessPolicy{AllowCIDRs: []string{"bad"}},
 	})); err == nil {
 		t.Fatal("invalid rule access policy accepted")
+	}
+}
+
+func TestAccessPolicyDeniesIDNHost(t *testing.T) {
+	p := &AccessPolicy{DenyHosts: []string{"metadata.google.internal"}}
+	req := mustRequest(t, http.MethodGet, "http://ｍｅｔａｄａｔａ.google.internal/x", "")
+	decision, err := p.Check(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decision.Allowed {
+		t.Fatal("Unicode IDN host bypassed the deny list")
+	}
+}
+
+func TestAccessPolicyIDNPattern(t *testing.T) {
+	p := &AccessPolicy{DenyHosts: []string{"ｍｅｔａｄａｔａ.google.internal"}}
+	req := mustRequest(t, http.MethodGet, "http://metadata.google.internal/x", "")
+	decision, err := p.Check(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decision.Allowed {
+		t.Fatal("Unicode deny pattern did not match the ASCII host")
 	}
 }
 

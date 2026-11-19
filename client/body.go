@@ -40,10 +40,10 @@ type MultipartFile struct {
 	Reader io.Reader
 }
 
-// MultipartBody marks a multipart/form-data request body. File parts are read
-// fully into memory while the body is prepared; use a streaming Body for large
-// uploads. | MultipartBody 标记 multipart/form-data 请求正文。准备正文时文件分片
-// 会完整读入内存；大文件上传请使用流式 Body。
+// MultipartBody marks a multipart/form-data request body. File parts are
+// streamed through a pipe; the request is one-shot and has unknown
+// Content-Length. | MultipartBody 标记 multipart/form-data 请求正文。文件分片通过
+// 管道流式发送；请求为一次性且 Content-Length 未知。
 type MultipartBody struct {
 	// Fields are regular form fields. | Fields 是普通表单字段。
 	Fields url.Values
@@ -84,19 +84,53 @@ type readerAtSeeker interface {
 	io.Seeker
 }
 
-// prepareMultipartBody encodes fields and files into a replayable multipart body. | prepareMultipartBody 把字段与文件编码为可重放的 multipart 正文。
+// multipartStreamBody streams a multipart body through a pipe. | multipartStreamBody
+// 通过管道流式发送 multipart 正文。
+type multipartStreamBody struct {
+	reader *io.PipeReader
+	done   chan struct{}
+	once   sync.Once
+}
+
+// Read reads the next multipart bytes. | Read 读取下一段 multipart 字节。
+func (b *multipartStreamBody) Read(p []byte) (int, error) { return b.reader.Read(p) }
+
+// Close closes the pipe and waits for the writer goroutine. | Close 关闭管道并
+// 等待写入 goroutine。
+func (b *multipartStreamBody) Close() error {
+	var err error
+	b.once.Do(func() {
+		err = b.reader.Close()
+		<-b.done
+	})
+	return err
+}
+
+// multipartFilePart is one validated file part. | multipartFilePart 是一个已校验的文件分片。
+type multipartFilePart struct {
+	reader      io.Reader
+	field       string
+	disposition string
+	contentType string
+}
+
+// multipartField is one validated form field. | multipartField 是一个已校验的表单字段。
+type multipartField struct {
+	key    string
+	values []string
+}
+
+// prepareMultipartBody validates and streams fields and files without buffering
+// file contents in memory. | prepareMultipartBody 校验并以流式发送字段与文件，
+// 不再把文件内容整体缓冲到内存。
 func prepareMultipartBody(body MultipartBody) (io.ReadCloser, func() (io.ReadCloser, error), string, int64, error) {
-	var buffer bytes.Buffer
-	writer := multipart.NewWriter(&buffer)
+	files := make([]multipartFilePart, 0, len(body.Files))
+	fields := make([]multipartField, 0, len(body.Fields))
 	for key, values := range body.Fields {
 		if key == "" {
 			return nil, nil, "", 0, errs.Detail(ErrEncodeBody, "empty multipart field name | 空 multipart 字段名")
 		}
-		for _, value := range values {
-			if err := writer.WriteField(key, value); err != nil {
-				return nil, nil, "", 0, errs.Wrap(err, ErrEncodeBody)
-			}
-		}
+		fields = append(fields, multipartField{key: key, values: append([]string(nil), values...)})
 	}
 	for _, file := range body.Files {
 		if file.Field == "" {
@@ -120,22 +154,48 @@ func prepareMultipartBody(body MultipartBody) (io.ReadCloser, func() (io.ReadClo
 		if disposition == "" {
 			return nil, nil, "", 0, errs.Detail(ErrEncodeBody, "invalid multipart field %q | 非法的 multipart 字段 %q", file.Field, file.Field)
 		}
-		part, err := writer.CreatePart(map[string][]string{
-			"Content-Disposition": {disposition},
-			"Content-Type":        {contentType},
+		files = append(files, multipartFilePart{
+			reader:      file.Reader,
+			field:       file.Field,
+			disposition: disposition,
+			contentType: contentType,
 		})
+	}
+	reader, pipeWriter := io.Pipe()
+	writer := multipart.NewWriter(pipeWriter)
+	contentType := writer.FormDataContentType()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		err := func() error {
+			for _, field := range fields {
+				for _, value := range field.values {
+					if err := writer.WriteField(field.key, value); err != nil {
+						return err
+					}
+				}
+			}
+			for _, file := range files {
+				part, err := writer.CreatePart(map[string][]string{
+					"Content-Disposition": {file.disposition},
+					"Content-Type":        {file.contentType},
+				})
+				if err != nil {
+					return err
+				}
+				if _, err := io.Copy(part, file.reader); err != nil {
+					return err
+				}
+			}
+			return writer.Close()
+		}()
 		if err != nil {
-			return nil, nil, "", 0, errs.Wrap(err, ErrEncodeBody)
+			_ = pipeWriter.CloseWithError(errs.Wrap(err, ErrEncodeBody))
+			return
 		}
-		if _, err := io.Copy(part, file.Reader); err != nil {
-			return nil, nil, "", 0, errs.Wrap(err, ErrEncodeBody)
-		}
-	}
-	if err := writer.Close(); err != nil {
-		return nil, nil, "", 0, errs.Wrap(err, ErrEncodeBody)
-	}
-	data := buffer.Bytes()
-	return bytesBody(data), bytesGetBody(data), writer.FormDataContentType(), int64(len(data)), nil
+		_ = pipeWriter.Close()
+	}()
+	return &multipartStreamBody{reader: reader, done: done}, nil, contentType, -1, nil
 }
 
 // prepareBody classifies a request body into a reader, a replay function and an

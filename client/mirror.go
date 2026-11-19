@@ -327,31 +327,37 @@ func (m *mirrorer) submit(parent context.Context, req *http.Request, logical *ur
 			m.drop(target.String(), "mirror inflight limit")
 			return
 		}
+		if m.engine != nil && m.engine.hooks.OnMirrorStart != nil {
+			// Fire before the close barrier is reserved so a hook that closes the
+			// client cannot wait on its own reservation. | 在占用关闭屏障前触发，
+			// 避免钩子关闭客户端时等待自身预留。
+			_ = callHook(func() error {
+				m.engine.hooks.OnMirrorStart(parent, MirrorInfo{Target: target.String()})
+				return nil
+			})
+		}
 		if !m.reserve() {
 			<-m.sem
 			return
 		}
 		if m.engine != nil {
 			m.engine.counters.mirrors.Add(1)
-			if m.engine.hooks.OnMirrorStart != nil {
-				_ = callHook(func() error {
-					m.engine.hooks.OnMirrorStart(parent, MirrorInfo{Target: target.String()})
-					return nil
-				})
-			}
 		}
 		if sp != nil {
 			sp.retain()
 		}
 		local.Add(1)
 		go func(target *url.URL) {
-			defer m.wg.Done()
 			defer local.Done()
 			defer func() { <-m.sem }()
 			if sp != nil {
 				defer sp.release()
 			}
-			m.run(parent, req, logical, rule, policy, target, getBody, sp)
+			func() {
+				defer m.wg.Done()
+				m.run(parent, req, logical, rule, policy, target, getBody, sp)
+			}()
+			m.fireMirrorDone(parent, target)
 		}(target)
 	}
 	if policy.Sync {
@@ -367,16 +373,6 @@ func (m *mirrorer) run(parent context.Context, req *http.Request, logical *url.U
 		result.Duration = time.Since(start)
 		recordMirror(req.Context(), result)
 	}()
-	if m.engine != nil {
-		defer func() {
-			if m.engine.hooks.OnMirrorDone != nil {
-				_ = callHook(func() error {
-					m.engine.hooks.OnMirrorDone(parent, MirrorInfo{Target: target.String()})
-					return nil
-				})
-			}
-		}()
-	}
 	ctx := m.ctx
 	var detach func()
 	if policy.FollowCancel && parent != nil {
@@ -392,6 +388,9 @@ func (m *mirrorer) run(parent context.Context, req *http.Request, logical *url.U
 	defer cancel()
 	if detach != nil {
 		defer detach()
+	}
+	if policies := dialPoliciesFrom(req.Context()); len(policies) > 0 {
+		ctx = context.WithValue(ctx, dialPoliciesKey{}, policies)
 	}
 	out := req.Clone(ctx)
 	out.URL = targetURL(logical, &Host{URL: target}, rule)
@@ -446,6 +445,18 @@ func (m *mirrorer) run(parent context.Context, req *http.Request, logical *url.U
 	}
 	result.Status = resp.StatusCode
 	drainAndClose(resp.Body, policy.MaxBodyBytes)
+}
+
+// fireMirrorDone runs OnMirrorDone after the worker leaves the close barrier. | fireMirrorDone
+// 在工作 goroutine 离开关闭屏障后运行 OnMirrorDone。
+func (m *mirrorer) fireMirrorDone(parent context.Context, target *url.URL) {
+	if m == nil || m.engine == nil || m.engine.hooks.OnMirrorDone == nil {
+		return
+	}
+	_ = callHook(func() error {
+		m.engine.hooks.OnMirrorDone(parent, MirrorInfo{Target: target.String()})
+		return nil
+	})
 }
 
 // drop records a dropped mirror payload. | drop 记录丢弃的镜像载荷。

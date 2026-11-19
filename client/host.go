@@ -632,17 +632,27 @@ func (hs *HostSet) Close() error {
 	return hs.CloseContext(context.Background())
 }
 
+// stopHealth cancels the active health loop without closing the pool. | stopHealth
+// 取消主动健康检查循环但不关闭 Host 池。
+func (hs *HostSet) stopHealth() {
+	if hs == nil {
+		return
+	}
+	hs.healthMu.Lock()
+	cancel := hs.healthCancel
+	hs.healthCancel = nil
+	hs.healthMu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+}
+
 // CloseContext stops health checks and bounds the wait by ctx. | CloseContext 停止健康检查并以 ctx 限制等待。
 func (hs *HostSet) CloseContext(ctx context.Context) error {
 	if hs == nil || !hs.closed.CompareAndSwap(false, true) {
 		return nil
 	}
-	hs.healthMu.Lock()
-	cancel := hs.healthCancel
-	hs.healthMu.Unlock()
-	if cancel != nil {
-		cancel()
-	}
+	hs.stopHealth()
 	hs.signalWait()
 	if ctx == nil {
 		ctx = context.Background()

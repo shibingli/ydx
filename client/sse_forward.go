@@ -32,6 +32,10 @@ type ForwardOptions struct {
 	PreserveHost bool
 	// AddForwardedFor appends X-Forwarded-For/Proto/Host. | AddForwardedFor 追加 X-Forwarded-For/Proto/Host。
 	AddForwardedFor bool
+	// AllowAbsoluteURLs allows an inbound absolute-form target to be used
+	// directly when no host pool or rule host set applies. | AllowAbsoluteURLs
+	// 允许在没有 Host 池或规则 Host 池时直接使用入站绝对形式目标。
+	AllowAbsoluteURLs bool
 	// SSEReconnect is reserved for future upstream resume support. | SSEReconnect 预留给未来的上游续传。
 	SSEReconnect bool
 }
@@ -127,12 +131,28 @@ func (c *Client) copySSE(ctx context.Context, w http.ResponseWriter, resp *http.
 	if err := flushResponseWriter(w); err != nil {
 		return err
 	}
+	teeActive := len(workers) > 0 || eventPump != nil
+	if !teeActive && opts.SSEIdleTimeout <= 0 && opts.SSEHeartbeat <= 0 {
+		// No tee, idle timer or heartbeat needs a select loop; copy inline with
+		// one pooled buffer. | 无 tee、空闲计时或心跳时无需 select 循环，使用单个
+		// 池化缓冲区内联复制。
+		buffer := buffpool.Get(32 << 10)
+		buffer = buffer[:cap(buffer)]
+		defer buffpool.Put(buffer)
+		writer := &sseFlushWriter{writer: w, interval: opts.FlushInterval, last: time.Now()}
+		if _, err := io.CopyBuffer(writer, resp.Body, buffer); err != nil {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			return err
+		}
+		return nil
+	}
 
 	type streamChunk struct {
 		err  error
 		data []byte
 	}
-	teeActive := len(workers) > 0 || eventPump != nil
 	chunks := make(chan streamChunk, 1)
 	readCtx, cancelRead := context.WithCancel(ctx)
 	defer cancelRead()
@@ -292,31 +312,37 @@ func (m *mirrorer) submitSSE(parent context.Context, req *http.Request, logical 
 			m.drop(target.String(), "mirror inflight limit")
 			return
 		}
+		if m.engine != nil && m.engine.hooks.OnMirrorStart != nil {
+			// Fire before the close barrier is reserved so a hook that closes the
+			// client cannot wait on its own reservation. | 在占用关闭屏障前触发，
+			// 避免钩子关闭客户端时等待自身预留。
+			_ = callHook(func() error {
+				m.engine.hooks.OnMirrorStart(parent, MirrorInfo{Target: target.String()})
+				return nil
+			})
+		}
 		if !m.reserve() {
 			<-m.sem
 			return
 		}
 		if m.engine != nil {
 			m.engine.counters.mirrors.Add(1)
-			if m.engine.hooks.OnMirrorStart != nil {
-				_ = callHook(func() error {
-					m.engine.hooks.OnMirrorStart(parent, MirrorInfo{Target: target.String()})
-					return nil
-				})
-			}
 		}
 		if sp != nil {
 			sp.retain()
 		}
 		local.Add(1)
 		go func(target *url.URL) {
-			defer m.wg.Done()
 			defer local.Done()
 			defer func() { <-m.sem }()
 			if sp != nil {
 				defer sp.release()
 			}
-			m.runSSE(parent, req, logical, rule, policy, target, getBody, sp)
+			func() {
+				defer m.wg.Done()
+				m.runSSE(parent, req, logical, rule, policy, target, getBody, sp)
+			}()
+			m.fireMirrorDone(parent, target)
 		}(target)
 	}
 	if policy.Sync {
@@ -332,16 +358,6 @@ func (m *mirrorer) runSSE(parent context.Context, req *http.Request, logical *ur
 		result.Duration = time.Since(start)
 		recordMirror(req.Context(), result)
 	}()
-	if m.engine != nil {
-		defer func() {
-			if m.engine.hooks.OnMirrorDone != nil {
-				_ = callHook(func() error {
-					m.engine.hooks.OnMirrorDone(parent, MirrorInfo{Target: target.String()})
-					return nil
-				})
-			}
-		}()
-	}
 	ctx := m.ctx
 	var detach func()
 	if policy.FollowCancel && parent != nil {
@@ -357,6 +373,9 @@ func (m *mirrorer) runSSE(parent context.Context, req *http.Request, logical *ur
 	defer cancel()
 	if detach != nil {
 		defer detach()
+	}
+	if policies := dialPoliciesFrom(req.Context()); len(policies) > 0 {
+		ctx = context.WithValue(ctx, dialPoliciesKey{}, policies)
 	}
 	out := req.Clone(ctx)
 	out.URL = targetURL(logical, &Host{URL: target}, rule)
@@ -423,6 +442,29 @@ func (m *mirrorer) runSSE(parent context.Context, req *http.Request, logical *ur
 			return
 		}
 	}
+}
+
+// sseFlushWriter flushes every chunk when interval <= 0. | sseFlushWriter 在
+// interval <= 0 时逐块刷新。
+type sseFlushWriter struct {
+	writer   http.ResponseWriter
+	last     time.Time
+	interval time.Duration
+}
+
+// Write writes and conditionally flushes. | Write 写入并按需刷新。
+func (f *sseFlushWriter) Write(p []byte) (int, error) {
+	n, err := f.writer.Write(p)
+	if err != nil {
+		return n, err
+	}
+	if f.interval <= 0 || time.Since(f.last) >= f.interval {
+		if flushErr := flushResponseWriter(f.writer); flushErr != nil {
+			return n, flushErr
+		}
+		f.last = time.Now()
+	}
+	return n, nil
 }
 
 // flushResponseWriter flushes through ResponseController with a Flusher fallback. | flushResponseWriter 通过 ResponseController 刷新，失败时回退 Flusher。

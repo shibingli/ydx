@@ -2,6 +2,7 @@ package client
 
 import (
 	"bufio"
+	"bytes"
 	"io"
 	"strconv"
 	"strings"
@@ -50,8 +51,17 @@ func WithEventMaxBytes(n int) EventReaderOption {
 type EventReader struct {
 	lastErr error
 	reader  *bufio.Reader
+	pending []byte
+	dataBuf []byte
 	max     int
 }
+
+var (
+	sseFieldData  = []byte("data")
+	sseFieldEvent = []byte("event")
+	sseFieldID    = []byte("id")
+	sseFieldRetry = []byte("retry")
+)
 
 // NewEventReader builds a reader and strips a leading UTF-8 BOM. | NewEventReader 构建 reader 并去除开头 UTF-8 BOM。
 func NewEventReader(r io.Reader, opts ...EventReaderOption) *EventReader {
@@ -80,7 +90,7 @@ func (r *EventReader) Next() (Event, error) {
 	if r.lastErr != nil {
 		return Event{}, r.lastErr
 	}
-	var data []byte
+	data := r.dataBuf[:0]
 	var id, name, comment string
 	var idSet, retrySet bool
 	var retry time.Duration
@@ -90,7 +100,7 @@ func (r *EventReader) Next() (Event, error) {
 			r.lastErr = err
 			return Event{}, err
 		}
-		if line == "" {
+		if len(line) == 0 {
 			if len(data) == 0 {
 				// The event-type buffer is reset when nothing is dispatched. | 未分发
 				// 事件时重置事件类型缓冲。
@@ -100,31 +110,34 @@ func (r *EventReader) Next() (Event, error) {
 			if data[len(data)-1] == '\n' {
 				data = data[:len(data)-1]
 			}
-			return Event{ID: id, IDSet: idSet, Name: name, Comment: comment, Data: data, Retry: retry, RetrySet: retrySet}, nil
+			out := make([]byte, len(data))
+			copy(out, data)
+			r.dataBuf = data
+			return Event{ID: id, IDSet: idSet, Name: name, Comment: comment, Data: out, Retry: retry, RetrySet: retrySet}, nil
 		}
 		if line[0] == ':' {
-			comment = strings.TrimPrefix(line[1:], " ")
+			comment = string(bytes.TrimPrefix(line[1:], []byte{' '}))
 			continue
 		}
 		field, value := splitSSEField(line)
-		switch field {
-		case "data":
+		switch {
+		case bytes.Equal(field, sseFieldData):
 			data = append(data, value...)
 			data = append(data, '\n')
 			if len(data) > r.max {
 				r.lastErr = ErrSSETooLarge
 				return Event{}, ErrSSETooLarge
 			}
-		case "event":
-			name = value
-		case "id":
-			if !strings.ContainsRune(value, 0) {
-				id = value
+		case bytes.Equal(field, sseFieldEvent):
+			name = string(value)
+		case bytes.Equal(field, sseFieldID):
+			if bytes.IndexByte(value, 0) < 0 {
+				id = string(value)
 				idSet = true
 			}
-		case "retry":
-			if isDigits(value) {
-				if millis, err := strconv.Atoi(value); err == nil &&
+		case bytes.Equal(field, sseFieldRetry):
+			if isDigitsBytes(value) {
+				if millis, err := strconv.Atoi(string(value)); err == nil &&
 					int64(millis) <= int64(maxSSERetry/time.Millisecond) {
 					retry = time.Duration(millis) * time.Millisecond
 					retrySet = true
@@ -135,53 +148,91 @@ func (r *EventReader) Next() (Event, error) {
 }
 
 // readLine reads one LF, CRLF or CR terminated line. | readLine 读取一行（LF、CRLF 或 CR 结尾）。
-func (r *EventReader) readLine() (string, error) {
-	var buf []byte
+func (r *EventReader) readLine() ([]byte, error) {
 	for {
-		b, err := r.reader.ReadByte()
-		if err != nil {
-			if err == io.EOF && len(buf) > 0 {
-				return string(buf), nil
+		if index := indexLineEnd(r.pending); index >= 0 {
+			line := r.pending[:index]
+			next := index + 1
+			if r.pending[index] == '\r' {
+				if next < len(r.pending) {
+					if r.pending[next] == '\n' {
+						next++
+					}
+				} else if peeked, err := r.reader.Peek(1); err == nil && len(peeked) > 0 && peeked[0] == '\n' {
+					_, _ = r.reader.Discard(1)
+				}
 			}
-			return "", err
+			if next >= len(r.pending) {
+				r.pending = r.pending[:0]
+			} else {
+				r.pending = r.pending[next:]
+			}
+			if len(line) > r.max {
+				return nil, ErrSSETooLarge
+			}
+			return line, nil
 		}
-		switch b {
-		case '\n':
-			return string(buf), nil
-		case '\r':
-			if next, err := r.reader.Peek(1); err == nil && len(next) > 0 && next[0] == '\n' {
-				_, _ = r.reader.Discard(1)
+		chunk, err := r.reader.ReadSlice('\n')
+		if len(chunk) > 0 {
+			r.pending = append(r.pending, chunk...)
+			if len(r.pending) > r.max+2 {
+				return nil, ErrSSETooLarge
 			}
-			return string(buf), nil
+		}
+		switch err {
+		case nil, bufio.ErrBufferFull:
+			continue
+		case io.EOF:
+			if len(r.pending) == 0 {
+				return nil, io.EOF
+			}
+			line := r.pending
+			if len(line) > 0 && line[len(line)-1] == '\r' {
+				line = line[:len(line)-1]
+			}
+			r.pending = r.pending[:0]
+			if len(line) > r.max {
+				return nil, ErrSSETooLarge
+			}
+			return line, nil
 		default:
-			buf = append(buf, b)
-			if len(buf) > r.max {
-				return "", ErrSSETooLarge
-			}
+			return nil, err
 		}
 	}
 }
 
-// splitSSEField splits "field: value" at the first colon and strips one space. | splitSSEField 在首个冒号处拆分并去掉一个空格。
-func splitSSEField(line string) (string, string) {
-	index := strings.IndexByte(line, ':')
-	if index < 0 {
-		return line, ""
+// indexLineEnd returns the first CR or LF index, or -1. | indexLineEnd 返回首个 CR
+// 或 LF 下标，没有时返回 -1。
+func indexLineEnd(line []byte) int {
+	for i, b := range line {
+		if b == '\n' || b == '\r' {
+			return i
+		}
 	}
-	value := line[index+1:]
-	if strings.HasPrefix(value, " ") {
+	return -1
+}
+
+// splitSSEField splits "field: value" at the first colon and strips one space. | splitSSEField 在首个冒号处拆分并去掉一个空格。
+func splitSSEField(line []byte) (field, value []byte) {
+	index := bytes.IndexByte(line, ':')
+	if index < 0 {
+		return line, nil
+	}
+	value = line[index+1:]
+	if len(value) > 0 && value[0] == ' ' {
 		value = value[1:]
 	}
 	return line[:index], value
 }
 
-// isDigits reports whether s is a non-empty ASCII digit string. | isDigits 报告 s 是否为非空 ASCII 数字串。
-func isDigits(s string) bool {
-	if s == "" {
+// isDigitsBytes reports whether value is a non-empty ASCII digit string. | isDigitsBytes
+// 报告 value 是否为非空 ASCII 数字串。
+func isDigitsBytes(value []byte) bool {
+	if len(value) == 0 {
 		return false
 	}
-	for i := 0; i < len(s); i++ {
-		if s[i] < '0' || s[i] > '9' {
+	for _, b := range value {
+		if b < '0' || b > '9' {
 			return false
 		}
 	}

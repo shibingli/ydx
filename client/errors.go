@@ -77,6 +77,9 @@ var (
 	ErrBlocked = errs.New("client: request blocked | client：请求被拦截")
 	// ErrGuard indicates a guard execution failure. | ErrGuard 表示守卫执行失败。
 	ErrGuard = errs.New("client: guard failed | client：守卫执行失败")
+	// ErrAbsoluteTarget indicates an absolute forward target without explicit opt-in. | ErrAbsoluteTarget
+	// 表示未显式开启的绝对转发目标。
+	ErrAbsoluteTarget = errs.New("client: absolute forward target is disabled | client：绝对转发目标未启用")
 	// ErrTLSConfig indicates an unusable TLS configuration. | ErrTLSConfig 表示不可用的 TLS 配置。
 	ErrTLSConfig = errs.New("client: invalid TLS configuration | client：非法的 TLS 配置")
 	// ErrTLS indicates a TLS handshake or verification failure. | ErrTLS 表示 TLS 握手或校验失败。

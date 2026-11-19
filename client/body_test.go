@@ -13,6 +13,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -288,7 +289,7 @@ func TestPrepareBodyMultipart(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer body.Close()
-	if getBody == nil || length <= 0 || !strings.HasPrefix(contentType, "multipart/form-data; boundary=") {
+	if getBody != nil || length != -1 || !strings.HasPrefix(contentType, "multipart/form-data; boundary=") {
 		t.Fatalf("content type %q length %d getBody %t", contentType, length, getBody != nil)
 	}
 	mediaType, params, err := mime.ParseMediaType(contentType)
@@ -317,5 +318,93 @@ func TestPrepareBodyMultipart(t *testing.T) {
 	value, _ = io.ReadAll(part)
 	if string(value) != "content" {
 		t.Fatalf("file value %q", value)
+	}
+}
+
+type lazyMultipartFile struct {
+	remaining int64
+	reads     atomic.Int64
+}
+
+func (r *lazyMultipartFile) Read(p []byte) (int, error) {
+	if r.remaining <= 0 {
+		return 0, io.EOF
+	}
+	r.reads.Add(1)
+	if int64(len(p)) > r.remaining {
+		p = p[:r.remaining]
+	}
+	for i := range p {
+		p[i] = 'x'
+	}
+	r.remaining -= int64(len(p))
+	return len(p), nil
+}
+
+func TestSendMultipartEndToEnd(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseMultipartForm(1 << 20); err != nil {
+			t.Errorf("parse multipart: %v", err)
+			return
+		}
+		if got := r.FormValue("field"); got != "value" {
+			t.Errorf("field %q", got)
+		}
+		file, header, err := r.FormFile("file")
+		if err != nil {
+			t.Errorf("form file: %v", err)
+			return
+		}
+		data, _ := io.ReadAll(file)
+		_ = file.Close()
+		if header.Filename != "a.txt" || string(data) != "content" {
+			t.Errorf("file %q %q", header.Filename, data)
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	c, err := New(WithoutCookieJar())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	resp, err := c.Post(context.Background(), srv.URL+"/upload", Multipart(
+		url.Values{"field": {"value"}},
+		MultipartFile{Field: "file", FileName: "a.txt", ContentType: "text/plain", Reader: strings.NewReader("content")},
+	))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := resp.Discard(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestMultipartStreamsLazily(t *testing.T) {
+	file := &lazyMultipartFile{remaining: 2 << 20}
+	body, getBody, _, length, err := prepareBodyInfo(Multipart(nil,
+		MultipartFile{Field: "file", Reader: file},
+	))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if getBody != nil || length != -1 {
+		t.Fatalf("getBody %t length %d", getBody != nil, length)
+	}
+	if got := file.reads.Load(); got != 0 {
+		t.Fatalf("multipart file was read eagerly: %d reads", got)
+	}
+	data, err := io.ReadAll(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := body.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if len(data) <= int(2<<20) {
+		t.Fatalf("streamed multipart body length %d", len(data))
+	}
+	if file.reads.Load() == 0 {
+		t.Fatal("multipart file was never streamed")
 	}
 }

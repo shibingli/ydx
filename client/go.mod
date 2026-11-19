@@ -10,6 +10,10 @@ require (
 	github.com/shibingli/ydx/log v0.1.14
 	github.com/shibingli/ydx/regexpx v0.1.14
 	github.com/shibingli/ydx/xml v0.1.3
+	golang.org/x/net v0.62.0
 )
 
-require github.com/shibingli/ydx/sysinfo v0.1.6 // indirect
+require (
+	github.com/shibingli/ydx/sysinfo v0.1.6 // indirect
+	golang.org/x/text v0.44.0 // indirect
+)

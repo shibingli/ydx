@@ -280,7 +280,8 @@ func TestForwardUnknownBodyLimit(t *testing.T) {
 	}
 	defer c.Close()
 	req := httptest.NewRequest(http.MethodGet, upstream.URL+"/data", nil)
-	resp, err := c.Forward(context.Background(), req, WithForwardMaxBodyBytes(10))
+	resp, err := c.Forward(context.Background(), req,
+		WithForwardMaxBodyBytes(10), WithForwardAllowAbsoluteURLs(true))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -421,7 +422,7 @@ func TestForwardNetworkPathURL(t *testing.T) {
 	in := httptest.NewRequest(http.MethodGet, upstream.URL+"/x", nil)
 	in.URL = &url.URL{Path: "/x", Host: target.Host}
 	in.Host = ""
-	resp, err := c.Forward(context.Background(), in)
+	resp, err := c.Forward(context.Background(), in, WithForwardAllowAbsoluteURLs(true))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -429,6 +430,56 @@ func TestForwardNetworkPathURL(t *testing.T) {
 	_ = resp.Body.Close()
 	if string(data) != "ok" || hit.Load() != 1 {
 		t.Fatalf("body %q hits %d", data, hit.Load())
+	}
+}
+
+func TestForwardRejectsAbsoluteTargetByDefault(t *testing.T) {
+	var hits atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+	}))
+	defer upstream.Close()
+	c, err := New(WithoutCookieJar())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	in := httptest.NewRequest(http.MethodGet, upstream.URL+"/x", nil)
+	if _, err := c.Forward(context.Background(), in); !errors.Is(err, ErrAbsoluteTarget) {
+		t.Fatalf("want ErrAbsoluteTarget, got %v", err)
+	}
+	if hits.Load() != 0 {
+		t.Fatal("absolute target reached upstream without opt-in")
+	}
+	rec := httptest.NewRecorder()
+	c.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, upstream.URL+"/x", nil))
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("handler status %d", rec.Code)
+	}
+}
+
+func TestForwardAllowsAbsoluteTargetWithOption(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer upstream.Close()
+	c, err := New(WithoutCookieJar())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	in := httptest.NewRequest(http.MethodGet, upstream.URL+"/x", nil)
+	resp, err := c.Forward(context.Background(), in, WithForwardAllowAbsoluteURLs(true))
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "ok" {
+		t.Fatalf("body %q", data)
 	}
 }
 

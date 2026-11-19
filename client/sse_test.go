@@ -63,6 +63,95 @@ func TestEventReaderRetryOverflowIgnored(t *testing.T) {
 	}
 }
 
+func TestOpenStreamFollowsRedirect(t *testing.T) {
+	var finalPath atomic.Value
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/events":
+			http.Redirect(w, r, "/events2", http.StatusFound)
+		case "/events2":
+			finalPath.Store(r.URL.Path)
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = io.WriteString(w, "data: x\n\n")
+			w.(http.Flusher).Flush()
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+	c, err := New(WithoutCookieJar())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	stream, err := c.OpenStream(context.Background(), mustRequest(t, http.MethodGet, srv.URL+"/events", ""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stream.Close()
+	event, err := stream.Next(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(event.Data) != "x" || finalPath.Load() != "/events2" {
+		t.Fatalf("data %q final %v", event.Data, finalPath.Load())
+	}
+}
+
+func TestOpenStreamRedirectStripsSensitiveHeaders(t *testing.T) {
+	var gotAuth atomic.Value
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth.Store(r.Header.Get("Authorization"))
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "data: x\n\n")
+		w.(http.Flusher).Flush()
+	}))
+	defer target.Close()
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, target.URL+"/events", http.StatusFound)
+	}))
+	defer origin.Close()
+	c, err := New(WithoutCookieJar())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	req := mustRequest(t, http.MethodGet, origin.URL+"/events", "")
+	req.Header.Set("Authorization", "Bearer secret")
+	stream, err := c.OpenStream(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stream.Close()
+	if _, err := stream.Next(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if value := gotAuth.Load(); value != nil && value.(string) != "" {
+		t.Fatalf("Authorization leaked across redirect: %q", value)
+	}
+}
+
+func TestOpenStreamHonorsCheckRedirect(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/other", http.StatusFound)
+	}))
+	defer srv.Close()
+	c, err := New(
+		WithCheckRedirect(func(*http.Request, []*http.Request) error {
+			return errors.New("stop redirect")
+		}),
+		WithoutCookieJar(),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	if _, err := c.OpenStream(context.Background(), mustRequest(t, http.MethodGet, srv.URL+"/events", "")); err == nil ||
+		!strings.Contains(err.Error(), "stop redirect") {
+		t.Fatalf("redirect error %v", err)
+	}
+}
+
 func TestOpenStreamClosedClosesBody(t *testing.T) {
 	var closed atomic.Bool
 	c, err := New(WithoutCookieJar())

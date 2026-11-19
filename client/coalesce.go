@@ -56,24 +56,44 @@ type flight struct {
 	bypass bool
 }
 
-// flightGroup deduplicates concurrent requests by key. | flightGroup 按键去重并发请求。
-type flightGroup struct {
+// flightShardCount spreads coalescing locks across independent shards. | flightShardCount
+// 把合并锁分散到独立分片。
+const flightShardCount = 16
+
+// flightShard is one independently locked flight map. | flightShard 是一个独立
+// 加锁的合并映射。
+type flightShard struct {
 	flights map[string]*flight
 	mu      sync.Mutex
 }
 
+// flightGroup deduplicates concurrent requests by key. | flightGroup 按键去重并发请求。
+type flightGroup struct {
+	shards [flightShardCount]flightShard
+}
+
 // newFlightGroup builds an empty flight group. | newFlightGroup 构建空的合并组。
 func newFlightGroup() *flightGroup {
-	return &flightGroup{flights: make(map[string]*flight)}
+	group := &flightGroup{}
+	for i := range group.shards {
+		group.shards[i].flights = make(map[string]*flight)
+	}
+	return group
+}
+
+// shardFor returns the shard owning key. | shardFor 返回 key 所属分片。
+func (g *flightGroup) shardFor(key string) *flightShard {
+	return &g.shards[fnv64aString(key)%flightShardCount]
 }
 
 // Do joins the in-flight leader or becomes the leader. The leader result reports
 // whether followers may share it. | Do 加入在途 leader 或成为 leader；leader 结果报告
 // follower 是否可共享。
 func (g *flightGroup) Do(ctx context.Context, key string, leader func() (*http.Response, []byte, bool, error)) (*http.Response, []byte, bool, error) {
-	g.mu.Lock()
-	if existing, ok := g.flights[key]; ok {
-		g.mu.Unlock()
+	shard := g.shardFor(key)
+	shard.mu.Lock()
+	if existing, ok := shard.flights[key]; ok {
+		shard.mu.Unlock()
 		select {
 		case <-existing.done:
 			if existing.bypass {
@@ -88,8 +108,8 @@ func (g *flightGroup) Do(ctx context.Context, key string, leader func() (*http.R
 		}
 	}
 	current := &flight{done: make(chan struct{})}
-	g.flights[key] = current
-	g.mu.Unlock()
+	shard.flights[key] = current
+	shard.mu.Unlock()
 
 	resp, body, shareable, err := leader()
 	current.body = body
@@ -114,9 +134,9 @@ func (g *flightGroup) Do(ctx context.Context, key string, leader func() (*http.R
 		current.bypass = true
 	}
 	close(current.done)
-	g.mu.Lock()
-	delete(g.flights, key)
-	g.mu.Unlock()
+	shard.mu.Lock()
+	delete(shard.flights, key)
+	shard.mu.Unlock()
 	return resp, body, false, err
 }
 
@@ -234,11 +254,42 @@ func coalesceKey(req *http.Request, rule *Rule) string {
 	sort.Strings(keys)
 	for _, key := range keys {
 		builder.WriteByte(0)
-		builder.WriteString(strings.ToLower(key))
+		appendLowerASCII(&builder, key)
 		builder.WriteByte('=')
-		builder.WriteString(strings.Join(req.Header.Values(key), "\x00"))
+		for i, value := range req.Header.Values(key) {
+			if i > 0 {
+				builder.WriteByte(0)
+			}
+			builder.WriteString(value)
+		}
 	}
 	return builder.String()
+}
+
+// appendLowerASCII appends an ASCII-lowercased string without allocating for
+// header names. | appendLowerASCII 以不分配的方式追加 ASCII 小写字符串，用于
+// 请求头名。
+func appendLowerASCII(builder *strings.Builder, value string) {
+	for i := 0; i < len(value); i++ {
+		if value[i] >= 0x80 {
+			builder.WriteString(strings.ToLower(value))
+			return
+		}
+	}
+	var scratch [64]byte
+	lower := scratch[:0]
+	for i := 0; i < len(value); i++ {
+		ch := value[i]
+		if ch >= 'A' && ch <= 'Z' {
+			ch += 'a' - 'A'
+		}
+		lower = append(lower, ch)
+		if len(lower) == len(scratch) {
+			_, _ = builder.Write(lower)
+			lower = lower[:0]
+		}
+	}
+	_, _ = builder.Write(lower)
 }
 
 // coalesceRoundTrip runs the leader or joins an existing flight. | coalesceRoundTrip 执行 leader 或加入已有合并。

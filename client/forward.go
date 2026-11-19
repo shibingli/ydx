@@ -78,6 +78,18 @@ func buildForwardOptions(opts ...ForwardOption) (ForwardOptions, error) {
 	return cfg, nil
 }
 
+// WithForwardAllowAbsoluteURLs allows inbound absolute-form targets to be used
+// directly when no host pool or rule host set applies. It is off by default so
+// an exposed Handler cannot act as an open forward proxy. | WithForwardAllowAbsoluteURLs
+// 允许在没有 Host 池或规则 Host 池时直接使用入站绝对形式目标。默认关闭，避免
+// 暴露的 Handler 变成开放正向代理。
+func WithForwardAllowAbsoluteURLs(ok bool) ForwardOption {
+	return func(o *ForwardOptions) error {
+		o.AllowAbsoluteURLs = ok
+		return nil
+	}
+}
+
 // WithForwardAddForwardedFor toggles X-Forwarded-* headers. When enabled,
 // X-Forwarded-Host/Proto are overwritten from the actual request and the
 // Forwarded header is removed. | WithForwardAddForwardedFor 开关 X-Forwarded-* 头。
@@ -134,11 +146,10 @@ func WithForwardBodyTimeout(d time.Duration) ForwardOption {
 
 // Forward forwards one inbound request and returns the upstream response. It does
 // not follow redirects or apply the cookie jar. Absolute-form inbound targets
-// are honored when no host pool or rule host set applies, so an untrusted
-// deployment should combine Handler with an AccessPolicy. | Forward 转发一个
-// 入站请求并返回上游响应；不跟随重定向，也不应用 Cookie 罐。没有 Host 池或规则
-// Host 池时，绝对形式入站目标会被直接使用；不可信部署应将 Handler 与 AccessPolicy
-// 配合使用。
+// without a configured host pool or rule host set are rejected unless
+// WithForwardAllowAbsoluteURLs is set. | Forward 转发一个入站请求并返回上游响应；
+// 不跟随重定向，也不应用 Cookie 罐。没有 Host 池或规则 Host 池时，绝对形式入站
+// 目标默认返回 ErrAbsoluteTarget，除非启用 WithForwardAllowAbsoluteURLs。
 func (c *Client) Forward(ctx context.Context, r *http.Request, opts ...ForwardOption) (*http.Response, error) {
 	cfg, err := buildForwardOptions(opts...)
 	if err != nil {
@@ -177,28 +188,36 @@ func (c *Client) forwardRequest(ctx context.Context, r *http.Request, cfg Forwar
 	rawPath := r.URL.RawPath
 	query := r.URL.RawQuery
 	host := r.Host
+	rules := c.engine.rules.Load()
+	var rule *Rule
+	if rules != nil {
+		matched, _, _, matchErr := rules.matchRequest(r)
+		if matchErr != nil {
+			return nil, matchErr
+		}
+		rule = matched
+	}
+	defaultHosts := c.engine.hosts.Load()
+	hasDefaultHosts := defaultHosts != nil && defaultHosts.Len() > 0
+	hasRuleHosts := rule != nil && rule.HostSet != nil && rule.HostSet.Len() > 0
+	hasRouting := hasDefaultHosts || hasRuleHosts
 	if r.URL.IsAbs() || r.URL.Host != "" {
 		if r.URL.Scheme != "" {
 			scheme = r.URL.Scheme
 		}
 		host = r.URL.Host
+		if !hasRouting && !cfg.AllowAbsoluteURLs {
+			// Honor an absolute-form target only with explicit opt-in when no
+			// configured upstream applies; otherwise a public Handler is an open
+			// forward proxy. | 无配置上游时，绝对形式目标必须显式开启，否则公开
+			// Handler 会成为开放正向代理。
+			return nil, errs.Detail(ErrAbsoluteTarget, "target %q needs WithForwardAllowAbsoluteURLs | 目标 %q 需要 WithForwardAllowAbsoluteURLs", host, host)
+		}
 	} else {
 		// A relative inbound URL is only routable through a rule or default
 		// host pool; falling back to the Host header would create an open
 		// proxy. | 相对入站 URL 只能走规则或默认 Host 池；回退到 Host 头会形成开放代理。
-		rules := c.engine.rules.Load()
-		var rule *Rule
-		if rules != nil {
-			matched, _, _, matchErr := rules.matchRequest(r)
-			if matchErr != nil {
-				return nil, matchErr
-			}
-			rule = matched
-		}
-		defaultHosts := c.engine.hosts.Load()
-		hasDefaultHosts := defaultHosts != nil && defaultHosts.Len() > 0
-		hasRuleHosts := rule != nil && rule.HostSet != nil && rule.HostSet.Len() > 0
-		if !hasDefaultHosts && !hasRuleHosts {
+		if !hasRouting {
 			return nil, errs.Detail(ErrNoHosts, "forward request has no target host | 转发请求没有目标 Host")
 		}
 		if host == "" {
@@ -431,6 +450,8 @@ func writeForwardError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, context.DeadlineExceeded), errors.Is(err, ErrForwardTimeout):
 		status = http.StatusGatewayTimeout
+	case errors.Is(err, ErrAbsoluteTarget):
+		status = http.StatusForbidden
 	case errors.Is(err, ErrBlocked):
 		status = http.StatusForbidden
 		var clientErr *Error

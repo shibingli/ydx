@@ -28,6 +28,7 @@ type engine struct {
 	budgetMu   sync.Mutex
 	closed     atomic.Bool
 	bare       atomic.Bool
+	ipGuard    bool
 
 	flights *flightGroup
 	mirrors *mirrorer
@@ -47,17 +48,20 @@ type engine struct {
 
 	uaCounter atomic.Uint64
 
-	cacheMu     sync.RWMutex
-	tlsMu       sync.RWMutex
-	ruleHostsMu sync.Mutex
-	ruleHosts   map[*HostSet]struct{}
-	ownsCache   bool
+	cacheMu      sync.RWMutex
+	tlsMu        sync.RWMutex
+	ruleHostsMu  sync.Mutex
+	ruleHosts    map[*HostSet]struct{}
+	retiredHosts []*HostSet
+	ownsCache    bool
 }
 
 // newEngine builds the engine and a default transport when none was supplied. | newEngine 构建引擎，并在未提供 Transport 时创建默认传输。
-func newEngine(o options) (*engine, error) {
+func newEngine(o options, rules *RuleSet) (*engine, error) {
 	base := o.Transport
+	ipGuard := false
 	var baseTransport *http.Transport
+	guardNeeded := hasIPCheckPolicies(o, rules)
 	if base == nil {
 		dialer := &net.Dialer{Timeout: 5 * time.Second, KeepAlive: 30 * time.Second}
 		if o.AccessPolicy != nil {
@@ -73,9 +77,26 @@ func newEngine(o options) (*engine, error) {
 			TLSHandshakeTimeout:   10 * time.Second,
 			ExpectContinueTimeout: time.Second,
 		}
+		installGuardedDial(baseTransport, dialer)
+		ipGuard = true
 		base = baseTransport
 	} else if tr, ok := base.(*http.Transport); ok {
+		if guardNeeded {
+			if tr.Dial != nil || tr.DialContext != nil || tr.DialTLS != nil || tr.DialTLSContext != nil {
+				return nil, errs.Detail(ErrInvalidConfig, "custom dialers cannot enforce the IP guard | 自定义拨号器无法执行 IP 守卫")
+			}
+			tr = tr.Clone()
+			dialer := &net.Dialer{Timeout: 5 * time.Second, KeepAlive: 30 * time.Second}
+			if o.AccessPolicy != nil {
+				dialer.Control = o.AccessPolicy.dialControl
+			}
+			installGuardedDial(tr, dialer)
+			ipGuard = true
+			base = tr
+		}
 		baseTransport = tr
+	} else if guardNeeded {
+		return nil, errs.Detail(ErrInvalidConfig, "IP guard requires an *http.Transport | IP 守卫需要 *http.Transport")
 	}
 	var h2cTransport *http.Transport
 	if o.H2C {
@@ -92,6 +113,7 @@ func newEngine(o options) (*engine, error) {
 		base:          base,
 		baseTransport: baseTransport,
 		h2c:           h2cTransport,
+		ipGuard:       ipGuard,
 		opts:          o,
 		budget:        newRetryBudget(0.1),
 		budgets:       make(map[float64]*retryBudget),
@@ -328,6 +350,9 @@ func (e *engine) RoundTrip(req *http.Request) (resp *http.Response, err error) {
 	if meta != nil {
 		meta.Rule = rule
 		meta.Params = params
+	}
+	if policies := dialPoliciesFor(e.opts, rule); len(policies) > 0 {
+		req = req.WithContext(context.WithValue(req.Context(), dialPoliciesKey{}, policies))
 	}
 	if rule != nil && rule.UA != nil && uaApplies(req, rule.UA) {
 		req = req.Clone(req.Context())

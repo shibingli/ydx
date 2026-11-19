@@ -233,6 +233,44 @@ func TestMirrorSpoolsNonReplayableBody(t *testing.T) {
 	}
 }
 
+func TestMirrorDoneHookCanClose(t *testing.T) {
+	mirror := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer mirror.Close()
+	primary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer primary.Close()
+	var c *Client
+	var err error
+	c, err = New(
+		WithHosts(primary.URL),
+		WithMirror(MirrorPolicy{Targets: []string{mirror.URL}, Sync: true, Wait: time.Second}),
+		WithHooks(Hooks{OnMirrorDone: func(context.Context, MirrorInfo) {
+			_ = c.CloseContext(context.Background())
+		}}),
+		WithoutCookieJar(),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		resp, reqErr := c.Get(context.Background(), "/x")
+		if reqErr == nil {
+			_ = resp.Body.Close()
+		}
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("OnMirrorDone blocked closing the client")
+	}
+}
+
 func TestMirrorSpoolDoesNotMutateRequest(t *testing.T) {
 	const size = 2 << 20
 	var primarySize, mirrorSize atomic.Int64
