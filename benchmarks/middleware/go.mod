@@ -4,11 +4,11 @@ go 1.27.4
 
 require (
 	github.com/go-chi/chi/v5 v5.5.0
-	github.com/klauspost/compress v1.20.3
+	github.com/klauspost/compress v1.20.4
 	github.com/rs/cors v1.11.1
 	github.com/shibingli/ydx/log v0.1.14
-	github.com/shibingli/ydx/middleware v0.1.18
-	github.com/shibingli/ydx/middleware/compress v0.1.15
+	github.com/shibingli/ydx/middleware v0.1.19
+	github.com/shibingli/ydx/middleware/compress v0.1.16
 	github.com/shibingli/ydx/middleware/cors v0.1.16
 	github.com/shibingli/ydx/middleware/ratelimit v0.1.15
 	github.com/shibingli/ydx/middleware/recovery v0.1.17
