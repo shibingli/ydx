@@ -749,6 +749,9 @@ func decodeOptionalB64(value string) ([]byte, error) {
 	if value == "" {
 		return nil, nil
 	}
+	if !validSegment(value) {
+		return nil, errs.Detail(ErrInvalidHeader, "apu/apv is not base64url | apu/apv 不是 base64url")
+	}
 	out, err := strictRawURLEncoding.DecodeString(value)
 	if err != nil {
 		return nil, errs.WrapDetail(err, ErrInvalidHeader, "apu/apv | apu/apv")

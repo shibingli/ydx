@@ -648,6 +648,9 @@ func decodeMember(name, value string) ([]byte, error) {
 	if value == "" {
 		return nil, errs.Detail(ErrInvalidKey, "missing %[1]s | 缺少 %[1]s", name)
 	}
+	if !validSegment(value) {
+		return nil, errs.Detail(ErrInvalidKey, "member %[1]s is not base64url | 成员 %[1]s 不是 base64url", name)
+	}
 	out, err := strictRawURLEncoding.DecodeString(value)
 	if err != nil {
 		return nil, errs.WrapDetail(err, ErrInvalidKey, "member %[1]s | 成员 %[1]s", name)

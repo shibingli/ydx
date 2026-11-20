@@ -72,9 +72,21 @@ func putScratch(s *scratch) {
 var strictRawURLEncoding = base64.RawURLEncoding.Strict()
 
 // decodeSegment base64url-decodes seg into dst without allocating an intermediate
-// text buffer: AppendDecodeString reads the string directly. | decodeSegment 把 seg
-// 以 base64url 解码到 dst，且不分配中间文本缓冲：AppendDecodeString 直接读取字符串。
+// text buffer: AppendDecodeString reads the string directly. The segment must use the
+// unpadded base64url alphabet exactly: CR/LF are silently skipped by RFC 4648 decoders,
+// so a token with an inserted newline would otherwise verify under a different raw
+// string while decoding to the same bytes. | decodeSegment 把 seg 以 base64url 解码到
+// dst，且不分配中间文本缓冲：AppendDecodeString 直接读取字符串。分段必须严格使用无填充
+// base64url 字母表：RFC 4648 解码器会静默跳过 CR/LF，因此插入换行的 token 否则会以另一条
+// 原始字符串通过校验，却解码出相同字节。
 func decodeSegment(s *scratch, dst *[]byte, seg string) bool {
+	for i := 0; i < len(seg); i++ {
+		c := seg[i]
+		if c >= 'A' && c <= 'Z' || c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || c == '-' || c == '_' {
+			continue
+		}
+		return false
+	}
 	out, err := strictRawURLEncoding.AppendDecodeString((*dst)[:0], seg)
 	if err != nil {
 		return false

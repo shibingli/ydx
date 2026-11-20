@@ -158,11 +158,31 @@ func EncodeSegment(src []byte) string {
 // 非零尾部填充位都会被拒绝：RFC 7515 规定使用规范的无填充编码，接受别名会使同一 token 出现多种
 // 编码。
 func DecodeSegment(seg string) ([]byte, error) {
+	if !validSegment(seg) {
+		return nil, errs.Detail(ErrMalformed, "segment is not base64url | 段不是 base64url")
+	}
 	out, err := strictRawURLEncoding.DecodeString(seg)
 	if err != nil {
 		return nil, errs.WrapDetail(err, ErrMalformed, "segment is not base64url | 段不是 base64url")
 	}
 	return out, nil
+}
+
+// validSegment reports whether seg contains only unpadded base64url characters. The RFC 4648
+// decoder ignores CR and LF, so this explicit check is what makes the canonical spelling
+// requirement real: without it a token with an inserted newline decodes to the same bytes while
+// remaining a different string. | validSegment 报告 seg 是否只含无填充 base64url 字符。RFC 4648
+// 解码器会忽略 CR 与 LF，因此只有显式检查才能落实规范拼写要求：缺少它时，插入换行的 token 会解码
+// 出相同字节，却仍是一条不同的字符串。
+func validSegment(seg string) bool {
+	for i := 0; i < len(seg); i++ {
+		c := seg[i]
+		if c >= 'A' && c <= 'Z' || c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || c == '-' || c == '_' {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 // appendSegment appends the unpadded base64url encoding of src to dst. | appendSegment 把 src 的

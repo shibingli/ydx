@@ -649,3 +649,15 @@ func TestDecodeSegmentRejectsNonZeroPadBits(t *testing.T) {
 		t.Fatalf("DecodeSegment(A) err = %v, want ErrMalformed", err)
 	}
 }
+
+// TestDecodeSegmentRejectsWhitespace pins that a JOSE segment never contains whitespace. The
+// RFC 4648 decoder skips CR/LF silently, so accepting them would let one token have several
+// spellings that decode identically. | TestDecodeSegmentRejectsWhitespace 固化 JOSE 段不含空白。
+// RFC 4648 解码器会静默跳过 CR/LF，接受它们会让同一 token 出现多种解码结果相同的拼写。
+func TestDecodeSegmentRejectsWhitespace(t *testing.T) {
+	for _, seg := range []string{"Q\nQ", "Q\rQ", "QQ\n", "\nQQ", "Q Q", "QQ=", "QQ=="} {
+		if _, err := DecodeSegment(seg); !errors.Is(err, ErrMalformed) {
+			t.Fatalf("DecodeSegment(%q) err = %v, want ErrMalformed", seg, err)
+		}
+	}
+}

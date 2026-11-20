@@ -1594,3 +1594,32 @@ func TestRSAWeakKeysRejected(t *testing.T) {
 		t.Errorf("Parse(1024-bit RSA signature) err = %v, want ErrSignatureInvalid", err)
 	}
 }
+
+// TestParseRejectsNonCanonicalSegmentWhitespace pins that whitespace inside a segment is a
+// malformed token. CR/LF are ignored by the Base64 decoder, so without this check a token
+// carrying the same signature with an inserted newline verifies under a different raw string,
+// which defeats revocation lists keyed by the exact token. |
+// TestParseRejectsNonCanonicalSegmentWhitespace 固化分段内的空白属于非法 token。Base64 解码器会忽略
+// CR/LF，缺少该检查时，同一签名插入换行后仍能通过校验却对应另一条原始字符串，按 token 原文建立的
+// 注销列表因此失效。
+func TestParseRejectsNonCanonicalSegmentWhitespace(t *testing.T) {
+	token := mustSign(t, map[string]any{"sub": "u-1"}, testSecret, HS256, SignOptions{})
+	parts := strings.Split(token, ".")
+	if len(parts) != 3 {
+		t.Fatalf("token 分段数 = %d | token has %d segments", len(parts), len(parts))
+	}
+	sig := parts[2]
+	cases := []string{
+		parts[0] + "." + parts[1] + "." + sig[:1] + "\n" + sig[1:],
+		parts[0] + "." + parts[1] + "." + sig[:1] + "\r" + sig[1:],
+		parts[0] + "." + parts[1] + "." + sig + "=",
+	}
+	for _, dirty := range cases {
+		if _, err := Parse(dirty, hmacKeyFunc(testSecret), ParseOptions{}); !errors.Is(err, ErrMalformed) {
+			t.Fatalf("Parse(%q) err = %v, 期望 ErrMalformed | want ErrMalformed", dirty, err)
+		}
+	}
+	if _, err := Parse(token, hmacKeyFunc(testSecret), ParseOptions{}); err != nil {
+		t.Fatalf("规范 token 应通过: %v | canonical token must pass", err)
+	}
+}
