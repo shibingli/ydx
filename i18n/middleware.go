@@ -80,11 +80,43 @@ func Middleware(b *Bundle, o Options) router.Middleware {
 		c.SetHeader(LanguageHeader, translator.Lang())
 		// The response body depends on request headers, so shared caches must key on them. A
 		// query-selected language is already part of the cache key, but Accept-Language, the
-		// custom header and the cookie are not. | 响应正文依赖请求头，共享缓存必须按它们区分。
+		// custom header and the cookie are not. Merge with any existing Vary (for example the
+		// CORS Origin) instead of replacing it. | 响应正文依赖请求头，共享缓存必须按它们区分。
 		// 通过查询参数选择的语言已在缓存键里，但 Accept-Language、自定义头与 cookie 不在。
-		c.SetHeader("Vary", strings.Join([]string{AcceptLanguageHeader, o.HeaderName, "Cookie"}, ", "))
+		// 与既有的 Vary（例如 CORS 的 Origin）合并，而不是覆盖。
+		c.SetHeader("Vary", mergeVary(c.Writer.Header().Values("Vary"), AcceptLanguageHeader, o.HeaderName, "Cookie"))
 		c.Next()
 	}
+}
+
+// mergeVary appends values that are not already present and removes duplicates.
+// Field names are compared case-insensitively, while the original spelling of
+// existing entries is preserved. | mergeVary 追加尚不存在的值并去重。字段名按大小写
+// 不敏感比较，同时保留既有条目的原始拼写。
+func mergeVary(existing []string, values ...string) string {
+	seen := make(map[string]struct{}, len(existing)+len(values))
+	out := make([]string, 0, len(existing)+len(values))
+	add := func(raw string) {
+		for _, part := range strings.Split(raw, ",") {
+			token := strings.TrimSpace(part)
+			if token == "" {
+				continue
+			}
+			key := strings.ToLower(token)
+			if _, dup := seen[key]; dup {
+				continue
+			}
+			seen[key] = struct{}{}
+			out = append(out, token)
+		}
+	}
+	for _, value := range existing {
+		add(value)
+	}
+	for _, value := range values {
+		add(value)
+	}
+	return strings.Join(out, ", ")
 }
 
 // FromContext returns the translator installed by Middleware. | FromContext 返回 Middleware 装入的译者。
