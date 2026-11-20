@@ -68,6 +68,10 @@ type ServiceProviderConfig struct {
 	RequireSignedAssertion bool
 	// RequireSignedResponse requires a signature on the response. | RequireSignedResponse 要求响应签名。
 	RequireSignedResponse bool
+	// AllowUnsigned explicitly accepts responses without any verified signature. The zero value
+	// rejects them; enable only for interoperability tests or a legacy IdP migration. |
+	// AllowUnsigned 显式接受没有任何已校验签名的响应。零值拒绝；仅用于互操作测试或遗留 IdP 迁移。
+	AllowUnsigned bool
 	// AllowIDPInitiated accepts responses without InResponseTo. | AllowIDPInitiated 接受无 InResponseTo 的响应。
 	AllowIDPInitiated bool
 	// RequireSubjectConfirmation requires a bearer subject confirmation. | RequireSubjectConfirmation 要求承载主体确认。
@@ -346,7 +350,7 @@ func (sp *ServiceProvider) validateResponse(ctx context.Context, raw []byte) (*V
 		SignatureVerifier:                 sp.config.SignatureVerifier,
 		Decryptor:                         sp.config.Decryptor,
 		RequireSignedResponse:             sp.config.RequireSignedResponse,
-		RequireSignedAssertion:            sp.config.RequireSignedAssertion,
+		RequireSignedAssertion:            sp.config.RequireSignedAssertion || !sp.config.AllowUnsigned,
 		RequireInResponseTo:               !sp.config.AllowIDPInitiated,
 		RequireSubjectConfirmation:        sp.config.RequireSubjectConfirmation,
 		ClockSkew:                         sp.config.ClockSkew,

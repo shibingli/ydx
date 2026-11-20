@@ -106,6 +106,10 @@ func newTestService(t *testing.T, mutate func(*Config)) *serviceHarness {
 		Passwords: hasher,
 		Policy:    PasswordPolicy{MinLength: 8, MaxLength: 128},
 		Clock:     clock.Now,
+		// The legacy flow keeps the existing CompleteMFA callers that do not exchange an MFAToken.
+		// Tests for the secure default enable the requirement explicitly. | 旧流程让既有
+		// CompleteMFA 调用方无需交换 MFAToken；安全默认的测试会显式开启要求。
+		AllowLegacyMFAFlow: true,
 	}
 	if mutate != nil {
 		mutate(&config)
@@ -529,6 +533,90 @@ func TestServiceAuthenticateMFAFlow(t *testing.T) {
 	result, err = harness.service.Authenticate(ctx, AuthenticateInput{Login: "alice", Password: testServicePassword, SkipMFA: true})
 	if err != nil || result.Session == nil || result.MFARequired {
 		t.Fatalf("SkipMFA = %+v %v", result, err)
+	}
+}
+
+// TestServiceCompleteMFARequiresTokenByDefault verifies the secure default rejects the legacy
+// user-ID-only flow and that a token issued by Authenticate still completes the login. |
+// TestServiceCompleteMFARequiresTokenByDefault 校验安全默认拒绝仅凭用户 ID 的旧流程，且
+// Authenticate 签发的令牌仍可完成登录。
+func TestServiceCompleteMFARequiresTokenByDefault(t *testing.T) {
+	harness := newTestService(t, func(config *Config) { config.AllowLegacyMFAFlow = false })
+	ctx := context.Background()
+	user := harness.register(t, "alice")
+	if _, err := harness.service.RegisterCredential(ctx, &Credential{UserID: user.ID, Type: CredentialTOTP}); err != nil {
+		t.Fatalf("RegisterCredential: %v", err)
+	}
+	harness.service.RegisterMFAVerifier(CredentialTOTP, &fakeMFAVerifier{code: "123456"})
+
+	if _, err := harness.service.CompleteMFA(ctx, CompleteMFAInput{UserID: user.ID, Response: "123456"}); !errors.Is(err, ErrInvalidRequest) {
+		t.Fatalf("empty MFAToken = %v, want ErrInvalidRequest", err)
+	}
+	pending, err := harness.service.Authenticate(ctx, AuthenticateInput{Login: "alice", Password: testServicePassword})
+	if err != nil || !pending.MFARequired || pending.MFAToken == "" {
+		t.Fatalf("password phase = %+v %v", pending, err)
+	}
+	completed, err := harness.service.CompleteMFA(ctx, CompleteMFAInput{
+		UserID: user.ID, MFAToken: pending.MFAToken, Response: "123456",
+	})
+	if err != nil || completed.Session == nil {
+		t.Fatalf("CompleteMFA with token = %+v %v", completed, err)
+	}
+}
+
+// TestServiceLegacyMFAFlowRequiresExplicitOptOut verifies AllowLegacyMFAFlow keeps the previous
+// user-ID-only behavior for callers that explicitly opt in. | TestServiceLegacyMFAFlowRequiresExplicitOptOut
+// 校验 AllowLegacyMFAFlow 为显式启用的调用方保留仅凭用户 ID 的旧行为。
+func TestServiceLegacyMFAFlowRequiresExplicitOptOut(t *testing.T) {
+	harness := newTestService(t, func(config *Config) { config.AllowLegacyMFAFlow = true })
+	ctx := context.Background()
+	user := harness.register(t, "alice")
+	if _, err := harness.service.RegisterCredential(ctx, &Credential{UserID: user.ID, Type: CredentialTOTP}); err != nil {
+		t.Fatalf("RegisterCredential: %v", err)
+	}
+	harness.service.RegisterMFAVerifier(CredentialTOTP, &fakeMFAVerifier{code: "123456"})
+	if _, err := harness.service.CompleteMFA(ctx, CompleteMFAInput{UserID: user.ID, Response: "123456"}); err != nil {
+		t.Fatalf("legacy CompleteMFA: %v", err)
+	}
+}
+
+// TestServiceAuthenticateDetectsStoredWebAuthnFactor verifies a credential written directly by an
+// MFA adapter, without updating User.MFAEnabled, still triggers the second-factor phase. |
+// TestServiceAuthenticateDetectsStoredWebAuthnFactor 校验由 MFA 适配器直接写入、未更新
+// User.MFAEnabled 的凭据仍会触发第二因素阶段。
+func TestServiceAuthenticateDetectsStoredWebAuthnFactor(t *testing.T) {
+	harness := newTestService(t, nil)
+	ctx := context.Background()
+	user := harness.register(t, "alice")
+	// Adapters such as webauthn.AuthCredentialStore persist the factor without touching the user
+	// record. | webauthn.AuthCredentialStore 等适配器只持久化因素，不会更新用户记录。
+	if err := harness.stores.Credentials.CreateCredential(ctx, &Credential{
+		ID: "cred-webauthn", UserID: user.ID, Type: CredentialWebAuthn, Name: "passkey",
+	}); err != nil {
+		t.Fatalf("CreateCredential: %v", err)
+	}
+	stored, err := harness.stores.Users.GetUser(ctx, user.ID)
+	if err != nil {
+		t.Fatalf("GetUser: %v", err)
+	}
+	if stored.MFAEnabled {
+		t.Fatal("precondition: user flag unexpectedly enabled")
+	}
+
+	result, err := harness.service.Authenticate(ctx, AuthenticateInput{Login: "alice", Password: testServicePassword})
+	if err != nil {
+		t.Fatalf("Authenticate: %v", err)
+	}
+	if !result.MFARequired || result.Session != nil || result.MFAToken == "" {
+		t.Fatalf("MFA phase result = %+v", result)
+	}
+
+	harness.service.RegisterMFAVerifier(CredentialWebAuthn, &fakeMFAVerifier{code: "webauthn-proof"})
+	completed, err := harness.service.CompleteMFA(ctx, CompleteMFAInput{
+		UserID: user.ID, MFAToken: result.MFAToken, Response: "webauthn-proof",
+	})
+	if err != nil || completed.Session == nil {
+		t.Fatalf("CompleteMFA with stored factor = %+v %v", completed, err)
 	}
 }
 

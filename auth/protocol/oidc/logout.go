@@ -269,7 +269,17 @@ func (p *Provider) EndSession(w http.ResponseWriter, r *http.Request) {
 	sid := ""
 	var client *oauth2.Client
 	if idTokenHint != "" {
-		verified, verifyErr := jose.VerifyContext(r.Context(), idTokenHint, p.keys.Resolver(), jose.VerifyOptions{})
+		// A logout hint is a bearer-style capability: reject an expired token so an old,
+		// leaked ID token cannot repeatedly force logouts or trigger back-channel delivery. |
+		// 登出 hint 是一种承载式凭据：拒绝过期令牌，避免旧的泄露 ID 令牌反复强制登出或触发
+		// 后端登出投递。
+		verified, verifyErr := jose.VerifyContext(r.Context(), idTokenHint, p.keys.Resolver(), jose.VerifyOptions{
+			ValidateClaims: true,
+			Issuer:         p.config.Issuer,
+			RequireExp:     true,
+			Leeway:         time.Minute,
+			Now:            p.now,
+		})
 		if verifyErr != nil || !verified.IsJSON() {
 			badRequest(w, "id_token_hint is invalid | id_token_hint 无效")
 			return

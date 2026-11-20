@@ -26,6 +26,17 @@ type AuthorizationRequest struct {
 	Credentials []Credential
 	// RemoteAddr is the client network address. | RemoteAddr 是客户端网络地址。
 	RemoteAddr string
+	// EncryptionKeyUID is the wrapping key identifier of an Unwrap Key request, or empty when the
+	// request does not name one. Authorizers can bind the unwrap decision to the KEK. |
+	// EncryptionKeyUID 是 Unwrap Key 请求的封装密钥标识，请求未指定时为空。授权器可把解封决策绑定到
+	// KEK。
+	EncryptionKeyUID string
+	// TemplateAttributes exposes the Template-Attribute values of an Unwrap Key request as scalar
+	// Go values keyed by KMIP attribute name, for example "Extractable" -> true. It is nil for
+	// other operations or when the request carries no template. | TemplateAttributes 以 KMIP 属性名为
+	// 键，把 Unwrap Key 请求的 Template-Attribute 值暴露为 Go 标量，例如 "Extractable" -> true。
+	// 其它操作或请求未携带模板时为 nil。
+	TemplateAttributes map[string]any
 }
 
 // Authorizer decides whether a client may perform an operation. | Authorizer 决定客户端是否可以执行操作。
@@ -661,6 +672,14 @@ func (s *Server) authorize(item RequestBatchItem, credentials []Credential, remo
 		Credentials:      credentials,
 		RemoteAddr:       remote,
 	}
+	if item.Operation == OpUnwrapKey {
+		// Unwrap Key targets a wrapped object rather than a Unique Identifier payload field, so
+		// expose the KEK and the requested template explicitly to the Authorizer. |
+		// Unwrap Key 的目标是已封装对象而非负载中的 Unique Identifier 字段，因此显式把 KEK 与请求
+		// 模板暴露给 Authorizer。
+		request.EncryptionKeyUID = payloadEncryptionKeyUID(item.Payload)
+		request.TemplateAttributes = payloadTemplateAttributeMap(item.Payload)
+	}
 	if err := s.cfg.Authorizer.Authorize(s.ctx, request); err != nil {
 		if errors.Is(err, ErrPermissionDenied) || errors.Is(err, ErrAuthenticationFailed) {
 			return err
@@ -668,6 +687,110 @@ func (s *Server) authorize(item RequestBatchItem, credentials []Credential, remo
 		return errs.Wrap(err, ErrPermissionDenied)
 	}
 	return nil
+}
+
+// payloadEncryptionKeyUID extracts the wrapping key identifier from an Unwrap Key payload. It walks
+// the contained managed object's Key Block to Key Wrapping Data and Encryption Key Information. |
+// payloadEncryptionKeyUID 从 Unwrap Key 负载提取封装密钥标识，遍历所含受管对象的 Key Block、
+// Key Wrapping Data 与 Encryption Key Information。
+func payloadEncryptionKeyUID(payload Item) string {
+	for _, child := range payload.Children {
+		switch child.Tag {
+		case TagSymmetricKey, TagPublicKey, TagPrivateKey, TagSecretData, TagCertificate, TagTemplate, TagOpaqueObject:
+			keyBlock, ok := child.Child(TagKeyBlock)
+			if !ok {
+				continue
+			}
+			wrapping, ok := keyBlock.Child(TagKeyWrappingData)
+			if !ok {
+				continue
+			}
+			info, ok := wrapping.Child(TagEncryptionKeyInformation)
+			if !ok {
+				continue
+			}
+			return payloadText(info, TagUniqueIdentifier)
+		}
+	}
+	return ""
+}
+
+// payloadTemplateAttributeMap exposes the Template-Attribute of an Unwrap Key payload as scalar
+// values keyed by attribute name. KMIP 1.4 carries a Template-Attribute structure while KMIP 2.0
+// carries an Attributes structure; both shapes are recognized. | payloadTemplateAttributeMap 把
+// Unwrap Key 负载的 Template-Attribute 以属性名为键暴露为标量值。KMIP 1.4 使用 Template-Attribute
+// 结构，KMIP 2.0 使用 Attributes 结构；两种形状都可识别。
+func payloadTemplateAttributeMap(payload Item) map[string]any {
+	attrs := payloadTemplateAttributes(payload)
+	if len(attrs) == 0 {
+		return nil
+	}
+	out := make(map[string]any, len(attrs))
+	for i := range attrs {
+		attr := attrs[i]
+		if attr.Name == "" {
+			continue
+		}
+		if value, ok := attributeScalarValue(attr.Value); ok {
+			out[attr.Name] = value
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// payloadTemplateAttributes returns the decoded template attributes of an Unwrap Key payload. |
+// payloadTemplateAttributes 返回 Unwrap Key 负载解码后的模板属性。
+func payloadTemplateAttributes(payload Item) AttributeList {
+	if tmpl, ok := payload.Child(TagTemplateAttribute); ok {
+		decoded, err := DecodeTemplateAttribute(tmpl)
+		if err == nil {
+			return decoded.Attributes
+		}
+	}
+	if attrs, ok := payload.Child(TagAttributes); ok {
+		decoded, err := decodeAttributes(attrs)
+		if err == nil {
+			return decoded
+		}
+	}
+	return nil
+}
+
+// attributeScalarValue converts an attribute value item into a Go scalar for Authorizer consumption.
+// Unsupported types are omitted rather than guessed. | attributeScalarValue 把属性值项转换为供
+// Authorizer 使用的 Go 标量；不支持的类型会被省略而非猜测。
+func attributeScalarValue(item Item) (any, bool) {
+	switch item.Type {
+	case TypeBoolean:
+		value, err := item.AsBoolean()
+		return value, err == nil
+	case TypeTextString:
+		value, err := item.AsTextString()
+		return value, err == nil
+	case TypeInteger, TypeLongInteger:
+		value, err := item.AsInteger()
+		return value, err == nil
+	case TypeEnumeration:
+		value, err := item.AsEnumeration()
+		return value, err == nil
+	case TypeByteString:
+		value, err := item.AsByteString()
+		if err != nil {
+			return nil, false
+		}
+		return append([]byte(nil), value...), true
+	case TypeDateTime:
+		value, err := item.AsDateTime()
+		return value, err == nil
+	case TypeInterval:
+		value, err := item.AsInterval()
+		return value, err == nil
+	default:
+		return nil, false
+	}
 }
 
 // payloadText extracts the first text value with tag from a payload. | payloadText 从负载提取首个指定标签的文本值。

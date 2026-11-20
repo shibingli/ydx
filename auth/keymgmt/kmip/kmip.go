@@ -158,6 +158,10 @@ var (
 	ErrUnsupported = errs.New("kmip: unsupported operation or feature | kmip：不支持的操作或特性")
 	// ErrInvalidRequest reports a structurally valid message with missing or contradictory fields. | ErrInvalidRequest 表示结构合法但字段缺失或相互矛盾的请求。
 	ErrInvalidRequest = errs.New("kmip: invalid request | kmip：请求非法")
+	// ErrInvalidField reports an attribute or field value outside its permitted range. It aliases
+	// ErrInvalidRequest so callers may classify such failures with either name. | ErrInvalidField
+	// 表示属性或字段取值超出允许范围。它是 ErrInvalidRequest 的别名，调用方可用任一名称分类。
+	ErrInvalidField = ErrInvalidRequest
 	// ErrItemNotFound reports that the requested managed object does not exist. | ErrItemNotFound 表示请求的受管对象不存在。
 	ErrItemNotFound = errs.New("kmip: item not found | kmip：对象不存在")
 	// ErrPermissionDenied reports an authorization failure or a sensitive/non-extractable object. | ErrPermissionDenied 表示授权失败，或对象敏感/不可导出。

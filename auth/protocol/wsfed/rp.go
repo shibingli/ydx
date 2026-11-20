@@ -187,6 +187,11 @@ type RelyingPartyConfig struct {
 	// RequireSigned requires a verifiable signature and therefore a SignatureVerifier. | RequireSigned
 	// 要求可校验签名，因此需要 SignatureVerifier。
 	RequireSigned bool
+	// AllowUnsigned explicitly accepts unsigned SAML assertions. The zero value fails closed:
+	// constructing an RP for SAML tokens without a SignatureVerifier is an error. JWT-only token
+	// types are unaffected. | AllowUnsigned 显式接受未签名的 SAML 断言。零值失败关闭：SAML 令牌
+	// 未配置 SignatureVerifier 时构造 RP 会报错。仅使用 JWT 令牌类型不受影响。
+	AllowUnsigned bool
 	// ClockSkew is the tolerated clock difference. | ClockSkew 是容忍的时钟差。
 	ClockSkew time.Duration
 	// AllowUnsolicited accepts responses without a matching outstanding request. | AllowUnsolicited
@@ -276,6 +281,9 @@ func NewRelyingParty(config RelyingPartyConfig) (*RelyingParty, error) {
 	}
 	if config.RequireSigned && config.SignatureVerifier == nil {
 		return nil, errs.Detail(ErrInvalidConfig, "RequireSigned needs a signature verifier | RequireSigned 需要签名校验器")
+	}
+	if config.TokenType != TokenTypeJWT && config.SignatureVerifier == nil && !config.AllowUnsigned {
+		return nil, errs.Detail(ErrInvalidConfig, "unsigned SAML assertions need AllowUnsigned | 未签名 SAML 断言需要 AllowUnsigned")
 	}
 	if config.ClockSkew <= 0 {
 		config.ClockSkew = defaultClockSkew

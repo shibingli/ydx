@@ -1,6 +1,7 @@
 package cas
 
 import (
+	"context"
 	"crypto/tls"
 	"errors"
 	"io"
@@ -523,9 +524,10 @@ func TestNewServerConfigValidation(t *testing.T) {
 		t.Fatalf("missing issuer error = %v", err)
 	}
 	if _, err := NewServer(ServerConfig{
-		Issuer:        testIssuer,
-		Authenticator: AuthenticatorFunc(testAuthenticator),
-		CookieConfig:  CookieConfig{SameSite: http.SameSiteNoneMode},
+		AllowAnyService: true,
+		Issuer:          testIssuer,
+		Authenticator:   AuthenticatorFunc(testAuthenticator),
+		CookieConfig:    CookieConfig{SameSite: http.SameSiteNoneMode},
 	}); !errors.Is(err, ErrInvalidConfig) {
 		t.Fatalf("SameSite=None without Secure error = %v", err)
 	}
@@ -618,5 +620,20 @@ func TestMiddlewareRejectsForgedForwardedProto(t *testing.T) {
 	location := recorder.Header().Get("Location")
 	if strings.Contains(strings.ToLower(location), "javascript") || !strings.Contains(location, url.QueryEscape("http://cas.example.com/private")) {
 		t.Fatalf("redirect Location = %q", location)
+	}
+}
+
+// TestAllowsServiceFailsClosedWithoutRegistry pins that a CAS server without a ServiceRegistry
+// refuses every service unless AllowAnyService is explicit. |
+// TestAllowsServiceFailsClosedWithoutRegistry 固化：没有 ServiceRegistry 的 CAS 服务器拒绝所有
+// 服务，除非显式 AllowAnyService。
+func TestAllowsServiceFailsClosedWithoutRegistry(t *testing.T) {
+	server := &Server{config: ServerConfig{}}
+	if server.allowsService(context.Background(), "https://app.example.com/callback") {
+		t.Fatal("nil registry accepted a service without AllowAnyService")
+	}
+	server.config.AllowAnyService = true
+	if !server.allowsService(context.Background(), "https://app.example.com/callback") {
+		t.Fatal("AllowAnyService did not accept a valid service URL")
 	}
 }

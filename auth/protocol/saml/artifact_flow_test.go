@@ -39,14 +39,20 @@ func newArtifactTestIdP(t *testing.T, mutate func(*IdentityProviderConfig)) (*Id
 	key, cert := samlTestKeyCert(t)
 	store := NewMemoryStore()
 	config := IdentityProviderConfig{
-		EntityID:      artifactIDPEntity,
-		SSOURL:        "https://idp.example/sso",
-		Store:         store,
-		Authenticator: testAuthenticator(),
-		Signer:        &XMLDSigSigner{PrivateKey: key, Certificate: cert, Exclusive: true},
-		SignResponse:  true,
-		SignAssertion: true,
-		Now:           func() time.Time { return samlTestNow },
+		AllowUnregisteredACS: true,
+		// The legacy artifact suite exercises unsigned SOAP messages; the default fail-closed
+		// policy is covered separately by TestArtifactResolutionRejectsUnsignedByDefault. |
+		// 旧工件测试套件使用未签名 SOAP 消息；默认失败关闭策略由
+		// TestArtifactResolutionRejectsUnsignedByDefault 单独覆盖。
+		AllowUnsignedArtifactResolve: true,
+		EntityID:                     artifactIDPEntity,
+		SSOURL:                       "https://idp.example/sso",
+		Store:                        store,
+		Authenticator:                testAuthenticator(),
+		Signer:                       &XMLDSigSigner{PrivateKey: key, Certificate: cert, Exclusive: true},
+		SignResponse:                 true,
+		SignAssertion:                true,
+		Now:                          func() time.Time { return samlTestNow },
 	}
 	if mutate != nil {
 		mutate(&config)
@@ -243,6 +249,42 @@ func TestArtifactResolutionUnsignedRoundTrip(t *testing.T) {
 	}
 	if replayPayload.FirstChild("Response") != nil {
 		t.Fatal("replay carried a Response")
+	}
+}
+
+// TestArtifactResolutionRejectsUnsignedByDefault pins fail-closed artifact resolution: without an
+// explicit AllowUnsignedArtifactResolve opt-in an unsigned ArtifactResolve is rejected without
+// consuming the artifact, while a correctly signed request succeeds. |
+// TestArtifactResolutionRejectsUnsignedByDefault 固化失败关闭的工件解析：没有显式
+// AllowUnsignedArtifactResolve 选择时，未签名的 ArtifactResolve 被拒绝且不消费工件，正确签名的请求成功。
+func TestArtifactResolutionRejectsUnsignedByDefault(t *testing.T) {
+	idp, _, key, cert := newArtifactTestIdP(t, func(config *IdentityProviderConfig) {
+		config.AllowUnsignedArtifactResolve = false
+		config.WantArtifactResolveSigned = false
+	})
+	idp.config.SignatureVerifier = &XMLDSigVerifier{Certificates: []*x509.Certificate{cert}}
+	artifactValue, _ := issueArtifact(t, idp, "")
+	resolveID := auth.NewID("resolve-default")
+	body := artifactResolveBody(t, resolveID, idp.Config().ArtifactResolutionURL, artifactValue, artifactSPEntity, samlTestNow)
+	recorder := postArtifactResolve(idp.HandleArtifactResolution, body)
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("unsigned default status = %d body=%s", recorder.Code, recorder.Body.String())
+	}
+
+	// The rejected request must not consume the artifact, so the signed request still resolves it. |
+	// 被拒绝的请求不得消费工件，因此签名请求仍能解析它。
+	document := artifactResolveDocument(t, resolveID, idp.Config().ArtifactResolutionURL, artifactValue, artifactSPEntity)
+	signed, err := (&XMLDSigSigner{PrivateKey: key, Certificate: cert, Exclusive: true}).SignElement(document, resolveID)
+	if err != nil {
+		t.Fatalf("sign resolve: %v", err)
+	}
+	recorder = postArtifactResolve(idp.HandleArtifactResolution, buildSOAPEnvelope(signed))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("signed default status = %d body=%s", recorder.Code, recorder.Body.String())
+	}
+	payload := artifactResponseNode(t, recorder.Body.Bytes())
+	if got := artifactResponseStatusValue(t, payload); got != StatusSuccess {
+		t.Fatalf("signed default status = %q body=%s", got, recorder.Body.String())
 	}
 }
 

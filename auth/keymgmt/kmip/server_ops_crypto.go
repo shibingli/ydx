@@ -244,6 +244,7 @@ func (s *Server) handleUnwrapKey(request UnwrapKeyRequest) (Item, error) {
 		zeroizeKeyBlock(&unwrapped)
 		return Item{}, err
 	}
+	privateMaterial := parsed.hasPrivateMaterial()
 	parsed.zeroize()
 	uid, err := newUniqueIdentifier()
 	if err != nil {
@@ -261,8 +262,57 @@ func (s *Server) handleUnwrapKey(request UnwrapKeyRequest) (Item, error) {
 		return Item{}, err
 	}
 	defer record.Object.Zeroize()
+	if err := enforceUnwrappedPermissions(&record, unwrapped.Value.Attributes, request.TemplateAttribute, privateMaterial); err != nil {
+		zeroizeKeyBlock(&unwrapped)
+		return Item{}, err
+	}
 	if err := s.createRecord(record); err != nil {
 		return Item{}, err
 	}
 	return UnwrapKeyResponse{UniqueIdentifier: uid, ObjectType: request.Object.Type}.Item()
+}
+
+// enforceUnwrappedPermissions prevents Unwrap Key from granting the new object more access than the
+// source key material. The wrapped Key Value may carry source attributes; when it marks the source
+// non-extractable, an explicit Extractable=true template is rejected and the implicit default is
+// lowered. A Public Key object that carries private material is treated as a private key and is
+// always sensitive. | enforceUnwrappedPermissions 防止 Unwrap Key 给新对象授予高于源密钥材料的权限。
+// 已封装 Key Value 可携带源属性；当源被标记为不可导出时，显式 Extractable=true 模板会被拒绝，隐式
+// 默认值会被下调。携带私有材料的 Public Key 对象按私钥处理并始终敏感。
+func enforceUnwrappedPermissions(record *ObjectRecord, source AttributeList, tmpl TemplateAttribute, privateMaterial bool) error {
+	if record == nil {
+		return nil
+	}
+	if privateMaterial {
+		record.Sensitive = true
+	}
+	if sourceSensitive, ok := attributeBoolean(source, AttributeSensitive); ok && sourceSensitive {
+		record.Sensitive = true
+	}
+	sourceExtractable, hasExtractable := attributeBoolean(source, AttributeExtractable)
+	if neverExtractable, ok := attributeBoolean(source, AttributeNeverExtractable); ok && neverExtractable {
+		sourceExtractable, hasExtractable = false, true
+	}
+	if !hasExtractable || sourceExtractable {
+		return nil
+	}
+	if requested, ok := attributeBoolean(tmpl.Attributes, AttributeExtractable); ok && requested {
+		return resultErrorFor(ResultStatusOperationFailed, ResultReasonNotExtractable,
+			"template Extractable=true exceeds the source key | 模板 Extractable=true 超出源密钥权限")
+	}
+	record.Extractable = false
+	return nil
+}
+
+// attributeBoolean reads a boolean attribute by name. | attributeBoolean 按名称读取布尔属性。
+func attributeBoolean(attrs AttributeList, name string) (bool, bool) {
+	attr, ok := attrs.Lookup(name)
+	if !ok {
+		return false, false
+	}
+	value, err := attr.Value.AsBoolean()
+	if err != nil {
+		return false, false
+	}
+	return value, true
 }

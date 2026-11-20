@@ -112,9 +112,10 @@ func TestValidationJSONProxyFields(t *testing.T) {
 		config.ServiceRegistry = NewAllowAllServiceRegistry()
 	})
 	handler := newTestRouter(t, server)
-	_, st := issueTestTickets(t, server, testAppService)
+	serviceURL := callback.URL + "/service"
+	_, st := issueTestTickets(t, server, serviceURL)
 	extra := url.Values{"format": {"json"}, "pgtUrl": {callback.URL + "/pgt"}}
-	recorder := serve(t, handler, http.MethodGet, validateURL("p3/serviceValidate", st.ID, testAppService, extra), nil)
+	recorder := serve(t, handler, http.MethodGet, validateURL("p3/serviceValidate", st.ID, serviceURL, extra), nil)
 	envelope := decodeJSONEnvelope(t, recorder.Body.String())
 	if envelope.AuthenticationSuccess == nil {
 		t.Fatalf("body = %s", recorder.Body.String())

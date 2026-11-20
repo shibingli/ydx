@@ -62,14 +62,19 @@
 // Versions and Check, plus the ydx Wrap Key and Unwrap Key extensions. Export is available for KMIP 1.4 and is
 // rejected with ErrUnsupported for KMIP 2.0. It supports AES/SM4 block ciphers (GCM by default,
 // CBC, CTR, CFB and OFB), RSA and ECDSA signatures, Ed25519, HMAC-SHA-256/384/512, SM2 and SM3 through ydx/guomi,
-// and Raw, Transparent, PKCS#1, PKCS#8, X.509, SEC1 and JWK key formats. | NewServer 构造由 Store 支持的 Server，
+// and Raw, Transparent, PKCS#1, PKCS#8, X.509, SEC1 and JWK key formats. For Unwrap Key the
+// AuthorizationRequest exposes the KEK identifier and the requested template attributes, and the
+// server never lets the template raise Extractable above the wrapped source key. | NewServer 构造由
+// Store 支持的 Server，
 // 默认使用 MemoryStore。生产监听器要求 TLS，可选要求客户端证书，并可通过 Authorizer 对每个批处理项授权。
 // 服务器实现 Create、Create Key Pair、Register、Get、Get Attributes、Get Attribute List、Activate、Revoke、
 // Destroy、Export、Locate、Derive Key、Encrypt、Decrypt、Sign、Signature Verify、MAC、MAC Verify、Query、
 // Discover Versions 与 Check，以及 ydx 的 Wrap Key 与 Unwrap Key 扩展。Export 在 KMIP 1.4 可用，对 KMIP 2.0
 // 以 ErrUnsupported 拒绝。它通过 ydx/guomi 支持 AES/SM4 分组密码
 // （默认 GCM，另有 CBC、CTR、CFB 与 OFB）、RSA 与 ECDSA 签名、Ed25519、HMAC-SHA-256/384/512、SM2 与 SM3，
-// 以及 Raw、Transparent、PKCS#1、PKCS#8、X.509、SEC1 与 JWK 密钥格式。
+// 以及 Raw、Transparent、PKCS#1、PKCS#8、X.509、SEC1 与 JWK 密钥格式。对 Unwrap Key，
+// AuthorizationRequest 暴露 KEK 标识与请求模板属性，服务器绝不允许模板把 Extractable 提升到高于
+// 已封装源密钥。
 //
 // # Client | 客户端
 //

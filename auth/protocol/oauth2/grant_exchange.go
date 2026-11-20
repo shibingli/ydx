@@ -51,7 +51,10 @@ func (s *Server) grantTokenExchange(r *http.Request, client *Client, form url.Va
 		if err != nil {
 			return nil, err
 		}
-		if len(principal.Scopes) > 0 && !isSubset(validated, principal.Scopes) {
+		// The subject token is the grant: an empty scope set grants nothing, and a requested
+		// scope must always be a subset of it. | 主体令牌就是授权：空作用域集合不授予任何权限，
+		// 请求的作用域必须始终是它的子集。
+		if !isSubset(validated, principal.Scopes) {
 			return nil, errs.Detail(ErrInvalidScope, "scope is broader than the subject token | 作用域超出主体令牌")
 		}
 		scopes = validated
@@ -196,6 +199,12 @@ func (s *Server) grantJWTBearer(r *http.Request, client *Client, form url.Values
 		validated, err := s.grantScopes(client, requested)
 		if err != nil {
 			return nil, err
+		}
+		// A JWT bearer assertion authorizes exactly its own scopes. The client allow list can
+		// only narrow that set, never widen it. | JWT 承载断言只授权其自身作用域；客户端白名单
+		// 只能收窄该集合，绝不能扩大。
+		if !isSubset(validated, principal.Scopes) {
+			return nil, errs.Detail(ErrInvalidScope, "scope is broader than the assertion | 作用域超出断言")
 		}
 		scopes = validated
 	}

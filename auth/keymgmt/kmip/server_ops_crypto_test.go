@@ -2,6 +2,7 @@ package kmip
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"testing"
 )
@@ -162,6 +163,177 @@ func TestServerSignVerifyMAC(t *testing.T) {
 	}
 	if item := runOpItem(t, server, OpMAC, MACRequest{UniqueIdentifier: "missing", Data: data}); !errors.Is(item.Err(), ErrItemNotFound) {
 		t.Fatalf("missing MAC key error = %v | 缺失 MAC 密钥错误 = %v", item.Err(), item.Err())
+	}
+}
+
+// TestServerUnwrapAuthorizationContext pins that an Authorizer can see the KEK identifier and the
+// requested template attributes of an Unwrap Key request. | TestServerUnwrapAuthorizationContext
+// 固化 Authorizer 能看到 Unwrap Key 请求的 KEK 标识与请求模板属性。
+func TestServerUnwrapAuthorizationContext(t *testing.T) {
+	var seen []AuthorizationRequest
+	server, err := NewServer(ServerConfig{
+		AllowPlaintext: true,
+		Store:          NewMemoryStore(),
+		Authorizer: AuthorizerFunc(func(_ context.Context, request AuthorizationRequest) error {
+			if request.Operation == OpUnwrapKey {
+				seen = append(seen, request)
+			}
+			return nil
+		}),
+	})
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	t.Cleanup(func() { _ = server.Close() })
+	wrapping := createSymmetric(t, server)
+	activateKey(t, server, wrapping)
+	target := createSymmetric(t, server)
+	activateKey(t, server, target)
+	spec := KeyWrappingSpecification{
+		WrappingMethod:           WrappingMethodEncrypt,
+		EncryptionKeyInformation: &EncryptionKeyInformation{UniqueIdentifier: wrapping},
+	}
+	wrapped, err := DecodeWrapKeyResponse(runOp(t, server, OpWrapKey, WrapKeyRequest{UniqueIdentifier: target, KeyWrappingSpecification: spec}))
+	if err != nil {
+		t.Fatalf("DecodeWrapKeyResponse: %v", err)
+	}
+	runOp(t, server, OpUnwrapKey, UnwrapKeyRequest{
+		Object:            wrapped.Object,
+		TemplateAttribute: TemplateAttribute{Attributes: AttributeList{NewBooleanAttribute(AttributeExtractable, true)}},
+	})
+	if len(seen) != 1 {
+		t.Fatalf("authorizer saw %d unwrap requests, want 1", len(seen))
+	}
+	if seen[0].EncryptionKeyUID != wrapping {
+		t.Fatalf("EncryptionKeyUID = %q, want %q", seen[0].EncryptionKeyUID, wrapping)
+	}
+	if value, ok := seen[0].TemplateAttributes[AttributeExtractable]; !ok || value != true {
+		t.Fatalf("TemplateAttributes = %#v, want Extractable=true", seen[0].TemplateAttributes)
+	}
+	if seen[0].ObjectType != ObjectTypeSymmetricKey {
+		t.Fatalf("ObjectType = %s, want Symmetric Key", seen[0].ObjectType)
+	}
+}
+
+// TestServerUnwrapDoesNotEscalateExtractability pins that a non-extractable source attribute cannot
+// be raised to Extractable=true by the Unwrap template, and that the implicit default is lowered. |
+// TestServerUnwrapDoesNotEscalateExtractability 固化源不可导出属性不能被 Unwrap 模板提升为
+// Extractable=true，且隐式默认值会被下调。
+func TestServerUnwrapDoesNotEscalateExtractability(t *testing.T) {
+	server := newTestServer(t)
+	wrapping := createSymmetric(t, server)
+	activateKey(t, server, wrapping)
+	target := createSymmetric(t, server)
+	activateKey(t, server, target)
+	spec := KeyWrappingSpecification{
+		WrappingMethod:           WrappingMethodEncrypt,
+		EncryptionKeyInformation: &EncryptionKeyInformation{UniqueIdentifier: wrapping},
+	}
+	wrapped, err := DecodeWrapKeyResponse(runOp(t, server, OpWrapKey, WrapKeyRequest{UniqueIdentifier: target, KeyWrappingSpecification: spec}))
+	if err != nil {
+		t.Fatalf("DecodeWrapKeyResponse: %v", err)
+	}
+	block, err := wrapped.Object.KeyBlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The wrapped Key Value carries the source key attributes. | 已封装 Key Value 携带源密钥属性。
+	block.Value.Attributes = AttributeList{NewBooleanAttribute(AttributeExtractable, false)}
+	item := runOpItem(t, server, OpUnwrapKey, UnwrapKeyRequest{
+		Object:            wrapped.Object,
+		TemplateAttribute: TemplateAttribute{Attributes: AttributeList{NewBooleanAttribute(AttributeExtractable, true)}},
+	})
+	if !errors.Is(item.Err(), ErrPermissionDenied) || item.ResultReason != ResultReasonNotExtractable {
+		t.Fatalf("escalating unwrap = %v reason=%v, want not extractable", item.Err(), item.ResultReason)
+	}
+	response, err := DecodeUnwrapKeyResponse(runOp(t, server, OpUnwrapKey, UnwrapKeyRequest{Object: wrapped.Object}))
+	if err != nil {
+		t.Fatalf("DecodeUnwrapKeyResponse: %v", err)
+	}
+	record, err := server.store.Get(server.ctx, response.UniqueIdentifier)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if record.Extractable {
+		t.Fatal("unwrapped record ignored the non-extractable source")
+	}
+}
+
+// TestServerUnwrapRequiresKEKUnwrapUsage pins that a KEK authorized only for Wrap cannot unwrap
+// even when the template requests an extractable object. | TestServerUnwrapRequiresKEKUnwrapUsage
+// 固化仅获 Wrap 授权的 KEK 无法解封，即使模板请求可导出对象。
+func TestServerUnwrapRequiresKEKUnwrapUsage(t *testing.T) {
+	server := newTestServer(t)
+	kekItem := runOp(t, server, OpCreate, CreateRequest{
+		ObjectType: ObjectTypeSymmetricKey,
+		TemplateAttribute: TemplateAttribute{Attributes: AttributeList{
+			NewEnumerationAttribute(AttributeCryptographicAlgorithm, uint32(AlgorithmAES)),
+			NewIntegerAttribute(AttributeCryptographicLength, 256),
+			NewIntegerAttribute(AttributeCryptographicUsageMask, int64(UsageMaskWrapKey)),
+		}},
+	})
+	kek, err := DecodeCreateResponse(kekItem)
+	if err != nil {
+		t.Fatal(err)
+	}
+	activateKey(t, server, kek.UniqueIdentifier)
+	target := createSymmetric(t, server)
+	activateKey(t, server, target)
+	spec := KeyWrappingSpecification{
+		WrappingMethod:           WrappingMethodEncrypt,
+		EncryptionKeyInformation: &EncryptionKeyInformation{UniqueIdentifier: kek.UniqueIdentifier},
+	}
+	wrapped, err := DecodeWrapKeyResponse(runOp(t, server, OpWrapKey, WrapKeyRequest{UniqueIdentifier: target, KeyWrappingSpecification: spec}))
+	if err != nil {
+		t.Fatalf("DecodeWrapKeyResponse: %v", err)
+	}
+	item := runOpItem(t, server, OpUnwrapKey, UnwrapKeyRequest{
+		Object:            wrapped.Object,
+		TemplateAttribute: TemplateAttribute{Attributes: AttributeList{NewBooleanAttribute(AttributeExtractable, true)}},
+	})
+	if !errors.Is(item.Err(), ErrUsageMask) {
+		t.Fatalf("wrap-only KEK unwrap err = %v, want ErrUsageMask", item.Err())
+	}
+}
+
+// TestServerUnwrapPublicKeyWithPrivateMaterial pins that a Public Key object carrying private
+// material is stored as sensitive. | TestServerUnwrapPublicKeyWithPrivateMaterial 固化携带私有材料的
+// Public Key 对象按敏感对象存储。
+func TestServerUnwrapPublicKeyWithPrivateMaterial(t *testing.T) {
+	server := newTestServer(t)
+	wrapping := createSymmetric(t, server)
+	activateKey(t, server, wrapping)
+	privateBlock, _, err := generateKeyPairKeyBlocks(AlgorithmRSA, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	kekRecord, err := server.store.Get(server.ctx, wrapping)
+	if err != nil {
+		t.Fatal(err)
+	}
+	kekBlock, err := recordKeyBlock(&kekRecord)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrapped, err := wrapKeyBlock(privateBlock, *kekBlock, KeyWrappingSpecification{
+		WrappingMethod:           WrappingMethodEncrypt,
+		EncryptionKeyInformation: &EncryptionKeyInformation{UniqueIdentifier: wrapping},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, err := DecodeUnwrapKeyResponse(runOp(t, server, OpUnwrapKey, UnwrapKeyRequest{
+		Object: NewPublicKeyObject(wrapped),
+	}))
+	if err != nil {
+		t.Fatalf("DecodeUnwrapKeyResponse: %v", err)
+	}
+	record, err := server.store.Get(server.ctx, response.UniqueIdentifier)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !record.Sensitive {
+		t.Fatal("public key object with private material was stored as non-sensitive")
 	}
 }
 

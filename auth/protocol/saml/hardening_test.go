@@ -397,9 +397,10 @@ func TestSignedSSOEndToEnd(t *testing.T) {
 	}
 
 	idp, err := NewIdentityProvider(IdentityProviderConfig{
-		EntityID: "https://idp.example/metadata",
-		SSOURL:   "https://idp.example/sso",
-		Store:    NewMemoryStore(),
+		AllowUnregisteredACS: true,
+		EntityID:             "https://idp.example/metadata",
+		SSOURL:               "https://idp.example/sso",
+		Store:                NewMemoryStore(),
 		Authenticator: AuthenticatorFunc(func(context.Context, http.ResponseWriter, *http.Request, *AuthnRequest) (*auth.Principal, error) {
 			return &auth.Principal{Subject: "user-1", Email: "alice@example.com", DisplayName: "Alice", AuthTime: samlTestNow}, nil
 		}),
@@ -452,11 +453,12 @@ func TestSignedSSOEndToEnd(t *testing.T) {
 func TestHandleSSOErrorPaths(t *testing.T) {
 	newIDP := func(authenticator Authenticator, config func(*IdentityProviderConfig)) *IdentityProvider {
 		cfg := IdentityProviderConfig{
-			EntityID:      "https://idp.example/metadata",
-			SSOURL:        "https://idp.example/sso",
-			LoginURL:      "https://idp.example/login",
-			Store:         NewMemoryStore(),
-			Authenticator: authenticator,
+			AllowUnregisteredACS: true,
+			EntityID:             "https://idp.example/metadata",
+			SSOURL:               "https://idp.example/sso",
+			LoginURL:             "https://idp.example/login",
+			Store:                NewMemoryStore(),
+			Authenticator:        authenticator,
 		}
 		if config != nil {
 			config(&cfg)
@@ -608,10 +610,11 @@ func TestSignedSLOEndToEnd(t *testing.T) {
 		t.Fatal(err)
 	}
 	idp, err := NewIdentityProvider(IdentityProviderConfig{
-		EntityID: "https://idp.example/metadata",
-		SSOURL:   "https://idp.example/sso",
-		SLOURL:   "https://idp.example/slo",
-		Store:    NewMemoryStore(),
+		AllowUnregisteredACS: true,
+		EntityID:             "https://idp.example/metadata",
+		SSOURL:               "https://idp.example/sso",
+		SLOURL:               "https://idp.example/slo",
+		Store:                NewMemoryStore(),
 		Authenticator: AuthenticatorFunc(func(context.Context, http.ResponseWriter, *http.Request, *AuthnRequest) (*auth.Principal, error) {
 			return &auth.Principal{Subject: "alice"}, nil
 		}),
@@ -1366,6 +1369,7 @@ func TestServiceProviderConstructorsAndHandlers(t *testing.T) {
 		ACSURL:            "https://sp.example/saml/acs",
 		IDPMetadata:       testMetadata(),
 		AllowIDPInitiated: true,
+		AllowUnsigned:     true,
 		SuccessHandler: func(w http.ResponseWriter, _ *http.Request, result *ValidationResult) {
 			success = result != nil
 			w.WriteHeader(http.StatusAccepted)
@@ -1388,6 +1392,7 @@ func TestServiceProviderConstructorsAndHandlers(t *testing.T) {
 		ACSURL:            "https://sp.example/saml/acs",
 		IDPMetadata:       testMetadata(),
 		AllowIDPInitiated: true,
+		AllowUnsigned:     true,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1639,10 +1644,16 @@ func TestIdPLogoutResponseHandling(t *testing.T) {
 	newIDP := func(t *testing.T) *IdentityProvider {
 		t.Helper()
 		idp, err := NewIdentityProvider(IdentityProviderConfig{
-			EntityID: "https://idp.example/metadata",
-			SSOURL:   "https://idp.example/sso",
-			SLOURL:   "https://idp.example/slo",
-			Store:    NewMemoryStore(),
+			AllowUnregisteredACS: true,
+			// The legacy matrix exercises unsigned POST SLO messages; the fail-closed default is
+			// covered by TestIdPLogoutRejectsUnsignedByDefault. |
+			// 旧测试矩阵使用未签名 POST SLO 消息；失败关闭的默认策略由
+			// TestIdPLogoutRejectsUnsignedByDefault 覆盖。
+			AllowUnsignedLogout: true,
+			EntityID:            "https://idp.example/metadata",
+			SSOURL:              "https://idp.example/sso",
+			SLOURL:              "https://idp.example/slo",
+			Store:               NewMemoryStore(),
 			Authenticator: AuthenticatorFunc(func(context.Context, http.ResponseWriter, *http.Request, *AuthnRequest) (*auth.Principal, error) {
 				return &auth.Principal{Subject: "alice"}, nil
 			}),
@@ -1722,10 +1733,14 @@ func TestIdPLogoutRequestRejections(t *testing.T) {
 	newIDP := func(t *testing.T, configure func(*IdentityProviderConfig)) *IdentityProvider {
 		t.Helper()
 		cfg := IdentityProviderConfig{
-			EntityID: "https://idp.example/metadata",
-			SSOURL:   "https://idp.example/sso",
-			SLOURL:   "https://idp.example/slo",
-			Store:    NewMemoryStore(),
+			AllowUnregisteredACS: true,
+			// Unsigned POST requests stay covered by this matrix; default rejection is pinned
+			// separately. | 本矩阵继续覆盖未签名 POST 请求；默认拒绝策略单独固化。
+			AllowUnsignedLogout: true,
+			EntityID:            "https://idp.example/metadata",
+			SSOURL:              "https://idp.example/sso",
+			SLOURL:              "https://idp.example/slo",
+			Store:               NewMemoryStore(),
 			Authenticator: AuthenticatorFunc(func(context.Context, http.ResponseWriter, *http.Request, *AuthnRequest) (*auth.Principal, error) {
 				return &auth.Principal{Subject: "alice"}, nil
 			}),
@@ -1790,5 +1805,122 @@ func TestIdPLogoutRequestRejections(t *testing.T) {
 				t.Fatalf("status = %d, want 400", status)
 			}
 		})
+	}
+}
+
+// TestIdPLogoutRejectsUnsignedByDefault pins fail-closed IdP single logout: an unsigned
+// LogoutRequest is rejected and leaves the session intact unless AllowUnsignedLogout opts in. |
+// TestIdPLogoutRejectsUnsignedByDefault 固化失败关闭的 IdP 单点登出：未签名的 LogoutRequest 被拒绝
+// 且会话保持不变，除非 AllowUnsignedLogout 显式开启。
+func TestIdPLogoutRejectsUnsignedByDefault(t *testing.T) {
+	now := time.Now().UTC()
+	resolver := staticResolver{metadata: &EntityDescriptor{
+		EntityID: "https://sp.example/metadata",
+		SPSSODescriptor: &SPSSODescriptor{
+			SingleLogoutService: []Endpoint{{Binding: BindingHTTPPost, Location: "https://sp.example/slo"}},
+		},
+	}}
+	newIDP := func(t *testing.T, allowUnsigned bool) (*IdentityProvider, *MemoryStore) {
+		t.Helper()
+		store := NewMemoryStore()
+		cfg := IdentityProviderConfig{
+			AllowUnregisteredACS: true,
+			EntityID:             "https://idp.example/metadata",
+			SSOURL:               "https://idp.example/sso",
+			SLOURL:               "https://idp.example/slo",
+			Store:                store,
+			SPResolver:           resolver,
+			AllowUnsignedLogout:  allowUnsigned,
+			Authenticator: AuthenticatorFunc(func(context.Context, http.ResponseWriter, *http.Request, *AuthnRequest) (*auth.Principal, error) {
+				return &auth.Principal{Subject: "alice"}, nil
+			}),
+		}
+		idp, err := NewIdentityProvider(cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := store.SaveSession(context.Background(), &Session{
+			ID:          "session-unsigned",
+			NameID:      "alice@example.com",
+			SPEntityID:  "https://sp.example/metadata",
+			IDPEntityID: "https://idp.example/metadata",
+		}); err != nil {
+			t.Fatal(err)
+		}
+		return idp, store
+	}
+	request := func(id string) []byte {
+		document, err := xml.Marshal(&LogoutRequest{
+			ID:           id,
+			Version:      Version,
+			IssueInstant: FormatTime(now),
+			Destination:  "https://idp.example/slo",
+			NotOnOrAfter: FormatTime(now.Add(5 * time.Minute)),
+			Issuer:       &Issuer{Value: "https://sp.example/metadata"},
+			NameID:       NewNameID(NameIDUnspecified, "alice@example.com"),
+			SessionIndex: []string{"session-unsigned"},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return document
+	}
+	deliver := func(t *testing.T, idp *IdentityProvider, document []byte) int {
+		t.Helper()
+		w := httptest.NewRecorder()
+		idp.HandleSLO(w, samlFormPost(t, "/slo", url.Values{"SAMLRequest": {EncodePost(document)}}.Encode()))
+		return w.Code
+	}
+
+	idp, store := newIDP(t, false)
+	if status := deliver(t, idp, request("unsigned-default")); status != http.StatusBadRequest {
+		t.Fatalf("unsigned default status = %d, want 400", status)
+	}
+	if _, err := store.GetSession(context.Background(), "session-unsigned"); err != nil {
+		t.Fatalf("rejected unsigned logout removed the session: %v", err)
+	}
+
+	idp, store = newIDP(t, true)
+	if status := deliver(t, idp, request("unsigned-allowed")); status != http.StatusOK {
+		t.Fatalf("explicit unsigned status = %d, want 200", status)
+	}
+	if _, err := store.GetSession(context.Background(), "session-unsigned"); err == nil {
+		t.Fatal("explicit unsigned logout kept the session")
+	}
+}
+
+// TestValidateResponseRejectsUnsignedByDefault pins fail-closed signature policy: without an
+// explicit AllowUnsigned opt-in, an unsigned response or assertion must be rejected even when no
+// verifier is configured. Accepting it would let anyone forge an assertion for any subject. |
+// TestValidateResponseRejectsUnsignedByDefault 固化失败关闭的签名策略：没有显式 AllowUnsigned
+// 选择时，即使未配置校验器，未签名的响应或断言也必须拒绝；接受它意味着任何人都能伪造任意主体。
+func TestValidateResponseRejectsUnsignedByDefault(t *testing.T) {
+	sp, err := NewServiceProvider(ServiceProviderConfig{
+		EntityID:    "https://sp.example/metadata",
+		ACSURL:      "https://sp.example/saml/acs",
+		IDPMetadata: testMetadata(),
+		Store:       samlStoreWithRequest(t),
+		Now:         func() time.Time { return samlTestNow },
+	})
+	if err != nil {
+		t.Fatalf("NewServiceProvider: %v", err)
+	}
+	if _, err := sp.validateResponse(context.Background(), []byte(samlValidResponse(samlTestNow))); !errors.Is(err, ErrInvalidSignature) {
+		t.Fatalf("unsigned response err = %v, 期望 ErrInvalidSignature | want ErrInvalidSignature", err)
+	}
+}
+
+// TestIdPRejectsRequestSuppliedACSWithoutResolver pins that an IdP without a metadata resolver
+// never delivers an assertion to a URL chosen by the requester. |
+// TestIdPRejectsRequestSuppliedACSWithoutResolver 固化：没有元数据解析器时，IdP 绝不把断言投递到
+// 请求方自选的 URL。
+func TestIdPRejectsRequestSuppliedACSWithoutResolver(t *testing.T) {
+	idp := &IdentityProvider{config: IdentityProviderConfig{}}
+	_, err := idp.resolveACS(context.Background(), &AuthnRequest{
+		Issuer:                      &Issuer{Value: "https://sp.example/metadata"},
+		AssertionConsumerServiceURL: "https://evil.example/acs",
+	})
+	if !errors.Is(err, ErrInvalidRequest) {
+		t.Fatalf("request ACS err = %v, 期望 ErrInvalidRequest | want ErrInvalidRequest", err)
 	}
 }

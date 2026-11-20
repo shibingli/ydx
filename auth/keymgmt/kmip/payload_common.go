@@ -49,6 +49,11 @@ func DecodeRevocationReason(item Item) (RevocationReason, error) {
 	return out, nil
 }
 
+// maxPBKDF2Iterations bounds a PBKDF2 iteration count so a hostile request cannot pin a server
+// core for an unbounded time. | maxPBKDF2Iterations 限制 PBKDF2 迭代次数，避免恶意请求无限占用
+// 服务器核心。
+const maxPBKDF2Iterations = 1 << 20
+
 // DerivationParameters is the KMIP Derivation Parameters structure. | DerivationParameters 是 KMIP 派生参数结构。
 type DerivationParameters struct {
 	// CryptographicParameters is an optional nested Cryptographic Parameters structure. | CryptographicParameters 是可选嵌套密码参数结构。
@@ -121,8 +126,10 @@ func DecodeDerivationParameters(item Item) (DerivationParameters, error) {
 			if err != nil {
 				return out, err
 			}
-			if v < 0 {
-				return out, errs.Detail(ErrMalformed, "negative iteration count | 迭代计数为负")
+			if v < 0 || v > int64(maxPBKDF2Iterations) {
+				return out, errs.Detail(ErrInvalidRequest,
+					"iteration count %[1]d must be between 0 and %[2]d | 迭代计数 %[1]d 必须在 0 到 %[2]d 之间",
+					v, maxPBKDF2Iterations)
 			}
 			out.IterationCount = int(v)
 		default:

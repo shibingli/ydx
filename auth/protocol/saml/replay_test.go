@@ -330,9 +330,10 @@ func TestValidateReplayStoreTypedNilFailsClosed(t *testing.T) {
 // TestServiceProviderReplayWindow 校验重放窗口的归一化与透传。
 func TestServiceProviderReplayWindow(t *testing.T) {
 	config := ServiceProviderConfig{
-		EntityID:    "https://sp.example/metadata",
-		ACSURL:      "https://sp.example/saml/acs",
-		IDPMetadata: testMetadata(),
+		EntityID:      "https://sp.example/metadata",
+		ACSURL:        "https://sp.example/saml/acs",
+		IDPMetadata:   testMetadata(),
+		AllowUnsigned: true,
 	}
 	sp, err := NewServiceProvider(config)
 	if err != nil {

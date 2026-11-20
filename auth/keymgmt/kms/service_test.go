@@ -224,6 +224,36 @@ func TestServiceAliasAndUpdate(t *testing.T) {
 	}
 }
 
+// TestServiceIDAliasExclusion pins the service-level identifier/alias namespace across CreateKey,
+// ImportKey, UpdateKey and alias resolution. | TestServiceIDAliasExclusion 固化 CreateKey、ImportKey、
+// UpdateKey 与别名解析中的服务级标识/别名命名空间。
+func TestServiceIDAliasExclusion(t *testing.T) {
+	service, _ := newServiceForTest(t, Config{})
+	ctx := context.Background()
+	first := createKeyForTest(t, service, CreateKeyRequest{ID: "key-one", Type: KeyTypeAES, Alias: "orders"}, false)
+	if _, err := service.CreateKey(ctx, CreateKeyRequest{ID: "orders", Type: KeyTypeAES}); !errors.Is(err, ErrAliasExists) {
+		t.Fatalf("CreateKey id equal to alias err = %v, want ErrAliasExists", err)
+	}
+	if _, err := service.CreateKey(ctx, CreateKeyRequest{ID: "key-two", Type: KeyTypeAES, Alias: "key-one"}); !errors.Is(err, ErrAliasExists) {
+		t.Fatalf("CreateKey alias equal to id err = %v, want ErrAliasExists", err)
+	}
+	if _, err := service.ImportKey(ctx, ImportKeyRequest{
+		CreateKeyRequest: CreateKeyRequest{ID: "orders", Type: KeyTypeAES},
+		Material:         []byte("0123456789abcdef0123456789abcdef"),
+	}); !errors.Is(err, ErrAliasExists) {
+		t.Fatalf("ImportKey id equal to alias err = %v, want ErrAliasExists", err)
+	}
+	alias := "key-one"
+	if _, err := service.UpdateKey(ctx, first.ID, UpdateKeyRequest{Alias: &alias}); !errors.Is(err, ErrAliasExists) {
+		t.Fatalf("UpdateKey alias equal to id err = %v, want ErrAliasExists", err)
+	}
+	second := createKeyForTest(t, service, CreateKeyRequest{ID: "key-two", Type: KeyTypeAES, Alias: "payments"}, false)
+	resolved, err := service.Resolve(ctx, "payments")
+	if err != nil || resolved.ID != second.ID {
+		t.Fatalf("Resolve(payments) = %+v, %v, want %q", resolved, err, second.ID)
+	}
+}
+
 func TestServiceRotationAndRotateAllDue(t *testing.T) {
 	ctx := context.Background()
 	service, clock := newServiceForTest(t, Config{})

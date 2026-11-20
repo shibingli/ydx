@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync/atomic"
 	"testing"
 )
 
@@ -125,6 +126,7 @@ func TestActiveDirectoryGroupFailurePaths(t *testing.T) {
 		cfg := ADConfig{
 			Domain: "example.com", URL: server.URL(),
 			BindDN: adTestServiceDN, BindPassword: adTestServicePassword,
+			AllowInsecureLDAP: true,
 		}
 		ad, err := NewActiveDirectory(context.Background(), cfg)
 		if err != nil {
@@ -144,6 +146,7 @@ func TestActiveDirectoryGroupFailurePaths(t *testing.T) {
 		cfg := ADConfig{
 			Domain: "example.com", URL: server.URL(),
 			BindDN: adTestServiceDN, BindPassword: adTestServicePassword,
+			AllowInsecureLDAP: true,
 		}
 		ad, err := NewActiveDirectory(context.Background(), cfg)
 		if err != nil {
@@ -174,6 +177,64 @@ func TestActiveDirectoryGroupFailurePaths(t *testing.T) {
 			t.Fatalf("closed groupsRecursive = %v, %v", groups, err)
 		}
 	})
+}
+
+// TestActiveDirectoryRequiresTLSForPasswordAuthentication verifies that a plaintext endpoint is
+// rejected before any password bind unless AllowInsecureLDAP is set explicitly. |
+// TestActiveDirectoryRequiresTLSForPasswordAuthentication 校验除非显式设置 AllowInsecureLDAP，
+// 明文端点会在任何口令绑定之前被拒绝。
+func TestActiveDirectoryRequiresTLSForPasswordAuthentication(t *testing.T) {
+	var binds atomic.Int32
+	server := startMockServer(t, func(session *mockSession, message *LDAPMessage) error {
+		switch request := message.Op.(type) {
+		case *BindRequest:
+			binds.Add(1)
+			return session.writeSimpleResult(message.MessageID, &BindResponse{Result: LDAPResult{Code: ResultSuccess}})
+		case *SearchRequest:
+			if request.BaseDN == "" && request.Scope == ScopeBaseObject {
+				if err := session.writeEntry(message.MessageID, "",
+					Attribute{Type: "defaultNamingContext", Values: []string{adTestBaseDN}}); err != nil {
+					return err
+				}
+			}
+			return session.writeSearchDone(message.MessageID, LDAPResult{Code: ResultSuccess})
+		default:
+			return errors.New("unexpected operation")
+		}
+	})
+	ad, err := NewActiveDirectory(context.Background(), ADConfig{URL: server.URL(), Domain: "example.com"})
+	if err != nil {
+		t.Fatalf("NewActiveDirectory: %v", err)
+	}
+	defer ad.Close()
+	if _, err := ad.Authenticate(context.Background(), "alice", adTestUserPassword); !errors.Is(err, ErrTLSRequired) {
+		t.Fatalf("plaintext Authenticate error = %v, want ErrTLSRequired", err)
+	}
+	if got := binds.Load(); got != 0 {
+		t.Fatalf("plaintext Authenticate sent %d bind requests, want 0", got)
+	}
+
+	if _, err := NewActiveDirectory(context.Background(), ADConfig{
+		URL: server.URL(), Domain: "example.com",
+		BindDN: adTestServiceDN, BindPassword: adTestServicePassword,
+	}); !errors.Is(err, ErrTLSRequired) {
+		t.Fatalf("plaintext service bind error = %v, want ErrTLSRequired", err)
+	}
+
+	insecure, err := NewActiveDirectory(context.Background(), ADConfig{
+		URL: server.URL(), Domain: "example.com", AllowInsecureLDAP: true,
+	})
+	if err != nil {
+		t.Fatalf("NewActiveDirectory(AllowInsecureLDAP): %v", err)
+	}
+	defer insecure.Close()
+	user, err := insecure.Authenticate(context.Background(), "alice", adTestUserPassword)
+	if err != nil {
+		t.Fatalf("opt-out Authenticate: %v", err)
+	}
+	if !user.Authenticated || binds.Load() == 0 {
+		t.Fatalf("opt-out user = %+v, binds = %d", user, binds.Load())
+	}
 }
 
 // TestADIdentityHelperEdges verifies direct bind name derivation without a

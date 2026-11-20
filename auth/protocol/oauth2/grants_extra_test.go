@@ -496,3 +496,27 @@ func TestAccessTokenRequestDPoPAndTargets(t *testing.T) {
 		t.Fatalf("revoked JWT = %v", err)
 	}
 }
+
+// TestJWTBearerGrantRejectsScopeEscalation pins RFC 7523 scope bounding: the assertion's own
+// scopes are the upper bound, even when the client is allowed a broader scope set. |
+// TestJWTBearerGrantRejectsScopeEscalation 固化 RFC 7523 的作用域上限：即使客户端被允许更宽的
+// 作用域集合，断言的自身作用域仍是上限。
+func TestJWTBearerGrantRejectsScopeEscalation(t *testing.T) {
+	server, client := grantServer(t, nil)
+	form := url.Values{
+		"grant_type": {GrantJWTBearer},
+		"assertion":  {"assertion-1"},
+		"scope":      {"profile"},
+	}
+	if _, status := tokenRequest(t, server, form, client.ID, "super-secret"); status != http.StatusBadRequest {
+		t.Fatalf("scope escalation = %d, 期望 400 | want 400", status)
+	}
+	allowed := url.Values{
+		"grant_type": {GrantJWTBearer},
+		"assertion":  {"assertion-1"},
+		"scope":      {"api:read"},
+	}
+	if _, status := tokenRequest(t, server, allowed, client.ID, "super-secret"); status != http.StatusOK {
+		t.Fatalf("assertion scope = %d, 期望 200 | want 200", status)
+	}
+}

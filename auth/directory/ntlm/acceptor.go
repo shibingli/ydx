@@ -47,6 +47,20 @@ type AcceptorConfig struct {
 	// RequireMIC are merged into a non-nil value. | TargetInfo 覆盖生成的 AV 对。
 	// Domain、ServerName 与 RequireMIC 会合并到非 nil 值中。
 	TargetInfo TargetInfo
+	// ExpectedChannelBindings is the 16-byte GSS channel-binding hash expected
+	// in the client's MsvAvChannelBindings pair. Use ChannelBindingHash to derive
+	// it from an RFC 5929 tls-server-end-point certificate hash. | ExpectedChannelBindings
+	// 是客户端 MsvAvChannelBindings 对中期望的 16 字节 GSS 通道绑定哈希。可用
+	// ChannelBindingHash 从 RFC 5929 tls-server-end-point 证书哈希派生。
+	ExpectedChannelBindings []byte
+	// RequireChannelBindings rejects a Type 3 response that omits
+	// MsvAvChannelBindings or carries a value that differs from
+	// ExpectedChannelBindings. Comparison is constant time. The default false
+	// preserves clients that do not support channel binding; enable it whenever
+	// the acceptor terminates TLS. | RequireChannelBindings 拒绝缺少
+	// MsvAvChannelBindings 或值不等于 ExpectedChannelBindings 的 Type 3 响应。比较使用常量
+	// 时间。默认 false 兼容不支持通道绑定的客户端；只要接受方终结 TLS 就应启用。
+	RequireChannelBindings bool
 	// Flags overrides the advertised negotiate flags. A zero value selects
 	// baseAcceptorFlags. Sign, Seal and KeyExchange are added to the selected
 	// set. | Flags 覆盖声明的协商标志。零值选择 baseAcceptorFlags。Sign、Seal 与
@@ -441,11 +455,14 @@ func (a *Acceptor) AcceptFinal(data []byte) (*AcceptResult, []byte, error) {
 		return a.failFinal(err)
 	}
 	defer wipe(responseKey)
-	sessionBaseKey, err := verifyNTLMv2(a.serverChallenge[:], responseKey, message)
+	sessionBaseKey, targetInfo, err := verifyNTLMv2(a.serverChallenge[:], responseKey, message)
 	if err != nil {
 		return a.failFinal(err)
 	}
 	defer wipe(sessionBaseKey)
+	if err := verifyChannelBindings(targetInfo, a.config.ExpectedChannelBindings, a.config.RequireChannelBindings); err != nil {
+		return a.failFinal(err)
+	}
 	type3MICPresent, err := verifyType3MIC(a.negotiate, a.challenge, authData, message, sessionBaseKey)
 	if err != nil {
 		return a.failFinal(err)
@@ -569,48 +586,49 @@ func (a *Acceptor) lookupResponseKey(domain, username string) ([]byte, error) {
 }
 
 // verifyNTLMv2 validates the NTLMv2 NT proof string and optional LMv2 response
-// and returns the SessionBaseKey. Only the NTLMv2 response format is accepted. |
-// verifyNTLMv2 校验 NTLMv2 NT proof 字符串与可选 LMv2 响应，并返回 SessionBaseKey。
-// 仅接受 NTLMv2 响应格式。
-func verifyNTLMv2(serverChallenge, responseKey []byte, message *AuthenticateMessage) ([]byte, error) {
+// and returns the SessionBaseKey and the echoed target info. Only the NTLMv2
+// response format is accepted. | verifyNTLMv2 校验 NTLMv2 NT proof 字符串与可选 LMv2
+// 响应，并返回 SessionBaseKey 与回显的目标信息。仅接受 NTLMv2 响应格式。
+func verifyNTLMv2(serverChallenge, responseKey []byte, message *AuthenticateMessage) ([]byte, TargetInfo, error) {
 	if len(serverChallenge) != 8 {
-		return nil, errs.Detail(ErrAuthentication, "server challenge is %d bytes, want 8 | 服务端挑战为 %d 字节，期望 8", len(serverChallenge), len(serverChallenge))
+		return nil, nil, errs.Detail(ErrAuthentication, "server challenge is %d bytes, want 8 | 服务端挑战为 %d 字节，期望 8", len(serverChallenge), len(serverChallenge))
 	}
 	if len(responseKey) != md4Size {
-		return nil, errs.Detail(ErrAuthentication, "response key has invalid length | 响应密钥长度非法")
+		return nil, nil, errs.Detail(ErrAuthentication, "response key has invalid length | 响应密钥长度非法")
 	}
 	ntResponse := message.NTResponse
 	if len(ntResponse) < 16+28+4+4 {
-		return nil, errs.Detail(ErrAuthentication, "NTLMv2 response is %d bytes, want at least %d | NTLMv2 响应为 %d 字节，至少需要 %d", len(ntResponse), 16+28+4+4, len(ntResponse), 16+28+4+4)
+		return nil, nil, errs.Detail(ErrAuthentication, "NTLMv2 response is %d bytes, want at least %d | NTLMv2 响应为 %d 字节，至少需要 %d", len(ntResponse), 16+28+4+4, len(ntResponse), 16+28+4+4)
 	}
 	proof := ntResponse[:16]
 	temp := ntResponse[16:]
 	if temp[0] != 1 || temp[1] != 1 {
-		return nil, errs.Detail(ErrAuthentication, "NTLMv2 response type is invalid | NTLMv2 响应类型非法")
+		return nil, nil, errs.Detail(ErrAuthentication, "NTLMv2 response type is invalid | NTLMv2 响应类型非法")
 	}
 	zero := []byte{0, 0, 0, 0}
 	for _, span := range [][2]int{{2, 4}, {4, 8}, {24, 28}, {len(temp) - 4, len(temp)}} {
 		if !constantTimeEqual(temp[span[0]:span[1]], zero[:span[1]-span[0]]) {
-			return nil, errs.Detail(ErrAuthentication, "NTLMv2 temporary field %d is not zero | NTLMv2 临时字段 %d 非零", span[0], span[0])
+			return nil, nil, errs.Detail(ErrAuthentication, "NTLMv2 temporary field %d is not zero | NTLMv2 临时字段 %d 非零", span[0], span[0])
 		}
 	}
-	if _, err := ParseTargetInfo(temp[28 : len(temp)-4]); err != nil {
-		return nil, errs.WrapDetail(err, ErrAuthentication, "NTLMv2 target info is invalid | NTLMv2 目标信息非法")
+	targetInfo, err := ParseTargetInfo(temp[28 : len(temp)-4])
+	if err != nil {
+		return nil, nil, errs.WrapDetail(err, ErrAuthentication, "NTLMv2 target info is invalid | NTLMv2 目标信息非法")
 	}
 	clientChallenge := temp[16:24]
 	if len(message.LMResponse) > 0 {
 		if len(message.LMResponse) != 24 {
-			return nil, errs.Detail(ErrAuthentication, "LMv2 response is %d bytes, want 24 | LMv2 响应为 %d 字节，期望 24", len(message.LMResponse), len(message.LMResponse))
+			return nil, nil, errs.Detail(ErrAuthentication, "LMv2 response is %d bytes, want 24 | LMv2 响应为 %d 字节，期望 24", len(message.LMResponse), len(message.LMResponse))
 		}
 		if !constantTimeEqual(message.LMResponse[16:], clientChallenge) {
-			return nil, errs.Detail(ErrAuthentication, "LMv2 client challenge does not match | LMv2 客户端挑战不匹配")
+			return nil, nil, errs.Detail(ErrAuthentication, "LMv2 client challenge does not match | LMv2 客户端挑战不匹配")
 		}
 		lmInput := make([]byte, 0, len(serverChallenge)+len(clientChallenge))
 		lmInput = append(lmInput, serverChallenge...)
 		lmInput = append(lmInput, clientChallenge...)
 		expectedLM := hmacMD5(responseKey, lmInput)
 		if !constantTimeEqual(message.LMResponse[:16], expectedLM) {
-			return nil, errs.Detail(ErrAuthentication, "LMv2 response does not match | LMv2 响应不匹配")
+			return nil, nil, errs.Detail(ErrAuthentication, "LMv2 response does not match | LMv2 响应不匹配")
 		}
 	}
 	proofInput := make([]byte, 0, len(serverChallenge)+len(temp))
@@ -618,9 +636,34 @@ func verifyNTLMv2(serverChallenge, responseKey []byte, message *AuthenticateMess
 	proofInput = append(proofInput, temp...)
 	expectedProof := hmacMD5(responseKey, proofInput)
 	if !constantTimeEqual(proof, expectedProof) {
-		return nil, errs.Detail(ErrAuthentication, "NT proof string does not match | NT proof 字符串不匹配")
+		return nil, nil, errs.Detail(ErrAuthentication, "NT proof string does not match | NT proof 字符串不匹配")
 	}
-	return hmacMD5(responseKey, proof), nil
+	return hmacMD5(responseKey, proof), targetInfo, nil
+}
+
+// verifyChannelBindings enforces the configured Type 3 channel-binding policy.
+// When required, a missing MsvAvChannelBindings pair or a value differing from
+// expected fails closed; the comparison is constant time. | verifyChannelBindings
+// 执行配置的 Type 3 通道绑定策略。要求绑定时，缺少 MsvAvChannelBindings 对或值不等于
+// expected 都会失败关闭；比较使用常量时间。
+func verifyChannelBindings(info TargetInfo, expected []byte, required bool) error {
+	if !required {
+		return nil
+	}
+	binding, ok := info.Get(AVChannelBindings)
+	if !ok {
+		return errs.WrapDetail(
+			errs.Detail(ErrChannelBindings, "Type 3 response lacks MsvAvChannelBindings | Type 3 响应缺少 MsvAvChannelBindings"),
+			ErrAuthentication, "channel binding verification failed | 通道绑定校验失败",
+		)
+	}
+	if !constantTimeEqual(binding, expected) {
+		return errs.WrapDetail(
+			errs.Detail(ErrChannelBindings, "channel bindings do not match | 通道绑定不匹配"),
+			ErrAuthentication, "channel binding verification failed | 通道绑定校验失败",
+		)
+	}
+	return nil
 }
 
 // verifyType3MIC verifies the Type 1/2/3 MIC when present and reports whether

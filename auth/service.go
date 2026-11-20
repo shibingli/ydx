@@ -121,13 +121,19 @@ type Config struct {
 	// MFATokenTTL is the password-phase MFA challenge lifetime; zero defaults to 5 minutes. | MFATokenTTL
 	// 是口令阶段 MFA 挑战的寿命；零值默认 5 分钟。
 	MFATokenTTL time.Duration
-	// RequireMFAToken rejects CompleteMFA calls that omit the MFAToken returned by Authenticate. The
-	// default false preserves the legacy flow, where knowledge of a user ID and a valid factor code
-	// is enough; that flow skips proof of the password phase and should be disabled for new
-	// deployments. | RequireMFAToken 拒绝未回传 Authenticate 所返回 MFAToken 的 CompleteMFA 调用。
-	// 默认 false 保留旧流程：只要知道用户 ID 与有效因素验证码即可完成，跳过了口令阶段证明，新部署
-	// 应禁用该旧流程。
+	// RequireMFAToken rejects CompleteMFA calls that omit the MFAToken returned by Authenticate. It
+	// is implied unless AllowLegacyMFAFlow is set, and remains honored when the legacy flow is
+	// enabled. | RequireMFAToken 拒绝未回传 Authenticate 所返回 MFAToken 的 CompleteMFA 调用。
+	// 除非设置 AllowLegacyMFAFlow，否则该约束始终生效；启用旧流程后显式设置仍会被遵守。
 	RequireMFAToken bool
+	// AllowLegacyMFAFlow permits CompleteMFA calls that omit the MFAToken returned by Authenticate.
+	// The default false requires the token, so knowledge of a user ID and a valid factor code is no
+	// longer enough to complete a login. Enable it only for compatibility with callers that have not
+	// adopted the password-phase challenge; such callers skip proof of the password phase. |
+	// AllowLegacyMFAFlow 允许 CompleteMFA 省略 Authenticate 返回的 MFAToken。默认 false 要求回传
+	// 令牌，因此仅知道用户 ID 与有效因素验证码不足以完成登录。仅应为尚未接入口令阶段挑战的调用方
+	// 兼容而启用；这类调用方跳过了口令阶段证明。
+	AllowLegacyMFAFlow bool
 	// LoginSnapshot reports whether Service updates LastLoginAt and LastLoginIP. | LoginSnapshot 报告 Service 是否更新 LastLoginAt 与 LastLoginIP。
 	LoginSnapshot bool
 	// Hooks are optional lifecycle callbacks. | Hooks 是可选生命周期回调。
@@ -344,9 +350,9 @@ type AuthenticateResult struct {
 	// MFARequired reports that CompleteMFA must be called. | MFARequired 表示必须调用 CompleteMFA。
 	MFARequired bool
 	// MFAToken is a short-lived, single-use challenge binding CompleteMFA to this password phase.
-	// Clients should return it unchanged; an empty value keeps the legacy caller-supplied UserID
-	// behavior. | MFAToken 是短期单次挑战，把 CompleteMFA 绑定到本次口令阶段。客户端应原样返回；
-	// 空值保留旧的由调用方提供 UserID 的行为。
+	// Clients should return it unchanged; CompleteMFA accepts an empty value only when
+	// Config.AllowLegacyMFAFlow is set. | MFAToken 是短期单次挑战，把 CompleteMFA 绑定到本次
+	// 口令阶段。客户端应原样返回；仅当设置 Config.AllowLegacyMFAFlow 时 CompleteMFA 才接受空值。
 	MFAToken string
 	// PasswordExpired reports that the password exceeded the policy age. | PasswordExpired 表示口令超过策略有效期。
 	PasswordExpired bool
@@ -397,7 +403,19 @@ func (s *Service) Authenticate(ctx context.Context, input AuthenticateInput) (*A
 		// 恢复账号，避免下次登录看到 UserLocked 且期限为零而永久拒登。
 		user.Status = UserActive
 	}
-	mfaPending := user.MFAEnabled && !input.SkipMFA
+	mfaEnrolled := user.MFAEnabled
+	if !input.SkipMFA && !mfaEnrolled {
+		// WebAuthn and other adapters can persist second factors directly instead of going through
+		// RegisterCredential, which is the only writer of User.MFAEnabled. Treat any enabled
+		// non-password credential as an enrolled factor so a stale flag cannot bypass MFA. |
+		// WebAuthn 等适配器可以绕过 RegisterCredential 直接持久化第二因素，而 RegisterCredential 是
+		// User.MFAEnabled 的唯一写入点。任何已启用的非口令凭据都视为已登记因素，避免过期标志绕过 MFA。
+		mfaEnrolled, err = s.userHasSecondFactor(ctx, user)
+		if err != nil {
+			return nil, err
+		}
+	}
+	mfaPending := mfaEnrolled && !input.SkipMFA
 	if !mfaPending {
 		// A successful password phase alone must not clear the shared lockout counter while a second
 		// factor is still pending, otherwise wrong factors can be retried without limit. | 第二因素
@@ -551,16 +569,21 @@ func (s *Service) consumeMFAChallenge(ctx context.Context, raw string, now time.
 //
 // When Authenticate returned a non-empty MFAToken the caller must pass it back; the token binds the
 // completion to the password phase, expires quickly and is consumed on success. Failed attempts
-// share the password lockout counter so the factor cannot be brute forced without limit. With
-// Config.RequireMFAToken enabled an empty MFAToken is rejected, closing the legacy flow that trusts
-// a caller-supplied UserID. | 当 Authenticate 返回非空 MFAToken 时调用方必须回传；该令牌把完成
-// 动作绑定到口令阶段、快速过期并在成功时消费。失败尝试与口令锁定计数共享，因素无法被无限暴力
-// 尝试。启用 Config.RequireMFAToken 后空的 MFAToken 会被拒绝，从而关闭信任调用方 UserID 的旧流程。
+// share the password lockout counter so the factor cannot be brute forced without limit. Unless
+// Config.AllowLegacyMFAFlow is set, an empty MFAToken is rejected, closing the legacy flow that
+// trusts a caller-supplied UserID; Config.RequireMFAToken always rejects it. An account counts as
+// having a second factor when either User.MFAEnabled is set or an enabled non-password credential
+// is stored, so factors persisted by an adapter without updating the user flag still require MFA. |
+// 当 Authenticate 返回非空 MFAToken 时调用方必须回传；该令牌把完成动作绑定到口令阶段、快速过期
+// 并在成功时消费。失败尝试与口令锁定计数共享，因素无法被无限暴力尝试。除非设置
+// Config.AllowLegacyMFAFlow，否则空的 MFAToken 会被拒绝，从而关闭信任调用方 UserID 的旧流程；
+// Config.RequireMFAToken 始终拒绝空令牌。只要 User.MFAEnabled 已设置或存有已启用的非口令凭据，
+// 账号即视为具备第二因素，因此适配器未更新用户标志时仍会要求 MFA。
 func (s *Service) CompleteMFA(ctx context.Context, input CompleteMFAInput) (*AuthenticateResult, error) {
 	if input.UserID == "" {
 		return nil, errs.Detail(ErrInvalidRequest, "user id is empty | 用户 ID 为空")
 	}
-	if input.MFAToken == "" && s.config.RequireMFAToken {
+	if input.MFAToken == "" && (s.config.RequireMFAToken || !s.config.AllowLegacyMFAFlow) {
 		return nil, errs.Detail(ErrInvalidRequest, "MFA token is required | 必须提供 MFA 令牌")
 	}
 	now := s.nowTime()
@@ -571,20 +594,20 @@ func (s *Service) CompleteMFA(ctx context.Context, input CompleteMFAInput) (*Aut
 	if err := user.CanLogin(now); err != nil {
 		return nil, err
 	}
-	if !user.MFAEnabled {
+	credentials, err := s.stores.Credentials.ListCredentialsByUser(ctx, user.ID)
+	if err != nil {
+		return nil, err
+	}
+	if !user.MFAEnabled && !hasEnabledSecondFactor(credentials) {
 		return nil, errs.Detail(ErrMFAInvalid, "account has no enabled second factor | 账号没有启用的第二因素")
 	}
 	if err := s.peekMFAChallenge(ctx, input.MFAToken, user.ID, now); err != nil {
 		return nil, err
 	}
-	credentials, err := s.stores.Credentials.ListCredentialsByUser(ctx, user.ID)
-	if err != nil {
-		return nil, err
-	}
 	verified := false
 	var used *Credential
 	for _, credential := range credentials {
-		if credential.Disabled || credential.Type == CredentialPassword {
+		if credential == nil || credential.Disabled || credential.Type == CredentialPassword {
 			continue
 		}
 		if input.CredentialID != "" && credential.ID != input.CredentialID {
@@ -644,6 +667,38 @@ func (s *Service) CompleteMFA(ctx context.Context, input CompleteMFAInput) (*Aut
 	return &AuthenticateResult{User: user, Session: session}, nil
 }
 
+// hasEnabledSecondFactor reports whether credentials contain an enabled non-password factor. |
+// hasEnabledSecondFactor 报告 credentials 中是否存在已启用的非口令因素。
+func hasEnabledSecondFactor(credentials []*Credential) bool {
+	for _, credential := range credentials {
+		if credential == nil || credential.Disabled || credential.Type == CredentialPassword {
+			continue
+		}
+		if credential.Type != "" {
+			return true
+		}
+	}
+	return false
+}
+
+// userHasSecondFactor reports whether user has an enrolled second factor in the credential store.
+// The MFAEnabled flag alone is not authoritative because adapters such as the WebAuthn credential
+// store persist factors directly. | userHasSecondFactor 报告用户在凭据存储中是否已登记第二因素。
+// 仅凭 MFAEnabled 标志并不可靠，因为 WebAuthn 凭据存储等适配器会直接持久化因素。
+func (s *Service) userHasSecondFactor(ctx context.Context, user *User) (bool, error) {
+	if user == nil {
+		return false, nil
+	}
+	if user.MFAEnabled {
+		return true, nil
+	}
+	credentials, err := s.stores.Credentials.ListCredentialsByUser(ctx, user.ID)
+	if err != nil {
+		return false, err
+	}
+	return hasEnabledSecondFactor(credentials), nil
+}
+
 // CompleteMFAInput is the input of Service.CompleteMFA. | CompleteMFAInput 是 Service.CompleteMFA 的输入。
 type CompleteMFAInput struct {
 	// UserID is the account that passed the password phase. | UserID 是通过口令阶段的账号。
@@ -653,9 +708,10 @@ type CompleteMFAInput struct {
 	// Response is the factor-specific proof, such as a TOTP code. | Response 是因素相关的证明，例如 TOTP 验证码。
 	Response string
 	// MFAToken is the hidden challenge returned by Authenticate when MFARequired is true. When set,
-	// it must match the user and a still-valid password phase and is consumed on success. | MFAToken
-	// 是 Authenticate 在 MFARequired 为 true 时返回的隐藏挑战。设置后必须与用户及仍有效的口令阶段匹配，
-	// 并在成功时消费。
+	// it must match the user and a still-valid password phase and is consumed on success. It is
+	// required unless Config.AllowLegacyMFAFlow is set. | MFAToken 是 Authenticate 在 MFARequired
+	// 为 true 时返回的隐藏挑战。设置后必须与用户及仍有效的口令阶段匹配，并在成功时消费。除非设置
+	// Config.AllowLegacyMFAFlow，否则必须提供。
 	MFAToken string
 	// ClientID identifies the application or OAuth client. | ClientID 标识应用或 OAuth 客户端。
 	ClientID string

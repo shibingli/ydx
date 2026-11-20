@@ -601,3 +601,64 @@ func TestParseKeyInfoSelectorsDigestLength(t *testing.T) {
 		t.Fatalf("short digest matched: %v, %v", ok, err)
 	}
 }
+
+// testCertificateWithEKU issues a self-signed certificate carrying ExtKeyUsage values. |
+// testCertificateWithEKU 签发携带 ExtKeyUsage 的自签名证书。
+func testCertificateWithEKU(t *testing.T, key *rsa.PrivateKey, eku []x509.ExtKeyUsage) *x509.Certificate {
+	t.Helper()
+	template := &x509.Certificate{
+		SerialNumber: big.NewInt(time.Now().UnixNano()),
+		Subject:      pkix.Name{CommonName: "xmlsig EKU test"},
+		NotBefore:    time.Now().Add(-time.Hour),
+		NotAfter:     time.Now().Add(time.Hour),
+		KeyUsage:     x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:  eku,
+	}
+	der, err := x509.CreateCertificate(rand.Reader, template, template, &key.PublicKey, key)
+	if err != nil {
+		t.Fatalf("x509.CreateCertificate: %v", err)
+	}
+	cert, err := x509.ParseCertificate(der)
+	if err != nil {
+		t.Fatalf("x509.ParseCertificate: %v", err)
+	}
+	return cert
+}
+
+// TestCertificateExtendedKeyUsage checks the default XML-signature EKU policy and its override. |
+// TestCertificateExtendedKeyUsage 校验默认 XML 签名 EKU 策略及其覆盖。
+func TestCertificateExtendedKeyUsage(t *testing.T) {
+	key := testRSAPrivateKey(t)
+	signed, err := Sign([]byte(keyInfoDocument), SignOptions{PrivateKey: key, ID: "order-1"})
+	if err != nil {
+		t.Fatalf("Sign: %v", err)
+	}
+	serverAuth := testCertificateWithEKU(t, key, []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth})
+	if _, err := VerifyElement(signed, "order-1", VerifyOptions{Certificates: []*x509.Certificate{serverAuth}}); !errors.Is(err, ErrCertificateInvalid) {
+		t.Fatalf("serverAuth-only certificate error = %v, want ErrCertificateInvalid", err)
+	}
+	if _, err := VerifyElement(signed, "order-1", VerifyOptions{
+		Certificates: []*x509.Certificate{serverAuth},
+		AllowedEKUs:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+	}); err != nil {
+		t.Fatalf("AllowedEKUs override: %v", err)
+	}
+	noEKU := testCertificate(t, key)
+	if _, err := VerifyElement(signed, "order-1", VerifyOptions{Certificates: []*x509.Certificate{noEKU}}); err != nil {
+		t.Fatalf("no-EKU certificate: %v", err)
+	}
+	email := testCertificateWithEKU(t, key, []x509.ExtKeyUsage{x509.ExtKeyUsageEmailProtection})
+	if _, err := VerifyElement(signed, "order-1", VerifyOptions{Certificates: []*x509.Certificate{email}}); err != nil {
+		t.Fatalf("emailProtection certificate: %v", err)
+	}
+	anyEKU := testCertificateWithEKU(t, key, []x509.ExtKeyUsage{x509.ExtKeyUsageAny})
+	if _, err := VerifyElement(signed, "order-1", VerifyOptions{Certificates: []*x509.Certificate{anyEKU}}); err != nil {
+		t.Fatalf("anyEKU certificate: %v", err)
+	}
+	if _, err := VerifyElement(signed, "order-1", VerifyOptions{
+		Certificates: []*x509.Certificate{email},
+		AllowedEKUs:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+	}); !errors.Is(err, ErrCertificateInvalid) {
+		t.Fatalf("override rejecting emailProtection error = %v, want ErrCertificateInvalid", err)
+	}
+}

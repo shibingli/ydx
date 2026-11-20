@@ -3,6 +3,8 @@ package ldap
 import (
 	"context"
 	"errors"
+	"net"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -714,10 +716,206 @@ func TestPoolConfigBind(t *testing.T) {
 	mu.Lock()
 	count := binds
 	mu.Unlock()
-	if count != 1 {
+	// The idle connection is re-bound to the configured service identity on reuse. |
+	// 复用的空闲连接会重新绑定到配置的服务身份。
+	if count != 2 {
 		t.Fatalf("binds = %d", count)
 	}
 	if err := pool.Put(second); err != nil {
 		t.Fatalf("second Put: %v", err)
+	}
+}
+
+// poolBindingState records the bind identity per connection and every password
+// sent to the mock server. | poolBindingState 记录每条连接的绑定身份与发送到模拟服务端的
+// 每个口令。
+type poolBindingState struct {
+	mu        sync.Mutex
+	dn        map[net.Conn]string
+	passwords []string
+}
+
+// newPoolBindingState returns an empty binding state. | newPoolBindingState 返回空的绑定状态。
+func newPoolBindingState() *poolBindingState {
+	return &poolBindingState{dn: make(map[net.Conn]string)}
+}
+
+// poolBindingHandler answers simple binds and RFC 4532 Who Am I requests. |
+// poolBindingHandler 应答简单绑定与 RFC 4532 Who Am I 请求。
+func poolBindingHandler(state *poolBindingState) mockHandler {
+	return func(session *mockSession, message *LDAPMessage) error {
+		switch request := message.Op.(type) {
+		case *BindRequest:
+			simple, ok := request.Authentication.(SimpleAuthentication)
+			if !ok {
+				return errors.New("expected simple bind")
+			}
+			state.mu.Lock()
+			state.dn[session.conn] = request.DN
+			state.passwords = append(state.passwords, simple.Password)
+			state.mu.Unlock()
+			return session.writeSimpleResult(message.MessageID, &BindResponse{Result: LDAPResult{Code: ResultSuccess}})
+		case *ExtendedRequest:
+			if request.Name != OIDWhoAmI {
+				return errors.New("unexpected extended operation")
+			}
+			state.mu.Lock()
+			dn := state.dn[session.conn]
+			state.mu.Unlock()
+			value := []byte(nil)
+			if dn != "" {
+				value = []byte("dn:" + dn)
+			}
+			return session.writeSimpleResult(message.MessageID, &ExtendedResponse{
+				Result: LDAPResult{Code: ResultSuccess},
+				Value:  value,
+			})
+		case *SearchRequest:
+			return session.writeSearchDone(message.MessageID, LDAPResult{Code: ResultSuccess})
+		default:
+			return errors.New("unexpected operation")
+		}
+	}
+}
+
+// TestPoolDropsBorrowerIdentity verifies a client bound by a borrower is closed
+// on Put and the next borrower cannot inherit that identity. | TestPoolDropsBorrowerIdentity
+// 校验借用方绑定的客户端在 Put 时被关闭，下一借用方无法继承该身份。
+func TestPoolDropsBorrowerIdentity(t *testing.T) {
+	state := newPoolBindingState()
+	server := startMockServer(t, poolBindingHandler(state))
+	pool, err := NewPool(Config{URL: server.URL(), PoolSize: 1, MaxIdleTime: time.Minute})
+	if err != nil {
+		t.Fatalf("NewPool: %v", err)
+	}
+	defer pool.Close()
+	ctx := context.Background()
+	client, err := pool.Get(ctx)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if err := client.Bind(ctx, "cn=alice", "alice-secret"); err != nil {
+		t.Fatalf("Bind alice: %v", err)
+	}
+	if err := pool.Put(client); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	if !client.IsClosed() {
+		t.Fatal("user-bound client was retained in the idle pool")
+	}
+	second, err := pool.Get(ctx)
+	if err != nil {
+		t.Fatalf("second Get: %v", err)
+	}
+	who, err := second.WhoAmI(ctx)
+	if err != nil {
+		t.Fatalf("WhoAmI: %v", err)
+	}
+	if strings.Contains(who, "alice") {
+		t.Fatalf("next borrower inherited identity %q", who)
+	}
+	// A reconnect must not replay the previous borrower's password. | 重连不得重放上一借用方的口令。
+	server.closeAllConns(t)
+	if err := second.Reconnect(ctx); err != nil {
+		t.Fatalf("Reconnect: %v", err)
+	}
+	who, err = second.WhoAmI(ctx)
+	if err != nil {
+		t.Fatalf("WhoAmI after reconnect: %v", err)
+	}
+	if strings.Contains(who, "alice") {
+		t.Fatalf("reconnect replayed identity %q", who)
+	}
+	state.mu.Lock()
+	aliceSends := 0
+	for _, password := range state.passwords {
+		if password == "alice-secret" {
+			aliceSends++
+		}
+	}
+	binds := len(state.passwords)
+	state.mu.Unlock()
+	if aliceSends != 1 {
+		t.Fatalf("borrower password was sent %d times, want only the initial bind", aliceSends)
+	}
+	if binds != 1 {
+		t.Fatalf("bind requests = %d, want 1", binds)
+	}
+	if err := pool.Put(second); err != nil {
+		t.Fatalf("Put second: %v", err)
+	}
+}
+
+// TestPoolRebindsConfiguredIdentity verifies a pool with BindDN restores the
+// service identity after a borrower used the connection. | TestPoolRebindsConfiguredIdentity
+// 校验配置了 BindDN 的池在借用方使用连接后恢复服务身份。
+func TestPoolRebindsConfiguredIdentity(t *testing.T) {
+	state := newPoolBindingState()
+	server := startMockServer(t, poolBindingHandler(state))
+	pool, err := NewPool(Config{
+		URL: server.URL(), PoolSize: 1, MaxIdleTime: time.Minute,
+		BindDN: "cn=service", BindPassword: "service-secret",
+	})
+	if err != nil {
+		t.Fatalf("NewPool: %v", err)
+	}
+	defer pool.Close()
+	ctx := context.Background()
+	first, err := pool.Get(ctx)
+	if err != nil {
+		t.Fatalf("first Get: %v", err)
+	}
+	who, err := first.WhoAmI(ctx)
+	if err != nil || who != "dn:cn=service" {
+		t.Fatalf("service identity = %q, %v", who, err)
+	}
+	if err := first.Bind(ctx, "cn=alice", "alice-secret"); err != nil {
+		t.Fatalf("Bind alice: %v", err)
+	}
+	if err := pool.Put(first); err != nil {
+		t.Fatalf("Put alice client: %v", err)
+	}
+	second, err := pool.Get(ctx)
+	if err != nil {
+		t.Fatalf("second Get: %v", err)
+	}
+	who, err = second.WhoAmI(ctx)
+	if err != nil || who != "dn:cn=service" {
+		t.Fatalf("identity after borrower = %q, %v", who, err)
+	}
+	if err := pool.Put(second); err != nil {
+		t.Fatalf("second Put: %v", err)
+	}
+	third, err := pool.Get(ctx)
+	if err != nil {
+		t.Fatalf("third Get: %v", err)
+	}
+	who, err = third.WhoAmI(ctx)
+	if err != nil || who != "dn:cn=service" {
+		t.Fatalf("identity after idle reuse = %q, %v", who, err)
+	}
+	state.mu.Lock()
+	var aliceIndex, lastIndex = -1, len(state.passwords) - 1
+	for index, password := range state.passwords {
+		if password == "alice-secret" {
+			aliceIndex = index
+		}
+	}
+	lastPassword := ""
+	if lastIndex >= 0 {
+		lastPassword = state.passwords[lastIndex]
+	}
+	state.mu.Unlock()
+	if aliceIndex < 0 {
+		t.Fatal("borrower bind was not observed")
+	}
+	if aliceIndex == lastIndex {
+		t.Fatal("borrower password was the last bind after reuse")
+	}
+	if lastPassword != "service-secret" {
+		t.Fatalf("last bind password = %q, want the service credential", lastPassword)
+	}
+	if err := pool.Put(third); err != nil {
+		t.Fatalf("third Put: %v", err)
 	}
 }

@@ -953,6 +953,90 @@ func TestAcceptorFinalNegState(t *testing.T) {
 	}
 }
 
+// TestAcceptorChannelBindings verifies that RequireChannelBindings fails closed
+// when the Type 3 response omits MsvAvChannelBindings or echoes a different
+// value, and accepts the configured value otherwise. | TestAcceptorChannelBindings
+// 校验 RequireChannelBindings 在 Type 3 响应缺少 MsvAvChannelBindings 或回显不同值时
+// 失败关闭，并在值匹配时接受。
+func TestAcceptorChannelBindings(t *testing.T) {
+	expected, err := ChannelBindingHash([]byte("test-server-endpoint"))
+	if err != nil {
+		t.Fatalf("ChannelBindingHash: %v", err)
+	}
+	wrong := bytes.Repeat([]byte{0xaa}, len(expected))
+	tests := []struct {
+		name    string
+		binding []byte
+		wantErr error
+	}{
+		{name: "matching", binding: expected},
+		{name: "missing", binding: nil, wantErr: ErrChannelBindings},
+		{name: "mismatch", binding: wrong, wantErr: ErrChannelBindings},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			config := testAcceptorConfig()
+			config.AllowRawNTLM = true
+			config.RequireChannelBindings = true
+			config.ExpectedChannelBindings = append([]byte(nil), expected...)
+			acceptor := testNewAcceptor(t, config)
+			clientConfig := clientConfig()
+			clientConfig.ChannelBindings = append([]byte(nil), test.binding...)
+			client := clientCreate(t, clientConfig)
+			type1, err := client.Negotiate()
+			if err != nil {
+				t.Fatalf("Negotiate: %v", err)
+			}
+			type2, err := acceptor.AcceptInitial(type1)
+			if err != nil {
+				t.Fatalf("AcceptInitial: %v", err)
+			}
+			type3, err := client.Authenticate(type2)
+			if err != nil {
+				t.Fatalf("Authenticate: %v", err)
+			}
+			result, _, err := acceptor.AcceptFinal(type3)
+			if test.wantErr != nil {
+				if !errors.Is(err, test.wantErr) {
+					t.Fatalf("AcceptFinal error = %v, want %v", err, test.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("AcceptFinal: %v", err)
+			}
+			if result.Username != "User" {
+				t.Fatalf("identity = %q", result.Username)
+			}
+		})
+	}
+}
+
+// TestAcceptorWithoutChannelBindingRequirement verifies the default policy keeps
+// accepting responses that omit MsvAvChannelBindings. | TestAcceptorWithoutChannelBindingRequirement
+// 校验默认策略继续接受缺少 MsvAvChannelBindings 的响应。
+func TestAcceptorWithoutChannelBindingRequirement(t *testing.T) {
+	config := testAcceptorConfig()
+	config.AllowRawNTLM = true
+	acceptor := testNewAcceptor(t, config)
+	client := clientCreate(t, clientConfig())
+	type1, err := client.Negotiate()
+	if err != nil {
+		t.Fatalf("Negotiate: %v", err)
+	}
+	type2, err := acceptor.AcceptInitial(type1)
+	if err != nil {
+		t.Fatalf("AcceptInitial: %v", err)
+	}
+	type3, err := client.Authenticate(type2)
+	if err != nil {
+		t.Fatalf("Authenticate: %v", err)
+	}
+	if _, _, err := acceptor.AcceptFinal(type3); err != nil {
+		t.Fatalf("AcceptFinal: %v", err)
+	}
+}
+
 func TestAcceptorRejectsTamperedTargetInfo(t *testing.T) {
 	config := testAcceptorConfig()
 	config.AllowRawNTLM = true

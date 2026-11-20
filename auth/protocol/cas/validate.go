@@ -203,6 +203,35 @@ func validationMessage(err error) string {
 	}
 }
 
+// sameOrigin reports whether a and b share scheme, host and effective port. An empty explicit port
+// is normalized to the scheme default so that https://example.com and https://example.com:443
+// compare equal. | sameOrigin 报告 a 与 b 是否同源（scheme、主机与有效端口一致）。显式端口为空时
+// 归一化为协议默认端口，因此 https://example.com 与 https://example.com:443 视为相同。
+func sameOrigin(a, b *url.URL) bool {
+	if a == nil || b == nil {
+		return false
+	}
+	if !strings.EqualFold(a.Scheme, b.Scheme) || !strings.EqualFold(a.Hostname(), b.Hostname()) {
+		return false
+	}
+	return effectivePort(a) == effectivePort(b)
+}
+
+// effectivePort returns the explicit port or the scheme default. | effectivePort 返回显式端口或协议默认端口。
+func effectivePort(u *url.URL) string {
+	if port := u.Port(); port != "" {
+		return port
+	}
+	switch strings.ToLower(u.Scheme) {
+	case "https":
+		return "443"
+	case "http":
+		return "80"
+	default:
+		return ""
+	}
+}
+
 // issueProxyGrantingTicket validates pgtURL, issues a PGT, and performs the pgtUrl callback that
 // hands the PGT identifier and a one-time IOU to the proxy. A callback failure removes the PGT. |
 // issueProxyGrantingTicket 校验 pgtURL、签发 PGT，并执行把 PGT 标识与一次性 IOU 交给代理的 pgtUrl
@@ -218,6 +247,24 @@ func (s *Server) issueProxyGrantingTicket(ctx context.Context, parent *Ticket, p
 	}
 	if scheme != "https" && !s.config.AllowInsecurePGTCallback {
 		return nil, "", errs.Detail(ErrInsecureProxyCallback, "pgtUrl %[1]q must use https | pgtUrl %[1]q 必须使用 https", pgtURL)
+	}
+	if parent == nil || parent.Service == "" {
+		return nil, "", errs.Detail(ErrInvalidProxyCallback, "pgtUrl %[1]q has no bound service | pgtUrl %[1]q 没有绑定的服务", pgtURL)
+	}
+	serviceURL, err := url.Parse(parent.Service)
+	if err != nil {
+		return nil, "", errs.WrapDetail(err, ErrInvalidProxyCallback, "service %[1]q cannot be parsed | 服务 %[1]q 无法解析", parent.Service)
+	}
+	if serviceURL.Host == "" {
+		return nil, "", errs.Detail(ErrInvalidProxyCallback, "service %[1]q is not an absolute URL | 服务 %[1]q 不是绝对 URL", parent.Service)
+	}
+	if !sameOrigin(parsed, serviceURL) {
+		// A pgtUrl on another origin would let a validated service direct a credential callback at
+		// an arbitrary host (SSRF) and bind a PGT to a party unrelated to the ticket. |
+		// 其它源的 pgtUrl 会让已校验服务把凭据回调指向任意主机（SSRF），并把 PGT 绑定到与票据无关的一方。
+		return nil, "", errs.Detail(ErrInvalidProxyCallback,
+			"pgtUrl %[1]q must share the scheme, host and port of service %[2]q | pgtUrl %[1]q 必须与 service %[2]q 的 scheme、主机与端口一致",
+			pgtURL, parent.Service)
 	}
 	if s.config.ServiceRegistry != nil && !s.config.ServiceRegistry.Allows(ctx, pgtURL) {
 		return nil, "", errs.Detail(ErrInvalidProxyCallback, "pgtUrl is not registered | pgtUrl 未注册")

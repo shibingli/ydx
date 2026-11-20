@@ -359,11 +359,15 @@ func TestArtifactResolveEndpointValidation(t *testing.T) {
 func TestArtifactResolutionStoreErrors(t *testing.T) {
 	t.Run("store without artifacts", func(t *testing.T) {
 		idp, err := NewIdentityProvider(IdentityProviderConfig{
-			EntityID:      artifactIDPEntity,
-			SSOURL:        "https://idp.example/sso",
-			Store:         storeWithoutArtifacts{},
-			Authenticator: testAuthenticator(),
-			Now:           func() time.Time { return samlTestNow },
+			AllowUnregisteredACS: true,
+			// This case targets store availability, not signature policy. |
+			// 本用例关注存储可用性，而非签名策略。
+			AllowUnsignedArtifactResolve: true,
+			EntityID:                     artifactIDPEntity,
+			SSOURL:                       "https://idp.example/sso",
+			Store:                        storeWithoutArtifacts{},
+			Authenticator:                testAuthenticator(),
+			Now:                          func() time.Time { return samlTestNow },
 		})
 		if err != nil {
 			t.Fatalf("idp: %v", err)

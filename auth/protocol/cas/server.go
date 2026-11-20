@@ -96,10 +96,15 @@ type CSRFProtector interface {
 
 // ServerConfig configures a CAS server. | ServerConfig 配置 CAS 服务端。
 type ServerConfig struct {
-	// ServiceRegistry restricts service URLs. Nil allows every non-empty URL; production
-	// deployments should always configure it. | ServiceRegistry 限制服务 URL。空值允许每个非空
-	// URL；生产部署应始终配置它。
+	// ServiceRegistry restricts service URLs. The zero value fails closed: without a registry no
+	// service can receive a ticket. | ServiceRegistry 限制服务 URL。零值失败关闭：没有注册表时
+	// 任何服务都无法获得票据。
 	ServiceRegistry ServiceRegistry
+	// AllowAnyService explicitly accepts any syntactically valid service URL when ServiceRegistry
+	// is nil. Enable only for development; production deployments must configure a registry. |
+	// AllowAnyService 在 ServiceRegistry 为空时显式接受任意语法合法的服务 URL。仅用于开发；
+	// 生产部署必须配置注册表。
+	AllowAnyService bool
 	// FrontChannelLogoutResolver supplies the registered front-channel logout URL of each service.
 	// When nil, ServiceRegistry is used if it implements FrontChannelLogoutResolver. When neither
 	// does, browser logout only performs back-channel delivery and redirects as before. |
@@ -399,7 +404,7 @@ func (s *Server) allowsService(ctx context.Context, service string) bool {
 		return false
 	}
 	if s.config.ServiceRegistry == nil {
-		return true
+		return s.config.AllowAnyService
 	}
 	return s.config.ServiceRegistry.Allows(ctx, service)
 }

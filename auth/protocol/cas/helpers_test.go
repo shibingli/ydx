@@ -67,6 +67,7 @@ func newTestServer(t *testing.T, options ...func(*ServerConfig)) (*Server, *Memo
 	clock := &testClock{now: time.Date(2026, time.January, 1, 12, 0, 0, 0, time.UTC)}
 	store := NewMemoryTicketStore()
 	config := ServerConfig{
+		AllowAnyService: true,
 		Issuer:          testIssuer,
 		ServiceRegistry: NewStaticServiceRegistry(testAppService, testOtherService, testAPIEndpoint, "https://proxy.example.com/*"),
 		TicketStore:     store,

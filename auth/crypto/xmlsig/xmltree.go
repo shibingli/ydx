@@ -78,6 +78,12 @@ func parseXML(data []byte) (*xmlDocument, error) {
 	// UTF-8 字节序标记不属于 XML 信息集；ydx/xml（与 encoding/xml 一致）把它作为字符数据返回，
 	// 否则会被视为根元素之外的文本。
 	data = bytes.TrimPrefix(data, []byte{0xEF, 0xBB, 0xBF})
+	// Apply XML attribute-value normalization before decoding. ydx/xml normalizes line ends but
+	// keeps literal TAB and LF bytes, while character references decode to the same bytes; without
+	// this pass "a&#x9;b" and a literal TAB would canonicalize identically. | 在解码前执行 XML
+	// 属性值归一。ydx/xml 只归一化行结束符，仍保留字面 TAB 与 LF 字节，而字符引用会解码为相同
+	// 字节；若不做此处理，"a&#x9;b" 与字面 TAB 会得到相同的规范形式。
+	data = normalizeAttributeValues(data)
 	dec := xml.NewDecoderBytes(data)
 	doc := &xmlDocument{}
 	var stack []*xmlNode
@@ -207,6 +213,168 @@ func parseXML(data []byte) (*xmlDocument, error) {
 		return nil, err
 	}
 	return doc, nil
+}
+
+// normalizeAttributeValues applies XML attribute-value normalization to literal characters inside
+// quoted attribute values. Line ends are normalized first (CRLF and CR become LF), then literal
+// TAB, LF and CR become spaces. Character references are copied unchanged, so &#x9; keeps its
+// referenced character and remains distinguishable from a literal TAB. | normalizeAttributeValues
+// 对引号属性值中的字面字符执行 XML 属性值归一。先归一化行结束符（CRLF 与 CR 变为 LF），再把字面
+// TAB、LF 与 CR 变为空格。字符引用原样复制，因此 &#x9; 保持其引用字符，并与字面 TAB 可区分。
+func normalizeAttributeValues(data []byte) []byte {
+	out := make([]byte, 0, len(data))
+	changed := false
+	for i := 0; i < len(data); {
+		if data[i] != '<' {
+			out = append(out, data[i])
+			i++
+			continue
+		}
+		rest := data[i:]
+		switch {
+		case bytes.HasPrefix(rest, []byte("<!--")):
+			end := markupEnd(data, i+4, []byte("-->"))
+			out = append(out, data[i:end]...)
+			i = end
+		case bytes.HasPrefix(rest, []byte("<![CDATA[")):
+			end := markupEnd(data, i+9, []byte("]]>"))
+			out = append(out, data[i:end]...)
+			i = end
+		case bytes.HasPrefix(rest, []byte("<?")):
+			end := markupEnd(data, i+2, []byte("?>"))
+			out = append(out, data[i:end]...)
+			i = end
+		case bytes.HasPrefix(rest, []byte("<!")):
+			end := tagMarkupEnd(data, i+2)
+			out = append(out, data[i:end]...)
+			i = end
+		case bytes.HasPrefix(rest, []byte("</")):
+			end := tagMarkupEnd(data, i+2)
+			out = append(out, data[i:end]...)
+			i = end
+		default:
+			var changedTag bool
+			out, i, changedTag = appendNormalizedStartTag(out, data, i)
+			changed = changed || changedTag
+		}
+	}
+	if !changed {
+		return data
+	}
+	return out
+}
+
+// appendNormalizedStartTag copies one start tag into out while normalizing literal whitespace in
+// its quoted attribute values. | appendNormalizedStartTag 把单个起始元素复制到 out，同时归一其引号
+// 属性值中的字面空白。
+func appendNormalizedStartTag(out, data []byte, start int) ([]byte, int, bool) {
+	i := start + 1
+	out = append(out, data[start])
+	for i < len(data) && !isXMLSpaceByte(data[i]) && data[i] != '>' && data[i] != '/' {
+		out = append(out, data[i])
+		i++
+	}
+	changed := false
+	for i < len(data) {
+		c := data[i]
+		if c == '>' {
+			out = append(out, c)
+			return out, i + 1, changed
+		}
+		if c != '"' && c != '\'' {
+			out = append(out, c)
+			i++
+			continue
+		}
+		quote := c
+		out = append(out, c)
+		i++
+		for i < len(data) {
+			c = data[i]
+			if c == quote {
+				out = append(out, c)
+				i++
+				break
+			}
+			switch c {
+			case '&':
+				end := entityReferenceEnd(data, i)
+				out = append(out, data[i:end]...)
+				i = end
+			case '\r':
+				out = append(out, ' ')
+				changed = true
+				i++
+				if i < len(data) && data[i] == '\n' {
+					i++
+				}
+			case '\t', '\n':
+				out = append(out, ' ')
+				changed = true
+				i++
+			default:
+				out = append(out, c)
+				i++
+			}
+		}
+	}
+	return out, i, changed
+}
+
+// markupEnd returns the end offset of a construct terminated by terminator, or len(data). |
+// markupEnd 返回以 terminator 结束的构造的结束偏移；未找到时返回 len(data)。
+func markupEnd(data []byte, from int, terminator []byte) int {
+	if idx := bytes.Index(data[from:], terminator); idx >= 0 {
+		return from + idx + len(terminator)
+	}
+	return len(data)
+}
+
+// tagMarkupEnd returns the offset just past the quote-aware '>' of a tag or directive. |
+// tagMarkupEnd 返回标签或指令的、忽略引号内 '>' 的结束偏移。
+func tagMarkupEnd(data []byte, from int) int {
+	var quote byte
+	for i := from; i < len(data); i++ {
+		c := data[i]
+		if quote != 0 {
+			if c == quote {
+				quote = 0
+			}
+			continue
+		}
+		switch c {
+		case '"', '\'':
+			quote = c
+		case '>':
+			return i + 1
+		}
+	}
+	return len(data)
+}
+
+// entityReferenceEnd returns the offset just past a character or entity reference starting at
+// start, or the first delimiter when the reference is not terminated. | entityReferenceEnd 返回从
+// start 开始的字符或实体引用的结束偏移；引用未终止时返回首个分隔符位置。
+func entityReferenceEnd(data []byte, start int) int {
+	for i := start + 1; i < len(data); i++ {
+		switch data[i] {
+		case ';':
+			return i + 1
+		case '&', '<', '"', '\'', ' ', '\t', '\n', '\r':
+			return i
+		}
+	}
+	return len(data)
+}
+
+// isXMLSpaceByte reports whether c is an XML whitespace byte. | isXMLSpaceByte 判断 c 是否为 XML
+// 空白字节。
+func isXMLSpaceByte(c byte) bool {
+	switch c {
+	case ' ', '\t', '\r', '\n':
+		return true
+	}
+	return false
 }
 
 // isXMLSpace reports whether b consists only of XML whitespace. | isXMLSpace 判断 b 是否只包含

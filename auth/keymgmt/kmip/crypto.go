@@ -45,6 +45,18 @@ func (k *parsedKey) zeroize() {
 	}
 }
 
+// hasPrivateMaterial reports whether the parsed key holds private or secret material. Symmetric
+// material counts as private because exposing it is equivalent to exposing a private key. |
+// hasPrivateMaterial 报告已解析密钥是否持有私有或秘密材料。对称材料按私钥处理，因为泄露它等同
+// 泄露私钥。
+func (k *parsedKey) hasPrivateMaterial() bool {
+	if k == nil {
+		return false
+	}
+	return k.symmetric != nil || k.rsaPrivate != nil || k.ecPrivate != nil || k.edPrivate != nil ||
+		k.xPrivate != nil || k.sm2Private != nil
+}
+
 // generateSymmetricKeyBlock generates a symmetric key block with Raw material. | generateSymmetricKeyBlock 生成材料为 Raw 的对称密钥块。
 //
 // AES supports 128, 192 and 256 bits, SM4 supports 128 bits, and HMAC-SHA-2 algorithms support 128 to 512 bits.

@@ -412,15 +412,46 @@ func TestEAPTLSAuthentication(t *testing.T) {
 func TestEAPTLSWithoutClientCertificate(t *testing.T) {
 	pki := newEAPTestPKI(t)
 	server := eapTestServer(t, EAPServerConfig{
+		Password:  testEAPPasswordLookup(map[string]string{"alice": "s3cret"}),
+		TLSConfig: &tls.Config{Certificates: []tls.Certificate{pki.serverCert}, ClientCAs: pki.roots, MinVersion: tls.VersionTLS12},
+		Methods:   []EAPType{EAPTypeTLS},
+	})
+	client := newEAPTestTLSClient(eapTLSClientConfig(pki, false, tls.VersionTLS12))
+	result := runEAPTLSAuthentication(t, server, client, "alice")
+	if result.Accept {
+		t.Fatalf("EAP-TLS without a client certificate was accepted: %+v", result)
+	}
+}
+
+func TestEAPTLSLegacyAllowsNoClientCertificate(t *testing.T) {
+	pki := newEAPTestPKI(t)
+	server := eapTestServer(t, EAPServerConfig{
 		Password:                 testEAPPasswordLookup(map[string]string{"alice": "s3cret"}),
 		TLSConfig:                &tls.Config{Certificates: []tls.Certificate{pki.serverCert}, MinVersion: tls.VersionTLS12},
 		Methods:                  []EAPType{EAPTypeTLS},
-		RequireClientCertificate: false,
+		AllowNoClientCertificate: true,
 	})
 	client := newEAPTestTLSClient(eapTLSClientConfig(pki, false, tls.VersionTLS12))
 	result := runEAPTLSAuthentication(t, server, client, "alice")
 	if !result.Accept || result.Identity != "alice" {
-		t.Fatalf("EAP-TLS result = %+v", result)
+		t.Fatalf("legacy EAP-TLS result = %+v", result)
+	}
+}
+
+func TestEAPTLSDefaultClientAuthVerifiesCertificate(t *testing.T) {
+	pki := newEAPTestPKI(t)
+	// ClientAuth is left at its zero value: the server tightens it to
+	// RequireAndVerifyClientCert for EAP-TLS. | ClientAuth 保持零值：服务器会为 EAP-TLS
+	// 收紧为 RequireAndVerifyClientCert。
+	server := eapTestServer(t, EAPServerConfig{
+		Password:  testEAPPasswordLookup(map[string]string{"alice": "s3cret"}),
+		TLSConfig: &tls.Config{Certificates: []tls.Certificate{pki.serverCert}, ClientCAs: pki.roots, MinVersion: tls.VersionTLS12},
+		Methods:   []EAPType{EAPTypeTLS},
+	})
+	client := newEAPTestTLSClient(eapTLSClientConfig(pki, true, tls.VersionTLS12))
+	result := runEAPTLSAuthentication(t, server, client, "outer-alice")
+	if !result.Accept || result.Identity != "tls-client" {
+		t.Fatalf("default EAP-TLS result = %+v", result)
 	}
 }
 

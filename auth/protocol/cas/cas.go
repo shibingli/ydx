@@ -98,12 +98,14 @@
 //
 // Tickets are opaque random identifiers and are never written to logs. STs and PTs are single-use
 // and consumed atomically; the service binding is checked on every validation. PGT callbacks
-// require HTTPS unless AllowInsecurePGTCallback is explicitly enabled, and the TGC cookie is always
-// HttpOnly with SameSite=Lax by default. Configure a ServiceRegistry in production so login and
-// logout redirects cannot target arbitrary URLs. | 票据是不透明随机标识，绝不写入日志。ST 与 PT
-// 一次性使用并原子消费；每次校验都检查服务绑定。除非显式启用 AllowInsecurePGTCallback，否则 PGT
-// 回调必须使用 HTTPS；TGC Cookie 始终为 HttpOnly，并默认 SameSite=Lax。生产环境应配置
-// ServiceRegistry，避免登录与登出重定向指向任意 URL。
+// require HTTPS unless AllowInsecurePGTCallback is explicitly enabled, and a pgtUrl must share the
+// scheme, host and port of the validated service so validation cannot be turned into an SSRF
+// primitive; the TGC cookie is always HttpOnly with SameSite=Lax by default. Configure a
+// ServiceRegistry in production so login and logout redirects cannot target arbitrary URLs. | 票据是
+// 不透明随机标识，绝不写入日志。ST 与 PT 一次性使用并原子消费；每次校验都检查服务绑定。除非显式
+// 启用 AllowInsecurePGTCallback，否则 PGT 回调必须使用 HTTPS；pgtUrl 必须与已校验服务的 scheme、
+// 主机与端口一致，避免把校验变成 SSRF 原语；TGC Cookie 始终为 HttpOnly，并默认 SameSite=Lax。
+// 生产环境应配置 ServiceRegistry，避免登录与登出重定向指向任意 URL。
 package cas
 
 import (

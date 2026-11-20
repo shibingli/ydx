@@ -45,7 +45,19 @@ func (s *MemoryStore) CreateKey(_ context.Context, key *Key) error {
 	if _, ok := s.keys[key.ID]; ok {
 		return errs.Detail(ErrKeyExists, "id %[1]q | ID %[1]q", key.ID)
 	}
+	// Identifiers and aliases share one namespace: an identifier must not shadow an existing
+	// alias, and an alias must not shadow an existing identifier. | 标识与别名共享同一命名空间：
+	// 标识不得遮蔽已有别名，别名也不得遮蔽已有标识。
+	if _, bound := s.aliases[key.ID]; bound {
+		return errs.Detail(ErrAliasExists, "id %[1]q is already an alias | ID %[1]q 已是别名", key.ID)
+	}
 	if key.Alias != "" {
+		if key.Alias == key.ID {
+			return errs.Detail(ErrAliasExists, "alias %[1]q equals the key id | 别名 %[1]q 与密钥 ID 相同", key.Alias)
+		}
+		if _, exists := s.keys[key.Alias]; exists {
+			return errs.Detail(ErrAliasExists, "alias %[1]q is already a key id | 别名 %[1]q 已是密钥 ID", key.Alias)
+		}
 		if owner, ok := s.aliases[key.Alias]; ok && owner != key.ID {
 			return errs.Detail(ErrAliasExists, "alias %[1]q is bound to %[2]q | 别名 %[1]q 已绑定到 %[2]q", key.Alias, owner)
 		}
@@ -94,6 +106,12 @@ func (s *MemoryStore) UpdateKey(_ context.Context, key *Key) error {
 	}
 	if key.Alias != stored.Alias {
 		if key.Alias != "" {
+			if key.Alias == key.ID {
+				return errs.Detail(ErrAliasExists, "alias %[1]q equals the key id | 别名 %[1]q 与密钥 ID 相同", key.Alias)
+			}
+			if _, exists := s.keys[key.Alias]; exists {
+				return errs.Detail(ErrAliasExists, "alias %[1]q is already a key id | 别名 %[1]q 已是密钥 ID", key.Alias)
+			}
 			if owner, bound := s.aliases[key.Alias]; bound && owner != key.ID {
 				return errs.Detail(ErrAliasExists, "alias %[1]q is bound to %[2]q | 别名 %[1]q 已绑定到 %[2]q", key.Alias, owner)
 			}
@@ -186,6 +204,12 @@ func (s *MemoryStore) SetAlias(_ context.Context, alias, keyID string) error {
 	defer s.mu.Unlock()
 	if _, ok := s.keys[keyID]; !ok {
 		return errs.Detail(ErrNotFound, "id %[1]q | ID %[1]q", keyID)
+	}
+	if alias == keyID {
+		return errs.Detail(ErrAliasExists, "alias %[1]q equals a key id | 别名 %[1]q 与密钥 ID 相同", alias)
+	}
+	if _, exists := s.keys[alias]; exists {
+		return errs.Detail(ErrAliasExists, "alias %[1]q is already a key id | 别名 %[1]q 已是密钥 ID", alias)
 	}
 	if owner, ok := s.aliases[alias]; ok && owner != keyID {
 		return errs.Detail(ErrAliasExists, "alias %[1]q is bound to %[2]q | 别名 %[1]q 已绑定到 %[2]q", alias, owner)

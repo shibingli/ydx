@@ -81,6 +81,10 @@ func (s *Service) CreateKey(ctx context.Context, request CreateKeyRequest) (*Key
 		s.fail(ctx, OperationKeyCreate, keyID, 0, err)
 		return nil, err
 	}
+	if err := s.ensureNewKeyName(ctx, keyID, request.Alias); err != nil {
+		s.fail(ctx, OperationKeyCreate, keyID, 0, err)
+		return nil, err
+	}
 	if request.Type == "" {
 		err := errs.Detail(ErrInvalidKeyType, "key type is required | 必须提供密钥类型")
 		s.fail(ctx, OperationKeyCreate, keyID, 0, err)
@@ -165,6 +169,10 @@ func (s *Service) ImportKey(ctx context.Context, request ImportKeyRequest) (*Key
 		return nil, err
 	}
 	if err := validateAlias(request.Alias); err != nil {
+		s.fail(ctx, OperationKeyImport, keyID, 0, err)
+		return nil, err
+	}
+	if err := s.ensureNewKeyName(ctx, keyID, request.Alias); err != nil {
 		s.fail(ctx, OperationKeyImport, keyID, 0, err)
 		return nil, err
 	}
@@ -317,6 +325,10 @@ func (s *Service) UpdateKey(ctx context.Context, id string, request UpdateKeyReq
 			s.fail(ctx, OperationKeyUpdate, id, 0, err)
 			return nil, err
 		}
+		if err := s.ensureAliasNotKeyID(ctx, *request.Alias); err != nil {
+			s.fail(ctx, OperationKeyUpdate, id, 0, err)
+			return nil, err
+		}
 	}
 	if request.RotationInterval != nil && *request.RotationInterval < 0 {
 		err := errs.Detail(ErrInvalidRequest, "negative rotation interval | 轮换间隔为负")
@@ -376,6 +388,48 @@ func (s *Service) mutateStoredKey(ctx context.Context, id string, mutate func(*K
 		return key, nil
 	}
 	return nil, errs.Detail(ErrConflict, "key %[1]q changed repeatedly | 密钥 %[1]q 反复变更", target)
+}
+
+// ensureNewKeyName enforces the shared identifier/alias namespace for a new key. | ensureNewKeyName
+// 为新密钥强制共享的标识/别名命名空间。
+func (s *Service) ensureNewKeyName(ctx context.Context, id, alias string) error {
+	if s == nil || s.store == nil {
+		return ErrStoreUnavailable
+	}
+	if _, err := s.store.ResolveAlias(ctx, id); err == nil {
+		return errs.Detail(ErrAliasExists, "id %[1]q is already an alias | ID %[1]q 已是别名", id)
+	} else if !isNotFound(err) {
+		return err
+	}
+	if alias == "" {
+		return nil
+	}
+	if alias == id {
+		return errs.Detail(ErrAliasExists, "alias %[1]q equals the key id | 别名 %[1]q 与密钥 ID 相同", alias)
+	}
+	if _, err := s.store.GetKey(ctx, alias); err == nil {
+		return errs.Detail(ErrAliasExists, "alias %[1]q is already a key id | 别名 %[1]q 已是密钥 ID", alias)
+	} else if !isNotFound(err) {
+		return err
+	}
+	return nil
+}
+
+// ensureAliasNotKeyID rejects an alias that would shadow an existing key identifier. |
+// ensureAliasNotKeyID 拒绝会遮蔽既有密钥标识的别名。
+func (s *Service) ensureAliasNotKeyID(ctx context.Context, alias string) error {
+	if alias == "" {
+		return nil
+	}
+	if s == nil || s.store == nil {
+		return ErrStoreUnavailable
+	}
+	if _, err := s.store.GetKey(ctx, alias); err == nil {
+		return errs.Detail(ErrAliasExists, "alias %[1]q is already a key id | 别名 %[1]q 已是密钥 ID", alias)
+	} else if !isNotFound(err) {
+		return err
+	}
+	return nil
 }
 
 // prepareID validates a caller identifier or generates one. | prepareID 校验调用方标识或生成一个。

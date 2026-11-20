@@ -133,6 +133,7 @@ func newTestRP(t *testing.T, mutate func(*RelyingPartyConfig)) *RelyingParty {
 		IDPURL:           testIssuer + "wsfed/signin",
 		SignOutURL:       testIssuer + "wsfed/signout",
 		AllowUnsolicited: true,
+		AllowUnsigned:    true,
 		Now:              func() time.Time { return testNow },
 	}
 	if mutate != nil {

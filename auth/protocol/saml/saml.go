@@ -4,9 +4,16 @@
 // The package covers the Web Browser SSO profile with HTTP-POST, HTTP-Redirect and HTTP-Artifact
 // bindings, Single Logout, Metadata, encrypted assertions, XML signatures (including SM2/SM3 when
 // configured), name-identifier formats, attribute profiles, replay protection, clock skew and the
-// common compatibility switches needed by real-world identity providers. | 本包覆盖 Web Browser SSO
+// common compatibility switches needed by real-world identity providers. Artifact resolution and
+// IdP single logout fail closed: SOAP ArtifactResolve and non-redirect LogoutRequest messages must
+// carry verifiable signatures, and redirect SLO messages must carry verifiable query signatures.
+// AllowUnsignedArtifactResolve and AllowUnsignedLogout explicitly opt in to unsigned compatibility.
+// | 本包覆盖 Web Browser SSO
 // 的 HTTP-POST、HTTP-Redirect 与 HTTP-Artifact 绑定，单点登出、元数据、加密断言、XML 签名（配置后
 // 支持 SM2/SM3）、NameID 格式、属性配置、重放保护、时钟偏移，以及真实身份提供方常见的兼容开关。
+// 工件解析与 IdP 单点登出失败关闭：SOAP ArtifactResolve 与非重定向 LogoutRequest 必须携带可校验
+// 签名，重定向 SLO 消息必须携带可校验的查询签名。AllowUnsignedArtifactResolve 与
+// AllowUnsignedLogout 显式选择未签名兼容模式。
 //
 // The handlers use the ydx/router-native signature shape and are also valid net/http handlers. | 处理器
 // 使用 ydx/router 原生签名形状，同时也是合法的 net/http 处理器。

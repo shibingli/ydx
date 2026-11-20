@@ -1,6 +1,7 @@
 package xmlsig
 
 import (
+	"bytes"
 	"errors"
 	"testing"
 
@@ -164,7 +165,7 @@ func TestCanonicalizeElementInheritedXMLAttrs(t *testing.T) {
 // TestCanonicalizeCommentsAndEscaping checks comment exclusion and escaping. |
 // TestCanonicalizeCommentsAndEscaping 校验注释排除与转义。
 func TestCanonicalizeCommentsAndEscaping(t *testing.T) {
-	input := []byte("<r a=\"x\t y\"><!--drop--><t>a &amp; b &lt; c &gt; d</t></r>")
+	input := []byte("<r a=\"x&#x9; y\"><!--drop--><t>a &amp; b &lt; c &gt; d</t></r>")
 	got, err := Canonicalize(input)
 	if err != nil {
 		t.Fatalf("Canonicalize: %v", err)
@@ -172,6 +173,72 @@ func TestCanonicalizeCommentsAndEscaping(t *testing.T) {
 	want := `<r a="x&#x9; y"><t>a &amp; b &lt; c &gt; d</t></r>`
 	if string(got) != want {
 		t.Fatalf("escaping mismatch\n got: %s\nwant: %s", got, want)
+	}
+}
+
+// TestCanonicalizeAttributeValueNormalization checks XML attribute-value normalization. Literal
+// TAB, LF and CR characters are normalized to spaces before canonicalization, while character
+// references such as &#x9; keep their referenced character. | TestCanonicalizeAttributeValueNormalization
+// 校验 XML 属性值归一。字面 TAB、LF 与 CR 在规范化前归一为空格，而 &#x9; 等字符引用保留其引用字符。
+func TestCanonicalizeAttributeValueNormalization(t *testing.T) {
+	cases := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{name: "literal tab", input: "<r x=\"a\tb\"/>", want: `<r x="a b"></r>`},
+		{name: "literal LF", input: "<r x=\"a\nb\"/>", want: `<r x="a b"></r>`},
+		{name: "literal CR", input: "<r x=\"a\rb\"/>", want: `<r x="a b"></r>`},
+		{name: "literal CRLF", input: "<r x=\"a\r\nb\"/>", want: `<r x="a b"></r>`},
+		{name: "tab character reference", input: "<r x=\"a&#x9;b\"/>", want: `<r x="a&#x9;b"></r>`},
+		{name: "LF character reference", input: "<r x=\"a&#xA;b\"/>", want: `<r x="a&#xA;b"></r>`},
+		{name: "CR character reference", input: "<r x=\"a&#xD;b\"/>", want: `<r x="a&#xD;b"></r>`},
+	}
+	outputs := make(map[string]string, len(cases))
+	for _, tc := range cases {
+		got, err := Canonicalize([]byte(tc.input))
+		if err != nil {
+			t.Fatalf("%s: Canonicalize: %v", tc.name, err)
+		}
+		if string(got) != tc.want {
+			t.Fatalf("%s: canonical form = %q, want %q", tc.name, got, tc.want)
+		}
+		outputs[tc.name] = string(got)
+	}
+	if outputs["literal tab"] == outputs["tab character reference"] {
+		t.Fatalf("literal TAB and &#x9; canonicalized identically: %q", outputs["literal tab"])
+	}
+	if outputs["literal LF"] == outputs["LF character reference"] {
+		t.Fatalf("literal LF and &#xA; canonicalized identically: %q", outputs["literal LF"])
+	}
+	if outputs["literal CR"] == outputs["CR character reference"] {
+		t.Fatalf("literal CR and &#xD; canonicalized identically: %q", outputs["literal CR"])
+	}
+}
+
+// TestSignatureAttributeNormalization checks that a signature over a space-bearing attribute
+// verifies, and that swapping the space for a TAB character reference changes the digest input. |
+// TestSignatureAttributeNormalization 校验含空格属性的签名可验证，而把空格换成 TAB 字符引用会改变
+// 摘要输入。
+func TestSignatureAttributeNormalization(t *testing.T) {
+	key := testRSAPrivateKey(t)
+	signed, err := Sign([]byte(`<root><order ID="r1" note="a b"><amount>42</amount></order></root>`),
+		SignOptions{PrivateKey: key, ID: "r1"})
+	if err != nil {
+		t.Fatalf("Sign: %v", err)
+	}
+	if _, err := VerifyElement(signed, "r1", VerifyOptions{Certificates: signerCertificates(t, key)}); err != nil {
+		t.Fatalf("VerifyElement: %v", err)
+	}
+	if !bytes.Contains(signed, []byte(`note="a b"`)) {
+		t.Fatalf("signed document lacks normalized attribute: %s", signed)
+	}
+	tampered := bytes.Replace(signed, []byte(`note="a b"`), []byte(`note="a&#x9;b"`), 1)
+	if bytes.Equal(tampered, signed) {
+		t.Fatal("tampering replacement did not apply")
+	}
+	if _, err := VerifyElement(tampered, "r1", VerifyOptions{Certificates: signerCertificates(t, key)}); !errors.Is(err, ErrDigestMismatch) {
+		t.Fatalf("tampered verification error = %v, want ErrDigestMismatch", err)
 	}
 }
 

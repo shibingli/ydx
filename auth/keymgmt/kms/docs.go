@@ -15,6 +15,12 @@
 // destroyed/pending-deletion；compromised → destroyed/pending-deletion；pending-deletion → destroyed。
 // destroyed 为终态并擦除材料。
 //
+// Identifiers and aliases share one namespace. CreateKey and ImportKey reject an identifier that is
+// already an alias and an alias that is already an identifier; SetAlias and UpdateKey apply the
+// same rule, so resolveStoredKey never has to choose between an identifier and an alias. | 标识与
+// 别名共享同一命名空间。CreateKey 与 ImportKey 拒绝已是别名的标识以及已是标识的别名；SetAlias
+// 与 UpdateKey 遵循同一规则，因此 resolveStoredKey 永远不必在标识与别名之间做选择。
+//
 // # Supported algorithms | 支持的算法
 //
 // AES-128/192/256-GCM, ChaCha20-Poly1305 and SM4-GCM for symmetric encryption; RSA 2048/3072/4096

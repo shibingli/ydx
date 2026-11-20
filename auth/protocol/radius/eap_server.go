@@ -72,9 +72,11 @@ type EAPServerConfig struct {
 	Password EAPPasswordLookup
 	// TLSConfig configures the server certificate for EAP-TLS, EAP-TTLS and PEAPv0. The server clones
 	// it and enforces TLS 1.2 as the minimum version when MinVersion is zero. Client certificate
-	// policy and VerifyPeerCertificate callbacks are honored as configured. | TLSConfig 为 EAP-TLS、
-	// EAP-TTLS 与 PEAPv0 配置服务器证书。服务器会克隆它，并在 MinVersion 为零时强制最低 TLS 1.2。
-	// 客户端证书策略与 VerifyPeerCertificate 回调按配置生效。
+	// policy and VerifyPeerCertificate callbacks are honored as configured, except that EAP-TLS
+	// forces RequireAndVerifyClientCert unless AllowNoClientCertificate is set. | TLSConfig 为
+	// EAP-TLS、EAP-TTLS 与 PEAPv0 配置服务器证书。服务器会克隆它，并在 MinVersion 为零时强制最低
+	// TLS 1.2。客户端证书策略与 VerifyPeerCertificate 回调按配置生效，但除非设置
+	// AllowNoClientCertificate，EAP-TLS 会强制 RequireAndVerifyClientCert。
 	TLSConfig *tls.Config
 	// IdentityFromCertificate extracts the authenticated identity from a verified peer certificate
 	// for EAP-TLS; nil uses the subject CommonName, then the first DNS name. | IdentityFromCertificate
@@ -101,6 +103,15 @@ type EAPServerConfig struct {
 	// certificate. TLSConfig.ClientAuth is also honored. | RequireClientCertificate 拒绝未携带已校验
 	// 客户端证书的 EAP-TLS、EAP-TTLS 与 PEAP 握手。TLSConfig.ClientAuth 同样生效。
 	RequireClientCertificate bool
+	// AllowNoClientCertificate permits EAP-TLS without a client certificate and restores the legacy
+	// behavior where the identity falls back to the outer EAP Response/Identity. The default false
+	// requires and verifies a client certificate for EAP-TLS and extracts the identity from the
+	// certificate chain (CN, then SAN); EAP-TTLS and PEAP are unaffected unless
+	// RequireClientCertificate or TLSConfig.ClientAuth says otherwise. | AllowNoClientCertificate
+	// 允许 EAP-TLS 不使用客户端证书，并恢复身份回退到外层 EAP Response/Identity 的旧行为。默认
+	// false 要求并校验 EAP-TLS 客户端证书，并从证书链（CN，其次 SAN）提取身份；除非
+	// RequireClientCertificate 或 TLSConfig.ClientAuth 另有要求，EAP-TTLS 与 PEAP 不受影响。
+	AllowNoClientCertificate bool
 	// TTLSInnerMethods is the ordered list of accepted EAP-TTLS phase-2 methods. Nil selects
 	// EAP-MSCHAPv2 and PAP when Password is set. Only EAPTypeMSCHAPv2 and EAPTypeIdentity (PAP) are
 	// valid. | TTLSInnerMethods 是接受的 EAP-TTLS 第二阶段方法列表。nil 时在 Password 设置的情况下
@@ -117,15 +128,17 @@ type EAPServerConfig struct {
 // Request 生成新的 EAP 标识符，缓存对重传 EAP Identifier 的响应，在 Timeout 后使空闲会话过期，并在
 // 达到 MaxSessions 时淘汰最旧会话。
 type EAPServer struct {
-	password      EAPPasswordLookup
-	tlsConfig     *tls.Config
-	identity      func(*x509.Certificate) string
-	methods       []EAPType
-	ttlsMethods   []EAPType
-	timeout       time.Duration
-	maxSessions   int
-	fragmentSize  int
-	requireClient bool
+	password          EAPPasswordLookup
+	tlsConfig         *tls.Config
+	eapTLSConfig      *tls.Config
+	identity          func(*x509.Certificate) string
+	methods           []EAPType
+	ttlsMethods       []EAPType
+	timeout           time.Duration
+	maxSessions       int
+	fragmentSize      int
+	requireClient     bool
+	allowNoClientCert bool
 
 	mu       sync.Mutex
 	sessions map[string]*eapSession
@@ -205,6 +218,7 @@ func NewEAPServer(config EAPServerConfig) (*EAPServer, error) {
 			return nil, err
 		}
 	}
+	var eapTLSConfig *tls.Config
 	if config.TLSConfig != nil {
 		config.TLSConfig = config.TLSConfig.Clone()
 		if config.TLSConfig.MinVersion == 0 {
@@ -213,6 +227,14 @@ func NewEAPServer(config EAPServerConfig) (*EAPServer, error) {
 		if config.RequireClientCertificate &&
 			(config.TLSConfig.ClientAuth == tls.NoClientCert || config.TLSConfig.ClientAuth == 0) {
 			config.TLSConfig.ClientAuth = tls.RequireAndVerifyClientCert
+		}
+		eapTLSConfig = config.TLSConfig
+		if !config.AllowNoClientCertificate {
+			// EAP-TLS authenticates by certificate, so a verified client certificate is the secure
+			// default; AllowNoClientCertificate is the only opt-out. | EAP-TLS 以证书认证，因此
+			// 已校验客户端证书是安全默认值；AllowNoClientCertificate 是唯一的退出开关。
+			eapTLSConfig = config.TLSConfig.Clone()
+			eapTLSConfig.ClientAuth = tls.RequireAndVerifyClientCert
 		}
 	}
 	ttlsMethods := config.TTLSInnerMethods
@@ -228,16 +250,18 @@ func NewEAPServer(config EAPServerConfig) (*EAPServer, error) {
 		}
 	}
 	return &EAPServer{
-		password:      config.Password,
-		tlsConfig:     config.TLSConfig,
-		identity:      config.IdentityFromCertificate,
-		methods:       append([]EAPType(nil), methods...),
-		ttlsMethods:   append([]EAPType(nil), ttlsMethods...),
-		timeout:       config.Timeout,
-		maxSessions:   config.MaxSessions,
-		fragmentSize:  config.FragmentSize,
-		requireClient: config.RequireClientCertificate,
-		sessions:      make(map[string]*eapSession, config.MaxSessions),
+		password:          config.Password,
+		tlsConfig:         config.TLSConfig,
+		eapTLSConfig:      eapTLSConfig,
+		identity:          config.IdentityFromCertificate,
+		methods:           append([]EAPType(nil), methods...),
+		ttlsMethods:       append([]EAPType(nil), ttlsMethods...),
+		timeout:           config.Timeout,
+		maxSessions:       config.MaxSessions,
+		fragmentSize:      config.FragmentSize,
+		requireClient:     config.RequireClientCertificate,
+		allowNoClientCert: config.AllowNoClientCertificate,
+		sessions:          make(map[string]*eapSession, config.MaxSessions),
 	}, nil
 }
 
@@ -598,10 +622,14 @@ func (s *EAPServer) startMethodLocked(ctx context.Context, session *eapSession, 
 		session.requestID = identifier
 		return s.requestResultLocked(session, method, data, identifier)
 	case EAPTypeTLS, EAPTypeTTLS, EAPTypePEAP:
-		if s.tlsConfig == nil {
+		engineConfig := s.tlsConfig
+		if method == EAPTypeTLS {
+			engineConfig = s.eapTLSConfig
+		}
+		if engineConfig == nil {
 			return s.failureLocked(session, session.requestID, 0)
 		}
-		engine, err := newEAPTLSEngine(s.tlsConfig)
+		engine, err := newEAPTLSEngine(engineConfig)
 		if err != nil {
 			return nil, err
 		}

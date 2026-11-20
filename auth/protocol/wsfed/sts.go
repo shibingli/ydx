@@ -553,11 +553,19 @@ func (sts *SecurityTokenService) HandleSignOut(w http.ResponseWriter, r *http.Re
 		sts.fail(w, r, err)
 		return
 	}
+	replyURL := request.Wreply
 	if request.Wtrealm != "" {
-		if _, err := sts.resolveRealm(r, request.Wtrealm, request.Wreply); err != nil {
+		resolved, err := sts.resolveRealm(r, request.Wtrealm, request.Wreply)
+		if err != nil {
 			sts.fail(w, r, err)
 			return
 		}
+		replyURL = resolved
+	} else if request.Wreply != "" {
+		// Sign-out without a realm has no binding to validate the reply URL against. |
+		// 没有领域的登出无法校验回复 URL 的绑定关系。
+		sts.fail(w, r, errs.Detail(ErrInvalidRealm, "wtrealm is required with wreply | wtreply 存在时需要 wtrealm"))
+		return
 	}
 	if principal, authErr := sts.config.Authenticator.Authenticate(r.Context(), w, r, nil); authErr == nil && principal != nil {
 		sts.deleteSessions(r.Context(), principal)
@@ -578,7 +586,7 @@ func (sts *SecurityTokenService) HandleSignOut(w http.ResponseWriter, r *http.Re
 	if request.Wctx != "" {
 		fields = append(fields, [2]string{ParamWctx, request.Wctx})
 	}
-	postForm(w, request.Wreply, fields)
+	postForm(w, replyURL, fields)
 }
 
 // deleteSessions removes every known session of principal. | deleteSessions 删除 principal 的所有已知会话。
@@ -665,8 +673,28 @@ func (sts *SecurityTokenService) resolveRealm(r *http.Request, realm, replyURL s
 		if err != nil {
 			return "", errs.WrapDetail(err, ErrInvalidRealm, "realm %[1]q | 领域 %[1]q", realm)
 		}
-		if strings.TrimSpace(value) != "" {
-			resolved = strings.TrimSpace(value)
+		value = strings.TrimSpace(value)
+		if value == "" {
+			if resolved == "" {
+				// A cleanup message has no reply target; only the realm allow list applies. |
+				// 清理消息没有回复目标，只需通过领域白名单。
+				return "", nil
+			}
+			// A resolver is authoritative: when it cannot validate the requested reply URL, the
+			// request fails closed instead of falling back to an attacker-supplied value. |
+			// 解析器具有权威性：无法验证请求的回复 URL 时失败关闭，而不是回退到攻击者提供的值。
+			return "", errs.Detail(ErrInvalidRealm, "realm %[1]q did not resolve a reply URL | 领域 %[1]q 未解析出回复 URL", realm)
+		}
+		resolved = value
+	} else {
+		if resolved == "" {
+			return "", nil
+		}
+		// Without a resolver, bind the reply URL to the realm's origin. A realm that is not an
+		// absolute URL cannot be bound safely and is rejected. | 没有解析器时，把回复 URL 绑定到
+		// 领域的源。领域不是绝对 URL 时无法安全绑定，直接拒绝。
+		if !sameOriginURL(realm, resolved) {
+			return "", errs.Detail(ErrInvalidRealm, "reply URL %[1]q is outside realm %[2]q | 回复 URL %[1]q 不在领域 %[2]q 内", resolved, realm)
 		}
 	}
 	if resolved != "" {
@@ -675,6 +703,21 @@ func (sts *SecurityTokenService) resolveRealm(r *http.Request, realm, replyURL s
 		}
 	}
 	return resolved, nil
+}
+
+// sameOriginURL reports whether raw and reply are absolute URLs with the same scheme, host and
+// port. | sameOriginURL 报告 raw 与 reply 是否为协议、主机和端口完全相同的绝对 URL。
+func sameOriginURL(raw, reply string) bool {
+	realmURL, err := url.Parse(raw)
+	if err != nil || realmURL.Scheme == "" || realmURL.Host == "" {
+		return false
+	}
+	replyURL, err := url.Parse(reply)
+	if err != nil || replyURL.Scheme == "" || replyURL.Host == "" {
+		return false
+	}
+	return strings.EqualFold(realmURL.Scheme, replyURL.Scheme) &&
+		strings.EqualFold(realmURL.Host, replyURL.Host)
 }
 
 // login redirects or renders a login page. | login 重定向或渲染登录页。

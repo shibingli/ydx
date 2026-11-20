@@ -59,6 +59,12 @@ type IdentityProviderConfig struct {
 	// WantArtifactResolveSigned rejects unsigned SOAP ArtifactResolve messages. | WantArtifactResolveSigned
 	// 拒绝未签名的 SOAP ArtifactResolve 消息。
 	WantArtifactResolveSigned bool
+	// AllowUnsignedArtifactResolve accepts unsigned SOAP ArtifactResolve messages. The zero value
+	// fails closed: a request without a verifiable XML signature is rejected, so a deployment must
+	// opt in explicitly to the legacy unsigned behavior. | AllowUnsignedArtifactResolve 接受未签名的
+	// SOAP ArtifactResolve 消息。零值失败关闭：无可校验 XML 签名的请求会被拒绝，部署必须显式选择
+	// 旧的未签名兼容行为。
+	AllowUnsignedArtifactResolve bool
 	// SignArtifactResponse signs the SOAP ArtifactResponse; it requires Signer. | SignArtifactResponse
 	// 签名 SOAP ArtifactResponse；需要 Signer。
 	SignArtifactResponse bool
@@ -86,6 +92,12 @@ type IdentityProviderConfig struct {
 	SigningAlg string
 	// SPResolver resolves service-provider metadata. | SPResolver 解析服务提供方元数据。
 	SPResolver MetadataResolver
+	// AllowUnregisteredACS accepts the AssertionConsumerServiceURL carried by the AuthnRequest
+	// when SPResolver is nil. The zero value fails closed: without a resolver the IdP refuses to
+	// deliver an assertion to a URL chosen by the requester. | AllowUnregisteredACS 在 SPResolver
+	// 为空时接受 AuthnRequest 自带的 AssertionConsumerServiceURL。零值失败关闭：没有解析器时，
+	// IdP 拒绝把断言投递到请求方自选的 URL。
+	AllowUnregisteredACS bool
 	// Authenticator resolves the current user. | Authenticator 解析当前用户。
 	Authenticator Authenticator
 	// AttributeMapper maps the principal to attributes. | AttributeMapper 把主体映射为属性。
@@ -103,6 +115,13 @@ type IdentityProviderConfig struct {
 	// WantLogoutRequestsSigned rejects unsigned LogoutRequests. | WantLogoutRequestsSigned 拒绝未签名
 	// LogoutRequest。
 	WantLogoutRequestsSigned bool
+	// AllowUnsignedLogout accepts unsigned LogoutRequest and LogoutResponse messages at the IdP. The
+	// zero value fails closed: a non-redirect message must carry a verifiable XML signature and a
+	// redirect message must carry a query signature verifiable by RedirectVerifier. Set it only for
+	// legacy peers that cannot sign. | AllowUnsignedLogout 在 IdP 接受未签名的 LogoutRequest 与
+	// LogoutResponse。零值失败关闭：非重定向消息必须携带可校验的 XML 签名，重定向消息必须携带可由
+	// RedirectVerifier 校验的查询签名。仅应为无法签名的旧对端开启。
+	AllowUnsignedLogout bool
 	// NameIDFormat is the default NameID format. | NameIDFormat 是默认 NameID 格式。
 	NameIDFormat string
 	// AllowedNameIDFormats restricts requested NameID formats. | AllowedNameIDFormats 限定请求的 NameID 格式。
@@ -444,8 +463,10 @@ func (idp *IdentityProvider) resolveACS(ctx context.Context, request *AuthnReque
 			return "", errs.Wrap(err, ErrInvalidIssuer)
 		}
 		acsURL = metadata.ACSURL(request.ProtocolBinding)
-	} else {
+	} else if idp.config.AllowUnregisteredACS {
 		acsURL = request.AssertionConsumerServiceURL
+	} else {
+		return "", errs.Detail(ErrInvalidRequest, "SPResolver is required to validate the ACS URL | 需要 SPResolver 校验 ACS URL")
 	}
 	if acsURL == "" {
 		return "", errs.Detail(ErrInvalidRequest, "ACS URL is missing | 缺少 ACS URL")

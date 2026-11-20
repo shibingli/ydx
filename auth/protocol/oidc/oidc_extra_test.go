@@ -592,12 +592,38 @@ func TestRelyingPartyUserInfoJWT(t *testing.T) {
 		}
 		return signed
 	}
-	raw := sign(map[string]any{"iss": discovery.Issuer, "sub": "user-1", "email": "alice@example.com"})
+	now := time.Now()
+	raw := sign(map[string]any{
+		"iss":   discovery.Issuer,
+		"aud":   "web",
+		"sub":   "user-1",
+		"email": "alice@example.com",
+		"iat":   now.Unix(),
+		"exp":   now.Add(5 * time.Minute).Unix(),
+	})
 	claims, err := rp.verifyUserInfoJWT(ctx, raw)
 	if err != nil || claims["sub"] != "user-1" || claims["email"] != "alice@example.com" {
 		t.Fatalf("JWT userinfo = %+v err=%v", claims, err)
 	}
-	if _, err := rp.verifyUserInfoJWT(ctx, sign(map[string]any{"iss": "https://other.example", "sub": "user-1"})); !errors.Is(err, ErrInvalidIssuer) {
+	if _, err := rp.verifyUserInfoJWT(ctx, sign(map[string]any{
+		"iss": discovery.Issuer, "aud": "web", "sub": "user-1",
+		"iat": now.Add(-10 * time.Minute).Unix(), "exp": now.Add(-5 * time.Minute).Unix(),
+	})); !errors.Is(err, ErrInvalidToken) {
+		t.Fatalf("expired userinfo = %v, 期望 ErrInvalidToken | want ErrInvalidToken", err)
+	}
+	if _, err := rp.verifyUserInfoJWT(ctx, sign(map[string]any{
+		"iss": discovery.Issuer, "aud": "other", "sub": "user-1",
+		"iat": now.Unix(), "exp": now.Add(5 * time.Minute).Unix(),
+	})); !errors.Is(err, ErrInvalidToken) {
+		t.Fatalf("wrong audience userinfo = %v, 期望 ErrInvalidToken | want ErrInvalidToken", err)
+	}
+	if _, err := rp.verifyUserInfoJWT(ctx, sign(map[string]any{"iss": discovery.Issuer, "aud": "web", "sub": "user-1"})); !errors.Is(err, ErrInvalidToken) {
+		t.Fatalf("userinfo without exp = %v, 期望 ErrInvalidToken | want ErrInvalidToken", err)
+	}
+	if _, err := rp.verifyUserInfoJWT(ctx, sign(map[string]any{
+		"iss": "https://other.example", "aud": "web", "sub": "user-1",
+		"iat": now.Unix(), "exp": now.Add(5 * time.Minute).Unix(),
+	})); !errors.Is(err, ErrInvalidIssuer) {
 		t.Fatalf("issuer mismatch = %v", err)
 	}
 	if _, err := rp.verifyUserInfoJWT(ctx, "not-a-jwt"); !errors.Is(err, ErrInvalidToken) {
@@ -659,5 +685,30 @@ func TestEqualAudience(t *testing.T) {
 	}
 	if EqualAudience(Audience{"web", "other"}, "web") || EqualAudience(Audience{"other"}, "web") || EqualAudience(nil, "") {
 		t.Fatal("unequal audience")
+	}
+}
+
+// TestEndSessionRejectsExpiredIDTokenHint pins that an old ID token cannot force a fresh
+// logout or trigger a back-channel logout: the hint must be within its expiry window. |
+// TestEndSessionRejectsExpiredIDTokenHint 固化旧 ID 令牌不能强制新的登出或触发后端登出：
+// hint 必须处于有效期内。
+func TestEndSessionRejectsExpiredIDTokenHint(t *testing.T) {
+	fixture := newOIDCFixture(t, false)
+	provider := fixture.provider
+	now := time.Now().Unix()
+	expired := signLogoutClaims(t, provider, map[string]any{
+		"iss": fixture.server.URL,
+		"sub": "user-1",
+		"aud": []string{"web"},
+		"iat": now - 600,
+		"exp": now - 300,
+	})
+	body := url.Values{"id_token_hint": {expired}}.Encode()
+	req := httptest.NewRequest(http.MethodPost, "/logout", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	w := httptest.NewRecorder()
+	provider.EndSession(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expired hint = %d body=%s, 期望 400", w.Code, w.Body.String())
 	}
 }

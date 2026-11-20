@@ -58,9 +58,10 @@ func TestValidateAuthnRequestRejectsACSMissingFromMetadata(t *testing.T) {
 // 请求自带 ACS URL 也以已注册端点为准。
 func TestResolveACSPrefersRegisteredEndpoint(t *testing.T) {
 	idp, err := NewIdentityProvider(IdentityProviderConfig{
-		EntityID: "https://idp.example/metadata",
-		SSOURL:   "https://idp.example/sso",
-		Store:    NewMemoryStore(),
+		AllowUnregisteredACS: true,
+		EntityID:             "https://idp.example/metadata",
+		SSOURL:               "https://idp.example/sso",
+		Store:                NewMemoryStore(),
 		SPResolver: staticResolver{metadata: &EntityDescriptor{
 			EntityID: "https://sp.example/metadata",
 			SPSSODescriptor: &SPSSODescriptor{

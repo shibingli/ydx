@@ -188,10 +188,10 @@ func TestMFAFlow(t *testing.T) {
 	if !result.MFARequired || result.Session != nil {
 		t.Fatalf("result = %+v", result)
 	}
-	if _, err := svc.CompleteMFA(ctx, CompleteMFAInput{UserID: user.ID, Response: "bad"}); !errors.Is(err, ErrMFAInvalid) {
+	if _, err := svc.CompleteMFA(ctx, CompleteMFAInput{UserID: user.ID, MFAToken: result.MFAToken, Response: "bad"}); !errors.Is(err, ErrMFAInvalid) {
 		t.Fatalf("bad mfa = %v, want ErrMFAInvalid", err)
 	}
-	done, err := svc.CompleteMFA(ctx, CompleteMFAInput{UserID: user.ID, Response: "123456"})
+	done, err := svc.CompleteMFA(ctx, CompleteMFAInput{UserID: user.ID, MFAToken: result.MFAToken, Response: "123456"})
 	if err != nil {
 		t.Fatalf("complete mfa: %v", err)
 	}

@@ -64,8 +64,13 @@ func NewPool(cfg Config) (*Pool, error) {
 }
 
 // Get borrows a client, waiting for one when PoolSize clients are in use. The
-// client must be returned with Put and must not be closed by the borrower. | Get
-// 借出一个客户端；PoolSize 个客户端都在使用时会等待。客户端必须用 Put 归还，借用方不得关闭它。
+// client must be returned with Put and must not be closed by the borrower. When
+// Config.BindDN is set, a reused idle connection is re-bound to the configured
+// service identity before it is handed out, so a previous borrower's residual
+// authorization cannot leak into the next borrow. | Get 借出一个客户端；PoolSize 个
+// 客户端都在使用时会等待。客户端必须用 Put 归还，借用方不得关闭它。设置 Config.BindDN
+// 时，复用的空闲连接会在借出前重新绑定到配置的服务身份，避免上一借用方残留的授权泄漏给
+// 下一借用方。
 func (p *Pool) Get(ctx context.Context) (*Client, error) {
 	if p == nil {
 		return nil, ErrPoolClosed
@@ -96,6 +101,15 @@ func (p *Pool) Get(ctx context.Context) (*Client, error) {
 			}
 			if client.IsClosed() {
 				return nil, ErrPoolClosed
+			}
+			if p.cfg.BindDN != "" {
+				if err := client.Bind(ctx, p.cfg.BindDN, p.cfg.BindPassword); err != nil {
+					p.discardProbed(client)
+					if ctxErr := ctx.Err(); ctxErr != nil {
+						return nil, ctxErr
+					}
+					continue
+				}
 			}
 			return client, nil
 		}
@@ -138,11 +152,16 @@ func (p *Pool) Get(ctx context.Context) (*Client, error) {
 }
 
 // Put returns a borrowed client. Closing, dead, excess, and expired clients are
-// discarded. Returning a client that is already idle is a no-op, so a repeated
-// Put cannot duplicate it in the idle set. It is safe to Put a client after
-// Close, where it is closed. | Put 归还借出的客户端。已关闭、已失效、超额与过期客户端
-// 会被丢弃。归还已经空闲的客户端是无操作，因此重复 Put 不会在空闲集合中复制它。Close
-// 之后 Put 也安全，此时客户端会被关闭。
+// discarded. A client bound to an identity other than the pool's configured
+// service account is closed instead of being retained, because reusing it would
+// lend the previous borrower's authentication state to the next borrower and
+// could replay that password after a reconnect. Returning a client that is
+// already idle is a no-op, so a repeated Put cannot duplicate it in the idle
+// set. It is safe to Put a client after Close, where it is closed. | Put 归还借出的
+// 客户端。已关闭、已失效、超额与过期客户端会被丢弃。绑定身份不是池配置服务账号的客户端会被
+// 关闭而不是保留，因为复用会把上一借用方的认证态借给下一借用方，并可能在重连后重放该口令。
+// 归还已经空闲的客户端是无操作，因此重复 Put 不会在空闲集合中复制它。Close 之后 Put 也安全，
+// 此时客户端会被关闭。
 func (p *Pool) Put(client *Client) error {
 	if p == nil || client == nil {
 		return nil
@@ -161,7 +180,7 @@ func (p *Pool) Put(client *Client) error {
 		return client.Close()
 	}
 	delete(p.checkedOut, client)
-	if p.closed || client.IsClosed() {
+	if p.closed || client.IsClosed() || !p.reusableBinding(client) {
 		delete(p.all, client)
 		p.broadcastLocked()
 		p.mu.Unlock()
@@ -180,6 +199,36 @@ func (p *Pool) Put(client *Client) error {
 	p.mu.Unlock()
 	closeClients(expired)
 	return nil
+}
+
+// reusableBinding reports whether client carries only the pool's configured
+// service identity, or no identity at all. Any other bind state is discarded on
+// Put. | reusableBinding 报告 client 是否只携带池配置的服务身份或完全没有身份。其它绑定
+// 状态会在 Put 时丢弃。
+func (p *Pool) reusableBinding(client *Client) bool {
+	client.mu.Lock()
+	defer client.mu.Unlock()
+	auth := client.auth
+	if auth == nil {
+		return true
+	}
+	switch auth.kind {
+	case authSimple:
+		return p.cfg.BindDN != "" && auth.dn == p.cfg.BindDN
+	case authGSSAPI:
+		configured := p.cfg.GSSAPI
+		if configured == nil {
+			return false
+		}
+		return auth.gssapi.Client == configured.Client &&
+			auth.gssapi.Service == configured.Service &&
+			auth.gssapi.ServiceRealm == configured.ServiceRealm &&
+			auth.gssapi.AuthzID == configured.AuthzID &&
+			auth.gssapi.SPNEGO == configured.SPNEGO &&
+			auth.gssapi.ChannelBinding == configured.ChannelBinding
+	default:
+		return false
+	}
 }
 
 // Do borrows a client, invokes fn, and returns the client to the pool. | Do 借出

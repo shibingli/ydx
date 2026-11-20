@@ -5,6 +5,7 @@ import (
 	"crypto/aes"
 	"crypto/sha256"
 	"errors"
+	"math"
 	"testing"
 )
 
@@ -652,6 +653,34 @@ func TestMAC(t *testing.T) {
 	}
 	if _, err := macHash(AlgorithmECDSA, CryptographicParameters{}); !errors.Is(err, ErrUnsupported) {
 		t.Fatalf("ECDSA MAC hash error = %v | ECDSA MAC 哈希错误 = %v", err, err)
+	}
+}
+
+// TestPBKDF2IterationLimit pins the PBKDF2 iteration bound in both the decoder and the derivation
+// path. An absurd count must fail immediately instead of entering the key-stretching loop. |
+// TestPBKDF2IterationLimit 固化解码与派生两处的 PBKDF2 迭代上限。异常计数必须立即失败，不得进入
+// 密钥拉伸循环。
+func TestPBKDF2IterationLimit(t *testing.T) {
+	overflowing := NewStructure(TagDerivationParameters, NewInteger(TagIterationCount, math.MaxInt64))
+	if _, err := DecodeDerivationParameters(overflowing); !errors.Is(err, ErrInvalidRequest) {
+		t.Fatalf("MaxInt64 decode err = %v, want ErrInvalidRequest", err)
+	}
+	negative := NewStructure(TagDerivationParameters, NewInteger(TagIterationCount, -1))
+	if _, err := DecodeDerivationParameters(negative); !errors.Is(err, ErrInvalidRequest) {
+		t.Fatalf("negative decode err = %v, want ErrInvalidRequest", err)
+	}
+	overLimit := NewStructure(TagDerivationParameters, NewInteger(TagIterationCount, int64(maxPBKDF2Iterations)+1))
+	if _, err := DecodeDerivationParameters(overLimit); !errors.Is(err, ErrInvalidRequest) {
+		t.Fatalf("over-limit decode err = %v, want ErrInvalidRequest", err)
+	}
+
+	input := rawKeyBlock(AlgorithmAES, bytes.Repeat([]byte{0x33}, 32))
+	maxInt := int(^uint(0) >> 1)
+	for _, iterations := range []int{-1, maxPBKDF2Iterations + 1, maxInt} {
+		if _, err := deriveKeyBlock([]KeyBlock{input}, DerivationMethodPBKDF2,
+			DerivationParameters{Salt: []byte("salt"), IterationCount: iterations}, 0, 0); !errors.Is(err, ErrInvalidRequest) {
+			t.Fatalf("derive iterations %d err = %v, want ErrInvalidRequest", iterations, err)
+		}
 	}
 }
 

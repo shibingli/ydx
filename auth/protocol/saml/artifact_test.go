@@ -319,10 +319,11 @@ func TestArtifactMetadata(t *testing.T) {
 		t.Fatalf("explicit location = %q", explicit.Metadata().ArtifactResolutionURL(0))
 	}
 	if _, err := NewIdentityProvider(IdentityProviderConfig{
-		EntityID:         "https://idp.example/metadata",
-		SSOURL:           "https://idp.example/sso",
-		Authenticator:    testAuthenticator(),
-		ArtifactSourceID: []byte("short"),
+		AllowUnregisteredACS: true,
+		EntityID:             "https://idp.example/metadata",
+		SSOURL:               "https://idp.example/sso",
+		Authenticator:        testAuthenticator(),
+		ArtifactSourceID:     []byte("short"),
 	}); !errors.Is(err, ErrInvalidConfig) {
 		t.Fatalf("short source ID error = %v", err)
 	}

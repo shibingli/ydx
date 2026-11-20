@@ -51,17 +51,31 @@ func (s *EAPServer) processEAPTLSLocked(ctx context.Context, session *eapSession
 	return s.tlsSuccessLocked(session, packet.Identifier)
 }
 
-// tlsSuccessLocked completes EAP-TLS and extracts the authenticated identity. The caller must hold
-// session.mu. | tlsSuccessLocked 完成 EAP-TLS 并提取认证身份。调用方必须持有 session.mu。
+// tlsSuccessLocked completes EAP-TLS and extracts the authenticated identity. Unless
+// AllowNoClientCertificate is set, EAP-TLS requires a verified peer certificate and derives the
+// identity from its certificate chain; the outer Response/Identity is never trusted in that mode.
+// The caller must hold session.mu. | tlsSuccessLocked 完成 EAP-TLS 并提取认证身份。除非设置
+// AllowNoClientCertificate，EAP-TLS 要求已校验的对端证书并从其证书链推导身份；该模式下绝不信任
+// 外层 Response/Identity。调用方必须持有 session.mu。
 func (s *EAPServer) tlsSuccessLocked(session *eapSession, identifier uint8) (*AccessServerResult, error) {
 	state, ok := session.tls.connectionState()
 	if !ok {
 		return s.failureLocked(session, identifier, 0)
 	}
-	if s.requireClient && len(state.PeerCertificates) == 0 {
+	strictCertificate := session.method == EAPTypeTLS && !s.allowNoClientCert
+	if (s.requireClient || strictCertificate) && len(state.PeerCertificates) == 0 {
+		return s.failureLocked(session, identifier, 0)
+	}
+	if strictCertificate && len(state.VerifiedChains) == 0 {
+		// An unverified certificate cannot authenticate the peer. | 未校验的证书不能认证对端。
 		return s.failureLocked(session, identifier, 0)
 	}
 	identity := session.username
+	if strictCertificate {
+		// The outer Response/Identity is unauthenticated and must not stand in for a certificate. |
+		// 外层 Response/Identity 未经认证，不能替代证书。
+		identity = ""
+	}
 	if len(state.PeerCertificates) > 0 {
 		if extracted := s.certificateIdentity(state.PeerCertificates[0]); extracted != "" {
 			identity = extracted

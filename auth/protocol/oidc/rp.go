@@ -269,7 +269,16 @@ func (rp *RelyingParty) verifyUserInfoJWT(ctx context.Context, raw string) (map[
 		}
 		raw = string(plaintext)
 	}
-	verified, err := jose.VerifyContext(ctx, raw, rp.resolver(), jose.VerifyOptions{})
+	verifyOpts := jose.VerifyOptions{
+		ValidateClaims: true,
+		RequireExp:     true,
+		Leeway:         rp.config.Leeway,
+		Now:            rp.now,
+	}
+	if rp.config.ClientID != "" {
+		verifyOpts.Audience = rp.config.ClientID
+	}
+	verified, err := jose.VerifyContext(ctx, raw, rp.resolver(), verifyOpts)
 	if err != nil {
 		return nil, errs.Wrap(err, ErrInvalidToken)
 	}
@@ -277,7 +286,7 @@ func (rp *RelyingParty) verifyUserInfoJWT(ctx context.Context, raw string) (map[
 	if err := json.Unmarshal(verified.Payload, &claims); err != nil {
 		return nil, errs.Wrap(err, ErrInvalidToken)
 	}
-	if issuer, _ := claims["iss"].(string); issuer != "" && issuer != rp.discovery.Issuer {
+	if issuer, _ := claims["iss"].(string); issuer == "" || issuer != rp.discovery.Issuer {
 		return nil, ErrInvalidIssuer
 	}
 	return claims, nil

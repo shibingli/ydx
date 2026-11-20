@@ -368,9 +368,40 @@ func (ki *parsedKeyInfo) matchesCertificate(cert *x509.Certificate) (bool, error
 	return false, nil
 }
 
+// defaultAllowedEKUs returns the extended key usages accepted for XML signatures by default. | defaultAllowedEKUs
+// 返回默认接受的 XML 签名扩展密钥用途。
+func defaultAllowedEKUs() []x509.ExtKeyUsage {
+	return []x509.ExtKeyUsage{
+		x509.ExtKeyUsageAny,
+		x509.ExtKeyUsageEmailProtection,
+		x509.ExtKeyUsageClientAuth,
+		x509.ExtKeyUsageCodeSigning,
+	}
+}
+
+// checkExtendedKeyUsage rejects a signer certificate whose non-empty EKU set shares no usage with
+// the allowed set. Certificates without EKU are unconstrained and always pass. | checkExtendedKeyUsage
+// 拒绝非空 EKU 集合与允许集合无交集的签名证书。无 EKU 的证书不受限制，始终通过。
+func checkExtendedKeyUsage(cert *x509.Certificate, allowed []x509.ExtKeyUsage) error {
+	if cert == nil || len(cert.ExtKeyUsage) == 0 {
+		return nil
+	}
+	if len(allowed) == 0 {
+		allowed = defaultAllowedEKUs()
+	}
+	for _, have := range cert.ExtKeyUsage {
+		for _, want := range allowed {
+			if have == want {
+				return nil
+			}
+		}
+	}
+	return errs.Detail(ErrCertificateInvalid, "certificate extended key usage %v is not allowed | 证书扩展密钥用途 %v 不被允许", cert.ExtKeyUsage, cert.ExtKeyUsage)
+}
+
 // validateCertificate checks validity, key usage and, when roots is set, the chain. |
 // validateCertificate 检查有效期、密钥用途；roots 非空时还检查证书链。
-func validateCertificate(cert *x509.Certificate, roots *x509.CertPool, intermediates []*x509.Certificate, now time.Time, skew time.Duration) error {
+func validateCertificate(cert *x509.Certificate, roots *x509.CertPool, intermediates []*x509.Certificate, now time.Time, skew time.Duration, allowedEKUs []x509.ExtKeyUsage) error {
 	if cert == nil {
 		return errs.Detail(ErrCertificateInvalid, "nil certificate | 证书为 nil")
 	}
@@ -382,6 +413,9 @@ func validateCertificate(cert *x509.Certificate, roots *x509.CertPool, intermedi
 	}
 	if cert.KeyUsage != 0 && cert.KeyUsage&x509.KeyUsageDigitalSignature == 0 {
 		return errs.Detail(ErrCertificateInvalid, "certificate key usage does not allow digital signatures | 证书密钥用途不允许数字签名")
+	}
+	if err := checkExtendedKeyUsage(cert, allowedEKUs); err != nil {
+		return err
 	}
 	if roots != nil {
 		pool := x509.NewCertPool()

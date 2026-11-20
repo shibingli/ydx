@@ -33,6 +33,14 @@ type ADConfig struct {
 	// StartTLS upgrades an ldap:// connection before binding. | StartTLS 在绑定前升级
 	// ldap:// 连接。
 	StartTLS bool
+	// AllowInsecureLDAP permits plaintext ldap:// discovery and simple binds. The default false
+	// requires TLS: SRV-discovered ldap:// endpoints default StartTLS to true, simple binds require
+	// a TLS-protected transport, and Authenticate refuses to send a password over an unprotected
+	// connection. Enable it only for isolated lab environments. | AllowInsecureLDAP 允许明文
+	// ldap:// 发现与简单绑定。默认 false 要求 TLS：SRV 发现的 ldap:// 端点默认开启 StartTLS，
+	// 简单绑定要求受 TLS 保护的传输，且 Authenticate 拒绝在未受保护连接上发送口令。仅在隔离的
+	// 实验环境中启用。
+	AllowInsecureLDAP bool
 	// Timeout bounds each LDAP exchange. Zero uses DefaultTimeout. | Timeout 限制每次
 	// LDAP 交换。零使用 DefaultTimeout。
 	Timeout time.Duration
@@ -61,17 +69,22 @@ type ADConfig struct {
 // password authentication. | ActiveDirectory 是域感知的 LDAP 门面。它保留一条用于
 // 搜索的服务连接，并为每次口令认证打开新的隔离连接。
 type ActiveDirectory struct {
-	domain string
-	baseDN string
-	url    string
-	cfg    Config
-	client *Client
-	closed atomic.Bool
+	domain        string
+	baseDN        string
+	url           string
+	cfg           Config
+	client        *Client
+	allowInsecure bool
+	closed        atomic.Bool
 }
 
 // NewActiveDirectory discovers or validates a domain controller, binds the
-// service account when configured, and resolves the base DN. | NewActiveDirectory
-// 发现或校验域控，在配置时绑定服务账号，并解析基础 DN。
+// service account when configured, and resolves the base DN. Unless
+// ADConfig.AllowInsecureLDAP is set, discovered ldap:// endpoints are upgraded
+// with StartTLS and simple binds require a TLS-protected transport. |
+// NewActiveDirectory 发现或校验域控，在配置时绑定服务账号，并解析基础 DN。除非设置
+// ADConfig.AllowInsecureLDAP，发现的 ldap:// 端点会使用 StartTLS 升级，简单绑定要求受 TLS
+// 保护的传输。
 func NewActiveDirectory(ctx context.Context, cfg ADConfig) (*ActiveDirectory, error) {
 	if ctx == nil {
 		ctx = context.Background()
@@ -93,15 +106,20 @@ func NewActiveDirectory(ctx context.Context, cfg ADConfig) (*ActiveDirectory, er
 	if err != nil {
 		return nil, err
 	}
+	discovered := strings.TrimSpace(cfg.URL) == ""
 	connectionConfig := Config{
-		TLSConfig:       cfg.TLSConfig,
-		StartTLS:        cfg.StartTLS,
-		Timeout:         cfg.Timeout,
-		DialTimeout:     cfg.DialTimeout,
-		MaxMessageSize:  cfg.MaxMessageSize,
-		BindDN:          cfg.BindDN,
-		BindPassword:    cfg.BindPassword,
-		ReferralHandler: cfg.ReferralHandler,
+		TLSConfig:      cfg.TLSConfig,
+		StartTLS:       cfg.StartTLS,
+		Timeout:        cfg.Timeout,
+		DialTimeout:    cfg.DialTimeout,
+		MaxMessageSize: cfg.MaxMessageSize,
+		// A simple bind carries the password in cleartext, so it requires TLS unless the operator
+		// explicitly opts into plaintext. | 简单绑定以明文传输口令，因此除非运维显式选择明文，
+		// 否则要求 TLS。
+		RequireSimpleBindTLS: !cfg.AllowInsecureLDAP,
+		BindDN:               cfg.BindDN,
+		BindPassword:         cfg.BindPassword,
+		ReferralHandler:      cfg.ReferralHandler,
 	}
 	var (
 		client  *Client
@@ -110,6 +128,12 @@ func NewActiveDirectory(ctx context.Context, cfg ADConfig) (*ActiveDirectory, er
 	for _, rawURL := range urls {
 		candidate := connectionConfig
 		candidate.URL = rawURL
+		if discovered && !cfg.AllowInsecureLDAP {
+			// SRV records only yield ldap:// endpoints; upgrade them by default so discovery and
+			// the service bind never run in cleartext. | SRV 记录只给出 ldap:// 端点；默认升级，
+			// 避免发现与服务绑定以明文运行。
+			candidate.StartTLS = true
+		}
 		client, err = Dial(ctx, candidate)
 		if err == nil {
 			break
@@ -149,17 +173,23 @@ func NewActiveDirectory(ctx context.Context, cfg ADConfig) (*ActiveDirectory, er
 	}
 	stored := connectionConfig
 	stored.URL = client.cfg.URL
+	// Carry the effective transport of the selected endpoint, including the StartTLS default applied
+	// to SRV discovery, so user authentication uses the same protection. | 沿用选中端点的有效传输
+	// 设置（包括对 SRV 发现应用的 StartTLS 默认值），使用户认证受到相同保护。
+	stored.StartTLS = client.cfg.StartTLS
+	stored.RequireSimpleBindTLS = client.cfg.RequireSimpleBindTLS
 	stored.BindDN = ""
 	stored.BindPassword = ""
 	if cfg.TLSConfig != nil {
 		stored.TLSConfig = cfg.TLSConfig.Clone()
 	}
 	ad := &ActiveDirectory{
-		domain: domain,
-		baseDN: baseDN,
-		url:    client.cfg.URL,
-		cfg:    stored,
-		client: client,
+		domain:        domain,
+		baseDN:        baseDN,
+		url:           client.cfg.URL,
+		cfg:           stored,
+		client:        client,
+		allowInsecure: cfg.AllowInsecureLDAP,
 	}
 	return ad, nil
 }
@@ -217,6 +247,12 @@ func (ad *ActiveDirectory) Authenticate(ctx context.Context, username, password 
 	identity := strings.TrimSpace(username)
 	if identity == "" {
 		return nil, errs.Detail(ErrInvalidConfig, "empty user identity | 用户身份为空")
+	}
+	if !ad.allowInsecure && !ad.usesTLS() {
+		// Refuse before any user lookup or dial so the password never reaches an unprotected
+		// transport and no bind request is generated. | 在用户查询或拨号之前拒绝，确保口令不会进入
+		// 未受保护的传输，也不会产生绑定请求。
+		return nil, errs.Detail(ErrTLSRequired, "Active Directory password authentication requires TLS; use LDAPS or StartTLS, or set AllowInsecureLDAP | Active Directory 口令认证要求 TLS；请使用 LDAPS 或 StartTLS，或设置 AllowInsecureLDAP")
 	}
 	var discovered *ADUser
 	if found, err := ad.lookupUser(ctx, identity); err == nil {
@@ -397,6 +433,18 @@ func (ad *ActiveDirectory) directBindName(identity string) string {
 		return identity + "@" + ad.domain
 	}
 	return identity
+}
+
+// usesTLS reports whether the selected endpoint is TLS-protected, either by the ldaps scheme or by
+// StartTLS. | usesTLS 报告选中端点是否受 TLS 保护，即使用 ldaps 协议或 StartTLS。
+func (ad *ActiveDirectory) usesTLS() bool {
+	if ad == nil {
+		return false
+	}
+	if strings.HasPrefix(strings.ToLower(strings.TrimSpace(ad.url)), "ldaps://") {
+		return true
+	}
+	return ad.cfg.StartTLS
 }
 
 // dialUserClient opens an isolated connection without service credentials. | dialUserClient

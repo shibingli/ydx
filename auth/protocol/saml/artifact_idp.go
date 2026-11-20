@@ -13,11 +13,12 @@ import (
 )
 
 // HandleArtifactResolution serves the SOAP Artifact Resolution Service. It accepts a SOAP 1.1 or
-// SOAP 1.2 ArtifactResolve, optionally verifies its XML signature, resolves an artifact issued by
-// this IdP exactly once and returns an ArtifactResponse in the request envelope version carrying
-// the original protocol Response. | HandleArtifactResolution 提供 SOAP 工件解析服务。它接受 SOAP 1.1
-// 或 SOAP 1.2 ArtifactResolve，按配置校验其 XML 签名，对本 IdP 签发的工件只解析一次，并以请求的信封
-// 版本返回携带原始协议 Response 的 ArtifactResponse。
+// SOAP 1.2 ArtifactResolve, verifies its XML signature unless AllowUnsignedArtifactResolve opts out,
+// resolves an artifact issued by this IdP exactly once and returns an ArtifactResponse in the request
+// envelope version carrying the original protocol Response. | HandleArtifactResolution 提供 SOAP
+// 工件解析服务。它接受 SOAP 1.1 或 SOAP 1.2 ArtifactResolve，在校验其 XML 签名后（除非
+// AllowUnsignedArtifactResolve 选择退出），对本 IdP 签发的工件只解析一次，并以请求的信封版本返回
+// 携带原始协议 Response 的 ArtifactResponse。
 func (idp *IdentityProvider) HandleArtifactResolution(w http.ResponseWriter, r *http.Request) {
 	version := soapRequestVersion(r)
 	if r.Method != http.MethodPost {
@@ -105,8 +106,12 @@ func (idp *IdentityProvider) HandleArtifactResolution(w http.ResponseWriter, r *
 	writeSOAPPayloadVersion(w, version, document)
 }
 
-// validateArtifactResolve validates the protocol attributes and optional signature of an
-// ArtifactResolve. | validateArtifactResolve 校验 ArtifactResolve 的协议属性与可选签名。
+// validateArtifactResolve validates the protocol attributes and signature of an ArtifactResolve.
+// By default the request must carry an XML signature verifiable by SignatureVerifier; only
+// IdentityProviderConfig.AllowUnsignedArtifactResolve accepts an unsigned message. |
+// validateArtifactResolve 校验 ArtifactResolve 的协议属性与签名。默认请求必须携带由
+// SignatureVerifier 可校验的 XML 签名；仅 IdentityProviderConfig.AllowUnsignedArtifactResolve 接受
+// 未签名消息。
 func (idp *IdentityProvider) validateArtifactResolve(ctx context.Context, body []byte, payload *xml.Node, request *ArtifactResolve, now time.Time) error {
 	if request.ID == "" {
 		return errs.Detail(ErrInvalidRequest, "ArtifactResolve ID is missing | 缺少 ArtifactResolve ID")
@@ -133,7 +138,10 @@ func (idp *IdentityProvider) validateArtifactResolve(ctx context.Context, body [
 		if err := verifyEmbeddedSignature(ctx, idp.config.SignatureVerifier, body, payload, request.ID); err != nil {
 			return err
 		}
-	} else if idp.config.WantArtifactResolveSigned {
+	} else if !idp.config.AllowUnsignedArtifactResolve || idp.config.WantArtifactResolveSigned {
+		// The zero value fails closed: an ArtifactResolve must prove its origin with an XML
+		// signature unless the deployment explicitly opts in to unsigned compatibility mode. |
+		// 零值失败关闭：除非部署显式选择未签名兼容模式，ArtifactResolve 必须以 XML 签名证明来源。
 		return errs.Detail(ErrInvalidSignature, "ArtifactResolve is not signed | ArtifactResolve 未签名")
 	}
 	return nil

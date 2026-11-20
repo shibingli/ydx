@@ -547,8 +547,9 @@ func TestServiceSessionOutlivesTicket(t *testing.T) {
 // 覆盖注册表所有权默认值。
 func TestServerOwnedSessionRegistry(t *testing.T) {
 	server, err := NewServer(ServerConfig{
-		Issuer:        testIssuer,
-		Authenticator: AuthenticatorFunc(testAuthenticator),
+		AllowAnyService: true,
+		Issuer:          testIssuer,
+		Authenticator:   AuthenticatorFunc(testAuthenticator),
 	})
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
@@ -569,9 +570,10 @@ func TestServerOwnedSessionRegistry(t *testing.T) {
 	store := NewMemoryTicketStore()
 	t.Cleanup(store.Stop)
 	server, err = NewServer(ServerConfig{
-		Issuer:        testIssuer,
-		Authenticator: AuthenticatorFunc(testAuthenticator),
-		TicketStore:   store,
+		AllowAnyService: true,
+		Issuer:          testIssuer,
+		Authenticator:   AuthenticatorFunc(testAuthenticator),
+		TicketStore:     store,
 	})
 	if err != nil {
 		t.Fatalf("NewServer with store: %v", err)
@@ -584,6 +586,7 @@ func TestServerOwnedSessionRegistry(t *testing.T) {
 	registry := NewMemoryServiceSessionRegistry()
 	t.Cleanup(func() { _ = registry.Close() })
 	server, err = NewServer(ServerConfig{
+		AllowAnyService: true,
 		Issuer:          testIssuer,
 		Authenticator:   AuthenticatorFunc(testAuthenticator),
 		SessionRegistry: registry,

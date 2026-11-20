@@ -240,3 +240,13 @@ func TestRPRejectsStatusWithoutCode(t *testing.T) {
 		t.Fatalf("successful sign-out: %v", err)
 	}
 }
+
+// TestRPRejectsUnsignedSAMLByDefault pins that an RP without a verifier cannot be constructed
+// unless AllowUnsigned is explicit; otherwise a forged unsigned assertion would be accepted. |
+// TestRPRejectsUnsignedSAMLByDefault 固化：没有校验器时，除非显式 AllowUnsigned，RP 不能被构造；
+// 否则伪造的未签名断言会被接受。
+func TestRPRejectsUnsignedSAMLByDefault(t *testing.T) {
+	if _, err := NewRelyingParty(RelyingPartyConfig{Realm: testRealm, ReplyURL: testReply}); !errors.Is(err, ErrInvalidConfig) {
+		t.Fatalf("unsigned default err = %v, 期望 ErrInvalidConfig | want ErrInvalidConfig", err)
+	}
+}

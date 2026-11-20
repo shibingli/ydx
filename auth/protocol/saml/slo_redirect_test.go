@@ -118,10 +118,11 @@ func newRedirectSLOProvider(t *testing.T, verifier RedirectVerifier, requireSign
 		t.Fatalf("sp: %v", err)
 	}
 	idp, err := NewIdentityProvider(IdentityProviderConfig{
-		EntityID: "https://idp.example/metadata",
-		SSOURL:   "https://idp.example/sso",
-		SLOURL:   "https://idp.example/slo",
-		Store:    NewMemoryStore(),
+		AllowUnregisteredACS: true,
+		EntityID:             "https://idp.example/metadata",
+		SSOURL:               "https://idp.example/sso",
+		SLOURL:               "https://idp.example/slo",
+		Store:                NewMemoryStore(),
 		Authenticator: AuthenticatorFunc(func(context.Context, http.ResponseWriter, *http.Request, *AuthnRequest) (*auth.Principal, error) {
 			return &auth.Principal{Subject: "alice"}, nil
 		}),
@@ -282,6 +283,7 @@ func TestSLORedirectSignedOnlyAcceptsSignedMessages(t *testing.T) {
 			},
 		}
 		idp, err := NewIdentityProvider(IdentityProviderConfig{
+			AllowUnregisteredACS:     true,
 			EntityID:                 "https://idp.example/metadata",
 			SSOURL:                   "https://idp.example/sso",
 			SLOURL:                   "https://idp.example/slo",
@@ -322,6 +324,7 @@ func TestSLORedirectSignedOnlyAcceptsSignedMessages(t *testing.T) {
 	t.Run("idp logout response", func(t *testing.T) {
 		spMetadata := &EntityDescriptor{EntityID: "https://sp.example/metadata", SPSSODescriptor: &SPSSODescriptor{}}
 		idp, err := NewIdentityProvider(IdentityProviderConfig{
+			AllowUnregisteredACS:     true,
 			EntityID:                 "https://idp.example/metadata",
 			SSOURL:                   "https://idp.example/sso",
 			SLOURL:                   "https://idp.example/slo",

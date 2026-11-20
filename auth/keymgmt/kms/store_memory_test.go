@@ -84,6 +84,48 @@ func TestMemoryStoreAliasLifecycle(t *testing.T) {
 	}
 }
 
+// TestMemoryStoreIDAliasExclusion pins that identifiers and aliases never shadow each other. |
+// TestMemoryStoreIDAliasExclusion 固化标识与别名互不遮蔽。
+func TestMemoryStoreIDAliasExclusion(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemoryStore()
+	if err := store.CreateKey(ctx, testKey("k1", "alias-1")); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CreateKey(ctx, testKey("alias-1", "")); !errors.Is(err, ErrAliasExists) {
+		t.Fatalf("id equal to existing alias err = %v, want ErrAliasExists", err)
+	}
+	if err := store.CreateKey(ctx, testKey("k2", "k1")); !errors.Is(err, ErrAliasExists) {
+		t.Fatalf("alias equal to existing id err = %v, want ErrAliasExists", err)
+	}
+	if err := store.CreateKey(ctx, testKey("k3", "k3")); !errors.Is(err, ErrAliasExists) {
+		t.Fatalf("alias equal to its own id err = %v, want ErrAliasExists", err)
+	}
+	if err := store.CreateKey(ctx, testKey("k2", "alias-2")); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetAlias(ctx, "k2", "k1"); !errors.Is(err, ErrAliasExists) {
+		t.Fatalf("SetAlias alias equal to existing id err = %v, want ErrAliasExists", err)
+	}
+	if err := store.SetAlias(ctx, "k1", "k1"); !errors.Is(err, ErrAliasExists) {
+		t.Fatalf("SetAlias alias equal to its key id err = %v, want ErrAliasExists", err)
+	}
+	if err := store.SetAlias(ctx, "fresh", "k2"); err != nil {
+		t.Fatalf("SetAlias fresh: %v", err)
+	}
+	if id, err := store.ResolveAlias(ctx, "fresh"); err != nil || id != "k2" {
+		t.Fatalf("ResolveAlias fresh = %q, %v, want k2", id, err)
+	}
+	updated, err := store.GetKey(ctx, "k2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated.Alias = "k1"
+	if err := store.UpdateKey(ctx, updated); !errors.Is(err, ErrAliasExists) {
+		t.Fatalf("UpdateKey alias equal to existing id err = %v, want ErrAliasExists", err)
+	}
+}
+
 func TestMemoryStoreOptimisticConcurrency(t *testing.T) {
 	ctx := context.Background()
 	store := NewMemoryStore()

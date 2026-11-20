@@ -71,9 +71,10 @@ func TestSAMLXMLDSigRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	idp, err := NewIdentityProvider(IdentityProviderConfig{
-		EntityID: "https://idp.example/metadata",
-		SSOURL:   "https://idp.example/sso",
-		Store:    NewMemoryStore(),
+		AllowUnregisteredACS: true,
+		EntityID:             "https://idp.example/metadata",
+		SSOURL:               "https://idp.example/sso",
+		Store:                NewMemoryStore(),
 		Authenticator: AuthenticatorFunc(func(context.Context, http.ResponseWriter, *http.Request, *AuthnRequest) (*auth.Principal, error) {
 			return &auth.Principal{Subject: "signed-user", Email: "signed@example.com", AuthTime: time.Now().UTC()}, nil
 		}),

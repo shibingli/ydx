@@ -213,6 +213,9 @@ func newTestAD(t *testing.T, mock *adMockServer, mutate ...func(*ADConfig)) *Act
 		BindPassword: adTestServicePassword,
 		Timeout:      5 * time.Second,
 		DialTimeout:  5 * time.Second,
+		// The mock listener is plaintext; opt out of the TLS requirement explicitly. |
+		// 模拟监听器是明文；显式关闭 TLS 要求。
+		AllowInsecureLDAP: true,
 	}
 	for _, apply := range mutate {
 		apply(&cfg)

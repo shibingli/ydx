@@ -39,6 +39,7 @@ func TestSPAuthnRequestAndIdPResponse(t *testing.T) {
 		IDPMetadata:       testMetadata(),
 		Store:             spStore,
 		AllowIDPInitiated: false,
+		AllowUnsigned:     true,
 	})
 	if err != nil {
 		t.Fatalf("sp: %v", err)
@@ -68,9 +69,10 @@ func TestSPAuthnRequestAndIdPResponse(t *testing.T) {
 
 	idpStore := NewMemoryStore()
 	idp, err := NewIdentityProvider(IdentityProviderConfig{
-		EntityID: "https://idp.example/metadata",
-		SSOURL:   "https://idp.example/sso",
-		Store:    idpStore,
+		AllowUnregisteredACS: true,
+		EntityID:             "https://idp.example/metadata",
+		SSOURL:               "https://idp.example/sso",
+		Store:                idpStore,
 		Authenticator: AuthenticatorFunc(func(context.Context, http.ResponseWriter, *http.Request, *AuthnRequest) (*auth.Principal, error) {
 			return &auth.Principal{
 				Subject:     "user-1",

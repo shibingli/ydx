@@ -207,17 +207,18 @@ func TestProxyTicketFlow(t *testing.T) {
 	}))
 	defer callback.Close()
 	pgtURL := callback.URL + "/pgt?existing=1"
+	serviceURL := callback.URL + "/service"
 
 	server, store, _ := newTestServer(t, func(config *ServerConfig) {
 		config.ServiceRegistry = NewAllowAllServiceRegistry()
 		config.AllowInsecurePGTCallback = true
 	})
 	handler := newTestRouter(t, server)
-	tgt, st := issueTestTickets(t, server, testAppService)
+	tgt, st := issueTestTickets(t, server, serviceURL)
 
 	extra := url.Values{}
 	extra.Set("pgtUrl", pgtURL)
-	recorder := serve(t, handler, http.MethodGet, validateURL("serviceValidate", st.ID, testAppService, extra), nil)
+	recorder := serve(t, handler, http.MethodGet, validateURL("serviceValidate", st.ID, serviceURL, extra), nil)
 	body := recorder.Body.String()
 	if !strings.Contains(body, "<cas:authenticationSuccess>") {
 		t.Fatalf("validation with pgtUrl failed: %s", body)
@@ -305,15 +306,16 @@ func TestPGTCallbackFailureRevokesTicket(t *testing.T) {
 		w.WriteHeader(http.StatusInternalServerError)
 	}))
 	defer callback.Close()
+	serviceURL := callback.URL + "/service"
 	server, store, _ := newTestServer(t, func(config *ServerConfig) {
 		config.ServiceRegistry = NewAllowAllServiceRegistry()
 		config.AllowInsecurePGTCallback = true
 	})
 	handler := newTestRouter(t, server)
-	tgt, st := issueTestTickets(t, server, testAppService)
+	tgt, st := issueTestTickets(t, server, serviceURL)
 	extra := url.Values{}
 	extra.Set("pgtUrl", callback.URL+"/pgt")
-	recorder := serve(t, handler, http.MethodGet, validateURL("serviceValidate", st.ID, testAppService, extra), nil)
+	recorder := serve(t, handler, http.MethodGet, validateURL("serviceValidate", st.ID, serviceURL, extra), nil)
 	if !strings.Contains(recorder.Body.String(), `code="INVALID_PROXY_CALLBACK"`) {
 		t.Fatalf("body = %s", recorder.Body.String())
 	}
@@ -337,6 +339,74 @@ func TestPGTRequiresHTTPS(t *testing.T) {
 	recorder := serve(t, handler, http.MethodGet, validateURL("serviceValidate", st.ID, testAppService, extra), nil)
 	if !strings.Contains(recorder.Body.String(), `code="INVALID_PROXY_CALLBACK"`) {
 		t.Fatalf("body = %s", recorder.Body.String())
+	}
+}
+
+// TestPGTURLMustMatchServiceOrigin pins that a pgtUrl callback is only performed on the origin of
+// the validated service, so a service cannot turn validation into an SSRF primitive. |
+// TestPGTURLMustMatchServiceOrigin 固化 pgtUrl 回调只能发生在已校验服务的同源地址，服务无法把校验
+// 变成 SSRF 原语。
+func TestPGTURLMustMatchServiceOrigin(t *testing.T) {
+	hits := make(chan struct{}, 4)
+	callback := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits <- struct{}{}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer callback.Close()
+	server, _, _ := newTestServer(t, func(config *ServerConfig) {
+		config.ServiceRegistry = NewAllowAllServiceRegistry()
+		config.AllowInsecurePGTCallback = true
+	})
+	handler := newTestRouter(t, server)
+
+	_, st := issueTestTickets(t, server, testAppService)
+	extra := url.Values{"pgtUrl": {callback.URL + "/pgt"}}
+	recorder := serve(t, handler, http.MethodGet, validateURL("serviceValidate", st.ID, testAppService, extra), nil)
+	if !strings.Contains(recorder.Body.String(), `code="INVALID_PROXY_CALLBACK"`) {
+		t.Fatalf("cross-origin body = %s", recorder.Body.String())
+	}
+	select {
+	case <-hits:
+		t.Fatal("cross-origin pgtUrl received an external request")
+	default:
+	}
+
+	serviceURL := callback.URL + "/service"
+	_, st = issueTestTickets(t, server, serviceURL)
+	recorder = serve(t, handler, http.MethodGet, validateURL("serviceValidate", st.ID, serviceURL, extra), nil)
+	if !strings.Contains(recorder.Body.String(), "<cas:authenticationSuccess>") {
+		t.Fatalf("same-origin body = %s", recorder.Body.String())
+	}
+	select {
+	case <-hits:
+	case <-time.After(2 * time.Second):
+		t.Fatal("same-origin pgtUrl callback was not called")
+	}
+
+	httpsDefault, err := url.Parse("https://example.com/callback")
+	if err != nil {
+		t.Fatal(err)
+	}
+	httpsExplicit, err := url.Parse("https://example.com:443/callback")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !sameOrigin(httpsDefault, httpsExplicit) {
+		t.Fatal("default https port is not normalized")
+	}
+	otherScheme, err := url.Parse("http://example.com/callback")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sameOrigin(httpsDefault, otherScheme) {
+		t.Fatal("different schemes matched as one origin")
+	}
+	otherPort, err := url.Parse("https://example.com:8443/callback")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sameOrigin(httpsDefault, otherPort) {
+		t.Fatal("different ports matched as one origin")
 	}
 }
 

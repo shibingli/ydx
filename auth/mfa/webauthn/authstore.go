@@ -62,8 +62,12 @@ const (
 // AuthCredentialStore adapts an auth.CredentialStore to CredentialStore. | AuthCredentialStore 把 auth.CredentialStore 适配为 CredentialStore。
 //
 // Only auth.CredentialWebAuthn records are read or written. See the CredentialData* constants for the
-// persisted Data layout. | 仅读取与写入 auth.CredentialWebAuthn 记录。持久化 Data 布局见
-// CredentialData* 常量。
+// persisted Data layout. Save writes the factor directly to auth.CredentialStore and therefore does
+// not update auth.User.MFAEnabled; auth.Service treats any enabled non-password credential as an
+// enrolled factor when deciding whether MFA is required. | 仅读取与写入 auth.CredentialWebAuthn
+// 记录。持久化 Data 布局见 CredentialData* 常量。Save 直接把因素写入 auth.CredentialStore，因此
+// 不会更新 auth.User.MFAEnabled；auth.Service 在判断是否需要 MFA 时会把任何已启用的非口令凭据
+// 视为已登记因素。
 type AuthCredentialStore struct {
 	store auth.CredentialStore
 	mu    sync.Mutex

@@ -721,7 +721,12 @@ func deriveKeyBlock(keys []KeyBlock, method DerivationMethod, params DerivationP
 		}
 	case DerivationMethodPBKDF2:
 		iterations := params.IterationCount
-		if iterations <= 0 {
+		if iterations < 0 || iterations > maxPBKDF2Iterations {
+			return KeyBlock{}, errs.Detail(ErrInvalidRequest,
+				"PBKDF2 iteration count %[1]d must be between 0 and %[2]d | PBKDF2 迭代计数 %[1]d 必须在 0 到 %[2]d 之间",
+				iterations, maxPBKDF2Iterations)
+		}
+		if iterations == 0 {
 			iterations = 10000
 		}
 		salt := params.Salt

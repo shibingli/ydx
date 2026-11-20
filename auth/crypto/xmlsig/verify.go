@@ -38,6 +38,11 @@ type VerifyOptions struct {
 	// AllowedDigestMethods overrides the default DigestMethod allowlist. SHA-1 must be listed
 	// explicitly. | AllowedDigestMethods 覆盖默认 DigestMethod 允许列表。SHA-1 必须显式列出。
 	AllowedDigestMethods []string
+	// AllowedEKUs lists the extended key usages accepted on signer certificates. A certificate
+	// with no extended key usage is always accepted; nil selects Any, EmailProtection, ClientAuth
+	// and CodeSigning. | AllowedEKUs 列出签名者证书接受的扩展密钥用途。无扩展密钥用途的证书始终
+	// 接受；nil 选择 Any、EmailProtection、ClientAuth 与 CodeSigning。
+	AllowedEKUs []x509.ExtKeyUsage
 	// ClockSkew tolerates certificate NotBefore/NotAfter drift. | ClockSkew 容忍证书
 	// NotBefore/NotAfter 的时间偏差。
 	ClockSkew time.Duration
@@ -363,7 +368,7 @@ func verifySignatureValue(ps *parsedSignature, signedInfo []byte, opts VerifyOpt
 				continue
 			}
 		}
-		if err := validateCertificate(cert, opts.Roots, intermediates, now, opts.ClockSkew); err != nil {
+		if err := validateCertificate(cert, opts.Roots, intermediates, now, opts.ClockSkew, opts.AllowedEKUs); err != nil {
 			lastCertErr = err
 			continue
 		}
