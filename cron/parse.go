@@ -462,6 +462,13 @@ func parseTerm(term string, min, max int, nameFn func(string) (int, bool)) (int,
 		}
 		step = n
 		hasStep = true
+		// A step larger than the field span selects only the first value. Capping it here
+		// prevents `value += step` from overflowing into a negative index or an endless loop. |
+		// 大于字段跨度的 step 只选择第一个值。在此封顶可避免 `value += step` 溢出为负下标或
+		// 无限循环。
+		if span := max - min + 1; step > span {
+			step = span
+		}
 	}
 
 	var lo, hi int

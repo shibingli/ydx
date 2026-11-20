@@ -506,3 +506,27 @@ func TestNextHasNoAllocations(t *testing.T) {
 		t.Fatalf("Next allocated %v times per run, want 0 | 热路径产生分配", allocs)
 	}
 }
+
+// TestParseHugeStepDoesNotPanic pins that an oversized step cannot overflow the year/index
+// arithmetic and panic. | TestParseHugeStepDoesNotPanic 固化超大 step 不会让年份/下标算术溢出并
+// panic。
+func TestParseHugeStepDoesNotPanic(t *testing.T) {
+	specs := []string{
+		"0 0 0 1 1 * */9223372036854775807",
+		"0 0 0 1 1 * */1000000000",
+		"*/9223372036854775807 * * * * *",
+	}
+	for _, spec := range specs {
+		spec := spec
+		t.Run(spec, func(t *testing.T) {
+			defer func() {
+				if rec := recover(); rec != nil {
+					t.Fatalf("Parse(%q) panicked: %v", spec, rec)
+				}
+			}()
+			if _, err := Parse(spec); err != nil {
+				t.Logf("Parse(%q) rejected: %v", spec, err)
+			}
+		})
+	}
+}
