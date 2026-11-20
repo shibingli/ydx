@@ -44,7 +44,9 @@ func (b *Builder) AddTypeAnnotations(ta *TypeAnnotations) {
 		b.doc.Components.Schemas = map[string]*Schema{}
 	}
 	for _, name := range sortedKeys(ta.Schemas) {
-		applySchemaAnnotation(b.ensureSchema(name), ta.Schemas[name])
+		sa := ta.Schemas[name]
+		b.addTypeAlias(sa.GoName, sa.Package, name)
+		applySchemaAnnotation(b.ensureSchema(name), sa)
 		b.markAnnotated(name)
 	}
 	for _, name := range sortedKeys(ta.Enums) {
@@ -87,6 +89,7 @@ func RegisterSchemaWithAnnotations(b *Builder, name string, v any, ta *TypeAnnot
 		return ref
 	}
 	if sa, ok := ta.Schemas[name]; ok {
+		b.addTypeAlias(sa.GoName, sa.Package, name)
 		applySchemaAnnotation(b.ensureSchema(name), sa)
 		b.markAnnotated(name)
 	}

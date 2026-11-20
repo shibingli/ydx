@@ -245,6 +245,9 @@ func TestParseSchemaAnnotationFromStruct(t *testing.T) {
 	if sa.Name != "User" {
 		t.Errorf("name = %q, want User | @Name 应为 User", sa.Name)
 	}
+	if sa.GoName != "User" || sa.Package != "model" {
+		t.Errorf("go name = %q package = %q | 应记录 Go 类型名与声明包名", sa.GoName, sa.Package)
+	}
 	if sa.Description != "系统用户账号 | A system user account" {
 		t.Errorf("description = %q | @Description 应保留完整中英文本", sa.Description)
 	}

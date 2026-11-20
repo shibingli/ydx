@@ -6,6 +6,8 @@ import (
 	"testing"
 
 	"github.com/spf13/afero"
+
+	"github.com/shibingli/ydx/json"
 )
 
 // annotatedSource is a fake handler file written into a memory file system. | annotatedSource 是写入内存文件系统的假处理器源码。
@@ -151,6 +153,37 @@ func TestParseAnnotationsFromSource(t *testing.T) {
 	}
 }
 
+// TestAnnotationResponseSchemaSurvivesJSONRoundTrip verifies that the resolved response
+// schema survives the metadata JSON round trip used by generated annotation bundles. |
+// TestAnnotationResponseSchemaSurvivesJSONRoundTrip 验证解析后的响应 Schema 能在生成注解包
+// 使用的元数据 JSON 往返后保留。
+func TestAnnotationResponseSchemaSurvivesJSONRoundTrip(t *testing.T) {
+	annots, err := ParseAnnotations(memFSWithAnnotations(t), []string{"/api"})
+	if err != nil {
+		t.Fatalf("ParseAnnotations: %v | 解析注解失败", err)
+	}
+	raw, err := json.Marshal(annots["GET /users/{id}"])
+	if err != nil {
+		t.Fatalf("marshal: %v | 序列化失败", err)
+	}
+	var decoded Annotation
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		t.Fatalf("unmarshal: %v | 反序列化失败", err)
+	}
+	op := decoded.operation("/users/{id}", nil)
+	response, ok := op.Responses["200"]
+	if !ok {
+		t.Fatalf("200 response missing | 缺少 200 响应: %+v", op.Responses)
+	}
+	media, ok := response.Content["application/json"]
+	if !ok {
+		t.Fatalf("200 response lost its content | 200 响应丢失 content: %+v", response)
+	}
+	if media.Schema == nil || media.Schema.Ref != "#/components/schemas/model.User" {
+		t.Fatalf("schema = %+v | 往返后 Schema 应保留 model.User 引用", media.Schema)
+	}
+}
+
 func TestCollectFromSourceReport(t *testing.T) {
 	report, err := CollectFromSource(memFSWithAnnotations(t), []string{"/api"})
 	if err != nil {
@@ -284,7 +317,7 @@ func TestParseResponsesDescriptionOnlyAndSpacedCodes(t *testing.T) {
 	if len(desc) != 1 {
 		t.Fatalf("description-only response count = %d", len(desc))
 	}
-	if desc[0].Code != 204 || desc[0].Ref != "" || desc[0].schema != nil || desc[0].Description != "No Content" {
+	if desc[0].Code != 204 || desc[0].Ref != "" || desc[0].Schema != nil || desc[0].Description != "No Content" {
 		t.Fatalf("description-only response = %+v", desc[0])
 	}
 

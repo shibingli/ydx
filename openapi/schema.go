@@ -378,6 +378,10 @@ type Builder struct {
 	// registered lists the names passed to RegisterSchema, in call order. | registered 按调用顺序
 	// 记录传给 RegisterSchema 的名字。
 	registered []string
+	// aliases maps Go type references onto annotated component names; nil until a type
+	// annotation renames its Go type through @Name. | aliases 把 Go 类型引用映射到注解组件名；
+	// 只有在类型注解通过 @Name 重命名 Go 类型后才会初始化。
+	aliases map[string]typeAlias
 }
 
 // routeRef locates a registered operation inside the document. | routeRef 定位文档中已注册的操作。
@@ -503,9 +507,19 @@ func (b *Builder) RegisterSchema(name string, v any) string {
 
 // Build returns the assembled document. | Build 返回装配好的文档。
 //
+// When type annotations carried Go names that differ from their @Name, references written
+// with the Go name are rewritten onto the annotated components and references that no
+// annotation could resolve are materialized as empty permissive schemas. | 当类型注解的 Go 名
+// 与 @Name 不同时，以 Go 名书写的引用会被改写到注解组件；任何注解都无法解析的引用会以空
+// （宽松）Schema 补齐。
+//
 // The document shares its maps with the builder, so it must not be mutated after the
 // build completes. | 该文档与构建器共享底层 map，构建完成后不应再修改。
 func (b *Builder) Build() *Document {
+	if b == nil {
+		return nil
+	}
+	b.resolveSchemaAliases()
 	return b.doc
 }
 

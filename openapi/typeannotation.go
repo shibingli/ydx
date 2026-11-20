@@ -95,6 +95,14 @@ type SchemaAnnotation struct {
 	// Name is the @Name value, falling back to the Go type name. | Name 为 @Name 取值，缺省时
 	// 回退到 Go 类型名。
 	Name string
+	// GoName is the declared Go type name, which differs from Name when @Name renames the
+	// component; it feeds the Go name to @Name alias used to repair references. | GoName 为声明的
+	// Go 类型名，@Name 重命名组件时与 Name 不同；它用于建立 Go 名到 @Name 的别名以修正引用。
+	GoName string
+	// Package is the declared package name of the type, used to build package qualified
+	// aliases such as domain.User. | Package 为类型的声明包名，用于构造 domain.User 这类带包
+	// 限定的别名。
+	Package string
 	// Description is the @Description text, falling back to the doc prose. | Description 为
 	// @Description 文本，缺省时回退到 doc 正文。
 	Description string
@@ -245,6 +253,10 @@ func (t *TypeAnnotations) TypeNames() []string {
 // collectFile records the annotated declarations of one parsed file. | collectFile 记录单个已解析
 // 文件中带注解的声明。
 func (t *TypeAnnotations) collectFile(fset *token.FileSet, file *ast.File) {
+	packageName := ""
+	if file != nil && file.Name != nil {
+		packageName = file.Name.Name
+	}
 	for _, decl := range file.Decls {
 		gd, ok := decl.(*ast.GenDecl)
 		if !ok {
@@ -252,7 +264,7 @@ func (t *TypeAnnotations) collectFile(fset *token.FileSet, file *ast.File) {
 		}
 		switch gd.Tok {
 		case token.TYPE:
-			t.collectTypes(fset, gd)
+			t.collectTypes(fset, packageName, gd)
 		case token.CONST:
 			t.collectConsts(fset, gd)
 		case token.VAR:
@@ -263,7 +275,7 @@ func (t *TypeAnnotations) collectFile(fset *token.FileSet, file *ast.File) {
 
 // collectTypes records the annotated struct types of one type declaration. | collectTypes
 // 记录一条类型声明中带注解的结构体类型。
-func (t *TypeAnnotations) collectTypes(fset *token.FileSet, gd *ast.GenDecl) {
+func (t *TypeAnnotations) collectTypes(fset *token.FileSet, packageName string, gd *ast.GenDecl) {
 	for _, spec := range gd.Specs {
 		ts, ok := spec.(*ast.TypeSpec)
 		if !ok || ts.Name == nil {
@@ -279,6 +291,8 @@ func (t *TypeAnnotations) collectTypes(fset *token.FileSet, gd *ast.GenDecl) {
 		}
 		sa := SchemaAnnotation{
 			Name:        doc.first("name"),
+			GoName:      ts.Name.Name,
+			Package:     packageName,
 			Description: doc.description(),
 			Example:     doc.first("example"),
 			Fields:      map[string]FieldAnnotation{},

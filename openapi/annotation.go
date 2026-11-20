@@ -122,10 +122,12 @@ type AnnotationParam struct {
 // AnnotationResponse is one @Success or @Failure declaration. | AnnotationResponse 是一条 @Success 或 @Failure 声明。
 type AnnotationResponse struct {
 
-	// schema is the fully resolved schema of the response, including array shapes that
-	// Type and Ref cannot express. | schema 是响应完全解析后的 Schema，涵盖 Type 与 Ref
-	// 无法表达的数组成员类型。
-	schema *Schema
+	// Schema is the fully resolved schema of the response, including array shapes that Type
+	// and Ref cannot express. The field is exported and serialized so that annotations keep
+	// their schemas across the JSON round trip through generated metadata files. | Schema 是
+	// 响应完全解析后的 Schema，涵盖 Type 与 Ref 无法表达的数组成员类型。该字段导出并参与序列化，
+	// 使注解经过生成元数据文件的 JSON 往返后仍保留 Schema。
+	Schema *Schema `json:"schema,omitempty"`
 	// Type is the declared type token. | Type 为声明的类型标记。
 	Type string
 	// Ref is the component reference derived from "{object} X" style annotations, empty
@@ -372,12 +374,12 @@ func (a Annotation) responses() map[string]Response {
 		// to JSON the same way request bodies already do. | 带类型的响应缺少 @Produce 时会完全丢掉
 		// schema；与请求体一样默认成 JSON。
 		media := a.Produce
-		if len(media) == 0 && r.schema != nil {
+		if len(media) == 0 && r.Schema != nil {
 			media = defaultMedia(media)
 		}
 		out[code] = Response{
 			Description: responseDescription(r),
-			Content:     contentFor(media, r.schema, exampleValue(r.Example)),
+			Content:     contentFor(media, r.Schema, exampleValue(r.Example)),
 			Headers:     a.headersFor(code),
 		}
 	}
@@ -1138,7 +1140,7 @@ func parseResponses(args string) []AnnotationResponse {
 
 	var out []AnnotationResponse
 	for _, code := range codes {
-		res := AnnotationResponse{Type: token, Description: description, CodeText: code, schema: schema}
+		res := AnnotationResponse{Type: token, Description: description, CodeText: code, Schema: schema}
 		if n, err := strconv.Atoi(code); err == nil {
 			res.Code = n
 		}

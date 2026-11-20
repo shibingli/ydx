@@ -449,11 +449,11 @@ func Upload() {}
 
 func TestAnnotationFileTokenBecomesBinary(t *testing.T) {
 	a := parseResponses(`200 {file} file "download | 下载"`)
-	if len(a) != 1 || a[0].schema == nil {
+	if len(a) != 1 || a[0].Schema == nil {
 		t.Fatalf("responses = %+v | 响应解析失败", a)
 	}
-	if a[0].schema.Type != "string" || a[0].schema.Format != "binary" {
-		t.Fatalf("file schema = %+v | file 应生成 string/binary", a[0].schema)
+	if a[0].Schema.Type != "string" || a[0].Schema.Format != "binary" {
+		t.Fatalf("file schema = %+v | file 应生成 string/binary", a[0].Schema)
 	}
 	if a[0].Ref != "" {
 		t.Fatalf("file must not become a component ref | file 不应变成组件引用: %q", a[0].Ref)
