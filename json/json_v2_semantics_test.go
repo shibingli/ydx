@@ -200,3 +200,47 @@ func TestV2MarshalErrors(t *testing.T) {
 		}
 	}
 }
+
+// TestV2RejectsLoneSurrogates pins encoding/json/v2 semantics: an unpaired surrogate escape is a
+// syntax error unless AllowInvalidUTF8 permits the replacement, and a skipped value is validated
+// just like a decoded one. | TestV2RejectsLoneSurrogates 固化 encoding/json/v2 语义：孤立代理项转义
+// 属于语法错误，除非 AllowInvalidUTF8 允许替换；被跳过的值也要和实际解码的值一样接受校验。
+func TestV2RejectsLoneSurrogates(t *testing.T) {
+	docs := []string{
+		`"\ud800"`,
+		`"\ud800x"`,
+		`"\ud800\ud800"`,
+		`"\udc00"`,
+		`{"k":"\ud800"}`,
+		`{"a":1,"unknown":"\ud800"}`,
+	}
+	relaxed := jsonx.JoinOptions(jsonx.DefaultOptionsV2(), jsontext.AllowInvalidUTF8(true))
+	for _, doc := range docs {
+		var got any
+		gotErr := jsonx.Unmarshal([]byte(doc), &got, v2Defaults()...)
+		var want any
+		wantErr := stdjsonv2.Unmarshal([]byte(doc), &want)
+		if (gotErr != nil) != (wantErr != nil) {
+			t.Fatalf("%s: ydx err = %v, stdlib err = %v | 错误不一致", doc, gotErr, wantErr)
+		}
+		var relaxedVal any
+		if err := jsonx.Unmarshal([]byte(doc), &relaxedVal, relaxed); err != nil {
+			t.Fatalf("%s: AllowInvalidUTF8 should accept, got %v | 宽松模式应接受", doc, err)
+		}
+	}
+
+	type target struct {
+		A int `json:"a"`
+	}
+	var s target
+	gotErr := jsonx.Unmarshal([]byte(`{"a":1,"unknown":"\ud800"}`), &s, v2Defaults()...)
+	var want target
+	wantErr := stdjsonv2.Unmarshal([]byte(`{"a":1,"unknown":"\ud800"}`), &want)
+	if (gotErr != nil) != (wantErr != nil) {
+		t.Fatalf("skipped value: ydx err = %v, stdlib err = %v | 跳过值错误不一致", gotErr, wantErr)
+	}
+	var relaxedTarget target
+	if err := jsonx.Unmarshal([]byte(`{"a":1,"unknown":"\ud800"}`), &relaxedTarget, relaxed); err != nil {
+		t.Fatalf("skipped value: AllowInvalidUTF8 should accept, got %v | 宽松模式应接受", err)
+	}
+}

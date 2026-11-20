@@ -217,6 +217,52 @@ func TestDecoderTokenMatchesStdlib(t *testing.T) {
 	}
 }
 
+// TestDecoderTokenDepthLimit pins that Token enforces the same 10000-level nesting bound as
+// encoding/json, so a token consumer cannot be driven into unbounded recursion. |
+// TestDecoderTokenDepthLimit 固化 Token 与 encoding/json 相同的 10000 层嵌套上限，避免使用方被
+// 诱导进入无界递归。
+func TestDecoderTokenDepthLimit(t *testing.T) {
+	for _, depth := range []int{10000, 10001} {
+		doc := strings.Repeat("[", depth) + strings.Repeat("]", depth)
+		ourErr := drainYdxTokens(json.NewDecoder(strings.NewReader(doc)))
+		stdErr := drainStdTokens(stdjson.NewDecoder(strings.NewReader(doc)))
+		if (ourErr != nil) != (stdErr != nil) {
+			t.Fatalf("depth %d: ours err = %v, stdlib err = %v", depth, ourErr, stdErr)
+		}
+		if depth > 10000 {
+			if ourErr == nil || !strings.Contains(ourErr.Error(), "exceeded max depth") {
+				t.Fatalf("depth %d: err = %v, 期望 exceeded max depth", depth, ourErr)
+			}
+		}
+	}
+}
+
+// drainYdxTokens consumes dec until the first error, treating io.EOF as success. | drainYdxTokens
+// 消费 dec 直到首个错误，把 io.EOF 视为成功。
+func drainYdxTokens(dec *json.Decoder) error {
+	for {
+		if _, err := dec.Token(); err != nil {
+			if errors.Is(err, io.EOF) {
+				return nil
+			}
+			return err
+		}
+	}
+}
+
+// drainStdTokens is drainYdxTokens for encoding/json. | drainStdTokens 是 encoding/json 版本的
+// drainYdxTokens。
+func drainStdTokens(dec *stdjson.Decoder) error {
+	for {
+		if _, err := dec.Token(); err != nil {
+			if errors.Is(err, io.EOF) {
+				return nil
+			}
+			return err
+		}
+	}
+}
+
 // collectTokens drains a Decoder through Token and records each token and the InputOffset after
 // it. | collectTokens 通过 Token 抽干 Decoder，记录每个记号及其之后的 InputOffset。
 func collectTokens(d any, useNumber bool) ([]string, []int64, error) {

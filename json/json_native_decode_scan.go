@@ -354,6 +354,16 @@ func (d *decoder) invalidUTF8(offset int) error {
 	return &jsontext.SyntacticError{ByteOffset: int64(offset), Err: errors.New("invalid UTF-8")}
 }
 
+// invalidSurrogate builds the strict v2 error for an unpaired surrogate escape at offset. The v2
+// decoder agrees with encoding/json/v2: two distinct keys must not collapse into one replacement
+// character, because duplicate-name handling and field matching would then see a single name. |
+// invalidSurrogate 构造严格 v2 模式下 offset 处孤立代理项转义的错误。v2 解码器与
+// encoding/json/v2 一致：两个不同的键不得塌缩成同一个替换符，否则重复名判定与字段匹配只会看到
+// 一个名字。
+func (d *decoder) invalidSurrogate(offset int) error {
+	return &jsontext.SyntacticError{ByteOffset: int64(offset), Err: errors.New("invalid surrogate pair")}
+}
+
 // skipString validates one string token without allocating or decoding it. | skipString 在不分配、
 // 不解码的前提下校验一个字符串 token。
 func (d *decoder) skipString() error {
@@ -386,10 +396,28 @@ func (d *decoder) skipString() error {
 				if i+4 >= len(d.data) {
 					return syntaxErr("unfinished unicode escape | 未完成的 Unicode 转义")
 				}
-				if _, ok := parseHex4(d.data[i+1 : i+5]); !ok {
+				v, ok := parseHex4(d.data[i+1 : i+5])
+				if !ok {
 					return syntaxErr("invalid unicode escape | 非法 Unicode 转义")
 				}
+				escapeStart := i - 1
 				i += 4
+				if d.v2 != nil && !d.v2.allowInvalidUTF8 {
+					switch {
+					case v >= 0xDC00 && v <= 0xDFFF:
+						return d.invalidSurrogate(escapeStart)
+					case v >= 0xD800 && v <= 0xDBFF:
+						j := i + 1
+						if j+6 > len(d.data) || d.data[j] != '\\' || d.data[j+1] != 'u' {
+							return d.invalidSurrogate(escapeStart)
+						}
+						low, ok2 := parseHex4(d.data[j+2 : j+6])
+						if !ok2 || low < 0xDC00 || low > 0xDFFF {
+							return d.invalidSurrogate(escapeStart)
+						}
+						i = j + 5
+					}
+				}
 			default:
 				return syntaxErr("invalid escape character %q | 非法转义字符 %q", d.data[i], d.data[i])
 			}
@@ -428,6 +456,7 @@ func parseHex4(b []byte) (rune, bool) {
 }
 
 func (d *decoder) parseUnicodeEscape() (rune, error) {
+	escapeStart := d.pos - 2
 	if d.pos+4 > len(d.data) {
 		return 0, syntaxErr("unfinished unicode escape | 未完成的 Unicode 转义")
 	}
@@ -451,9 +480,15 @@ func (d *decoder) parseUnicodeEscape() (rune, error) {
 				}
 			}
 		}
+		if d.v2 != nil && !d.v2.allowInvalidUTF8 {
+			return 0, d.invalidSurrogate(escapeStart)
+		}
 		return '�', nil
 	}
 	if r >= 0xDC00 && r <= 0xDFFF {
+		if d.v2 != nil && !d.v2.allowInvalidUTF8 {
+			return 0, d.invalidSurrogate(escapeStart)
+		}
 		return '�', nil
 	}
 	return r, nil

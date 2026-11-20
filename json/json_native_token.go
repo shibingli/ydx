@@ -158,6 +158,13 @@ func (d *Decoder) valueToken(dec *decoder, parent *tokenFrame) (Token, error) {
 	}
 	switch c {
 	case '{', '[':
+		// Match encoding/json's scanner: the 10001st open container is rejected. Without this
+		// bound a token consumer can be driven into unbounded recursion even though Unmarshal
+		// itself is depth-limited. | 与 encoding/json 的扫描器一致：第 10001 个打开的容器被拒绝。
+		// 缺少该上限时，即使 Unmarshal 本身有深度限制，使用方仍可能被诱导进入无界递归。
+		if len(d.tokens) >= maxNestingDepth {
+			return nil, syntaxErr("exceeded max depth of %d | 嵌套深度超过上限 %d", maxNestingDepth, maxNestingDepth)
+		}
 		dec.pos++
 		d.tokens = append(d.tokens, tokenFrame{open: c})
 		return Delim(c), nil
