@@ -53,6 +53,7 @@ func Defaults(c *Config) {
 	// asynq: weighted queues and concurrency. | asynq：加权队列与并发度。
 	v.SetDefault("asynq.queues", "critical:3,default:2,low:1")
 	v.SetDefault("asynq.concurrency", 10)
+	v.SetDefault("asynq.max_payload_bytes", 1<<20)
 
 	// grpc: off by default, same-port h2c multiplexing mode. | grpc：默认关闭，同端口 h2c 分流模式。
 	v.SetDefault("grpc.enabled", false)

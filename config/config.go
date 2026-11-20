@@ -54,6 +54,10 @@ var (
 	ErrReadConfigFile = errs.New("config: failed to read config file | config：读取配置文件失败")
 	// ErrParseConfigFile indicates the config file content could not be parsed. | ErrParseConfigFile 表示无法解析配置文件内容。
 	ErrParseConfigFile = errs.New("config: failed to parse config file | config：解析配置文件失败")
+	// ErrWriteConfig indicates the configuration could not be written back to disk. | ErrWriteConfig 表示配置无法写回磁盘。
+	ErrWriteConfig = errs.New("config: failed to write config file | config：写入配置文件失败")
+	// ErrConfigExists indicates SafeWriteConfig found an existing target file. | ErrConfigExists 表示 SafeWriteConfig 的目标文件已存在。
+	ErrConfigExists = errs.New("config: config file already exists | config：配置文件已存在")
 )
 
 // Options describes the input parameters of a single Load; the zero value uses the framework's conventional defaults. | Options 描述一次 Load 的输入参数，零值即采用框架约定默认。
@@ -133,6 +137,10 @@ func Load(opts Options) (*Config, error) {
 	}
 
 	v := viper.New()
+	// Config files written through the write API are owner-readable only: they commonly
+	// carry credentials and DSNs. | 通过写 API 落盘的配置文件仅属主可读写：它们通常包含
+	// 凭据与 DSN。
+	v.SetConfigPermissions(0o600)
 	// Make viper's internal file operations (including WatchConfig re-reads) share the same filesystem as external reads. | 让 viper 内部的文件操作（含 WatchConfig 的重新读取）与外部读取共用同一文件系统。
 	v.SetFs(fsys)
 	v.SetEnvPrefix(prefix)
