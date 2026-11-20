@@ -4,7 +4,9 @@ package base64
 
 import (
 	"bytes"
+	stdbase64 "encoding/base64"
 	"errors"
+	"strings"
 	"testing"
 )
 
@@ -149,5 +151,63 @@ func TestAVX2AsmNoWritePastDecodedLen(t *testing.T) {
 				}
 			}
 		}
+	}
+}
+
+// TestDecodeMalformedPaddingTailCanary pins the invariant behind CVE-2026-114938 ("Java4Shell"):
+// a malformed input whose tail contains only padding must not make a SIMD decoder store past
+// DecodedLen. The HotSpot AVX-512 VBMI intrinsic computed a negative output length for inputs
+// such as "A"*64+"=" and executed a fully-enabled masked store into a DecodedLen-sized buffer.
+// Every enabled kernel is driven directly with a canary after DecodedLen. |
+// TestDecodeMalformedPaddingTailCanary 固化 CVE-2026-114938（"Java4Shell"）背后的不变量：尾部只含
+// padding 的畸形输入不得让 SIMD 解码器写到 DecodedLen 之后。HotSpot 的 AVX-512 VBMI 内联函数对
+// "A"*64+"=" 这类输入算出负的输出长度，并以全开掩码写入 DecodedLen 大小的缓冲区。这里直接驱动每个
+// 已启用的内核，并在 DecodedLen 之后放置 canary。
+func TestDecodeMalformedPaddingTailCanary(t *testing.T) {
+	inputs := []string{
+		strings.Repeat("A", 64) + "=",
+		strings.Repeat("A", 65) + "=",
+		strings.Repeat("A", 128) + "=",
+		strings.Repeat("A", 63) + "=",
+		strings.Repeat("A", 64) + "==",
+		strings.Repeat("A", 64) + "AB==",
+		strings.Repeat("A", 60) + "AB==",
+		strings.Repeat("A", 64) + "AA=A",
+		strings.Repeat("A", 64) + "====",
+		strings.Repeat("=", 64),
+	}
+	for _, in := range inputs {
+		ours, ourErr := StdEncoding.DecodeString(in)
+		want, wantErr := stdbase64.StdEncoding.DecodeString(in)
+		if !bytes.Equal(ours, want) || (ourErr != nil) != (wantErr != nil) {
+			t.Fatalf("%q: ours=(%q,%v) stdlib=(%q,%v) | 解码结果不一致", in, ours, ourErr, want, wantErr)
+		}
+		strict, strictErr := StdEncoding.Strict().DecodeString(in)
+		wantStrict, wantStrictErr := stdbase64.StdEncoding.Strict().DecodeString(in)
+		if !bytes.Equal(strict, wantStrict) || (strictErr != nil) != (wantStrictErr != nil) {
+			t.Fatalf("%q: strict=(%q,%v) stdlib=(%q,%v) | 严格解码结果不一致", in, strict, strictErr, wantStrict, wantStrictErr)
+		}
+	}
+	exercise := func(name string, decode func(dst, src []byte) (int, int)) {
+		t.Helper()
+		for _, in := range inputs {
+			need := StdEncoding.DecodedLen(len(in))
+			buf := make([]byte, need+64)
+			for i := need; i < len(buf); i++ {
+				buf[i] = 0x5A
+			}
+			decode(buf[:need], []byte(in))
+			for i := need; i < len(buf); i++ {
+				if buf[i] != 0x5A {
+					t.Fatalf("%s: %q wrote %d byte(s) past DecodedLen | 写入越过解码长度", name, in, i-need+1)
+				}
+			}
+		}
+	}
+	if !forceScalar && hasAVX2() {
+		exercise("avx2", func(dst, src []byte) (int, int) { return decodeSIMDAsm(dst, src, false, false) })
+	}
+	if !forceScalar && hasAVX512BW() {
+		exercise("avx512", func(dst, src []byte) (int, int) { return decodeSIMD512BW(dst, src, false, false) })
 	}
 }
