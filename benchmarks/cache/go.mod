@@ -10,7 +10,7 @@ require (
 	github.com/hashicorp/golang-lru/v2 v2.0.7
 	github.com/jellydator/ttlcache/v3 v3.4.1
 	github.com/patrickmn/go-cache v2.1.0+incompatible
-	github.com/shibingli/ydx/cache v0.1.20
+	github.com/shibingli/ydx/cache v0.1.21
 	github.com/shibingli/ydx/log v0.1.14
 )
 
@@ -25,7 +25,7 @@ require (
 	github.com/sagikazarmark/locafero v0.12.0 // indirect
 	github.com/shibingli/ydx/afs v0.1.8 // indirect
 	github.com/shibingli/ydx/base64 v0.1.15 // indirect
-	github.com/shibingli/ydx/config v0.1.10 // indirect
+	github.com/shibingli/ydx/config v0.1.11 // indirect
 	github.com/shibingli/ydx/errs v0.1.6 // indirect
 	github.com/shibingli/ydx/json v0.1.20 // indirect
 	github.com/shibingli/ydx/nodeid v0.1.6 // indirect

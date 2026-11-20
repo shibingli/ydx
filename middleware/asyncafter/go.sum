@@ -12,6 +12,8 @@ github.com/shibingli/ydx/log v0.1.14 h1:UvCgFPiSJC99vUzn8JaDNZf7WezvFhbrLMIY9ecr
 github.com/shibingli/ydx/log v0.1.14/go.mod h1:4XXz6bmahSRH8SgM+pkNDRBQjcKB64eoTBLqfwMX1fo=
 github.com/shibingli/ydx/middleware/accesslog v0.1.18 h1:tmGyub8I15lMagnisNXQjZfGy+39VqXbngruUc/gBek=
 github.com/shibingli/ydx/middleware/accesslog v0.1.18/go.mod h1:XfCEQTU/ESGlTF80Xg/Ei/1L4P2C2DaPN303zIB74oU=
+github.com/shibingli/ydx/middleware/accesslog v0.1.20 h1:jLhU0rTOY5/sDclsONdGwQ4tHJhO4U7SMD+rWMl8N0c=
+github.com/shibingli/ydx/middleware/accesslog v0.1.20/go.mod h1:jQC238e16rUoXK85t4HvrVH0L/D+vNPr0grTndXs8KU=
 github.com/shibingli/ydx/middleware/reqlog v0.1.16 h1:MGXVi05DD/vXiNodmV94xzyYvhReDI6z0bJvhnWih4s=
 github.com/shibingli/ydx/middleware/reqlog v0.1.16/go.mod h1:7WYse/F6Nk9g8/Wu7IzhQcKZHln1BNqdFGkRvDxC+uk=
 github.com/shibingli/ydx/middleware/requestid v0.1.17 h1:KWipoHUh11obiHJCfDfcjmBDOUsENnKhEAvkBi4QaN0=

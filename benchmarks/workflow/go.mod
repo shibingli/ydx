@@ -4,7 +4,7 @@ go 1.27.4
 
 require (
 	github.com/glebarez/sqlite v1.11.0
-	github.com/shibingli/ydx/workflow v0.1.9
+	github.com/shibingli/ydx/workflow v0.1.11
 	gorm.io/gorm v1.31.2
 )
 
@@ -31,8 +31,8 @@ require (
 	github.com/sagikazarmark/locafero v0.12.0 // indirect
 	github.com/shibingli/ydx/afs v0.1.8 // indirect
 	github.com/shibingli/ydx/base64 v0.1.15 // indirect
-	github.com/shibingli/ydx/config v0.1.10 // indirect
-	github.com/shibingli/ydx/cron v0.1.5 // indirect
+	github.com/shibingli/ydx/config v0.1.11 // indirect
+	github.com/shibingli/ydx/cron v0.1.7 // indirect
 	github.com/shibingli/ydx/errs v0.1.6 // indirect
 	github.com/shibingli/ydx/gorm v0.1.16 // indirect
 	github.com/shibingli/ydx/json v0.1.20 // indirect

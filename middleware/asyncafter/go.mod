@@ -6,7 +6,7 @@ require (
 	github.com/shibingli/ydx/errs v0.1.6
 	github.com/shibingli/ydx/json v0.1.20
 	github.com/shibingli/ydx/log v0.1.14
-	github.com/shibingli/ydx/middleware/accesslog v0.1.18
+	github.com/shibingli/ydx/middleware/accesslog v0.1.20
 	github.com/shibingli/ydx/middleware/reqlog v0.1.16
 	github.com/shibingli/ydx/middleware/requestid v0.1.17
 	github.com/shibingli/ydx/router v0.1.17

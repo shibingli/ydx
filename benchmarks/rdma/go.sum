@@ -8,5 +8,7 @@ github.com/shibingli/ydx/json v0.1.20 h1:ffp21mWYiXi9HrHo8jsXZH130wjKILusejkESeE
 github.com/shibingli/ydx/json v0.1.20/go.mod h1:NzzLpxptfu5GQquG8IZPIa9xzVDNWZkiJfnZd1+H/0o=
 github.com/shibingli/ydx/rdma v0.1.8 h1:6vRXbypIhr1UWvwKTMyEN6pi6LzUfqYFw8YpWhMqyyE=
 github.com/shibingli/ydx/rdma v0.1.8/go.mod h1:1MEuvDJuye15Ce5Bm8pRG8pqRnJxQIXKhLuNMYbeLzU=
+github.com/shibingli/ydx/rdma v0.1.9 h1:QHBKJLuZA3gRGPUMSisuUZ++KThRnUa9yqzHrkWw4hw=
+github.com/shibingli/ydx/rdma v0.1.9/go.mod h1:ogkTYe+yzy0jhsxacvz792lV+UA4cMauJzektHthHJ4=
 github.com/shibingli/ydx/sysinfo v0.1.6 h1:5SEHSqUdVDqAgLxk7xqI4S2bldiO0CDz5XjYUnfHYRY=
 github.com/shibingli/ydx/sysinfo v0.1.6/go.mod h1:HF5vZvUUidCMnOWPlYUC3sSjYT23COYXm55KP9cdsMc=

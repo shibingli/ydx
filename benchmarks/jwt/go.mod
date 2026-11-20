@@ -8,7 +8,7 @@ require (
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/kataras/jwt v0.3.0
 	github.com/lestrrat-go/jwx/v4 v4.5.0
-	github.com/shibingli/ydx/auth v0.1.6
+	github.com/shibingli/ydx/auth v0.1.9
 	github.com/shibingli/ydx/errs v0.1.6
 )
 

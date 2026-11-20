@@ -5,7 +5,7 @@ go 1.27.4
 require (
 	github.com/alicebob/miniredis/v2 v2.40.0
 	github.com/redis/go-redis/v9 v9.23.0
-	github.com/shibingli/ydx/auth v0.1.6
+	github.com/shibingli/ydx/auth v0.1.9
 	github.com/shibingli/ydx/base64 v0.1.15
 	github.com/shibingli/ydx/errs v0.1.6
 	github.com/shibingli/ydx/json v0.1.20
@@ -20,7 +20,7 @@ require (
 	github.com/pelletier/go-toml/v2 v2.4.3 // indirect
 	github.com/sagikazarmark/locafero v0.12.0 // indirect
 	github.com/shibingli/ydx/afs v0.1.8 // indirect
-	github.com/shibingli/ydx/config v0.1.10 // indirect
+	github.com/shibingli/ydx/config v0.1.11 // indirect
 	github.com/shibingli/ydx/guomi v0.1.4 // indirect
 	github.com/shibingli/ydx/log v0.1.14 // indirect
 	github.com/shibingli/ydx/protocol v0.1.7 // indirect

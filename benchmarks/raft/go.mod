@@ -5,7 +5,7 @@ go 1.27.4
 require (
 	github.com/hashicorp/raft v1.8.0
 	github.com/lni/dragonboat/v4 v4.0.0-20250723143628-076c7f6497dc
-	github.com/shibingli/ydx/raft v0.1.14
+	github.com/shibingli/ydx/raft v0.1.15
 	go.etcd.io/raft/v3 v3.7.0
 	google.golang.org/protobuf v1.36.12
 )
@@ -56,9 +56,9 @@ require (
 	github.com/shibingli/ydx/guomi v0.1.4 // indirect
 	github.com/shibingli/ydx/json v0.1.20 // indirect
 	github.com/shibingli/ydx/log v0.1.14 // indirect
-	github.com/shibingli/ydx/rdma v0.1.8 // indirect
+	github.com/shibingli/ydx/rdma v0.1.9 // indirect
 	github.com/shibingli/ydx/sysinfo v0.1.6 // indirect
-	github.com/shibingli/ydx/wal v0.3.5 // indirect
+	github.com/shibingli/ydx/wal v0.3.6 // indirect
 	github.com/valyala/fastrand v1.1.0 // indirect
 	github.com/valyala/histogram v1.2.0 // indirect
 	golang.org/x/crypto v0.58.0 // indirect

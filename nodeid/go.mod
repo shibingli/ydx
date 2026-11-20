@@ -3,7 +3,7 @@ module github.com/shibingli/ydx/nodeid
 go 1.27.4
 
 require (
-	github.com/shibingli/ydx/config v0.1.10
+	github.com/shibingli/ydx/config v0.1.11
 	github.com/shibingli/ydx/errs v0.1.6
 	golang.org/x/sys v0.50.0
 )

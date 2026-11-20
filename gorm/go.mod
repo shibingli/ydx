@@ -8,7 +8,7 @@ require (
 	github.com/godoes/gorm-dameng v0.7.2
 	github.com/jackc/pgx/v5 v5.12.0
 	github.com/shibingli/ydx/afs v0.1.8
-	github.com/shibingli/ydx/config v0.1.10
+	github.com/shibingli/ydx/config v0.1.11
 	github.com/shibingli/ydx/errs v0.1.6
 	github.com/shibingli/ydx/log v0.1.14
 	github.com/spf13/afero v1.15.0

@@ -3,7 +3,7 @@ module github.com/shibingli/ydx/wal/cronbackup
 go 1.27.4
 
 require (
-	github.com/shibingli/ydx/cron v0.1.5
+	github.com/shibingli/ydx/cron v0.1.7
 	github.com/shibingli/ydx/errs v0.1.6
 )
 
@@ -14,7 +14,7 @@ require (
 	github.com/sagikazarmark/locafero v0.12.0 // indirect
 	github.com/shibingli/ydx/afs v0.1.8 // indirect
 	github.com/shibingli/ydx/base64 v0.1.15 // indirect
-	github.com/shibingli/ydx/config v0.1.10 // indirect
+	github.com/shibingli/ydx/config v0.1.11 // indirect
 	github.com/shibingli/ydx/json v0.1.20 // indirect
 	github.com/shibingli/ydx/log v0.1.14 // indirect
 	github.com/shibingli/ydx/protocol v0.1.7 // indirect

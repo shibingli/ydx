@@ -9,7 +9,7 @@ require (
 	github.com/cbroglie/mustache v1.4.2
 	github.com/flosch/pongo2/v6 v6.1.0
 	github.com/osteele/liquid v1.9.2
-	github.com/shibingli/ydx/render v0.1.13
+	github.com/shibingli/ydx/render v0.1.14
 	github.com/spf13/afero v1.15.0
 	github.com/valyala/quicktemplate v1.8.0
 )

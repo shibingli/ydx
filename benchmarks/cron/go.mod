@@ -6,7 +6,7 @@ require (
 	github.com/adhocore/gronx v1.20.5
 	github.com/go-co-op/gocron/v2 v2.23.0
 	github.com/robfig/cron/v3 v3.0.1
-	github.com/shibingli/ydx/cron v0.1.5
+	github.com/shibingli/ydx/cron v0.1.7
 )
 
 require (
@@ -18,7 +18,7 @@ require (
 	github.com/sagikazarmark/locafero v0.12.0 // indirect
 	github.com/shibingli/ydx/afs v0.1.8 // indirect
 	github.com/shibingli/ydx/base64 v0.1.15 // indirect
-	github.com/shibingli/ydx/config v0.1.10 // indirect
+	github.com/shibingli/ydx/config v0.1.11 // indirect
 	github.com/shibingli/ydx/errs v0.1.6 // indirect
 	github.com/shibingli/ydx/json v0.1.20 // indirect
 	github.com/shibingli/ydx/log v0.1.14 // indirect

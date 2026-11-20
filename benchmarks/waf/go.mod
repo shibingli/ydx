@@ -5,7 +5,7 @@ go 1.27.4
 require (
 	github.com/corazawaf/coraza/v3 v3.8.1
 	github.com/shibingli/ydx/log v0.1.14
-	github.com/shibingli/ydx/waf v0.1.11
+	github.com/shibingli/ydx/waf v0.1.13
 )
 
 require (

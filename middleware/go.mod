@@ -3,9 +3,9 @@ module github.com/shibingli/ydx/middleware
 go 1.27.4
 
 require (
-	github.com/shibingli/ydx/cache v0.1.20
+	github.com/shibingli/ydx/cache v0.1.21
 	github.com/shibingli/ydx/log v0.1.14
-	github.com/shibingli/ydx/middleware/accesslog v0.1.18
+	github.com/shibingli/ydx/middleware/accesslog v0.1.20
 	github.com/shibingli/ydx/middleware/asyncafter v0.1.18
 	github.com/shibingli/ydx/middleware/compress v0.1.16
 	github.com/shibingli/ydx/middleware/cors v0.1.16
@@ -27,7 +27,7 @@ require (
 	github.com/shibingli/ydx/afs v0.1.8 // indirect
 	github.com/shibingli/ydx/base64 v0.1.15 // indirect
 	github.com/shibingli/ydx/buffpool v0.1.6 // indirect
-	github.com/shibingli/ydx/config v0.1.10 // indirect
+	github.com/shibingli/ydx/config v0.1.11 // indirect
 	github.com/shibingli/ydx/errs v0.1.6 // indirect
 	github.com/shibingli/ydx/json v0.1.20 // indirect
 	github.com/shibingli/ydx/middleware/reqlog v0.1.16 // indirect

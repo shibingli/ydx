@@ -36,6 +36,8 @@ github.com/shibingli/ydx/log v0.1.14 h1:UvCgFPiSJC99vUzn8JaDNZf7WezvFhbrLMIY9ecr
 github.com/shibingli/ydx/log v0.1.14/go.mod h1:4XXz6bmahSRH8SgM+pkNDRBQjcKB64eoTBLqfwMX1fo=
 github.com/shibingli/ydx/render v0.1.13 h1:RDcA65FSr1sMbeRBqNmro5T9/wD4ZNyA0DhdcsmOacU=
 github.com/shibingli/ydx/render v0.1.13/go.mod h1:KRyrJY0Xj4fJKwFxNlUiHZHOSdlgUUfyuEgkhbeUvUc=
+github.com/shibingli/ydx/render v0.1.14 h1:3iRE0RJwL70YHShGryV5zZDao46hLX7Ho9yUD5e3RkQ=
+github.com/shibingli/ydx/render v0.1.14/go.mod h1:90GDimRo635j2Jw0U8H2JUdRBZ0tEfiO+yqfEmravpU=
 github.com/shibingli/ydx/sysinfo v0.1.6 h1:5SEHSqUdVDqAgLxk7xqI4S2bldiO0CDz5XjYUnfHYRY=
 github.com/shibingli/ydx/sysinfo v0.1.6/go.mod h1:HF5vZvUUidCMnOWPlYUC3sSjYT23COYXm55KP9cdsMc=
 github.com/spf13/afero v1.15.0 h1:b/YBCLWAJdFWJTN9cLhiXXcD7mzKn9Dm86dNnfyQw1I=
