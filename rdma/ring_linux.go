@@ -51,7 +51,7 @@ type ringResources struct {
 	mr  *MR
 }
 
-func newRingResources() (*ringResources, error) {
+func newRingResources(memory int) (*ringResources, error) {
 	dev, err := Open(DefaultConfig())
 	if err != nil {
 		return nil, err
@@ -67,7 +67,7 @@ func newRingResources() (*ringResources, error) {
 		_ = dev.Close()
 		return nil, err
 	}
-	mr, err := dev.NewMR(64<<10, AccessLocalWrite|AccessRemoteWrite)
+	mr, err := dev.NewMR(memory, AccessLocalWrite|AccessRemoteWrite)
 	if err != nil {
 		_ = qp.Close()
 		_ = cq.Close()
@@ -102,7 +102,11 @@ func ListenRing(addr string, cfg RingConfig) (*RingListener, error) {
 	if err != nil {
 		return nil, err
 	}
-	res, err := newRingResources()
+	memory, err := ringMemoryBytes(cfg)
+	if err != nil {
+		return nil, err
+	}
+	res, err := newRingResources(memory)
 	if err != nil {
 		return nil, err
 	}
@@ -163,7 +167,11 @@ func DialRing(addr string, cfg RingConfig) (*Ring, error) {
 	if err != nil {
 		return nil, err
 	}
-	res, err := newRingResources()
+	memory, err := ringMemoryBytes(cfg)
+	if err != nil {
+		return nil, err
+	}
+	res, err := newRingResources(memory)
 	if err != nil {
 		return nil, err
 	}
@@ -266,6 +274,10 @@ func (r *Ring) WriteWithImm(ctx context.Context, data []byte, imm uint32) (uint3
 	slot, err := r.reserveSlot(ctx)
 	if err != nil {
 		return 0, err
+	}
+	if slot < 0 || slot >= len(r.mr.Bytes())/r.cfg.SlotSize {
+		r.releaseSlot(slot)
+		return 0, ErrRingProtocol
 	}
 	seq := r.seq.Add(1)
 	body := r.mr.Bytes()[slot*r.cfg.SlotSize:]

@@ -42,3 +42,20 @@ func TestRingFrameRoundTripAndTamper(t *testing.T) {
 		t.Fatalf("tamper err = %v", err)
 	}
 }
+
+// TestRingMemoryBytes pins the MR geometry: the region must cover every slot and reject an
+// oversized or overflowing configuration instead of producing an out-of-bounds slice. |
+// TestRingMemoryBytes 固化 MR 几何：区域必须覆盖所有槽位，并拒绝过大或溢出的配置，而不是产生
+// 越界切片。
+func TestRingMemoryBytes(t *testing.T) {
+	size, err := ringMemoryBytes(RingConfig{Slots: 64, SlotSize: 64 << 10})
+	if err != nil || size != 4<<20 {
+		t.Fatalf("default geometry = %d, %v, 期望 4MiB", size, err)
+	}
+	if _, err := ringMemoryBytes(RingConfig{Slots: 4096, SlotSize: 1 << 20}); !errors.Is(err, ErrInvalidConfig) {
+		t.Fatalf("oversized geometry err = %v, 期望 ErrInvalidConfig", err)
+	}
+	if _, err := ringMemoryBytes(RingConfig{Slots: 0, SlotSize: 1}); !errors.Is(err, ErrInvalidConfig) {
+		t.Fatalf("zero slots err = %v, 期望 ErrInvalidConfig", err)
+	}
+}

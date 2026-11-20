@@ -161,3 +161,16 @@ func readRingAck(r io.Reader, secret []byte) (uint32, error) {
 	}
 	return seq, nil
 }
+
+// maxRingMemory bounds the memory region backing one ring. | maxRingMemory 限制单个 Ring 的
+// 内存区域大小。
+const maxRingMemory = 256 << 20
+
+// ringMemoryBytes returns the MR size for cfg, rejecting an overflowing geometry. |
+// ringMemoryBytes 返回 cfg 对应的 MR 大小，几何尺寸溢出时拒绝。
+func ringMemoryBytes(cfg RingConfig) (int, error) {
+	if cfg.SlotSize <= 0 || cfg.Slots <= 0 || cfg.Slots > maxRingMemory/cfg.SlotSize {
+		return 0, ErrInvalidConfig
+	}
+	return cfg.Slots * cfg.SlotSize, nil
+}
