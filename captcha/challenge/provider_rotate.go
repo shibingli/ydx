@@ -4,6 +4,7 @@ import (
 	"context"
 	"image/color"
 	"math"
+	"time"
 )
 
 // rotateState is the server-side rotate answer. | rotateState 是旋转挑战的服务端答案。
@@ -49,17 +50,20 @@ func (p *rotateProvider) Generate(ctx context.Context, req GenerateRequest) (*Ge
 	drawIcon(scene, "tree", 44, req.Height-42, 52)
 	drawIcon(scene, "house", req.Width-62, req.Height-48, 60)
 	scene.line(20, req.Height-20, req.Width-20, req.Height-20, 4, color.RGBA{R: 60, G: 90, B: 64, A: 255})
-	initial := 30 + r.Intn(300)
+	initial := r.Intn(360)
 	rotated := rotateImage(scene.img, float64(initial)*math.Pi/180, color.RGBA{R: 246, G: 246, B: 242, A: 255}, r)
 	img, err := rotated.encodePNG("challenge")
 	if err != nil {
 		return nil, err
 	}
 	// rotateImage turns the scene counter-clockwise; the browser slider uses
-	// positive CSS rotate, so the clockwise correction is the initial angle. |
-	// rotateImage 将场景逆时针旋转；浏览器滑块使用正 CSS 旋转，因此顺时针校正角等于初始角。
+	// positive CSS rotate, so the clockwise correction is the initial angle. The
+	// correction covers every degree and the tolerance stays narrow, otherwise a
+	// handful of attempts could guess the answer. | rotateImage 将场景逆时针旋转；
+	// 浏览器滑块使用正 CSS 旋转，因此顺时针校正角等于初始角。校正角覆盖每一度，
+	// 容差保持狭窄，避免少量尝试即可猜中答案。
 	correction := initial
-	answer, err := encodeAnswer(rotateState{Correction: correction, Tolerance: 10})
+	answer, err := encodeAnswer(rotateState{Correction: correction, Tolerance: 3})
 	if err != nil {
 		return nil, err
 	}
@@ -77,6 +81,9 @@ func (p *rotateProvider) Verify(ctx context.Context, rec *Record, ans Answer) (C
 		return CheckResult{}, err
 	}
 	behavior, reasons := scoreTrack(ans.Track, 8)
+	if len(ans.Track.Points) < 8 || trackDuration(ans.Track) < 200*time.Millisecond {
+		return CheckResult{Passed: false, BehaviorScore: behavior, Reasons: append(reasons, "rotate_track_too_short")}, nil
+	}
 	if ans.Angle == nil {
 		return CheckResult{Passed: false, BehaviorScore: behavior, Reasons: append(reasons, "rotate_angle_missing")}, nil
 	}
