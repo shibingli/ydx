@@ -159,20 +159,20 @@ func TestRedisPublishSubscribe(t *testing.T) {
 
 func TestRedisCorruptPayloadIsReplaced(t *testing.T) {
 	_, cli, rr := newRedisTest(t)
-	m, err := NewManager(WithRemote(rr), WithLocalOptions(testLocal()), WithLogger(testLogger()))
+	m, err := NewManager(WithRemote(rr), WithDeploymentID("testdeploy"), WithLocalOptions(testLocal()), WithLogger(testLogger()))
 	if err != nil {
 		t.Fatalf("NewManager: %v | 构造管理器失败", err)
 	}
 	t.Cleanup(func() { _ = m.Close() })
 	r, _ := m.Raw("ns")
 	ctx := context.Background()
-	if err := cli.Set(ctx, "test:ns:bad", "garbage", 0).Err(); err != nil {
+	if err := cli.Set(ctx, "test:testdeploy:ns:bad", "garbage", 0).Err(); err != nil {
 		t.Fatalf("seed: %v | 播种失败", err)
 	}
 	if _, ok, err := r.Get(ctx, "bad"); err != nil || ok {
 		t.Fatalf("corrupt Get = %v,%v | 损坏载荷读取结果不符", ok, err)
 	}
-	raw, err := cli.Get(ctx, "test:ns:bad").Bytes()
+	raw, err := cli.Get(ctx, "test:testdeploy:ns:bad").Bytes()
 	if err != nil {
 		t.Fatalf("Get after repair: %v | 修复后读取失败", err)
 	}

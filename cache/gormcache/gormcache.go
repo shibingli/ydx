@@ -453,20 +453,6 @@ func (p *Plugin) generations(table string) (epoch, generation uint64) {
 	return p.epoch.Load(), p.genFor(table).Load()
 }
 
-// tableOf returns the physical table name. | tableOf 返回物理表名。
-func (p *Plugin) tableOf(db *gorm.DB) string {
-	if db == nil || db.Statement == nil {
-		return ""
-	}
-	if db.Statement.Table != "" {
-		return db.Statement.Table
-	}
-	if db.Statement.Schema != nil {
-		return db.Statement.Schema.Table
-	}
-	return ""
-}
-
 // tableSensitive reports whether table uses the sensitive namespace. | tableSensitive 报告
 // table 是否使用敏感命名空间。
 func (p *Plugin) tableSensitive(table string) bool {

@@ -3,6 +3,7 @@ package cache
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -34,6 +35,11 @@ const (
 type RedisOptions struct {
 	// Prefix is prepended verbatim to every logical key. | Prefix 原样加在每个逻辑键之前。
 	Prefix string
+	// DeploymentID optionally nests every key and the event channel under one
+	// deployment segment. Empty means unscoped; Manager supplies its own ID. |
+	// DeploymentID 可选地把全部键与事件频道嵌套到一个部署段之下；空值表示不限定，
+	// Manager 会传入自己的部署 ID。
+	DeploymentID string
 	// Channel is the Pub/Sub channel; empty means Prefix + "events". | Channel 是 Pub/Sub 频道；空值表示 Prefix + "events"。
 	Channel string
 	// TombstoneTTL is the default lifetime of a delete marker; <=0 means one hour. | TombstoneTTL 是删除标记的默认存活时间；<=0 表示一小时。
@@ -61,7 +67,52 @@ func (o RedisOptions) withDefaults() RedisOptions {
 	if o.HealthInterval <= 0 {
 		o.HealthInterval = defaultHealthInterval
 	}
+	if o.DeploymentID != "" {
+		o = o.scoped(o.DeploymentID)
+	}
 	return o
+}
+
+// scoped returns a copy of o with Prefix and Channel nested under deployment. |
+// scoped 返回把 Prefix 与 Channel 嵌套到 deployment 之下的副本。
+func (o RedisOptions) scoped(deployment string) RedisOptions {
+	deployment = strings.Trim(strings.TrimSpace(deployment), ":")
+	if deployment == "" {
+		return o
+	}
+	derivedChannel := o.Channel == "" || o.Channel == o.Prefix+"events"
+	o.Prefix = appendDeploymentPrefix(o.Prefix, deployment)
+	if derivedChannel {
+		o.Channel = o.Prefix + "events"
+	} else {
+		o.Channel = appendDeploymentChannel(o.Channel, deployment)
+	}
+	o.DeploymentID = deployment
+	return o
+}
+
+// appendDeploymentPrefix nests deployment under a key prefix. | appendDeploymentPrefix
+// 把 deployment 嵌套到键前缀之下。
+func appendDeploymentPrefix(prefix, deployment string) string {
+	prefix = strings.TrimRight(prefix, ":")
+	switch {
+	case prefix == "":
+		return deployment + ":"
+	case deployment == "":
+		return prefix + ":"
+	default:
+		return prefix + ":" + deployment + ":"
+	}
+}
+
+// appendDeploymentChannel nests deployment under an explicit channel name. |
+// appendDeploymentChannel 把 deployment 嵌套到显式频道名之下。
+func appendDeploymentChannel(channel, deployment string) string {
+	channel = strings.TrimRight(strings.TrimSpace(channel), ":")
+	if channel == "" {
+		return deployment
+	}
+	return channel + ":" + deployment
 }
 
 // RedisRemote is a Redis-backed Remote. | RedisRemote 是基于 Redis 的 Remote。
@@ -103,6 +154,26 @@ func (r *RedisRemote) check() error {
 
 // key applies the Redis prefix. | key 施加 Redis 前缀。
 func (r *RedisRemote) key(k string) string { return r.opts.Prefix + k }
+
+// ScopeDeployment implements DeploymentScoper. | ScopeDeployment 实现 DeploymentScoper。
+//
+// The returned remote shares the caller-owned client but has its own key prefix,
+// channel and subscription lifecycle. | 返回的远端共享调用方持有的客户端，但拥有独立
+// 的键前缀、频道与订阅生命周期。
+func (r *RedisRemote) ScopeDeployment(deployment string) Remote {
+	if r == nil || deployment == "" {
+		return r
+	}
+	opts := r.opts
+	if opts.DeploymentID != deployment {
+		opts = opts.scoped(deployment)
+	}
+	return &RedisRemote{
+		cli:     r.cli,
+		opts:    opts,
+		closeCh: make(chan struct{}),
+	}
+}
 
 // ttlMillis converts a duration to Redis milliseconds; <=0 means no expiry. | ttlMillis 把时长转换为 Redis 毫秒；<=0 表示不过期。
 func ttlMillis(ttl time.Duration) int64 {
@@ -230,6 +301,7 @@ func (r *RedisRemote) Remove(ctx context.Context, key string, flags uint8, ttl t
 type eventWire struct {
 	NS     string   `json:"ns,omitempty"`
 	Src    string   `json:"src,omitempty"`
+	Dep    string   `json:"dep,omitempty"`
 	Keys   []string `json:"keys,omitempty"`
 	Tables []string `json:"tables,omitempty"`
 	Ver    uint64   `json:"ver,omitempty"`
@@ -242,7 +314,7 @@ func (r *RedisRemote) Publish(ctx context.Context, ev Event) error {
 	if err := r.check(); err != nil {
 		return err
 	}
-	base := eventWire{Op: uint8(ev.Op), NS: ev.Namespace, Tables: ev.Tables, Ver: ev.Version, Src: ev.Source, At: ev.At.UnixNano()}
+	base := eventWire{Op: uint8(ev.Op), NS: ev.Namespace, Tables: ev.Tables, Ver: ev.Version, Src: ev.Source, Dep: ev.Deployment, At: ev.At.UnixNano()}
 	if len(ev.Keys) == 0 {
 		return r.publishOne(ctx, base)
 	}
@@ -324,12 +396,13 @@ func decodeEvent(payload string) (Event, bool) {
 		return Event{}, false
 	}
 	ev := Event{
-		Op:        Op(wire.Op),
-		Namespace: wire.NS,
-		Keys:      wire.Keys,
-		Tables:    wire.Tables,
-		Version:   wire.Ver,
-		Source:    wire.Src,
+		Op:         Op(wire.Op),
+		Namespace:  wire.NS,
+		Keys:       wire.Keys,
+		Tables:     wire.Tables,
+		Version:    wire.Ver,
+		Source:     wire.Src,
+		Deployment: wire.Dep,
 	}
 	if wire.At > 0 {
 		ev.At = time.Unix(0, wire.At).UTC()

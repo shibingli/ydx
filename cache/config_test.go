@@ -79,6 +79,16 @@ func TestOptionsFromConfigDefaults(t *testing.T) {
 	}
 }
 
+func TestOptionsFromConfigDeploymentID(t *testing.T) {
+	c := loadConfig(t, `
+cache:
+  deployment_id: staging
+`)
+	if got := cache.OptionsFromConfig(c).DeploymentID; got != "staging" {
+		t.Fatalf("DeploymentID = %q, 期望 staging", got)
+	}
+}
+
 func TestRedisOptionsFromConfig(t *testing.T) {
 	c := loadConfig(t, `
 redis:

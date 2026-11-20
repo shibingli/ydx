@@ -57,14 +57,33 @@ func NewManager(opts ...Option) (*Manager, error) {
 			fn(&o)
 		}
 	}
+	// A deployment ID counts as explicit only when the caller supplied one; the
+	// derived default is applied by remotes that implement DeploymentScoper. |
+	// 只有调用方提供了部署 ID 才算显式；推导出的默认值交由实现 DeploymentScoper 的
+	// 远端应用。
+	explicitDeployment := o.DeploymentID != ""
 	o = o.withDefaults()
+	remote := o.Remote
+	if remote != nil {
+		if scoper, ok := remote.(DeploymentScoper); ok {
+			if scoped := scoper.ScopeDeployment(o.DeploymentID); scoped != nil {
+				remote = scoped
+			}
+		} else if explicitDeployment {
+			// Custom remotes get logical key prefixing and event filtering so an
+			// explicit deployment ID still isolates two managers sharing the store. |
+			// 自定义远端的键加逻辑前缀并过滤事件，使共享存储的两个管理器在显式部署 ID
+			// 下仍然隔离。
+			remote = &deploymentRemote{Remote: remote, deployment: o.DeploymentID}
+		}
+	}
 	lc, err := local.New(o.Local)
 	if err != nil {
 		return nil, errs.Wrap(err, ErrInvalidOptions)
 	}
 	m := &Manager{
 		local:      lc,
-		remote:     o.Remote,
+		remote:     remote,
 		opts:       o,
 		log:        o.Logger,
 		bus:        newEventBus(o.EventBuffer, o.Logger),
@@ -129,6 +148,9 @@ func (m *Manager) Publish(ctx context.Context, ev Event) error {
 	if ev.Source == "" {
 		ev.Source = m.opts.NodeID
 	}
+	if ev.Deployment == "" {
+		ev.Deployment = m.opts.DeploymentID
+	}
 	if ev.At.IsZero() {
 		ev.At = time.Now().UTC()
 	}
@@ -179,6 +201,9 @@ func (m *Manager) Stats() ManagerStats {
 
 // NodeID returns the identifier this manager stamps on its events. | NodeID 返回本管理器在事件上标记的标识。
 func (m *Manager) NodeID() string { return m.opts.NodeID }
+
+// DeploymentID returns the effective deployment identifier. | DeploymentID 返回生效的部署标识。
+func (m *Manager) DeploymentID() string { return m.opts.DeploymentID }
 
 // Close stops the subscription loop, closes the local cache and releases the bus. | Close 停止订阅循环、关闭本地缓存并释放事件总线。
 // It is idempotent. | 它是幂等的。
@@ -256,6 +281,11 @@ func (m *Manager) onRemoteEvent(ev Event) {
 		// | 本管理器已应用自己的变更；Pub/Sub 回声是重复的。
 		return
 	}
+	if ev.Deployment != "" && ev.Deployment != m.opts.DeploymentID {
+		// A shared channel can carry several deployments; only the matching one applies.
+		// | 共享频道可能承载多个部署，仅处理匹配的部署。
+		return
+	}
 	switch ev.Op {
 	case OpSet, OpDelete:
 		for _, k := range ev.Keys {
@@ -306,6 +336,9 @@ func validEvent(ev *Event) bool {
 		return false
 	}
 	if len(ev.Namespace) > 128 {
+		return false
+	}
+	if len(ev.Deployment) > 128 {
 		return false
 	}
 	if len(ev.Keys) > 1024 || len(ev.Tables) > 256 {

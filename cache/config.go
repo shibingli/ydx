@@ -19,6 +19,7 @@ func OptionsFromConfig(c *config.Config) Options {
 		EventBuffer:  c.GetInt("cache.event_buffer"),
 		FailOpen:     c.GetBool("cache.fail_open"),
 		TombstoneTTL: c.GetDuration("cache.tombstone_ttl"),
+		DeploymentID: c.GetString("cache.deployment_id"),
 		Local: local.Options{
 			MaxCost:         c.GetInt64("cache.max_cost"),
 			Shards:          c.GetInt("cache.shards"),

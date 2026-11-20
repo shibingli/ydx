@@ -36,6 +36,9 @@ type Event struct {
 	Namespace string `json:"ns,omitempty"`
 	// Source identifies the publishing process. | Source 标识发布进程。
 	Source string `json:"src,omitempty"`
+	// Deployment scopes the event to one deployment; empty means unscoped. | Deployment
+	// 把事件限定到一个部署；空值表示未限定。
+	Deployment string `json:"dep,omitempty"`
 	// Keys are the affected logical keys. | Keys 是受影响的逻辑键。
 	Keys []string `json:"keys,omitempty"`
 	// Tables are the affected database tables (OpInvalidate). | Tables 是受影响的数据库表（OpInvalidate）。

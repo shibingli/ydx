@@ -2,6 +2,9 @@ package cache
 
 import (
 	"math/rand/v2"
+	"os"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/shibingli/ydx/cache/local"
@@ -53,7 +56,11 @@ var (
 
 // Defaults applied by NewManager when an option leaves a field empty. | NewManager 在选项留空时施加的默认值。
 const (
-	// DefaultPrefix is the Redis key prefix used when RedisOptions.Prefix is empty. | DefaultPrefix 是 RedisOptions.Prefix 为空时使用的 Redis 键前缀。
+	// DefaultPrefix is the Redis key prefix used when RedisOptions.Prefix is empty.
+	// A Manager nests its DeploymentID under it, so the effective prefix is
+	// "yd:cache:<deployment>:". | DefaultPrefix 是 RedisOptions.Prefix 为空时使用的
+	// Redis 键前缀。Manager 会在其下嵌套 DeploymentID，因此实际前缀为
+	// "yd:cache:<deployment>:"。
 	DefaultPrefix = "yd:cache:"
 	// DefaultLease is the L1 revalidation lease used when Options.Lease is zero. | DefaultLease 是 Options.Lease 为零时使用的 L1 重新确认租约。
 	DefaultLease = 30 * time.Second
@@ -73,6 +80,10 @@ type Options struct {
 	Remote Remote
 	// Logger receives operational warnings; nil means log.Default(). | Logger 接收运行告警；nil 表示 log.Default()。
 	Logger *log.Logger
+	// DeploymentID scopes every L2 key and event channel to one deployment; empty
+	// means defaultDeploymentID(). | DeploymentID 把全部 L2 键与事件频道限定到一个
+	// 部署；空值表示 defaultDeploymentID()。
+	DeploymentID string
 	// NodeID identifies this process in events; empty means a random identifier. | NodeID 在事件中标识本进程；空值表示随机生成。
 	NodeID string
 	// Local configures the L1 ring cache. | Local 配置 L1 环形缓存。
@@ -126,6 +137,13 @@ func WithFailOpen(open bool) Option {
 // WithNodeID overrides the process identifier used in events. | WithNodeID 覆盖事件中使用的进程标识。
 func WithNodeID(id string) Option {
 	return func(o *Options) { o.NodeID = id }
+}
+
+// WithDeploymentID scopes keys and the event channel to deployment; empty selects
+// the default derived from the binary name and YD_ENV. | WithDeploymentID 把键与
+// 事件频道限定到 deployment；空值使用由二进制名与 YD_ENV 推导的默认值。
+func WithDeploymentID(deployment string) Option {
+	return func(o *Options) { o.DeploymentID = deployment }
 }
 
 // WithLogger overrides the operational logger. | WithLogger 覆盖运行日志器。
@@ -192,10 +210,55 @@ func (o Options) withDefaults() Options {
 	if o.Logger == nil {
 		o.Logger = log.Default()
 	}
+	if o.DeploymentID == "" {
+		o.DeploymentID = defaultDeploymentID()
+	}
 	if o.NodeID == "" {
 		o.NodeID = newNodeID()
 	}
 	return o
+}
+
+// defaultDeploymentID derives a stable, key-safe deployment identifier from the
+// executable name and the optional YD_ENV variable. | defaultDeploymentID 由可执行
+// 文件名与可选的 YD_ENV 环境变量推导稳定且适合做键前缀的部署标识。
+func defaultDeploymentID() string {
+	base := "ydx"
+	if len(os.Args) > 0 {
+		if name := filepath.Base(os.Args[0]); name != "" && name != "." && name != string(filepath.Separator) {
+			base = name
+		}
+	}
+	id := sanitizeDeploymentID(base)
+	if env := sanitizeDeploymentID(strings.TrimSpace(os.Getenv("YD_ENV"))); env != "" {
+		id += "-" + env
+	}
+	if id == "" {
+		id = "ydx"
+	}
+	if len(id) > 128 {
+		id = id[:128]
+	}
+	return id
+}
+
+// sanitizeDeploymentID maps characters that would confuse a Redis key prefix or
+// channel name to '_'. | sanitizeDeploymentID 把会混淆 Redis 键前缀或频道名的字符
+// 替换为 '_'。
+func sanitizeDeploymentID(id string) string {
+	var b strings.Builder
+	b.Grow(len(id))
+	for _, r := range id {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+			b.WriteRune(r)
+		case r == '-', r == '_', r == '.':
+			b.WriteRune(r)
+		default:
+			b.WriteByte('_')
+		}
+	}
+	return b.String()
 }
 
 // newNodeID returns a fresh per-process event source. It is an instance id,
