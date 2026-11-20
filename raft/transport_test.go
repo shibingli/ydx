@@ -39,12 +39,12 @@ func TestStreamFrameAuthentication(t *testing.T) {
 // TestTCPTransportDelivery sends a message between two TCP transports. | TestTCPTransportDelivery
 // 在两个 TCP 传输之间发送消息。
 func TestTCPTransportDelivery(t *testing.T) {
-	t1, err := NewTCPTransport(TCPTransportOptions{ListenAddr: "127.0.0.1:0"})
+	t1, err := NewTCPTransport(TCPTransportOptions{ListenAddr: "127.0.0.1:0", AllowInsecure: true})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer t1.Close()
-	t2, err := NewTCPTransport(TCPTransportOptions{ListenAddr: "127.0.0.1:0"})
+	t2, err := NewTCPTransport(TCPTransportOptions{ListenAddr: "127.0.0.1:0", AllowInsecure: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -127,7 +127,7 @@ func TestClusterOverTCP(t *testing.T) {
 	transports := make([]*TCPTransport, size)
 	peers := make([]Peer, size)
 	for i := 0; i < size; i++ {
-		tr, err := NewTCPTransport(TCPTransportOptions{ListenAddr: "127.0.0.1:0", Queue: 256})
+		tr, err := NewTCPTransport(TCPTransportOptions{ListenAddr: "127.0.0.1:0", Queue: 256, AllowInsecure: true})
 		if err != nil {
 			t.Fatal(err)
 		}

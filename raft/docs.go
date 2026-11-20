@@ -36,7 +36,8 @@
 // every node: | 三节点 TCP 集群在每个节点使用 NewTCPTransport 与相同的 Config.Peers：
 //
 //	tr, err := raft.NewTCPTransport(raft.TCPTransportOptions{
-//		ListenAddr: "192.168.2.2:22102",
+//		ListenAddr:   "192.168.2.2:22102",
+//		SharedSecret: secret,
 //	})
 //	peers := []raft.Peer{
 //		{ID: 1, Addr: "192.168.2.2:22102"},
@@ -78,18 +79,21 @@
 //
 // # Security and limits | 安全与上限
 //
-// Inbound messages are not authenticated by default. Every multi-node deployment
-// must configure TLS and/or SharedSecret (at least 16 bytes); use both for
-// encryption plus frame integrity. RDMA needs HMAC plus IPsec/MACsec for
-// confidentiality. TCP MaxFrameBytes and HTTP MaxBodyBytes must exceed the
-// largest encoded snapshot unless chunking is enabled. Config.SnapshotChunkBytes
-// transfers large images as ack-gated MsgSnapChunk messages, removing the
-// transport frame limit; the receiver still reassembles the whole image, so the
-// protocol cap of 256 MiB remains. Chunk messages are an opt-in extension and
-// require every peer to support them. Without chunking, a leader logs an
-// explicit error when a snapshot cannot fit instead of retrying silently. |
-// 入站消息默认不认证。所有多节点部署必须配置 TLS 和/或至少 16 字节的
-// SharedSecret；两者同时使用可同时获得加密与帧完整性。RDMA 需要 HMAC 与
+// Inbound messages are not authenticated by default. NewTCPTransport and
+// NewHTTPTransport therefore reject an empty SharedSecret unless AllowInsecure
+// is set explicitly; every multi-node deployment must configure TLS and/or
+// SharedSecret (at least 16 bytes), and should use both for encryption plus
+// frame integrity. RDMA needs HMAC plus IPsec/MACsec for confidentiality. TCP
+// MaxFrameBytes and HTTP MaxBodyBytes must exceed the largest encoded snapshot
+// unless chunking is enabled. Config.SnapshotChunkBytes transfers large images
+// as ack-gated MsgSnapChunk messages, removing the transport frame limit; the
+// receiver still reassembles the whole image, so the protocol cap of 256 MiB
+// remains. Chunk messages are an opt-in extension and require every peer to
+// support them. Without chunking, a leader logs an explicit error when a
+// snapshot cannot fit instead of retrying silently. |
+// 入站消息默认不认证。因此 NewTCPTransport 与 NewHTTPTransport 在 SharedSecret 为空
+// 时拒绝创建，除非显式设置 AllowInsecure；所有多节点部署必须配置 TLS 和/或至少
+// 16 字节的 SharedSecret，并建议同时使用以获得加密与帧完整性。RDMA 需要 HMAC 与
 // IPsec/MACsec 才能保密。TCP MaxFrameBytes 与 HTTP MaxBodyBytes 必须大于最大快照
 // 的编码大小，除非启用分块。Config.SnapshotChunkBytes 通过逐块确认的
 // MsgSnapChunk 传输大镜像，解除传输帧上限；接收端仍会重组完整镜像，因此协议上限

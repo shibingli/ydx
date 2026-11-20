@@ -25,6 +25,11 @@ func (n *Node) campaign(preVote bool) {
 // startPreVote sends MsgPreVote with a hypothetical next term. | startPreVote 用假设
 // 的下一任期发送 MsgPreVote。
 func (n *Node) startPreVote() {
+	if n.term >= maxCounter {
+		// Refuse to campaign at the term ceiling; n.term+1 must never wrap. |
+		// 任期达到上限时拒绝竞选；n.term+1 绝不能回绕。
+		return
+	}
 	n.setState(StatePreCandidate)
 	n.setLeader(0)
 	n.incomingSnapshot = nil
@@ -164,6 +169,11 @@ func (n *Node) expandPreVote() {
 // only after the new term and vote are durable. | startVote 提升任期、自投票，并且
 // 只在新任期与选票持久化后请求选票。
 func (n *Node) startVote() {
+	if n.term >= maxCounter {
+		// Refuse to campaign at the term ceiling; n.term+1 must never wrap. |
+		// 任期达到上限时拒绝竞选；n.term+1 绝不能回绕。
+		return
+	}
 	n.setTerm(n.term + 1)
 	n.vote = n.id
 	n.setState(StateCandidate)

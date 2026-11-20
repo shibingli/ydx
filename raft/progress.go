@@ -105,6 +105,16 @@ func (in *inflights) freeTo(index uint64) {
 	in.bytes = 0
 }
 
+// end returns the highest log index covered by an in-flight append, or zero
+// when nothing is in flight. | end 返回在途追加覆盖的最高日志索引；无在途请求时为
+// 零。
+func (in *inflights) end() uint64 {
+	if in.count == 0 {
+		return 0
+	}
+	return in.buf[(in.start+in.count-1)%len(in.buf)].index
+}
+
 // reset forgets all outstanding ranges. | reset 忘记所有未确认区间。
 func (in *inflights) reset() {
 	in.start = 0

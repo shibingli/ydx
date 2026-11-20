@@ -18,6 +18,27 @@ func (n *Node) handleSnapshot(m *Message) {
 		return
 	}
 	snap := m.Snapshot
+	// Validate the image before adopting the term or restoring anything. A
+	// poisoned index/term, a snapshot term ahead of its carrying message or an
+	// unusable configuration is rejected without changing local state. | 在采用
+	// 任期或还原任何状态前校验镜像。被毒化的索引/任期、高于承载消息任期的快照任期或
+	// 不可用配置都会被拒绝，且不改变本地状态。
+	if snap == nil {
+		n.send(Message{Type: MsgSnapResp, To: m.From, Term: n.term, Reject: true,
+			Index: n.committed})
+		return
+	}
+	if snap.Index == 0 || snap.Index > maxCounter || snap.Term == 0 || snap.Term > maxCounter ||
+		snap.Term > m.Term {
+		n.send(Message{Type: MsgSnapResp, To: m.From, Term: n.term, Reject: true,
+			Index: n.committed, LogIndex: snap.Index})
+		return
+	}
+	if err := validateConfState(snap.ConfState); err != nil {
+		n.send(Message{Type: MsgSnapResp, To: m.From, Term: n.term, Reject: true,
+			Index: n.committed, LogIndex: snap.Index})
+		return
+	}
 	// A complete image supersedes any partially reassembled chunk transfer. |
 	// 完整镜像取代任何尚未完成的分块重组。
 	n.incomingSnapshot = nil
@@ -34,11 +55,6 @@ func (n *Node) handleSnapshot(m *Message) {
 		}
 		n.setLeader(m.From)
 		n.resetElection()
-	}
-	if snap == nil || validateConfState(snap.ConfState) != nil {
-		n.sendAfterTerm(termSeq, m.Term, Message{Type: MsgSnapResp, To: m.From,
-			Term: n.term, Reject: true, Index: n.committed, LogIndex: snapshotIndexOrZero(snap)})
-		return
 	}
 	if snap.Index <= n.committed {
 		n.sendAfterTerm(termSeq, m.Term, Message{Type: MsgSnapResp, To: m.From,
@@ -114,6 +130,11 @@ func (n *Node) handleSnapshotResp(m *Message) {
 	}
 	pr.recentActive = true
 	if m.Reject {
+		// Only a rejection of the transfer currently in flight may cancel it. |
+		// 只有针对当前在途传输的拒绝才能取消它。
+		if pr.state != snapshot {
+			return
+		}
 		// Ignore a rejection for an older image; otherwise a delayed response
 		// could cancel a newer transfer that is already in flight. Followers that
 		// reject a nil snapshot report zero and are accepted for any pending
@@ -129,6 +150,23 @@ func (n *Node) handleSnapshotResp(m *Message) {
 		pr.snapshotSentAt = time.Time{}
 		pr.resetSnapshotChunks()
 		n.maybeSendAppend(m.From)
+		return
+	}
+	// A success response must match the snapshot this leader has in flight. A
+	// follower that already committed this base echoes the snapshot index in
+	// LogIndex while reporting its commit index in Index, so accept either form.
+	// A forged response with an unrelated index must not advance match or
+	// commit. | 成功响应必须匹配领导者当前在途的快照。已提交该基点的跟随者会在
+	// LogIndex 回显快照索引、在 Index 报告提交索引，因此两种形式都接受；携带无关
+	// 索引的伪造响应不得推进 match 或提交。
+	if pr.state != snapshot || pr.pendingSnapshot == 0 {
+		return
+	}
+	if m.LogIndex != 0 {
+		if m.LogIndex != pr.pendingSnapshot {
+			return
+		}
+	} else if m.Index != pr.pendingSnapshot {
 		return
 	}
 	pr.snapshotErr = nil
@@ -171,15 +209,6 @@ func (n *Node) snapshotData(snap *Snapshot) ([]byte, error) {
 			loaded.Index, loaded.Term, snap.Index, snap.Term)
 	}
 	return loaded.Data, nil
-}
-
-// snapshotIndexOrZero returns a snapshot index for rejection matching. | snapshotIndexOrZero
-// 返回用于拒绝匹配的快照索引。
-func snapshotIndexOrZero(snap *Snapshot) uint64 {
-	if snap == nil {
-		return 0
-	}
-	return snap.Index
 }
 
 // validateConfState rejects a configuration that cannot form a cluster. | validateConfState

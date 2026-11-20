@@ -461,6 +461,13 @@ func (n *Node) step(m *Message) {
 	if m.To != n.id || m.From == 0 {
 		return
 	}
+	// Reject non-members and spoofed leader claims before any term transition,
+	// log mutation or configuration change. | 在任何任期转换、日志变更或配置变更前
+	// 拒绝非成员与伪造的领导者声明。
+	if !n.acceptSender(m) {
+		n.metrics.messagesDropped.Add(1)
+		return
+	}
 	if m.Term < n.term {
 		// Stale requests and most stale responses are ignored. Pre-vote replies
 		// echo the responder's term, which may legitimately lag the candidate,

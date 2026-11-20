@@ -24,6 +24,10 @@ type raftLog struct {
 func newLog(snapshot *Snapshot, entries []Entry) (*raftLog, error) {
 	l := &raftLog{firstIndex: 1}
 	if snapshot != nil {
+		if snapshot.Index > maxCounter || snapshot.Term > maxCounter {
+			return nil, errs.Detail(ErrCorrupt, "snapshot index=%d term=%d exceeds bound %d",
+				snapshot.Index, snapshot.Term, maxCounter)
+		}
 		l.snapshotIndex = snapshot.Index
 		l.snapshotTerm = snapshot.Term
 		l.firstIndex = snapshot.Index + 1
@@ -35,8 +39,11 @@ func newLog(snapshot *Snapshot, entries []Entry) (*raftLog, error) {
 			if entries[i].Index != want {
 				return nil, errs.Detail(ErrCorrupt, "log gap at index %d, want %d", entries[i].Index, want)
 			}
-			if entries[i].Term == 0 {
-				return nil, errs.Detail(ErrCorrupt, "zero term at index %d", entries[i].Index)
+			if entries[i].Term == 0 || entries[i].Term > maxCounter {
+				return nil, errs.Detail(ErrCorrupt, "invalid term at index %d", entries[i].Index)
+			}
+			if entries[i].Index > maxCounter {
+				return nil, errs.Detail(ErrCorrupt, "index %d exceeds bound %d", entries[i].Index, maxCounter)
 			}
 			want++
 		}
@@ -147,6 +154,9 @@ func (l *raftLog) append(entries []Entry) error {
 	}
 	if entries[0].Index != l.lastIndex+1 {
 		return errs.Detail(ErrUnavailable, "append at %d after %d", entries[0].Index, l.lastIndex)
+	}
+	if last := entries[len(entries)-1].Index; last > maxCounter {
+		return errs.Detail(ErrTooLarge, "append index %d exceeds bound %d", last, maxCounter)
 	}
 	if cap(l.entries)-len(l.entries) < len(entries) {
 		l.entries = growEntries(l.entries, len(entries))

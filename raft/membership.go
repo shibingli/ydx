@@ -157,6 +157,14 @@ func (m *membership) isMember(id NodeID) bool {
 	return m.isVoter(id) || m.isLearner(id)
 }
 
+// empty reports whether no member is configured yet, as on a Join node before
+// its first configuration arrives. | empty 报告是否尚未配置任何成员，例如收到首份
+// 配置前的 Join 节点。
+func (m *membership) empty() bool {
+	return len(m.voters) == 0 && len(m.learners) == 0 &&
+		len(m.votersOut) == 0 && len(m.learnersOut) == 0
+}
+
 // addr returns the transport address for id. | addr 返回 id 的传输地址。
 func (m *membership) addr(id NodeID) string {
 	return m.addrs[id]

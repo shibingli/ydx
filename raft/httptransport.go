@@ -43,10 +43,16 @@ type HTTPTransportOptions struct {
 	// Path is the HTTP endpoint for Raft messages. Default "/raft/message".
 	// | Path 是 Raft 消息的 HTTP 端点，默认 "/raft/message"。
 	Path string
-	// SharedSecret enables HMAC-SHA256 authentication of every frame. Use it
-	// together with TLS; HMAC authenticates, TLS encrypts. | SharedSecret 启用每帧
-	// HMAC-SHA256 认证。应与 TLS 一起使用；HMAC 负责认证，TLS 负责加密。
+	// SharedSecret enables HMAC-SHA256 authentication of every frame. It is
+	// required unless AllowInsecure is set; HMAC authenticates, TLS encrypts.
+	// | SharedSecret 启用每帧 HMAC-SHA256 认证。除非设置 AllowInsecure，否则必须
+	// 提供；HMAC 负责认证，TLS 负责加密。
 	SharedSecret []byte
+	// AllowInsecure permits an empty SharedSecret. Use it only on a trusted
+	// network or when TLS/mTLS already authenticates both ends outside the
+	// transport. | AllowInsecure 允许空的 SharedSecret。仅在可信网络或 TLS/mTLS
+	// 已在传输之外双向认证时使用。
+	AllowInsecure bool
 	// ID is the local node ID. When non-zero, inbound messages addressed to a
 	// different ID are rejected. | ID 是本地节点标识。非零时，拒绝收件人不是本地
 	// 节点的入站消息。
@@ -106,6 +112,9 @@ func NewHTTPTransport(opts HTTPTransportOptions) (*HTTPTransport, error) {
 	}
 	if len(opts.SharedSecret) > 0 && len(opts.SharedSecret) < 16 {
 		return nil, errs.Detail(ErrInvalidConfig, "shared secret must be at least 16 bytes")
+	}
+	if len(opts.SharedSecret) == 0 && !opts.AllowInsecure {
+		return nil, errs.Detail(ErrInvalidConfig, "shared secret is required unless AllowInsecure is set")
 	}
 	t := &HTTPTransport{
 		id:      opts.ID,

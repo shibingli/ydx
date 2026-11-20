@@ -501,9 +501,15 @@ type TCPTransportOptions struct {
 	// | TLSConfig 非空时启用 TLS。监听与拨号共用该配置；服务端设置 Certificates，
 	// 客户端设置 RootCAs。
 	TLSConfig *tls.Config
-	// SharedSecret enables frame-level HMAC authentication. | SharedSecret 启用帧级
-	// HMAC 认证。
+	// SharedSecret enables frame-level HMAC authentication. It is required unless
+	// AllowInsecure is set. | SharedSecret 启用帧级 HMAC 认证。除非设置
+	// AllowInsecure，否则必须提供。
 	SharedSecret []byte
+	// AllowInsecure permits an empty SharedSecret. Use it only on a trusted
+	// network or when TLS/mTLS already authenticates both ends outside the
+	// transport. | AllowInsecure 允许空的 SharedSecret。仅在可信网络或 TLS/mTLS
+	// 已在传输之外双向认证时使用。
+	AllowInsecure bool
 	// Queue is the per-peer outbound queue length. Default 64. | Queue 是每对端出站
 	// 队列长度，默认 64。
 	Queue int
@@ -526,6 +532,9 @@ type TCPTransport struct {
 func NewTCPTransport(opts TCPTransportOptions) (*TCPTransport, error) {
 	if opts.ListenAddr == "" {
 		return nil, errs.Detail(ErrInvalidConfig, "TCP ListenAddr is required")
+	}
+	if len(opts.SharedSecret) == 0 && !opts.AllowInsecure {
+		return nil, errs.Detail(ErrInvalidConfig, "shared secret is required unless AllowInsecure is set")
 	}
 	backend := &tcpBackend{tlsConfig: opts.TLSConfig, timeout: opts.DialTimeout}
 	st, err := newStreamTransport(backend, opts.ListenAddr, opts.SharedSecret, opts.Queue, opts.MaxFrameBytes, opts.DialTimeout)

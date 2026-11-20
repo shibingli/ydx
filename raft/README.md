@@ -67,7 +67,7 @@ res, err := node.Propose(ctx, []byte("set key=value"))
 tr, err := raft.NewTCPTransport(raft.TCPTransportOptions{
     ListenAddr: "192.168.2.2:22102",
     TLSConfig:  tlsConfig,        // 可选：TLS/mTLS
-    SharedSecret: sharedSecret,   // 可选：帧级 HMAC-SHA256
+    SharedSecret: sharedSecret,   // 必填：帧级 HMAC-SHA256（至少 16 字节；纯 TLS 场景可显式 AllowInsecure）
 })
 if err != nil {
     return err
@@ -140,9 +140,12 @@ IPsec/MACsec，或改用启用 TLS 的 TCP/HTTP 传输。
 
 ### 传输安全与帧上限（生产必读）
 
-- 传输层**默认不认证入站消息**。多节点部署必须配置 `SharedSecret`（至少 16 字节，
+- 传输层**默认不认证入站消息**。`NewTCPTransport` / `NewHTTPTransport` 在
+  `SharedSecret` 为空时直接返回 `ErrInvalidConfig`，除非显式设置
+  `AllowInsecure: true`。多节点部署必须配置 `SharedSecret`（至少 16 字节，
   HMAC-SHA256）或 TLS；两者同时使用最稳妥：TLS 负责加密与服务器身份，HMAC 负责
-  帧完整性。RDMA 没有内置加密，生产环境应配合 IPsec/MACsec 与 HMAC。
+  帧完整性。RDMA 没有内置加密，生产环境应配合 IPsec/MACsec 与 HMAC。`AllowInsecure`
+  只适用于可信网络或已由 TLS/mTLS 在传输之外完成双向认证的场景。
 - 同一集群的所有成员必须使用相同的 `SharedSecret`。密钥只从环境变量或密钥管理
   系统读取，不得写入源码、配置样例或日志。
 - TCP 的 `MaxFrameBytes` 与 HTTP 的 `MaxBodyBytes` 必须大于最大快照的编码大小

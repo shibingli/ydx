@@ -569,6 +569,9 @@ func (n *Node) replayConfig(entries []Entry) error {
 			if err != nil {
 				return err
 			}
+			if err := validateConfState(cs); err != nil {
+				return err
+			}
 			conf = newMembershipFromState(cs)
 			jointIndex = 0
 		case EntryConfChange:
@@ -642,6 +645,9 @@ func (n *Node) truncateConfig(index uint64) {
 // 应用刚刚进入日志的成员变更项。
 func (n *Node) appendConfig(entries []Entry, from uint64) error {
 	conf := n.conf
+	if conf == nil {
+		conf = newMembership(nil, nil, nil)
+	}
 	jointIndex := n.jointIndex
 	for i := range entries {
 		e := &entries[i]
@@ -652,6 +658,9 @@ func (n *Node) appendConfig(entries []Entry, from uint64) error {
 		case EntryBootstrap:
 			cs, err := decodeConfStateBytes(e.Data)
 			if err != nil {
+				return err
+			}
+			if err := validateConfState(cs); err != nil {
 				return err
 			}
 			conf = newMembershipFromState(cs)
@@ -836,6 +845,14 @@ func (n *Node) stepPtr(m *Message) {
 		return
 	}
 	if m.Type < MsgHup || m.Type > maxMessageType || m.Type == MsgHup {
+		n.metrics.messagesDropped.Add(1)
+		releaseMessage(m)
+		return
+	}
+	// Drop poisoned counters and malformed entry ranges here, before they can be
+	// queued. Handlers never see MaxUint64 terms or indexes. | 在入队前丢弃被毒化的
+	// 计数与畸形日志项区间；处理器永远不会看到 MaxUint64 任期或索引。
+	if !validInbound(m) {
 		n.metrics.messagesDropped.Add(1)
 		releaseMessage(m)
 		return

@@ -225,6 +225,22 @@ func (n *Node) handleSnapshotChunk(m *Message) {
 	if m.Term < n.term {
 		return
 	}
+	snap := m.Snapshot
+	// Bound the snapshot metadata before adopting the term or allocating the
+	// reassembly buffer. Invalid chunks leave term, leader and configuration
+	// untouched. | 在采用任期或分配重组缓冲前约束快照元数据。非法分块不会改变任期、
+	// 领导者或配置。
+	if snap.Index == 0 || snap.Index > maxCounter || snap.Term == 0 || snap.Term > maxCounter ||
+		snap.Term > m.Term {
+		return
+	}
+	offset := m.LogIndex
+	total := m.LogTerm
+	if total > maxSnapshotBytes || offset > total || validateConfState(snap.ConfState) != nil {
+		n.send(Message{Type: MsgSnapResp, To: m.From, Term: n.term, Reject: true,
+			Index: n.committed, LogIndex: snap.Index})
+		return
+	}
 	if m.Term > n.term {
 		n.becomeFollower(m.Term, m.From, true)
 	} else {
@@ -233,19 +249,6 @@ func (n *Node) handleSnapshotChunk(m *Message) {
 		}
 		n.setLeader(m.From)
 		n.resetElection()
-	}
-	snap := m.Snapshot
-	if validateConfState(snap.ConfState) != nil {
-		n.send(Message{Type: MsgSnapResp, To: m.From, Term: n.term, Reject: true,
-			Index: n.committed, LogIndex: snap.Index})
-		return
-	}
-	offset := m.LogIndex
-	total := m.LogTerm
-	if total > maxSnapshotBytes || offset > total {
-		n.send(Message{Type: MsgSnapResp, To: m.From, Term: n.term, Reject: true,
-			Index: n.committed, LogIndex: snap.Index})
-		return
 	}
 	n.metrics.snapshotChunksIn.Add(1)
 	if snap.Index <= n.committed {

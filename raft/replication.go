@@ -107,6 +107,20 @@ func (n *Node) handleAppend(m *Message) {
 			RejectHint: n.log.lastIndex + 1})
 		return
 	}
+	// Validate peer-supplied membership entries before adopting the term or
+	// touching the log. Invalid input is a protocol violation, not a local
+	// storage failure, so it is rejected instead of stopping the node. | 在采用
+	// 任期或修改日志前校验对端提供的成员日志项。非法输入属于协议违规而非本地存储
+	// 故障，因此拒收而不是让节点停机。
+	if err := n.validateAppendConfig(m); err != nil {
+		n.metrics.messagesDropped.Add(1)
+		n.logf("warn", "raft rejected invalid config entry | raft 拒绝非法配置日志项",
+			ydlog.Uint64("node", uint64(n.id)), ydlog.Uint64("from", uint64(m.From)),
+			ydlog.Uint64("index", n.log.lastIndex+1), ydlog.Err(err))
+		n.send(Message{Type: MsgAppResp, To: m.From, Term: n.term, Reject: true,
+			RejectHint: n.log.lastIndex + 1})
+		return
+	}
 	termChanged := m.Term > n.term
 	var termSeq uint64
 	if termChanged {
@@ -155,7 +169,17 @@ func (n *Node) handleAppend(m *Message) {
 		from = truncatedAt
 	}
 	if err := n.appendConfig(m.Entries, from); err != nil {
-		n.fatal(err)
+		// Pre-validation should have rejected this before any mutation. Keep the
+		// node running even if a future encoding change slips past it: a peer
+		// must never be able to stop the process with malformed input. | 预校验
+		// 本应在任何修改前拒绝该输入。即使未来编码变化绕过预校验，也不让对端以畸形
+		// 输入停掉进程。
+		n.metrics.messagesDropped.Add(1)
+		n.logf("error", "raft rejected unapplied config entry | raft 拒绝未能应用的配置日志项",
+			ydlog.Uint64("node", uint64(n.id)), ydlog.Uint64("from", uint64(m.From)),
+			ydlog.Err(err))
+		n.send(Message{Type: MsgAppResp, To: m.From, Term: n.term, Reject: true,
+			RejectHint: from})
 		return
 	}
 	if commit > n.committed {
@@ -245,6 +269,18 @@ func (n *Node) handleAppendResp(m *Message) {
 		}
 		pr.maybeDecrTo(hint)
 		n.maybeSendAppend(m.From)
+		return
+	}
+	// A follower can only acknowledge entries this leader actually sent. Bounding
+	// the index by the outstanding pipeline window [next, inflightEnd] stops a
+	// single forged response from jumping match to the log tail and committing
+	// entries that were never replicated. | 跟随者只能确认领导者实际发送过的日志项。
+	// 用未确认流水线窗口 [next, inflightEnd] 约束索引，单条伪造响应无法把 match 跳到
+	// 日志末尾并提交从未复制的日志项。
+	if pr.inflights.count == 0 {
+		return
+	}
+	if end := pr.inflights.end(); m.Index < pr.next || m.Index > end {
 		return
 	}
 	if m.Index > n.log.lastIndex {

@@ -225,6 +225,13 @@ type Config struct {
 	// a heartbeat round. | DisableLeaseRead 强制每次线性一致读都通过心跳轮次确认
 	// 领导权。
 	DisableLeaseRead bool
+
+	// senderFilter optionally overrides the membership query used to accept
+	// inbound messages. It is unexported so only in-package tests can inject an
+	// alternative view; production nodes validate against the active
+	// configuration. | senderFilter 可选地覆盖入站消息的成员查询。它不导出，只有包内
+	// 测试可注入其他视图；生产节点按生效配置校验。
+	senderFilter func(NodeID) bool
 }
 
 // defaults fills unset fields. | defaults 填充未设置的字段。

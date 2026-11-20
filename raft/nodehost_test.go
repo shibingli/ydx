@@ -200,7 +200,7 @@ func TestNodeHostTCPGroups(t *testing.T) {
 	transports := make([]*TCPTransport, size)
 	peers := make([]Peer, size)
 	for i := 0; i < size; i++ {
-		tr, err := NewTCPTransport(TCPTransportOptions{ListenAddr: "127.0.0.1:0", Queue: 256})
+		tr, err := NewTCPTransport(TCPTransportOptions{ListenAddr: "127.0.0.1:0", Queue: 256, AllowInsecure: true})
 		if err != nil {
 			t.Fatal(err)
 		}
