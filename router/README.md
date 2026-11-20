@@ -132,6 +132,12 @@ http.Handle("/", h)
   `public, max-age=31536000, immutable`。可用 `WithSPAIndexCacheControl` /
   `WithSPAAssetCacheControl` 覆盖。
 - 目录请求保持文件服务器语义：缺少尾斜杠时 301 补齐，存在目录入口文档时输出，绝不列举目录。
+- 点号前缀的文件与目录（`.env`、`.git/config`、`.vite/manifest.json` 等）默认以 404 拒绝，
+  避免构建产物泄露隐藏配置或版本控制元数据；`.well-known` 例外，ACME HTTP-01 校验可正常访问。
+  确需输出隐藏文件时使用 `WithSPAAllowHiddenFiles(true)`。
+- 编码斜杠（`%2F` / `%5C`）绝不被当作路径分隔符：路由按原始转义路径匹配，文件解析若把同一
+  URL 解释成另一条路径，就会形成鉴权/排除规则绕过与目录穿越。含 `..` 且会爬出挂载前缀的请求
+  同样以 404 拒绝，即使受限文件系统会把它清理回根目录。
 - 每台路由器只允许挂载一套 SPA；重复挂载或 nil 文件系统会记录装配错误，由 `Validate()`
   报告，且路由器在修复装配前对所有请求返回 500。入口文档缺失会在装配期记录一条告警。
 - 挂载到 `/app` 等前缀时，构建产物的资源基路径需与之一致（Vite 的 `base: "/app/"`），

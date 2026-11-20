@@ -3,6 +3,7 @@ package router
 import (
 	"io/fs"
 	"net/http"
+	"net/url"
 	"path"
 	"strings"
 
@@ -33,6 +34,7 @@ type spaConfig struct {
 	indexCacheControl string
 	assetCacheControl string
 	exclude           []string
+	allowHidden       bool
 }
 
 // defaultSPAConfig returns the configuration used when no option overrides it. | defaultSPAConfig
@@ -101,6 +103,18 @@ func WithSPAExclude(urlPrefixes ...string) SPAOption {
 	}
 }
 
+// WithSPAAllowHiddenFiles lets the SPA serve dot-prefixed files and directories such as ".env",
+// ".git/config" or ".vite/manifest.json". They are refused with 404 by default so a build output
+// cannot leak hidden configuration or version-control metadata; ".well-known" is always reachable
+// because ACME HTTP-01 challenges live under it. Enable this only when the deployment genuinely
+// serves hidden files. | WithSPAAllowHiddenFiles 允许 SPA 输出点号前缀的文件与目录，例如
+// ".env"、".git/config" 或 ".vite/manifest.json"。默认以 404 拒绝，避免构建产物泄露隐藏配置或
+// 版本控制元数据；".well-known" 始终可访问，因为 ACME HTTP-01 校验位于其下。仅当部署确实需要
+// 输出隐藏文件时才启用。
+func WithSPAAllowHiddenFiles(allow bool) SPAOption {
+	return func(c *spaConfig) { c.allowHidden = allow }
+}
+
 // spaHandler serves one SPA deployment: static files first, then the history fallback. | spaHandler
 // 托管一套 SPA 部署：先输出静态文件，再回退到 history 入口。
 type spaHandler struct {
@@ -110,18 +124,22 @@ type spaHandler struct {
 	indexCacheControl string
 	assetCacheControl string
 	exclude           []string
+	allowHidden       bool
 }
 
 // SPAFS mounts fsys as a single-page application rooted at urlPrefix. | SPAFS 把 fsys 作为单页应用挂载在 urlPrefix。
 //
 // Files are served exactly as they exist; a GET/HEAD request that matches no file and carries
 // no file extension falls back to the index document (history mode). The SPA is consulted only
-// when no route matches, so registered routes always win. Only one SPA can be mounted per
-// router; a second call, like a nil file system, is a wiring error that marks the router
-// broken, after which every request is refused with 500 until the wiring is fixed. | 文件按原样
-// 输出；未命中文件且最后一段不含扩展名的 GET/HEAD 请求回退到入口文档（history 模式）。只有没有
-// 任何路由命中时才查询 SPA，因此已注册路由始终优先。每个路由器只能挂载一套 SPA；第二次调用与
-// nil 文件系统一样属于装配错误，会把路由器标记为损坏，修复装配前所有请求都以 500 拒绝。
+// when no route matches, so registered routes always win. Dot-prefixed files and directories are
+// refused with 404 unless WithSPAAllowHiddenFiles(true) is set, and encoded slashes are never
+// treated as path separators. Only one SPA can be mounted per router; a second call, like a nil
+// file system, is a wiring error that marks the router broken, after which every request is
+// refused with 500 until the wiring is fixed. | 文件按原样输出；未命中文件且最后一段不含扩展名的
+// GET/HEAD 请求回退到入口文档（history 模式）。只有没有任何路由命中时才查询 SPA，因此已注册路由
+// 始终优先。点号前缀的文件与目录默认以 404 拒绝，除非设置 WithSPAAllowHiddenFiles(true)；编码斜杠
+// 绝不被当作路径分隔符。每个路由器只能挂载一套 SPA；第二次调用与 nil 文件系统一样属于装配错误，
+// 会把路由器标记为损坏，修复装配前所有请求都以 500 拒绝。
 func (r *Router) SPAFS(urlPrefix string, fsys afero.Fs, opts ...SPAOption) {
 	if fsys == nil {
 		r.recordWiringError(ErrSPANilFS)
@@ -202,6 +220,7 @@ func buildSPAHandler(fsys afero.Fs, urlPrefix string, opts []SPAOption) *spaHand
 		index:             cfg.index,
 		indexCacheControl: cfg.indexCacheControl,
 		assetCacheControl: cfg.assetCacheControl,
+		allowHidden:       cfg.allowHidden,
 	}
 }
 
@@ -229,19 +248,91 @@ func normalizeSPAPrefix(prefix string) string {
 	return prefix
 }
 
-// relativePath maps the request path to a file path under the mount prefix. | relativePath 把请求路径
-// 映射为挂载前缀下的文件路径。
-func (s *spaHandler) relativePath(urlPath string) (string, bool) {
-	if s.prefix == "" {
-		return strings.TrimPrefix(urlPath, "/"), true
+// relativePath maps the request path to a file path under the mount prefix. |
+// relativePath 把请求路径映射为挂载前缀下的文件路径。
+//
+// The routing layer matches the raw escaped path, where an encoded slash stays inside one
+// segment. Reinterpreting %2F as a separator while resolving files would give one URL two
+// different meanings, so such requests are refused instead. A ".." segment that would climb out
+// of the mount is refused as well, even though the confined file system would clean it back into
+// the root; serving a file from a URL outside its own mount would bypass WithSPAExclude. |
+// 路由层按原始转义路径匹配，编码斜杠保留在单个分段内。文件解析若把 %2F 重新解释为分隔符，同一个
+// URL 就会有两种含义，因此这类请求直接拒绝。会爬出挂载的 ".." 分段同样拒绝：即使受限文件系统会把
+// 它清理回根目录，用挂载之外的 URL 输出文件也会绕过 WithSPAExclude。
+func (s *spaHandler) relativePath(u *url.URL) (string, bool) {
+	if u == nil || hasEncodedPathSeparator(u.RawPath) {
+		return "", false
 	}
-	if urlPath == s.prefix {
+	urlPath := u.Path
+	var rel string
+	switch {
+	case s.prefix == "":
+		rel = strings.TrimPrefix(urlPath, "/")
+	case urlPath == s.prefix:
+		return "", true
+	case strings.HasPrefix(urlPath, s.prefix+"/"):
+		rel = urlPath[len(s.prefix)+1:]
+	default:
+		return "", false
+	}
+	if rel == "" {
 		return "", true
 	}
-	if strings.HasPrefix(urlPath, s.prefix+"/") {
-		return urlPath[len(s.prefix)+1:], true
+	if strings.ContainsRune(rel, '\x00') || strings.ContainsRune(rel, '\\') {
+		return "", false
 	}
-	return "", false
+	rel = strings.TrimPrefix(path.Clean(rel), "/")
+	if rel == "." {
+		return "", true
+	}
+	if rel == ".." || strings.HasPrefix(rel, "../") {
+		return "", false
+	}
+	if !s.allowHidden && hasHiddenPathSegment(rel) {
+		return "", false
+	}
+	return rel, true
+}
+
+// hasEncodedPathSeparator reports whether rawPath contains %2F or %5C, the encoded forms of a
+// path separator. RawPath only holds the original encoding and is empty when it equals the
+// default escaping of Path. | hasEncodedPathSeparator 报告 rawPath 是否含有路径分隔符的编码形式
+// %2F 或 %5C。RawPath 只保存原始编码，与其默认转义一致时为空。
+func hasEncodedPathSeparator(rawPath string) bool {
+	for i := 0; i+2 < len(rawPath); i++ {
+		if rawPath[i] != '%' {
+			continue
+		}
+		switch rawPath[i+1] {
+		case '2':
+			if rawPath[i+2]|0x20 == 'f' {
+				return true
+			}
+		case '5':
+			if rawPath[i+2]|0x20 == 'c' {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// hasHiddenPathSegment reports whether any segment is dot-prefixed. The ".well-known" namespace
+// is exempt because ACME HTTP-01 challenges live below it. | hasHiddenPathSegment 报告是否存在
+// 点号前缀的分段。".well-known" 命名空间例外，因为 ACME HTTP-01 校验位于其下。
+func hasHiddenPathSegment(rel string) bool {
+	for rel != "" {
+		seg := rel
+		if i := strings.IndexByte(rel, '/'); i >= 0 {
+			seg, rel = rel[:i], rel[i+1:]
+		} else {
+			rel = ""
+		}
+		if strings.HasPrefix(seg, ".") && seg != ".well-known" {
+			return true
+		}
+	}
+	return false
 }
 
 // serve answers the request when the SPA owns it and reports whether it wrote a response. | serve
@@ -250,11 +341,11 @@ func (s *spaHandler) serve(w http.ResponseWriter, r *http.Request) bool {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
 		return false
 	}
-	rel, ok := s.relativePath(r.URL.Path)
+	rel, ok := s.relativePath(r.URL)
 	if !ok {
 		return false
 	}
-	if s.excluded(r.URL.Path) {
+	if s.excluded(r.URL, rel) {
 		return false
 	}
 	f, info, ok := s.open(rel)
@@ -436,13 +527,12 @@ func isHashByte(b byte) bool {
 // The full request path and the mount-relative path are both checked, so an exclusion behaves
 // the same whether the SPA is mounted at the root or under a prefix. | 完整请求路径与挂载相对
 // 路径都会被检查，因此无论 SPA 挂在根路径还是前缀下，排除规则的含义都一致。
-func (s *spaHandler) excluded(urlPath string) bool {
-	rel, ok := s.relativePath(urlPath)
+func (s *spaHandler) excluded(u *url.URL, rel string) bool {
 	for _, p := range s.exclude {
-		if prefixMatches(urlPath, p) {
+		if prefixMatches(u.Path, p) {
 			return true
 		}
-		if ok && prefixMatches("/"+rel, p) {
+		if prefixMatches("/"+rel, p) {
 			return true
 		}
 	}

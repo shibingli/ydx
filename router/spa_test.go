@@ -678,3 +678,98 @@ func TestStaticFSCtxResponseState(t *testing.T) {
 		}
 	}
 }
+
+// TestSPARejectsMountRelativeTraversal pins that a prefixed mount never serves a path that climbs
+// out of the mount with "..", even when the file system would clean the path back into its root. |
+// TestSPARejectsMountRelativeTraversal 固化前缀挂载绝不输出用 ".." 爬出挂载的路径，即使文件系统会把
+// 该路径清理回根目录之内。
+func TestSPARejectsMountRelativeTraversal(t *testing.T) {
+	fsys := spaAssets(t)
+	spaWrite(t, fsys, "secret.txt", "top-secret")
+	r := New()
+	r.SPAFS("/app", fsys)
+
+	for _, target := range []string{"/app/../secret.txt", "/app/%2e%2e/secret.txt"} {
+		req := httptest.NewRequest(http.MethodGet, "http://example.com/", nil)
+		req.URL.Path = target
+		rec := httptest.NewRecorder()
+		r.ServeHTTP(rec, req)
+		if rec.Code != http.StatusNotFound {
+			t.Fatalf("%q: code = %d, 期望 404", target, rec.Code)
+		}
+		if strings.Contains(rec.Body.String(), "top-secret") {
+			t.Fatalf("%q 泄露了挂载根之外的文件", target)
+		}
+	}
+}
+
+// TestSPARejectsEncodedPathSeparators pins that encoded slashes cannot smuggle a traversal or
+// bypass WithSPAExclude: routing matches the raw escaped path while the file lookup must not
+// reinterpret %2F as a segment separator. |
+// TestSPARejectsEncodedPathSeparators 固化编码斜杠不能夹带目录穿越或绕过 WithSPAExclude：路由按原始
+// 转义路径匹配，文件查找不得把 %2F 重新解释为分段分隔符。
+func TestSPARejectsEncodedPathSeparators(t *testing.T) {
+	fsys := spaAssets(t)
+	spaWrite(t, fsys, "secret.txt", "top-secret")
+	r := New()
+	r.SPAFS("/app", fsys, WithSPAExclude("/api"))
+
+	for _, target := range []string{
+		"http://example.com/app%2F..%2Fsecret.txt",
+		"http://example.com/app%2f..%2fsecret.txt",
+		"http://example.com/app%2F..%2Fapi%2Fmissing",
+	} {
+		req := httptest.NewRequest(http.MethodGet, target, nil)
+		rec := httptest.NewRecorder()
+		r.ServeHTTP(rec, req)
+		if rec.Code != http.StatusNotFound {
+			t.Fatalf("%q: code = %d body = %q, 期望 404", target, rec.Code, rec.Body.String())
+		}
+		if strings.Contains(rec.Body.String(), "top-secret") || strings.Contains(rec.Body.String(), "id=app") {
+			t.Fatalf("%q 仍命中了 SPA: body = %q", target, rec.Body.String())
+		}
+	}
+}
+
+// TestSPAServesEncodedSpaceInFileName keeps the separator guard narrow: ordinary escaped bytes
+// such as %20 must still resolve to their file name. |
+// TestSPAServesEncodedSpaceInFileName 保证分隔符防护范围足够窄：%20 这类普通转义字节仍应解析到文件名。
+func TestSPAServesEncodedSpaceInFileName(t *testing.T) {
+	fsys := spaAssets(t)
+	spaWrite(t, fsys, "a b.js", "space")
+	r := New()
+	r.SPAFS("/app", fsys)
+
+	rec := do(r, http.MethodGet, "/app/a%20b.js", nil, "")
+	if rec.Code != http.StatusOK || rec.Body.String() != "space" {
+		t.Fatalf("code = %d body = %q, 期望 200 space", rec.Code, rec.Body.String())
+	}
+}
+
+// TestSPAHiddenFiles pins the default denial of dot-prefixed path segments (except .well-known)
+// and the explicit opt-in that restores the old behaviour. |
+// TestSPAHiddenFiles 固化默认拒绝点号开头的路径分段（.well-known 除外）以及恢复旧行为的显式开关。
+func TestSPAHiddenFiles(t *testing.T) {
+	fsys := spaAssets(t)
+	spaWrite(t, fsys, ".env", "TOKEN=1")
+	spaWrite(t, fsys, ".git/config", "[core]")
+	spaWrite(t, fsys, "assets/.secret", "hidden")
+	spaWrite(t, fsys, ".well-known/acme-challenge/token", "acme")
+
+	r := New()
+	r.SPAFS("/", fsys)
+	for _, target := range []string{"/.env", "/.git/config", "/assets/.secret"} {
+		if rec := do(r, http.MethodGet, target, nil, ""); rec.Code != http.StatusNotFound {
+			t.Fatalf("%q: code = %d, 期望 404", target, rec.Code)
+		}
+	}
+	if rec := do(r, http.MethodGet, "/.well-known/acme-challenge/token", nil, ""); rec.Code != http.StatusOK {
+		t.Fatalf("ACME 路径 code = %d, 期望 200", rec.Code)
+	}
+
+	open := New()
+	open.SPAFS("/", fsys, WithSPAAllowHiddenFiles(true))
+	if rec := do(open, http.MethodGet, "/.env", nil, ""); rec.Code != http.StatusOK {
+		t.Fatalf("显式允许后 code = %d, 期望 200", rec.Code)
+	}
+}
