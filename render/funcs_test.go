@@ -76,3 +76,46 @@ func TestHtmxAttrsRejectsBadInput(t *testing.T) {
 		}
 	}
 }
+
+// TestHtmxAttrsRejectsScriptValues verifies that htmx attributes whose values
+// are evaluated as JavaScript cannot smuggle a script through the helper. |
+// TestHtmxAttrsRejectsScriptValues 验证值会被 htmx 当作 JavaScript 求值的属性不能
+// 借该辅助函数注入脚本。
+func TestHtmxAttrsRejectsScriptValues(t *testing.T) {
+	bad := []struct {
+		key   string
+		value string
+	}{
+		{"vals", "js:alert(1)"},
+		{"hx-vals", " js:alert(1)"},
+		{"vals", "JavaScript:alert(1)"},
+		{"headers", "js:{'X':'y'}"},
+		{"hx-headers", " javascript:alert(1)"},
+		{"trigger", "js:alert(1)"},
+		{"hx-trigger", "js:alert(1)"},
+		{"trigger", "click[foo]"},
+		{"hx-trigger", " load[someFilter] "},
+	}
+	for _, tc := range bad {
+		if _, err := htmxAttrs(tc.key, tc.value); !errors.Is(err, ErrHtmxInvalidValue) {
+			t.Errorf("htmxAttrs(%q, %q) 错误 = %v, 期望 ErrHtmxInvalidValue", tc.key, tc.value, err)
+		}
+	}
+
+	// Ordinary values still pass, including JSON and a plain trigger. | 普通值仍然通过，含 JSON 与普通触发器。
+	for _, tc := range []struct {
+		key   string
+		value string
+	}{
+		{"vals", `{"id":1}`},
+		{"hx-vals", `{"id":1}`},
+		{"headers", `{"X-Requested-With":"htmx"}`},
+		{"trigger", "click"},
+		{"trigger", "every 2s"},
+		{"trigger", "load, revealed"},
+	} {
+		if _, err := htmxAttrs(tc.key, tc.value); err != nil {
+			t.Errorf("htmxAttrs(%q, %q) 错误 = %v, 期望 nil", tc.key, tc.value, err)
+		}
+	}
+}

@@ -28,6 +28,11 @@ var (
 	ErrHtmxKeyNotString = errs.New("hx keys must be strings | hx 的键必须是字符串")
 	// ErrHtmxInvalidKey reports an attribute name the hx helper cannot emit safely. | ErrHtmxInvalidKey 表示 hx 辅助函数无法安全输出的属性名。
 	ErrHtmxInvalidKey = errs.New("hx key is not a plain attribute name | hx 的键不是普通属性名")
+	// ErrHtmxInvalidValue reports an htmx attribute value that would be evaluated
+	// as JavaScript (for example a "js:" prefix or a trigger filter expression). |
+	// ErrHtmxInvalidValue 表示会被当作 JavaScript 求值的 htmx 属性值（例如 "js:" 前缀
+	// 或触发器过滤表达式）。
+	ErrHtmxInvalidValue = errs.New("hx value would be evaluated as JavaScript | hx 的值会被当作 JavaScript 求值")
 	// ErrInvalidFunc reports a template function with an unusable signature. | ErrInvalidFunc 表示模板函数签名不可用。
 	ErrInvalidFunc = errs.New("invalid template function | 非法的模板函数")
 )

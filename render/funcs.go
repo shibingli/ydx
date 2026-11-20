@@ -186,10 +186,40 @@ func htmxAttrs(kv ...any) (template.HTMLAttr, error) {
 		if strings.HasPrefix(k, "hx-on") || strings.HasPrefix(k, "on") {
 			return "", errs.Detail(ErrHtmxInvalidKey, "key=%[1]q is executable JavaScript and is not allowed | 键 %[1]q 是可执行 JavaScript，不允许使用", k)
 		}
-		pairs = append(pairs, fmt.Sprintf(`%s="%s"`, k, html.EscapeString(fmt.Sprint(kv[i+1]))))
+		value := fmt.Sprint(kv[i+1])
+		// htmx treats a "js:" (or "javascript:") prefix on hx-vals / hx-headers as
+		// executable code, and hx-trigger filters are JavaScript expressions. HTML
+		// escaping does not make those values safe. | htmx 会把 hx-vals / hx-headers
+		// 上的 "js:"（或 "javascript:"）前缀当作可执行代码，hx-trigger 的过滤表达式
+		// 同样是 JavaScript；HTML 转义无法保证这些值安全。
+		if htmxValueRejected(k, value) {
+			return "", errs.Detail(ErrHtmxInvalidValue, "key=%[1]q | 键=%[1]q", k)
+		}
+		pairs = append(pairs, fmt.Sprintf(`%s="%s"`, k, html.EscapeString(value)))
 	}
 	sort.Strings(pairs)
 	return template.HTMLAttr(strings.Join(pairs, " ")), nil
+}
+
+// htmxValueRejected reports whether htmx would evaluate value as JavaScript. |
+// htmxValueRejected 报告 htmx 是否会把 value 当作 JavaScript 求值。
+func htmxValueRejected(key, value string) bool {
+	switch strings.ToLower(key) {
+	case "hx-vals", "hx-headers":
+		return htmxJSPrefix(value)
+	case "hx-trigger":
+		value = strings.TrimSpace(value)
+		return strings.Contains(value, "[") || htmxJSPrefix(value)
+	default:
+		return false
+	}
+}
+
+// htmxJSPrefix reports whether an htmx value starts with js: or javascript:. |
+// htmxJSPrefix 报告 htmx 值是否以 js: 或 javascript: 开头。
+func htmxJSPrefix(value string) bool {
+	lowered := strings.ToLower(strings.TrimSpace(value))
+	return strings.HasPrefix(lowered, "js:") || strings.HasPrefix(lowered, "javascript:")
 }
 
 // validAttrName reports whether name is a plain HTML attribute name: letters,
