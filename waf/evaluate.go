@@ -118,9 +118,24 @@ const parallelWorkThreshold = 128
 // | processPhase 求值一个阶段流。无副作用规则段并发求值并按源码顺序提交；带 setvar、ctl、
 // capture、chain、skip 或 allow 的规则作为屏障。
 func (e *engine) processPhase(tx *transaction, phase Phase) {
-	if tx == nil || tx.allow {
+	if tx == nil {
 		return
 	}
+	switch tx.allowScope {
+	case allowAll:
+		// Plain allow affects the whole transaction, but the logging phase is designed to always
+		// execute. | 不带参数的 allow 影响整个事务，但日志阶段被设计为始终执行。
+		if phase != PhaseLogging {
+			return
+		}
+	case allowRequest:
+		// allow:request ends the request phases and resumes at response headers.
+		// | allow:request 结束请求阶段并在响应头阶段恢复。
+		if phase <= PhaseRequestBody {
+			return
+		}
+	}
+	tx.allowStop = false
 	mode := e.mode(tx)
 	if mode == ModeOff {
 		return
@@ -189,7 +204,7 @@ func (e *engine) processRuleSequential(tx *transaction, entries []phaseEntry, ph
 		return next, false
 	}
 	e.commitChain(tx, result)
-	if tx.allow || tx.interruption != nil {
+	if tx.allowStop || tx.interruption != nil {
 		return 0, true
 	}
 	mode = e.mode(tx)
@@ -371,7 +386,7 @@ func (e *engine) commitParallelRun(tx *transaction, entries []phaseEntry, indice
 				rule: rule, first: result.first, values: result.values, hasFirst: result.hasFirst,
 			},
 		})
-		if tx.allow || tx.interruption != nil {
+		if tx.allowStop || tx.interruption != nil {
 			return true
 		}
 		if !isDisruptive(rule) {
@@ -649,7 +664,8 @@ func (e *engine) commitValue(tx *transaction, rule *compiledRule, value varValue
 		}
 	}
 	if rule.allow {
-		tx.allow = true
+		tx.allowScope = mergeAllowScope(tx.allowScope, rule.allowScope)
+		tx.allowStop = true
 	}
 	tx.applySetVars(rule.setvars)
 	tx.applyExpireVars(rule.expires)

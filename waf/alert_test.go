@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -162,6 +163,54 @@ func TestAlertFilterPanicIsIsolated(t *testing.T) {
 		ClientIP:     "192.0.2.1",
 		Interruption: &Interruption{RuleID: 1, Severity: "WARNING"},
 	})
+}
+
+// TestAlertBucketCapDropsNewBuckets verifies the aggregation map never grows past its limit and
+// new unique buckets are counted as dropped. | TestAlertBucketCapDropsNewBuckets 验证聚合映射不会
+// 超过上限，新的唯一桶会计入 dropped。
+func TestAlertBucketCapDropsNewBuckets(t *testing.T) {
+	alerting, err := newAlerter(AlertConfig{
+		Enabled:   true,
+		Threshold: 1000,
+		Sinks: []AlertSink{SinkFunc{
+			SinkName: "test",
+			Fn:       func(context.Context, Alert) error { return nil },
+		}},
+	}, log.New(log.Options{Writer: io.Discard, Level: log.ErrorLevel}), &counters{})
+	if err != nil {
+		t.Fatalf("newAlerter: %v", err)
+	}
+	defer alerting.close()
+	for index := 0; index < maxAlertBuckets+64; index++ {
+		alerting.notify(Event{
+			ID:           "tx",
+			ClientIP:     "192.0.2.1",
+			Path:         "/unique/" + strconv.Itoa(index),
+			Interruption: &Interruption{RuleID: 1, Severity: "WARNING"},
+		})
+	}
+	alerting.mu.Lock()
+	buckets := len(alerting.buckets)
+	alerting.mu.Unlock()
+	if buckets > maxAlertBuckets {
+		t.Fatalf("buckets = %d, want <= %d", buckets, maxAlertBuckets)
+	}
+	if dropped := alerting.counts.alertsDropped.Load(); dropped == 0 {
+		t.Fatal("new buckets were not counted as dropped")
+	}
+}
+
+// TestAlertBucketKeyBounded verifies bucket keys cannot grow with attacker-controlled paths or
+// forwarded IPs. | TestAlertBucketKeyBounded 验证桶键不会随攻击者可控的路径或转发 IP 增长。
+func TestAlertBucketKeyBounded(t *testing.T) {
+	key := alertBucketKey(Alert{
+		RuleID:   999999,
+		ClientIP: strings.Repeat("a", 4096),
+		Path:     strings.Repeat("p", 1<<20),
+	})
+	if len(key) > maxAlertKeyBytes {
+		t.Fatalf("key length = %d, want <= %d", len(key), maxAlertKeyBytes)
+	}
 }
 
 func TestEmailSinkRender(t *testing.T) {

@@ -91,6 +91,20 @@ func (w *WAF) Evaluate(r *http.Request) (Decision, error) {
 
 	status, evalErr = w.evaluateRequest(e, tx, r)
 	decision := Decision{Allowed: tx.interruption == nil, Matches: tx.matchSnapshot()}
+	if evalErr != nil && !w.failOpen.Load() && tx.interruption == nil {
+		// Fail closed in the decision itself, not only in the returned error. A caller that
+		// checks Allowed (the documented pattern) must not publish traffic when inspection
+		// could not complete, for example because the body read failed. | 在 Decision 本身失败
+		// 关闭，而不只是返回 error。按文档只检查 Allowed 的调用方在检测无法完成（例如正文读取
+		// 失败）时绝不能放行流量。
+		decision.Allowed = false
+		decision.Blocked = true
+		decision.Status = status
+		if decision.Status == 0 {
+			decision.Status = http.StatusBadRequest
+		}
+		decision.Message = "inspection failed | 检测失败"
+	}
 	if tx.interruption != nil {
 		decision.Blocked = true
 		decision.Allowed = false
@@ -125,7 +139,9 @@ func (w *WAF) evaluateRequest(e *engine, tx *transaction, r *http.Request) (int,
 	if tx.interruption != nil {
 		return tx.interruption.Status, nil
 	}
-	if tx.allow || e.mode(tx) == ModeOff {
+	if tx.allowScope == allowAll || tx.allowScope == allowRequest || e.mode(tx) == ModeOff {
+		// Request-scoped allow ends the request phases; response phases still run.
+		// | 请求级 allow 结束请求阶段；响应阶段仍会运行。
 		return 0, nil
 	}
 	if r.Method != http.MethodConnect && tx.requestBodyAccess && e.rules.needsBody &&
@@ -163,7 +179,7 @@ func (w *WAF) evaluateRequest(e *engine, tx *transaction, r *http.Request) (int,
 		if tx.interruption != nil {
 			return tx.interruption.Status, nil
 		}
-		if tx.allow || e.mode(tx) == ModeOff {
+		if tx.allowScope >= allowRequest || e.mode(tx) == ModeOff {
 			return 0, nil
 		}
 	}

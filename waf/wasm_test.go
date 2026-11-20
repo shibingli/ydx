@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/shibingli/ydx/log"
 )
@@ -156,6 +157,87 @@ func closeableWASM() []byte {
 	return module
 }
 
+// hangingInitWASM builds a plugin whose ydx_waf_init never returns. | hangingInitWASM 构建
+// ydx_waf_init 永不返回的插件。
+func hangingInitWASM() []byte {
+	module := []byte{0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00}
+	types := wasmVec(
+		[]byte{0x60, 0x00, 0x01, 0x7f},
+		[]byte{0x60, 0x02, 0x7f, 0x7f, 0x01, 0x7f},
+		[]byte{0x60, 0x01, 0x7f, 0x01, 0x7f},
+		[]byte{0x60, 0x01, 0x7f, 0x00},
+	)
+	functions := wasmVec([]byte{0x00}, []byte{0x01}, []byte{0x01}, []byte{0x02}, []byte{0x03})
+	memory := wasmVec([]byte{0x00, 0x01})
+	exports := wasmVec(
+		wasmExport("ydx_waf_abi_version", 0x00, 0),
+		wasmExport("ydx_waf_init", 0x00, 1),
+		wasmExport("ydx_waf_on_hook", 0x00, 2),
+		wasmExport("ydx_waf_alloc", 0x00, 3),
+		wasmExport("ydx_waf_free", 0x00, 4),
+		wasmExport("memory", 0x02, 0),
+	)
+	code := wasmVec(
+		wasmBody(0x41, 0x01),
+		wasmBody(0x03, 0x40, 0x0c, 0x00, 0x0b),
+		wasmBody(0x41, 0x00),
+		wasmBody(0x41, 0x80, 0x08),
+		wasmBody(),
+	)
+	module = append(module, wasmSection(1, types)...)
+	module = append(module, wasmSection(3, functions)...)
+	module = append(module, wasmSection(5, memory)...)
+	module = append(module, wasmSection(7, exports)...)
+	module = append(module, wasmSection(10, code)...)
+	return module
+}
+
+// verdictWASM builds a plugin that calls ydx_waf.set_verdict(1, status, ...) and denies.
+// | verdictWASM 构建调用 ydx_waf.set_verdict(1, status, ...) 并拒绝的插件。
+func verdictWASM(status uint32) []byte {
+	module := []byte{0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00}
+	types := wasmVec(
+		[]byte{0x60, 0x00, 0x01, 0x7f},
+		[]byte{0x60, 0x02, 0x7f, 0x7f, 0x01, 0x7f},
+		[]byte{0x60, 0x01, 0x7f, 0x01, 0x7f},
+		[]byte{0x60, 0x01, 0x7f, 0x00},
+		[]byte{0x60, 0x04, 0x7f, 0x7f, 0x7f, 0x7f, 0x01, 0x7f},
+	)
+	importEntry := wasmName(wasmHostModule)
+	importEntry = append(importEntry, wasmName("set_verdict")...)
+	importEntry = append(importEntry, 0x00)
+	importEntry = append(importEntry, 0x04)
+	imports := wasmVec(importEntry)
+	functions := wasmVec([]byte{0x00}, []byte{0x01}, []byte{0x01}, []byte{0x02}, []byte{0x03})
+	memory := wasmVec([]byte{0x00, 0x01})
+	exports := wasmVec(
+		wasmExport("ydx_waf_abi_version", 0x00, 1),
+		wasmExport("ydx_waf_init", 0x00, 2),
+		wasmExport("ydx_waf_on_hook", 0x00, 3),
+		wasmExport("ydx_waf_alloc", 0x00, 4),
+		wasmExport("ydx_waf_free", 0x00, 5),
+		wasmExport("memory", 0x02, 0),
+	)
+	hookCode := []byte{0x41, 0x01}
+	hookCode = append(hookCode, 0x41)
+	hookCode = appendU32(hookCode, status)
+	hookCode = append(hookCode, 0x41, 0x00, 0x41, 0x00, 0x10, 0x00, 0x1a, 0x41, 0x01)
+	code := wasmVec(
+		wasmBody(0x41, 0x01),
+		wasmBody(0x41, 0x00),
+		wasmBody(hookCode...),
+		wasmBody(0x41, 0x80, 0x08),
+		wasmBody(),
+	)
+	module = append(module, wasmSection(1, types)...)
+	module = append(module, wasmSection(2, imports)...)
+	module = append(module, wasmSection(3, functions)...)
+	module = append(module, wasmSection(5, memory)...)
+	module = append(module, wasmSection(7, exports)...)
+	module = append(module, wasmSection(10, code)...)
+	return module
+}
+
 // newWASMTestWAF builds an instance with one WASM plugin. | newWASMTestWAF 构建带一个 WASM 插件的实例。
 func newWASMTestWAF(t *testing.T, config WASMPluginConfig) *WAF {
 	t.Helper()
@@ -254,6 +336,51 @@ func TestWASMPluginRejectsWrongABI(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("wrong ABI version accepted")
+	}
+}
+
+// TestWASMInitTimeout verifies a guest init that never returns cannot block instance startup.
+// | TestWASMInitTimeout 验证永不返回的客户初始化不会阻塞实例启动。
+func TestWASMInitTimeout(t *testing.T) {
+	done := make(chan error, 1)
+	go func() {
+		instance, err := New(Options{
+			Directives: []string{`SecRule REQUEST_URI "@contains x" "id:1,phase:1,pass,nolog"`},
+			Logger:     log.New(log.Options{Writer: io.Discard, Level: log.ErrorLevel}),
+			WASMPlugins: []WASMPluginConfig{{
+				Name:    "hang-init",
+				Bytes:   hangingInitWASM(),
+				Config:  []byte("config"),
+				Timeout: 20 * time.Millisecond,
+			}},
+		})
+		if instance != nil {
+			_ = instance.Close()
+		}
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("hanging guest init accepted")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("WASM init timeout was not enforced")
+	}
+}
+
+// TestWASMSetVerdictClampsStatus verifies a guest-supplied status outside the HTTP range falls
+// back to the default deny status. | TestWASMSetVerdictClampsStatus 验证客户提供的越界状态码回退到
+// 默认拒绝状态。
+func TestWASMSetVerdictClampsStatus(t *testing.T) {
+	instance := newWASMTestWAF(t, WASMPluginConfig{
+		Name:   "clamp",
+		Bytes:  verdictWASM(999),
+		Points: []HookPoint{HookAfterPhase},
+	})
+	response := serveTest(t, instance, httptestNewRequest("/x"))
+	if response.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", response.Code)
 	}
 }
 

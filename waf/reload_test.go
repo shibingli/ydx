@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -14,6 +15,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/shibingli/ydx/log"
 )
 
 // testBundle builds a sealed SecLang bundle. | testBundle 构建已封装的 SecLang 规则包。
@@ -147,6 +150,38 @@ func TestApplyBundle(t *testing.T) {
 	}
 	if response := serveTest(t, instance, httptestNewRequest("/second")); response.Code != 403 {
 		t.Fatalf("pushed rule did not block: %d", response.Code)
+	}
+}
+
+// TestReloadWithReplacesHooks verifies ReloadWith treats the new options as authoritative and
+// removes hooks that are no longer configured. | TestReloadWithReplacesHooks 验证 ReloadWith 以新选项
+// 为准并移除不再配置的钩子。
+func TestReloadWithReplacesHooks(t *testing.T) {
+	directives := []string{`SecRule REQUEST_URI "@contains x" "id:1,phase:1,pass,nolog"`}
+	var calls atomic.Int32
+	instance, err := New(Options{
+		Directives: directives,
+		Logger:     log.New(log.Options{Writer: io.Discard, Level: log.ErrorLevel}),
+		Hooks: []Hook{HookFunc{
+			HookName: "configured",
+			Fn:       func(*HookContext) error { calls.Add(1); return nil },
+		}},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer func() { _ = instance.Close() }()
+	serveTest(t, instance, httptestNewRequest("/x"))
+	if calls.Load() == 0 {
+		t.Fatal("configured hook was not invoked")
+	}
+	if err := instance.ReloadWith(Options{Directives: directives}); err != nil {
+		t.Fatalf("ReloadWith: %v", err)
+	}
+	calls.Store(0)
+	serveTest(t, instance, httptestNewRequest("/x"))
+	if calls.Load() != 0 {
+		t.Fatalf("stale hook invoked %d times after ReloadWith", calls.Load())
 	}
 }
 

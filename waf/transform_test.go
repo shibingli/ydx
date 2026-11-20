@@ -8,8 +8,10 @@ func TestTransforms(t *testing.T) {
 		input string
 		want  string
 	}{
-		{"urlDecode", "%41%42+c", "AB+c"},
+		{"urlDecode", "%41%42+c", "AB c"},
+		{"urlDecode", "union+select", "union select"},
 		{"urlDecodeUni", "%u0041%uFF21%E4%B8%AD", "AA中"},
+		{"urlDecodeUni", "a+b%u0041", "a bA"},
 		{"htmlEntityDecode", "&lt;script&gt;&#x41;&#66;&colon;", "<script>AB:"},
 		{"jsDecode", `\x41B\u{1F600}`, "AB\U0001F600"},
 		{"cssDecode", `\41 \42`, "AB"},

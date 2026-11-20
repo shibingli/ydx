@@ -11,7 +11,7 @@ import (
 
 // buildRuleSet compiles every spec entry into phase buckets. | buildRuleSet 把每个规格条目编译到
 // 阶段桶中。
-func buildRuleSet(entries []specEntry, defaults []actionSpec, defaultPhase Phase, cfg ruleConfig, cc compileContext, warnings []string) (*ruleSet, []string, error) {
+func buildRuleSet(entries []specEntry, defaults map[Phase][]actionSpec, defaultPhase Phase, cfg ruleConfig, cc compileContext, warnings []string) (*ruleSet, []string, error) {
 	rs := &ruleSet{
 		engineMode:              cfg.engineMode,
 		requestBodyAccess:       cfg.requestBodyAccess,
@@ -202,7 +202,7 @@ func (rs *ruleSet) computeNeeds() {
 }
 
 // compileRuleSpec compiles one rule spec and its chain. | compileRuleSpec 编译一条规则及其链。
-func compileRuleSpec(spec *ruleSpec, defaults []actionSpec, defaultPhase Phase, cc compileContext, chainMember bool) (*compiledRule, error) {
+func compileRuleSpec(spec *ruleSpec, defaults map[Phase][]actionSpec, defaultPhase Phase, cc compileContext, chainMember bool) (*compiledRule, error) {
 	meta := &Rule{
 		ID:   spec.id,
 		File: spec.file,
@@ -247,15 +247,17 @@ func compileRuleSpec(spec *ruleSpec, defaults []actionSpec, defaultPhase Phase, 
 	} else {
 		rule.actionOnly = true
 	}
+	var defaultList []actionSpec
 	if !chainMember {
-		rule.blocking = resolveBlocking(defaults)
+		defaultList = ruleDefaultActions(defaults, spec, defaultPhase)
+		rule.blocking = resolveBlocking(defaultList)
 	}
-	actions := make([]actionSpec, 0, len(defaults)+8)
+	actions := make([]actionSpec, 0, len(defaultList)+8)
 	if chainMember {
 		// A chain member inherits the base rule's phase and cannot add disruptive actions.
 		// | 链成员继承基础规则的阶段，且不能添加破坏性动作。
-	} else if len(defaults) > 0 {
-		actions = append(actions, defaults...)
+	} else if len(defaultList) > 0 {
+		actions = append(actions, defaultList...)
 	}
 	actions = append(actions, parseActionSpecs(spec.actionsRaw)...)
 	for _, extra := range spec.extraActions {
@@ -271,6 +273,7 @@ func compileRuleSpec(spec *ruleSpec, defaults []actionSpec, defaultPhase Phase, 
 		rule.block = false
 		rule.redirect = ""
 		rule.allow = false
+		rule.allowScope = allowNone
 		rule.skip = 0
 		rule.skipAfter = ""
 		rule.log = false

@@ -2,6 +2,7 @@ package waf
 
 import (
 	"errors"
+	"net/http"
 	"strings"
 	"testing"
 	"testing/fstest"
@@ -160,6 +161,72 @@ func TestSecDefaultActionPhaseInheritance(t *testing.T) {
 	response := serveTest(t, instance, httptestNewRequest("/inherited"))
 	if response.Code != 403 {
 		t.Fatalf("status = %d", response.Code)
+	}
+}
+
+// TestSecDefaultActionScopedByPhase verifies each phase keeps its own default action list.
+// | TestSecDefaultActionScopedByPhase 验证每个阶段保留各自的默认动作列表。
+func TestSecDefaultActionScopedByPhase(t *testing.T) {
+	instance := newTestWAF(t, []string{
+		`SecDefaultAction "phase:2,deny,status:402"`,
+		`SecDefaultAction "phase:3,pass,nolog"`,
+		`SecRule REQUEST_URI "@contains default" "id:9140,phase:2"`,
+	}, nil)
+	response := serveTest(t, instance, httptestNewRequest("/default"))
+	if response.Code != http.StatusPaymentRequired {
+		t.Fatalf("status = %d, want 402; phase 2 rules must merge phase 2 defaults", response.Code)
+	}
+}
+
+// TestAllowPhaseKeepsLaterPhases verifies allow:phase stops only the current phase.
+// | TestAllowPhaseKeepsLaterPhases 验证 allow:phase 仅停止当前阶段。
+func TestAllowPhaseKeepsLaterPhases(t *testing.T) {
+	instance := newTestWAF(t, []string{
+		`SecRule REQUEST_URI "@contains allow" "id:9141,phase:1,allow:phase"`,
+		`SecRule REQUEST_URI "@contains allow" "id:9142,phase:1,deny,status:403"`,
+		`SecRule REQUEST_URI "@contains allow" "id:9143,phase:2,deny,status:418"`,
+	}, nil)
+	response := serveTest(t, instance, httptestNewRequest("/allow"))
+	if response.Code != http.StatusTeapot {
+		t.Fatalf("status = %d, want 418; allow:phase must not skip phase 2", response.Code)
+	}
+}
+
+// TestAllowRequestKeepsResponsePhases verifies allow:request ends request phases and resumes at
+// response headers. | TestAllowRequestKeepsResponsePhases 验证 allow:request 结束请求阶段并在响应头
+// 阶段恢复。
+func TestAllowRequestKeepsResponsePhases(t *testing.T) {
+	instance := newTestWAF(t, []string{
+		`SecRule REQUEST_URI "@contains allow" "id:9144,phase:1,allow:request"`,
+		`SecRule REQUEST_URI "@contains allow" "id:9145,phase:2,deny,status:403"`,
+		`SecRule RESPONSE_STATUS "@streq 200" "id:9146,phase:3,deny,status:418"`,
+	}, nil)
+	response := serveTest(t, instance, httptestNewRequest("/allow"))
+	if response.Code != http.StatusTeapot {
+		t.Fatalf("status = %d, want 418; allow:request must keep response phases", response.Code)
+	}
+}
+
+// TestAllowWithoutScopeSkipsResponsePhases verifies plain allow affects the whole transaction.
+// | TestAllowWithoutScopeSkipsResponsePhases 验证不带作用域的 allow 影响整个事务。
+func TestAllowWithoutScopeSkipsResponsePhases(t *testing.T) {
+	instance := newTestWAF(t, []string{
+		`SecRule REQUEST_URI "@contains allow" "id:9147,phase:1,allow"`,
+		`SecRule RESPONSE_STATUS "@streq 200" "id:9148,phase:3,deny,status:418"`,
+	}, nil)
+	response := serveTest(t, instance, httptestNewRequest("/allow"))
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; plain allow must skip response phases", response.Code)
+	}
+}
+
+// TestAllowRejectsUnknownScope verifies invalid allow parameters fail the build.
+// | TestAllowRejectsUnknownScope 验证非法的 allow 参数会使构建失败。
+func TestAllowRejectsUnknownScope(t *testing.T) {
+	if _, err := New(Options{
+		Directives: []string{`SecAction "id:9149,phase:1,allow:bogus"`},
+	}); err == nil {
+		t.Fatal("unknown allow scope accepted")
 	}
 }
 

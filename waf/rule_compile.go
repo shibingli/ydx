@@ -88,7 +88,7 @@ func compileRuleSet(directives []parsedDirective, opts Options, cc compileContex
 	}
 	cc.warn = warn
 
-	defaultActions := []actionSpec{{name: "pass"}}
+	defaultActions := make(map[Phase][]actionSpec, 4)
 	defaultPhase := PhaseNone
 	lastPhase := PhaseRequestBody
 	var entries []specEntry
@@ -146,15 +146,25 @@ func compileRuleSet(directives []parsedDirective, opts Options, cc compileContex
 				declaredAt: sequence,
 			})
 		case dirDefaultAction:
-			defaultActions = parseActionSpecs(directive.Args[0])
-			for _, action := range defaultActions {
+			actions := parseActionSpecs(directive.Args[0])
+			phase := PhaseNone
+			for _, action := range actions {
 				if action.name == "phase" {
-					if phase, err := parsePhase(action.value); err == nil {
-						defaultPhase = phase
-						lastPhase = phase
+					if parsed, err := parsePhase(action.value); err == nil {
+						phase = parsed
+						defaultPhase = parsed
+						lastPhase = parsed
 					}
 				}
 			}
+			if phase == PhaseNone {
+				// A directive without phase keeps applying where it would have applied before:
+				// to the most recently declared phase, or to every phase as a global fallback.
+				// | 未带 phase 的指令保持原有作用范围：应用于最近声明的阶段，或作为所有阶段的全局
+				// 回退。
+				phase = defaultPhase
+			}
+			defaultActions[phase] = actions
 		case dirUpdateActionByID, dirUpdateTargetByID, dirUpdateTargetByTag,
 			dirUpdateTargetByMsg, dirRemoveByID, dirRemoveByTag, dirRemoveByMsg,
 			dirRemoveTargetByID:
@@ -199,6 +209,36 @@ func specPhase(spec *ruleSpec, defaultPhase Phase) Phase {
 		return PhaseRequestHeaders
 	}
 	return PhaseRequestBody
+}
+
+// baseDefaultActions applies when no SecDefaultAction covers a rule's phase. SecDefaultAction
+// defaults to a non-disruptive pass, matching ModSecurity. | baseDefaultActions 在没有
+// SecDefaultAction 覆盖规则阶段时使用。默认动作是非破坏性的 pass，与 ModSecurity 一致。
+var baseDefaultActions = []actionSpec{{name: "pass"}}
+
+// ruleDefaultActions selects the SecDefaultAction list for a rule's effective phase. Phase changes
+// from SecRuleUpdateActionById are applied first so the lookup follows the rule's final phase.
+// | ruleDefaultActions 为规则的有效阶段选择 SecDefaultAction 列表。先应用
+// SecRuleUpdateActionById 的阶段变更，使查找跟随规则的最终阶段。
+func ruleDefaultActions(defaults map[Phase][]actionSpec, spec *ruleSpec, defaultPhase Phase) []actionSpec {
+	phase := specPhase(spec, defaultPhase)
+	for _, extra := range spec.extraActions {
+		for _, action := range parseActionSpecs(extra) {
+			if action.name != "phase" {
+				continue
+			}
+			if parsed, err := parsePhase(action.value); err == nil {
+				phase = parsed
+			}
+		}
+	}
+	if actions, ok := defaults[phase]; ok && len(actions) > 0 {
+		return actions
+	}
+	if actions, ok := defaults[PhaseNone]; ok && len(actions) > 0 {
+		return actions
+	}
+	return baseDefaultActions
 }
 
 // actionArg returns the actions argument or an empty string. | actionArg 返回动作参数或空串。

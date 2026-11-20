@@ -12,6 +12,35 @@ import (
 // 限制在 ModSecurity 兼容范围内。
 const maxRuleID = 999999
 
+// allowScope records how far an allow action skips rule processing, matching Coraza and
+// ModSecurity. | allowScope 记录 allow 动作跳过规则处理的范围，与 Coraza、ModSecurity 一致。
+type allowScope uint8
+
+// Allow scopes. | allow 作用域。
+const (
+	// allowNone means no allow action matched. | allowNone 表示没有 allow 动作命中。
+	allowNone allowScope = iota
+	// allowPhase stops only the current phase; later phases still run. | allowPhase 仅停止当前阶段，
+	// 后续阶段仍会运行。
+	allowPhase
+	// allowRequest stops the remaining request phases and resumes at response headers.
+	// | allowRequest 停止其余请求阶段并在响应头阶段恢复。
+	allowRequest
+	// allowAll stops every phase except logging. Plain allow selects this scope.
+	// | allowAll 停止除日志阶段外的所有阶段。不带参数的 allow 选择该作用域。
+	allowAll
+)
+
+// mergeAllowScope widens a transaction's allow scope. A narrower later action never re-enables
+// phases that an earlier action already allowed. | mergeAllowScope 扩大事务的 allow 作用域；后续
+// 较窄的动作不会重新启用此前已放行的阶段。
+func mergeAllowScope(current, next allowScope) allowScope {
+	if next > current {
+		return next
+	}
+	return current
+}
+
 // blockingAction is the disruptive action selected by SecDefaultAction. The SecLang block action
 // executes this action instead of always denying. | blockingAction 是 SecDefaultAction 选定的
 // 破坏性动作。SecLang 的 block 动作执行该动作，而不是总是拒绝。
@@ -184,6 +213,17 @@ func applyAction(spec actionSpec, rule *compiledRule, cc compileContext) error {
 		rule.redirect = ""
 	case "allow":
 		rule.allow = true
+		switch strings.ToLower(strings.TrimSpace(spec.value)) {
+		case "":
+			rule.allowScope = allowAll
+		case "phase":
+			rule.allowScope = allowPhase
+		case "request":
+			rule.allowScope = allowRequest
+		default:
+			return errs.Detail(ErrParse, "invalid allow scope %q | 非法的 allow 作用域 %q",
+				spec.value, spec.value)
+		}
 	case "deny":
 		rule.deny = true
 		rule.drop = false

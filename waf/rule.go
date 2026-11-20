@@ -108,6 +108,7 @@ type compiledRule struct {
 	log        bool
 	audit      bool
 	allow      bool
+	allowScope allowScope
 	pass       bool
 
 	deny  bool

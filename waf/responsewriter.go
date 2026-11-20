@@ -32,6 +32,7 @@ type responseWriter struct {
 	interrupted      bool
 	hijacked         bool
 	tooLarge         bool
+	tooLargeRejected bool
 }
 
 // newResponseWriter creates a response wrapper. | newResponseWriter 创建响应包装器。
@@ -108,7 +109,7 @@ func (w *responseWriter) WriteHeader(code int) {
 // 响应正文，其余内容直接透传。
 func (w *responseWriter) Write(p []byte) (int, error) {
 	written := len(p)
-	if w.hijacked {
+	if w.hijacked || w.tooLargeRejected {
 		return written, nil
 	}
 	if !w.wroteHeader {
@@ -184,16 +185,23 @@ func (w *responseWriter) flushPartial() bool {
 // Flush inspects the buffered prefix and flushes the underlying writer. | Flush 检测已缓冲前缀并
 // 刷新底层写入器。
 func (w *responseWriter) Flush() {
-	if w.hijacked {
+	if w.hijacked || w.tooLargeRejected {
 		return
 	}
 	if !w.wroteHeader {
 		w.WriteHeader(http.StatusOK)
 	}
-	if w.interrupted {
+	if w.interrupted || w.tooLargeRejected {
 		return
 	}
 	if w.buffering {
+		if w.tooLarge && w.tx.responseBodyLimitAction == LimitReject {
+			// In reject mode an oversized body must never release its buffered prefix, not even
+			// when the handler flushes early. | Reject 模式下超限正文绝不能释放已缓冲前缀，即使
+			// 处理器提前 Flush。
+			w.rejectTooLarge()
+			return
+		}
 		if !w.flushPartial() {
 			return
 		}
@@ -232,10 +240,22 @@ func (w *responseWriter) Push(target string, opts *http.PushOptions) error {
 // http.ResponseController 暴露底层写入器。
 func (w *responseWriter) Unwrap() http.ResponseWriter { return w.rw }
 
-// ReadFrom preserves the underlying ReaderFrom fast path when no buffering is active.
-// | ReadFrom 在未缓冲时保留底层 ReaderFrom 快路径。
+// ReadFrom evaluates phase 3 through WriteHeader before using the underlying ReaderFrom fast path.
+// A source without WriterTo reaches this method, so delegating first would send response headers
+// and body without running phase 3 at all. | ReadFrom 在使用底层 ReaderFrom 快路径之前通过
+// WriteHeader 执行 phase 3。没有 WriterTo 的来源会进入本方法，若先委托就会完全跳过 phase 3 直接
+// 发送响应头与正文。
 func (w *responseWriter) ReadFrom(r io.Reader) (int64, error) {
-	if w.buffering || w.hijacked || w.interrupted {
+	if w.hijacked || w.tooLargeRejected {
+		return 0, nil
+	}
+	if !w.wroteHeader {
+		w.WriteHeader(http.StatusOK)
+	}
+	if w.hijacked || w.interrupted || w.tooLargeRejected {
+		return 0, nil
+	}
+	if w.buffering {
 		return io.Copy(plainWriter{Writer: w}, r)
 	}
 	if readerFrom, ok := w.rw.(io.ReaderFrom); ok {
@@ -255,6 +275,9 @@ func (w *responseWriter) finish() error {
 	if w.interrupted || w.hijacked {
 		return nil
 	}
+	if w.tooLargeRejected {
+		return ErrResponseBodyTooLarge
+	}
 	if !w.buffering {
 		return nil
 	}
@@ -269,6 +292,20 @@ func (w *responseWriter) finish() error {
 	}
 	w.buffering = false
 	return nil
+}
+
+// rejectTooLarge discards an oversized buffered body and answers 500 without releasing any body
+// bytes. | rejectTooLarge 丢弃已超限的缓冲正文并以 500 应答，不释放任何正文字节。
+func (w *responseWriter) rejectTooLarge() {
+	w.tooLargeRejected = true
+	w.buffer = w.buffer[:0]
+	w.buffering = false
+	if w.hijacked || w.headerSent {
+		return
+	}
+	w.rw.WriteHeader(http.StatusInternalServerError)
+	w.status = http.StatusInternalServerError
+	w.headerSent = true
 }
 
 // writeBlock writes the interruption response when headers have not been sent yet. | writeBlock 在

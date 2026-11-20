@@ -100,7 +100,7 @@ func (w *WAF) serve(rw http.ResponseWriter, r *http.Request, run func(http.Respo
 		w.respondInterruption(rw, r, e, tx, &status)
 		return false
 	}
-	if tx.allow || e.mode(tx) == ModeOff {
+	if tx.allowScope == allowAll || e.mode(tx) == ModeOff {
 		run(rw)
 		return true
 	}

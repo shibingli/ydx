@@ -13,12 +13,20 @@ import (
 // maps full-width compatibility characters to ASCII. | percentDecode 解码百分号转义。uni 为 true
 // 时同时解码 %uXXXX 序列并把全角兼容字符映射为 ASCII。
 func percentDecode(s string, uni bool) string {
-	if !strings.Contains(s, "%") {
+	if !strings.ContainsAny(s, "%+") {
 		return s
 	}
 	var b strings.Builder
 	b.Grow(len(s))
 	for i := 0; i < len(s); {
+		if s[i] == '+' {
+			// ModSecurity/Coraza urlDecode and urlDecodeUni treat '+' as a space, matching
+			// application/x-www-form-urlencoded decoding. | ModSecurity/Coraza 的 urlDecode 与
+			// urlDecodeUni 把 '+' 视为空格，与 application/x-www-form-urlencoded 解码一致。
+			b.WriteByte(' ')
+			i++
+			continue
+		}
 		if s[i] != '%' {
 			b.WriteByte(s[i])
 			i++

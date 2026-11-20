@@ -232,7 +232,7 @@ func (w *WAF) Reload() error {
 		return err
 	}
 	w.persist(opts, bundle)
-	return w.reloadLocked(opts, bundle, w.native)
+	return w.reloadLocked(opts, bundle, w.native, false)
 }
 
 // ReloadWith replaces the options and rebuilds the engine. When the source reports no change,
@@ -276,7 +276,7 @@ func (w *WAF) ReloadWith(o Options) error {
 			return alertErr
 		}
 	}
-	if err := w.reloadLocked(normalized, bundle, native); err != nil {
+	if err := w.reloadLocked(normalized, bundle, native, true); err != nil {
 		if native != w.native {
 			native.release()
 		}
@@ -307,13 +307,15 @@ func (w *WAF) ApplyBundle(bundle *Bundle) error {
 		return ErrClosed
 	}
 	w.persist(w.opts, bundle)
-	return w.reloadLocked(w.opts, bundle, w.native)
+	return w.reloadLocked(w.opts, bundle, w.native, false)
 }
 
 // reloadLocked builds, validates and swaps while the caller holds mu. Native plugin ownership
-// moves to the new engine; the previous generation is released after the swap. | reloadLocked 在
-// 调用方持有 mu 时构建、校验并替换。原生插件所有权移交给新引擎；交换后释放上一代际。
-func (w *WAF) reloadLocked(opts Options, bundle *Bundle, native *nativePluginSet) error {
+// moves to the new engine; the previous generation is released after the swap. When
+// replaceHooks is true the option hook list is authoritative, so an empty list clears hooks.
+// | reloadLocked 在调用方持有 mu 时构建、校验并替换。原生插件所有权移交给新引擎；交换后释放上一
+// 代际。replaceHooks 为真时选项中的钩子列表是唯一事实来源，空列表会清空钩子。
+func (w *WAF) reloadLocked(opts Options, bundle *Bundle, native *nativePluginSet, replaceHooks bool) error {
 	next, err := buildEngine(opts, bundle, w.logger, w.hooks, &w.counts, native)
 	if err != nil {
 		w.counts.errors.Add(1)
@@ -326,7 +328,7 @@ func (w *WAF) reloadLocked(opts Options, bundle *Bundle, native *nativePluginSet
 	w.opts = opts
 	w.failOpen.Store(opts.FailOpen)
 	w.bundle = bundle
-	if len(opts.Hooks) > 0 {
+	if replaceHooks || len(opts.Hooks) > 0 {
 		w.hooks.Replace(opts.Hooks)
 	}
 	if previousNative != nil && previousNative != native {
@@ -365,7 +367,7 @@ func (w *WAF) resolveWatch(ctx context.Context) error {
 		return ErrNotModified
 	}
 	w.persist(opts, bundle)
-	return w.reloadLocked(opts, bundle, w.native)
+	return w.reloadLocked(opts, bundle, w.native, false)
 }
 
 // Watch polls the configured source until ctx is cancelled or the WAF is closed. New already

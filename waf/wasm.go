@@ -81,10 +81,11 @@ type wasmPlugin struct {
 // wasmRuntime owns the wazero runtime, the compiled module and an instance pool. | wasmRuntime 持有
 // wazero 运行时、已编译模块与实例池。
 type wasmRuntime struct {
-	rt       wazero.Runtime
-	compiled wazero.CompiledModule
-	logger   *log.Logger
-	sem      chan struct{}
+	rt          wazero.Runtime
+	compiled    wazero.CompiledModule
+	logger      *log.Logger
+	sem         chan struct{}
+	initTimeout time.Duration
 
 	modules sync.Map // module name -> *wasmInstance | 模块名 -> *wasmInstance
 	name    string
@@ -186,11 +187,12 @@ func newWASMPlugin(config WASMPluginConfig, logger *log.Logger, counters *counte
 		return nil, errs.Wrap(err, ErrWASM)
 	}
 	rt := &wasmRuntime{
-		rt:     runtime,
-		config: append([]byte(nil), config.Config...),
-		logger: logger,
-		name:   config.Name,
-		sem:    make(chan struct{}, instances),
+		rt:          runtime,
+		config:      append([]byte(nil), config.Config...),
+		logger:      logger,
+		name:        config.Name,
+		sem:         make(chan struct{}, instances),
+		initTimeout: timeout,
 	}
 	if _, err := runtime.NewHostModuleBuilder(wasmHostModule).
 		NewFunctionBuilder().WithFunc(rt.hostLog).Export("log").
@@ -304,7 +306,10 @@ func (p *wasmPlugin) run(ctx *HookContext) error {
 		case 2:
 			ctx.Drop(result.status, result.message)
 		case 3:
-			ctx.tx.allow = true
+			// A guest allow verdict has no phase argument, so it allows the whole transaction.
+			// | 客户 allow 裁决没有阶段参数，因此放行整个事务。
+			ctx.tx.allowScope = allowAll
+			ctx.tx.allowStop = true
 		}
 	}
 	return nil
@@ -418,8 +423,16 @@ func (r *wasmRuntime) release(instance *wasmInstance, broken bool) {
 	r.mu.Unlock()
 }
 
-// newInstance instantiates and initializes one guest module. | newInstance 实例化并初始化一个客户模块。
+// newInstance instantiates and initializes one guest module. Instantiation, the ABI version call
+// and guest init share the plugin timeout so a malicious or broken start function cannot block the
+// caller forever. | newInstance 实例化并初始化一个客户模块。实例化、ABI 版本调用与客户初始化共享
+// 插件超时，恶意或损坏的启动函数不会永久阻塞调用方。
 func (r *wasmRuntime) newInstance(ctx context.Context) (*wasmInstance, error) {
+	if r.initTimeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, r.initTimeout)
+		defer cancel()
+	}
 	name := r.name + "-" + strconv.FormatUint(r.seq.Add(1), 36)
 	module, err := r.rt.InstantiateModule(ctx, r.compiled, wazero.NewModuleConfig().WithName(name))
 	if err != nil {
@@ -475,7 +488,12 @@ func (r *wasmRuntime) newInstance(ctx context.Context) (*wasmInstance, error) {
 		}
 		initResults, initErr := fnInit.Call(ctx, uint64(ptr), uint64(len(r.config)))
 		if instance.fnFree != nil {
-			_, _ = instance.fnFree.Call(context.Background(), uint64(ptr))
+			// Freeing the config buffer must not close a successfully initialized module when the
+			// init deadline has just elapsed, so it gets its own short bound.
+			// | 释放配置缓冲区不能因初始化期限刚到期就关闭已成功初始化的模块，因此使用独立的短超时。
+			freeCtx, freeCancel := context.WithTimeout(context.Background(), wasmCloseTimeout)
+			_, _ = instance.fnFree.Call(freeCtx, uint64(ptr))
+			freeCancel()
 		}
 		if initErr != nil {
 			instance.close()
@@ -625,6 +643,12 @@ func (r *wasmRuntime) hostSetVerdict(_ context.Context, module api.Module, code,
 		return -1
 	}
 	state.verdict = int32(code)
+	// Guest code is untrusted: statuses outside the HTTP range fall back to the default deny
+	// status instead of leaking 0 or overflowing the int32 conversion.
+	// | 客户代码不可信：HTTP 范围之外的状态码回退到默认拒绝状态，避免泄漏 0 或 int32 转换溢出。
+	if status < 100 || status > 599 {
+		status = 0
+	}
 	state.status = int32(status)
 	if message, ok := readGuestMemory(module, msgPtr, msgLen); ok {
 		state.message = string(message)

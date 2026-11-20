@@ -98,6 +98,10 @@ const (
 	alertSinkFailureThreshold     = 5
 	alertSinkDisableCooldown      = 5 * time.Minute
 	maxAlertBuckets               = 4096
+	maxAlertIPBytes               = 64
+	maxAlertPathBytes             = 192
+	maxAlertKeyBytes              = 6 + 1 + maxAlertIPBytes + 1 + maxAlertPathBytes
+	minAlertPruneInterval         = time.Second
 )
 
 // alertBucket aggregates events for one rule/client pair. | alertBucket 为一个规则/客户端组合聚合事件。
@@ -122,6 +126,7 @@ type alerter struct {
 	lastSent  time.Time
 	hourStart time.Time
 	dayStart  time.Time
+	lastPrune time.Time
 	ctx       context.Context
 	logger    *log.Logger
 	counts    *counters
@@ -250,7 +255,7 @@ func (a *alerter) notify(event Event) {
 		return
 	}
 	now := time.Now()
-	key := strconv.Itoa(alert.RuleID) + "|" + alert.ClientIP + "|" + alert.Path
+	key := alertBucketKey(alert)
 	threshold := a.cfg.Threshold
 	if severityValue(alert.Severity) <= 2 {
 		threshold = a.cfg.CriticalThreshold
@@ -259,7 +264,19 @@ func (a *alerter) notify(event Event) {
 	bucket := a.buckets[key]
 	if bucket == nil {
 		if len(a.buckets) >= maxAlertBuckets {
-			a.pruneBucketsLocked(now)
+			// Prune at most once per interval: while an attacker floods unique keys, scanning the
+			// whole map for every event would be the amplification the cap is meant to stop.
+			// | 每个间隔最多 prune 一次：攻击者制造大量唯一键时，每个事件都扫描整个映射正是上限
+			// 要阻止的放大。
+			if a.lastPrune.IsZero() || now.Sub(a.lastPrune) >= minAlertPruneInterval {
+				a.pruneBucketsLocked(now)
+				a.lastPrune = now
+			}
+			if len(a.buckets) >= maxAlertBuckets {
+				a.counts.alertsDropped.Add(1)
+				a.mu.Unlock()
+				return
+			}
 		}
 		bucket = &alertBucket{}
 		a.buckets[key] = bucket
@@ -339,6 +356,22 @@ func (a *alerter) allowLocked(now time.Time) bool {
 		return false
 	}
 	return true
+}
+
+// alertBucketKey builds the aggregation key with bounded parts. Paths and client addresses are
+// attacker-controlled, so truncating them keeps both the key and the prune scan from growing with
+// input size. | alertBucketKey 构建各段长度有界的聚合键。路径与客户端地址受攻击者控制，截断可避免
+// 键与 prune 扫描随输入增长。
+func alertBucketKey(alert Alert) string {
+	clientIP := alert.ClientIP
+	if len(clientIP) > maxAlertIPBytes {
+		clientIP = clientIP[:maxAlertIPBytes]
+	}
+	path := alert.Path
+	if len(path) > maxAlertPathBytes {
+		path = path[:maxAlertPathBytes]
+	}
+	return strconv.Itoa(alert.RuleID) + "|" + clientIP + "|" + path
 }
 
 // pruneBucketsLocked drops buckets outside the aggregation and cooldown windows. | pruneBucketsLocked

@@ -104,7 +104,8 @@ type transaction struct {
 	argLimit          int
 	bodyLimit         int
 	responseBodyLimit int
-	allow             bool
+	allowScope        allowScope
+	allowStop         bool
 
 	engineMode  Mode
 	defaultMode Mode
@@ -167,7 +168,8 @@ func resetTransaction(tx *transaction) {
 	tx.parallelResults = tx.parallelResults[:0]
 	tx.interruption = nil
 	tx.detected = nil
-	tx.allow = false
+	tx.allowScope = allowNone
+	tx.allowStop = false
 	if tx.removedRules != nil {
 		clear(tx.removedRules)
 	}
