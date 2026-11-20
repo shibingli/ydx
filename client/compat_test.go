@@ -594,3 +594,106 @@ func TestRuleHeadersNotReaddedOnCrossHostRedirect(t *testing.T) {
 		t.Fatalf("rule Authorization leaked to redirect target: %q", got)
 	}
 }
+
+// TestRuleCredentialHeadersNotReaddedOnCrossOriginRedirect checks that every rule header, not
+// only the standard sensitive ones, is dropped when a redirect changes origin. | TestRuleCredentialHeadersNotReaddedOnCrossOriginRedirect
+// 校验跨源重定向丢弃全部规则头，而不只是标准敏感头。
+func TestRuleCredentialHeadersNotReaddedOnCrossOriginRedirect(t *testing.T) {
+	var gotAuth, gotKey atomic.Value
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth.Store(r.Header.Get("Authorization"))
+		gotKey.Store(r.Header.Get("X-API-Key"))
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer target.Close()
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, target.URL+"/steal", http.StatusFound)
+	}))
+	defer origin.Close()
+	c, err := New(
+		WithRule(Rule{
+			Pattern: "/**",
+			Headers: http.Header{
+				"Authorization": {"Bearer secret"},
+				"X-API-Key":     {"api-secret"},
+			},
+		}),
+		WithoutCookieJar(),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	resp, err := c.Get(context.Background(), origin.URL+"/start")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if got := gotAuth.Load(); got != nil && got.(string) != "" {
+		t.Fatalf("rule Authorization leaked across origins: %q", got)
+	}
+	if got := gotKey.Load(); got != nil && got.(string) != "" {
+		t.Fatalf("rule X-API-Key leaked across origins: %q", got)
+	}
+}
+
+// schemeRedirectTransport simulates an https request redirected to plain http on the same host. |
+// schemeRedirectTransport 模拟同主机 https 请求重定向到明文 http。
+type schemeRedirectTransport struct {
+	mu   sync.Mutex
+	auth []string
+	key  []string
+}
+
+// RoundTrip returns one redirect followed by a successful response. | RoundTrip 返回一次重定向与
+// 一次成功响应。
+func (rt *schemeRedirectTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	rt.mu.Lock()
+	first := len(rt.auth) == 0
+	rt.auth = append(rt.auth, req.Header.Get("Authorization"))
+	rt.key = append(rt.key, req.Header.Get("X-API-Key"))
+	rt.mu.Unlock()
+	header := make(http.Header)
+	if first {
+		header.Set("Location", "http://example.com/next")
+		return &http.Response{StatusCode: http.StatusFound, Header: header, Body: http.NoBody, Request: req}, nil
+	}
+	header.Set("Content-Type", "text/plain")
+	return &http.Response{StatusCode: http.StatusOK, Header: header, Body: http.NoBody, Request: req}, nil
+}
+
+// TestSchemeDowngradeRedirectDropsRuleCredentials checks that an https to http redirect on the
+// same host does not re-add rule credentials. | TestSchemeDowngradeRedirectDropsRuleCredentials
+// 校验同主机 https 到 http 的重定向不会重新注入规则凭据。
+func TestSchemeDowngradeRedirectDropsRuleCredentials(t *testing.T) {
+	rt := &schemeRedirectTransport{}
+	c, err := New(
+		WithTransport(rt),
+		WithRule(Rule{
+			Pattern: "/**",
+			Headers: http.Header{
+				"Authorization": {"Bearer secret"},
+				"X-API-Key":     {"api-secret"},
+			},
+		}),
+		WithoutCookieJar(),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	resp, err := c.Get(context.Background(), "https://example.com/start")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if len(rt.auth) != 2 {
+		t.Fatalf("redirect hops = %d, want 2", len(rt.auth))
+	}
+	if rt.auth[0] != "Bearer secret" || rt.key[0] != "api-secret" {
+		t.Fatalf("first hop credentials = %q/%q, want rule injection", rt.auth[0], rt.key[0])
+	}
+	if rt.auth[1] != "" || rt.key[1] != "" {
+		t.Fatalf("downgrade hop leaked credentials: auth=%q key=%q", rt.auth[1], rt.key[1])
+	}
+}

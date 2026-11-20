@@ -177,6 +177,7 @@ func (s *Stream) open(ctx context.Context) error {
 	}
 	template := s.template.Clone(ctx)
 	via := make([]*http.Request, 0, 4)
+	suppressInjected := false
 	for redirects := 0; ; redirects++ {
 		req := template.Clone(ctx)
 		if (redirects > 0 || s.reconnects > 0) && req.Body != nil && req.Body != http.NoBody {
@@ -195,6 +196,9 @@ func (s *Stream) open(ctx context.Context) error {
 		}
 		req = req.WithContext(context.WithValue(req.Context(), streamRequestKey{}, true))
 		req = req.WithContext(context.WithValue(req.Context(), metaKey{}, meta))
+		if suppressInjected {
+			req = req.WithContext(context.WithValue(req.Context(), suppressInjectedKey{}, true))
+		}
 		if jar != nil {
 			for _, cookie := range jar.Cookies(req.URL) {
 				req.AddCookie(cookie)
@@ -239,12 +243,17 @@ func (s *Stream) open(ctx context.Context) error {
 				drainAndClose(resp.Body, 64<<10)
 				return errs.Detail(ErrSSEProtocol, "redirect scheme %q | 重定向 scheme %q", location.Scheme, location.Scheme)
 			}
-			if !strings.EqualFold(req.URL.Host, location.Host) {
+			if !sameOrigin(req.URL, location) {
+				// A cross-origin stream hop must not carry rule-injected credentials. Remove
+				// the standard sensitive set and suppress all rule and host header injection for
+				// the rest of this redirect chain. | 跨源流跳不得携带规则注入的凭据。移除标准敏感
+				// 头集合，并在本次重定向链的后续请求中禁止全部规则与 Host 头注入。
 				for _, name := range []string{
 					"Authorization", "Cookie", "Cookie2", "Proxy-Authorization", "Last-Event-ID",
 				} {
 					template.Header.Del(name)
 				}
+				suppressInjected = true
 			}
 			switch {
 			case resp.StatusCode == http.StatusSeeOther,

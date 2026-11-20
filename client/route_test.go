@@ -10,6 +10,49 @@ import (
 	"time"
 )
 
+func TestRuleMatchUsesDecodedPathAndRejectsAmbiguity(t *testing.T) {
+	rs, err := CompileRules(
+		Rule{Name: "admin", Pattern: "/admin/**"},
+		Rule{Name: "catchall", Pattern: "/**"},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustTarget := func(raw string) *http.Request {
+		t.Helper()
+		req, err := http.NewRequest(http.MethodGet, raw, nil)
+		if err != nil {
+			t.Fatalf("NewRequest(%q): %v", raw, err)
+		}
+		return req
+	}
+	cases := []struct {
+		name   string
+		target string
+	}{
+		{name: "percent encoded literal", target: "http://svc/%61dmin/x"},
+		{name: "dot segments", target: "http://svc/admin/../admin"},
+		{name: "duplicate slash", target: "http://svc//admin"},
+		{name: "encoded slash", target: "http://svc/admin%2F..%2Fadmin"},
+		{name: "encoded backslash", target: "http://svc/admin%5C..%5Cadmin"},
+		{name: "encoded separator", target: "http://svc/admin%2Fsecret"},
+	}
+	for _, tc := range cases {
+		rv, _, _, matchErr := rs.matchRequest(mustTarget(tc.target))
+		if matchErr != nil {
+			if !errors.Is(matchErr, ErrAmbiguousPath) {
+				t.Fatalf("%s: error = %v, want ErrAmbiguousPath", tc.name, matchErr)
+			}
+			continue
+		}
+		if rv == nil || rv.Name != "admin" {
+			t.Fatalf("%s: matched %v, want admin or ErrAmbiguousPath", tc.name, rv)
+		}
+	}
+}
+
+// TestRulePriorityAndRewrite covers rule ordering, method filters and rewrite boundaries. |
+// TestRulePriorityAndRewrite 覆盖规则排序、方法过滤与重写边界。
 func TestRulePriorityAndRewrite(t *testing.T) {
 	rs, err := CompileRules(
 		Rule{Name: "param", Methods: []string{"GET"}, Pattern: "/api/user/{id}", Rewrite: &Rewrite{StripPrefix: "/api"}},

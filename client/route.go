@@ -301,7 +301,7 @@ func (rs *RuleSet) MatchRequest(req *http.Request) (*Rule, Params, bool) {
 
 // matchRequest evaluates conditions with panic isolation for engine routing. | matchRequest 带 panic 隔离地为引擎路由求值 Condition。
 func (rs *RuleSet) matchRequest(req *http.Request) (rule *Rule, params Params, ok bool, err error) {
-	if rs == nil || req == nil || req.URL == nil || len(rs.entries) == 0 {
+	if req == nil || req.URL == nil {
 		return nil, Params{}, false, nil
 	}
 	defer func() {
@@ -310,7 +310,13 @@ func (rs *RuleSet) matchRequest(req *http.Request) (rule *Rule, params Params, o
 			err = errs.Detail(ErrHookPanic, "rule condition panic: %v | 规则 Condition panic：%v", recovered, recovered)
 		}
 	}()
-	path := matchPath(req.URL)
+	path, err := matchPath(req.URL)
+	if err != nil {
+		return nil, Params{}, false, err
+	}
+	if rs == nil || len(rs.entries) == 0 {
+		return nil, Params{}, false, nil
+	}
 	pathSegments, pathOK := splitMatchPath(path)
 	if !pathOK {
 		return nil, Params{}, false, nil
@@ -343,17 +349,6 @@ func methodAllowed(methods []string, method string) bool {
 		}
 	}
 	return false
-}
-
-// matchPath returns the path form used for matching, mirroring router semantics. | matchPath 返回用于匹配的路径形式，对齐 router 语义。
-func matchPath(u *url.URL) string {
-	if u.RawPath != "" {
-		return u.RawPath
-	}
-	if u.Path == "" {
-		return "/"
-	}
-	return u.Path
 }
 
 // validateRewrite rejects rewrite prefixes that are not absolute paths. | validateRewrite 拒绝非绝对路径的重写前缀。

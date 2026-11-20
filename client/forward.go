@@ -174,6 +174,9 @@ func (c *Client) forwardRequest(ctx context.Context, r *http.Request, cfg Forwar
 	if r == nil || r.URL == nil {
 		return nil, ErrInvalidRequest
 	}
+	if _, pathErr := matchPath(r.URL); pathErr != nil {
+		return nil, pathErr
+	}
 	if r.Method == http.MethodConnect || r.Header.Get("Upgrade") != "" {
 		return nil, ErrUpgradeUnsupported
 	}
@@ -452,6 +455,8 @@ func writeForwardError(w http.ResponseWriter, err error) {
 		status = http.StatusGatewayTimeout
 	case errors.Is(err, ErrAbsoluteTarget):
 		status = http.StatusForbidden
+	case errors.Is(err, ErrAmbiguousPath):
+		status = http.StatusBadRequest
 	case errors.Is(err, ErrBlocked):
 		status = http.StatusForbidden
 		var clientErr *Error

@@ -131,6 +131,46 @@ func TestOpenStreamRedirectStripsSensitiveHeaders(t *testing.T) {
 	}
 }
 
+// TestOpenStreamRedirectStripsRuleHeaders checks that cross-origin SSE redirects do not re-add
+// rule-injected credential headers. | TestOpenStreamRedirectStripsRuleHeaders 校验跨源 SSE
+// 重定向不会重新注入规则凭据头。
+func TestOpenStreamRedirectStripsRuleHeaders(t *testing.T) {
+	var gotKey atomic.Value
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotKey.Store(r.Header.Get("X-API-Key"))
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "data: x\n\n")
+		w.(http.Flusher).Flush()
+	}))
+	defer target.Close()
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, target.URL+"/events", http.StatusFound)
+	}))
+	defer origin.Close()
+	c, err := New(
+		WithRule(Rule{
+			Pattern: "/**",
+			Headers: http.Header{"X-API-Key": {"api-secret"}},
+		}),
+		WithoutCookieJar(),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	stream, err := c.OpenStream(context.Background(), mustRequest(t, http.MethodGet, origin.URL+"/events", ""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stream.Close()
+	if _, err := stream.Next(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := gotKey.Load(); got != nil && got.(string) != "" {
+		t.Fatalf("rule X-API-Key leaked across SSE redirect: %q", got)
+	}
+}
+
 func TestOpenStreamHonorsCheckRedirect(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/other", http.StatusFound)

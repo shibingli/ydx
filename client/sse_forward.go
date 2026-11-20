@@ -378,7 +378,12 @@ func (m *mirrorer) runSSE(parent context.Context, req *http.Request, logical *ur
 		ctx = context.WithValue(ctx, dialPoliciesKey{}, policies)
 	}
 	out := req.Clone(ctx)
-	out.URL = targetURL(logical, &Host{URL: target}, rule)
+	wireURL, targetErr := targetURL(logical, &Host{URL: target}, rule)
+	if targetErr != nil {
+		result.Err = targetErr
+		return
+	}
+	out.URL = wireURL
 	out.RequestURI = ""
 	out.Host = out.URL.Host
 	// Request.Clone already deep-copied Header. | Request.Clone 已深拷贝 Header。

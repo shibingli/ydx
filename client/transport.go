@@ -287,6 +287,9 @@ func (e *engine) RoundTrip(req *http.Request) (resp *http.Response, err error) {
 	if req == nil || req.URL == nil {
 		return nil, ErrInvalidConfig
 	}
+	if _, pathErr := matchPath(req.URL); pathErr != nil {
+		return nil, e.wrapError("route", req, "", 0, pathErr)
+	}
 	if e.bare.Load() {
 		if resp, tripErr, handled := e.tryBare(req); handled {
 			return resp, tripErr
@@ -663,7 +666,13 @@ func (e *engine) roundTripDirect(req *http.Request, rule *Rule, meta *Meta, sp *
 	for attempt := 1; attempt <= attempts; attempt++ {
 		attempted = attempt
 		attemptReq, attemptCancel := attemptWithTimeout(req, policy.PerAttemptTimeout)
-		target := directTarget(attemptReq.URL, rule)
+		target, targetErr := directTarget(attemptReq.URL, rule)
+		if targetErr != nil {
+			if attemptCancel != nil {
+				attemptCancel()
+			}
+			return nil, e.wrapError("prepare_attempt", req, "", attempt-1, targetErr)
+		}
 		out, err := e.cloneAttempt(attemptReq, attempt, target, req.Host, rule, nil, sp)
 		if err != nil {
 			if attemptCancel != nil {
@@ -830,7 +839,15 @@ func (e *engine) roundTripHosts(req *http.Request, rule *Rule, meta *Meta, hosts
 			return e.finishResponse(resp, req, meta, host, 1, start), nil
 		}
 		attemptReq, attemptCancel := attemptWithTimeout(req, policy.PerAttemptTimeout)
-		target := targetURL(logical, host, rule)
+		target, targetErr := targetURL(logical, host, rule)
+		if targetErr != nil {
+			if attemptCancel != nil {
+				attemptCancel()
+			}
+			hosts.Release(host)
+			lastErr = e.wrapError("prepare_attempt", req, host.Name, attempt-1, targetErr)
+			break
+		}
 		out, prepErr := e.cloneAttempt(attemptReq, attempt, target, originalHost, rule, host, sp)
 		if prepErr != nil {
 			if attemptCancel != nil {
@@ -929,9 +946,9 @@ func (e *engine) roundTripHosts(req *http.Request, rule *Rule, meta *Meta, hosts
 	return nil, e.wrapError("roundtrip", req, hostName, attempted, errs.Wrap(lastErr, ErrRetryExhausted))
 }
 
-// crossHostRedirect reports whether req is a redirect hop to a different host
-// or port. | crossHostRedirect 报告 req 是否跳到不同主机或端口的重定向。
-func crossHostRedirect(req *http.Request) bool {
+// crossOriginRedirect reports whether req is a redirect hop that changes scheme, host or port. |
+// crossOriginRedirect 报告 req 是否为改变 scheme、Host 或端口的重定向跳。
+func crossOriginRedirect(req *http.Request) bool {
 	if req == nil || req.Response == nil || req.Response.Request == nil || req.URL == nil {
 		return false
 	}
@@ -939,17 +956,33 @@ func crossHostRedirect(req *http.Request) bool {
 	if previous == nil {
 		return false
 	}
-	return !strings.EqualFold(previous.Host, req.URL.Host)
+	return !sameOrigin(previous, req.URL)
 }
 
-// isSensitiveRedirectHeader reports headers Go strips on cross-domain redirects. | isSensitiveRedirectHeader
-// 报告跨域重定向时 Go 会剥离的头。
-func isSensitiveRedirectHeader(name string) bool {
-	switch http.CanonicalHeaderKey(name) {
-	case "Authorization", "Cookie", "Cookie2", "Proxy-Authorization", "Www-Authenticate":
-		return true
+// sameOrigin reports whether a and b share a scheme and authority. | sameOrigin 报告 a 与 b 是否
+// 具有相同 scheme 与 authority。
+func sameOrigin(a, b *url.URL) bool {
+	if a == nil || b == nil {
+		return false
 	}
-	return false
+	if !strings.EqualFold(a.Scheme, b.Scheme) {
+		return false
+	}
+	return strings.EqualFold(a.Host, b.Host)
+}
+
+// suppressInjectedKey marks a redirect hop on which rule and host headers must not be injected. |
+// suppressInjectedKey 标记不得注入规则与 Host 头的重定向跳。
+type suppressInjectedKey struct{}
+
+// suppressInjectedHeaders reports whether header injection is disabled for the request. |
+// suppressInjectedHeaders 报告请求是否禁用头注入。
+func suppressInjectedHeaders(ctx context.Context) bool {
+	if ctx == nil {
+		return false
+	}
+	value, _ := ctx.Value(suppressInjectedKey{}).(bool)
+	return value
 }
 
 // cloneAttempt clones the request for one attempt without mutating the caller's request. | cloneAttempt 为单次尝试克隆请求，不修改调用方请求。
@@ -960,7 +993,7 @@ func (e *engine) cloneAttempt(req *http.Request, attempt int, target *url.URL, o
 	if req.Trailer != nil {
 		out.Trailer = req.Trailer
 	}
-	skipSensitive := crossHostRedirect(req)
+	suppressInjected := suppressInjectedHeaders(req.Context()) || crossOriginRedirect(req)
 	if host != nil {
 		explicitHost := req.Host != "" && (!strings.EqualFold(req.Host, req.URL.Host) || explicitHostFrom(req.Context()))
 		preserve := (rule != nil && rule.PreserveHost) || explicitHost
@@ -978,9 +1011,27 @@ func (e *engine) cloneAttempt(req *http.Request, attempt int, target *url.URL, o
 	if out.Header == nil {
 		out.Header = make(http.Header)
 	}
+	if suppressInjected {
+		// A cross-origin hop must start from a clean credential surface: remove every rule and
+		// host header, plus authentication headers copied by the standard redirect logic. |
+		// 跨源跳必须从干净的凭据面开始：移除全部规则与 Host 头，以及标准重定向逻辑复制的认证头。
+		if rule != nil {
+			for key := range rule.Headers {
+				out.Header.Del(key)
+			}
+		}
+		if host != nil {
+			for key := range host.Headers {
+				out.Header.Del(key)
+			}
+		}
+		for _, name := range []string{"Authorization", "Proxy-Authorization", "Www-Authenticate", "Cookie2"} {
+			out.Header.Del(name)
+		}
+	}
 	if rule != nil {
 		for key, values := range rule.Headers {
-			if skipSensitive && isSensitiveRedirectHeader(key) {
+			if suppressInjected {
 				continue
 			}
 			if strings.EqualFold(key, "Host") {
@@ -1000,7 +1051,7 @@ func (e *engine) cloneAttempt(req *http.Request, attempt int, target *url.URL, o
 	}
 	if host != nil {
 		for key, values := range host.Headers {
-			if skipSensitive && isSensitiveRedirectHeader(key) {
+			if suppressInjected {
 				continue
 			}
 			if strings.EqualFold(key, "Host") {
@@ -1143,31 +1194,33 @@ func unrewritePath(rule *Rule, path string) string {
 	return path
 }
 
-// directTarget applies a rule rewrite without a host base path. | directTarget 在无 Host base path 时应用规则重写。
-func directTarget(logical *url.URL, rule *Rule) *url.URL {
+// directTarget applies a rule rewrite without a host base path. It rejects rewrites that resolve
+// outside the root. | directTarget 在无 Host base path 时应用规则重写。解析到根之外的重写会被拒绝。
+func directTarget(logical *url.URL, rule *Rule) (*url.URL, error) {
 	target := *logical
 	if rule == nil || rule.Rewrite == nil {
-		return &target
+		return &target, nil
 	}
 	escaped := logical.EscapedPath()
 	if escaped == "" {
 		escaped = "/"
 	}
 	escaped = applyRewrite(rule.Rewrite, escaped)
-	decoded, err := url.PathUnescape(escaped)
+	rawPath, path, err := resolveTargetPaths(escaped)
 	if err != nil {
-		decoded = escaped
+		return nil, err
 	}
-	target.RawPath = escaped
-	target.Path = decoded
-	return &target
+	target.RawPath = rawPath
+	target.Path = path
+	return &target, nil
 }
 
-// targetURL builds the wire URL from the logical URL, the rule rewrite and the host base path. | targetURL 由逻辑 URL、规则重写与 Host base path 构造连接 URL。
-func targetURL(logical *url.URL, host *Host, rule *Rule) *url.URL {
+// targetURL builds the wire URL from the logical URL, the rule rewrite and the host base path. It
+// rejects rewrites or request paths whose dot segments escape the host base path. | targetURL 由
+// 逻辑 URL、规则重写与 Host base path 构造连接 URL。点段越出 Host base path 的重写或请求路径会被
+// 拒绝。
+func targetURL(logical *url.URL, host *Host, rule *Rule) (*url.URL, error) {
 	target := *host.URL
-	basePath := target.Path
-	baseEscaped := target.EscapedPath()
 	escaped := logical.EscapedPath()
 	if escaped == "" {
 		escaped = "/"
@@ -1175,15 +1228,15 @@ func targetURL(logical *url.URL, host *Host, rule *Rule) *url.URL {
 	if rule != nil && rule.Rewrite != nil {
 		escaped = applyRewrite(rule.Rewrite, escaped)
 	}
-	decoded, err := url.PathUnescape(escaped)
+	rawPath, path, err := targetPathForms(target.Path, target.EscapedPath(), escaped)
 	if err != nil {
-		decoded = escaped
+		return nil, err
 	}
-	target.RawPath = joinBasePath(baseEscaped, escaped)
-	target.Path = joinBasePath(basePath, decoded)
+	target.RawPath = rawPath
+	target.Path = path
 	target.RawQuery, target.ForceQuery = mergeQueries(host.URL, logical)
 	target.Fragment = ""
-	return &target
+	return &target, nil
 }
 
 // mergeQueries combines a host base URL query with the logical request query. | mergeQueries
@@ -1207,27 +1260,6 @@ func mergeQueries(host, logical *url.URL) (string, bool) {
 	default:
 		return hostQuery + "&" + logicalQuery, false
 	}
-}
-
-// joinBasePath joins a host base path with a request path. | joinBasePath 拼接 Host base path 与请求路径。
-func joinBasePath(base, path string) string {
-	if base == "" || base == "/" {
-		if path == "" {
-			return "/"
-		}
-		if path[0] != '/' {
-			return "/" + path
-		}
-		return path
-	}
-	base = strings.TrimSuffix(base, "/")
-	if path == "" || path == "/" {
-		return base + "/"
-	}
-	if path[0] != '/' {
-		return base + "/" + path
-	}
-	return base + path
 }
 
 // finishResponse attaches metadata to a returned response. | finishResponse 给返回的响应附加元数据。

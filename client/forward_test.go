@@ -15,6 +15,82 @@ import (
 	"time"
 )
 
+func TestForwardRejectsAmbiguousPaths(t *testing.T) {
+	var hits atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		_, _ = w.Write([]byte("hit"))
+	}))
+	defer upstream.Close()
+	c, err := New(WithHosts(upstream.URL), WithoutCookieJar())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	for _, target := range []string{
+		"http://logical.example//admin",
+		"http://logical.example/admin/../admin",
+		"http://logical.example/admin%2Fsecret",
+		"http://logical.example/admin%5Csecret",
+	} {
+		req := httptest.NewRequest(http.MethodGet, target, nil)
+		if _, err := c.Forward(context.Background(), req); !errors.Is(err, ErrAmbiguousPath) {
+			t.Fatalf("Forward(%q) error = %v, want ErrAmbiguousPath", target, err)
+		}
+	}
+	if hits.Load() != 0 {
+		t.Fatalf("ambiguous request reached upstream %d times", hits.Load())
+	}
+}
+
+func TestForwardBasePathRejectsDotDotEscape(t *testing.T) {
+	var hits atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		_, _ = w.Write([]byte("hit"))
+	}))
+	defer upstream.Close()
+	c, err := New(WithHosts(upstream.URL+"/api"), WithoutCookieJar())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	req := httptest.NewRequest(http.MethodGet, "http://logical.example/../admin", nil)
+	if _, err := c.Forward(context.Background(), req); !errors.Is(err, ErrAmbiguousPath) {
+		t.Fatalf("Forward dot-dot error = %v, want ErrAmbiguousPath", err)
+	}
+	if hits.Load() != 0 {
+		t.Fatalf("dot-dot request reached upstream %d times", hits.Load())
+	}
+}
+
+func TestForwardPercentEncodedPathReachesDecodedPath(t *testing.T) {
+	var gotPath atomic.Value
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath.Store(r.URL.Path)
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer upstream.Close()
+	c, err := New(
+		WithHosts(upstream.URL),
+		WithRule(Rule{Name: "admin", Pattern: "/admin/**"}),
+		WithoutCookieJar(),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	req := httptest.NewRequest(http.MethodGet, "http://logical.example/%61dmin/x", nil)
+	resp, err := c.Forward(context.Background(), req)
+	if err != nil {
+		t.Fatalf("Forward: %v", err)
+	}
+	_ = resp.Body.Close()
+	if got := gotPath.Load(); got != "/admin/x" {
+		t.Fatalf("upstream path = %v, want /admin/x", got)
+	}
+}
+
 func TestForwardHandler(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Connection") != "" {

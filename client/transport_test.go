@@ -626,6 +626,40 @@ func TestTransportErrorRedactsURL(t *testing.T) {
 	}
 }
 
+func TestTargetURLRejectsBasePathEscapes(t *testing.T) {
+	host := &Host{URL: mustURL("http://upstream/api")}
+	if _, err := targetURL(mustURL("http://logical/../admin"), host, nil); !errors.Is(err, ErrAmbiguousPath) {
+		t.Fatalf("dot-dot escape error = %v, want ErrAmbiguousPath", err)
+	}
+	target, err := targetURL(mustURL("http://logical/x/../admin"), host, nil)
+	if err != nil {
+		t.Fatalf("in-base dot-dot: %v", err)
+	}
+	if target.Path != "/api/admin" || target.RawPath != "/api/admin" {
+		t.Fatalf("in-base dot-dot target = path %q raw %q, want /api/admin", target.Path, target.RawPath)
+	}
+	target, err = targetURL(mustURL("http://logical//x"), host, nil)
+	if err != nil {
+		t.Fatalf("duplicate slash: %v", err)
+	}
+	if target.Path != "/api/x" {
+		t.Fatalf("duplicate slash target = %q, want /api/x", target.Path)
+	}
+	if _, err := targetURL(mustURL("http://logical/start"), host, &Rule{Rewrite: &Rewrite{AddPrefix: "/../admin"}}); !errors.Is(err, ErrAmbiguousPath) {
+		t.Fatalf("rewrite escape error = %v, want ErrAmbiguousPath", err)
+	}
+	target, err = targetURL(mustURL("http://logical/start"), host, &Rule{Rewrite: &Rewrite{AddPrefix: "/v2"}})
+	if err != nil {
+		t.Fatalf("in-base rewrite: %v", err)
+	}
+	if target.Path != "/api/v2/start" {
+		t.Fatalf("rewrite target = %q, want /api/v2/start", target.Path)
+	}
+	if _, err := directTarget(mustURL("http://logical/start"), &Rule{Rewrite: &Rewrite{AddPrefix: "/../admin"}}); !errors.Is(err, ErrAmbiguousPath) {
+		t.Fatalf("direct rewrite escape error = %v, want ErrAmbiguousPath", err)
+	}
+}
+
 func TestHostBasePathRedirectPathAbsolute(t *testing.T) {
 	var paths []string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

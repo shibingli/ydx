@@ -21,6 +21,11 @@ var (
 	ErrInvalidResponse = errs.New("client: transport returned nil response | client：传输层返回空响应")
 	// ErrInvalidRequest indicates a request that cannot be constructed. | ErrInvalidRequest 表示无法构造的请求。
 	ErrInvalidRequest = errs.New("client: invalid request | client：非法请求")
+	// ErrAmbiguousPath indicates a path with a second interpretation, such as encoded separators,
+	// dot segments or duplicate slashes, or a rewrite that escapes the host base path. |
+	// ErrAmbiguousPath 表示路径存在第二种解释（如编码分隔符、点段或重复斜杠），或重写越出了 Host
+	// base path。
+	ErrAmbiguousPath = errs.New("client: ambiguous request path | client：请求路径存在歧义")
 	// ErrEncodeBody indicates a request body that could not be encoded. | ErrEncodeBody 表示无法编码的请求正文。
 	ErrEncodeBody = errs.New("client: encode request body | client：编码请求正文失败")
 	// ErrBodyNotReplayable indicates a request body that cannot be replayed. | ErrBodyNotReplayable 表示无法重放的请求正文。
