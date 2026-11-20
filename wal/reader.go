@@ -433,6 +433,9 @@ func (w *WAL) resolveRecordView(seg *segment, f *os.File, refOff int64, hdr reco
 
 // decompress expands a compressed payload into a new buffer. | decompress 把压缩负载解开到新缓冲。
 func (r *Reader) decompress(hdr recordHeader, payload, buf []byte) ([]byte, []byte, error) {
+	if err := r.w.checkDecodedRecordLimit(hdr); err != nil {
+		return nil, buf, err
+	}
 	expected := int(hdr.keyLen) + int(hdr.dataLen)
 	if expected > formatHardLimit {
 		return nil, buf, errs.Detail(ErrTooLarge, "decompressed record exceeds 1 GiB | 解压记录超过 1 GiB")
@@ -698,6 +701,9 @@ func (w *WAL) decodeRecord(seg *segment, f *os.File, off int64, buf, scratch []b
 	if err := validatePayloadLength(hdr); err != nil {
 		return recordHeader{}, nil, buf, scratch, err
 	}
+	if err := w.checkDecodedRecordLimit(hdr); err != nil {
+		return recordHeader{}, nil, buf, scratch, err
+	}
 	seg.metaMu.RLock()
 	size := seg.size
 	seg.metaMu.RUnlock()
@@ -751,6 +757,9 @@ func (w *WAL) decodeRecordWindow(seg *segment, f *os.File, off int64, buf, scrat
 	if err := validatePayloadLength(hdr); err != nil {
 		return recordHeader{}, nil, buf, scratch, err
 	}
+	if err := w.checkDecodedRecordLimit(hdr); err != nil {
+		return recordHeader{}, nil, buf, scratch, err
+	}
 	if hdr.cipher != cipherNone && int(hdr.size) < hdr.headerLen+aeadTagSize {
 		return recordHeader{}, nil, buf, scratch, errs.Detail(ErrCorrupt, "encrypted record is shorter than its AEAD tag | 加密记录短于 AEAD tag")
 	}
@@ -776,6 +785,9 @@ func (w *WAL) decodeRecordStream(seg *segment, br *bufio.Reader, off, size int64
 		return recordHeader{}, nil, buf, scratch, err
 	}
 	if err := validatePayloadLength(hdr); err != nil {
+		return recordHeader{}, nil, buf, scratch, err
+	}
+	if err := w.checkDecodedRecordLimit(hdr); err != nil {
 		return recordHeader{}, nil, buf, scratch, err
 	}
 	if off < int64(segmentHeaderSize) || off+int64(hdr.size) > size {
@@ -812,6 +824,9 @@ func (w *WAL) decodeRecordRaw(seg *segment, off int64, hdr recordHeader, rawHead
 // decodePayload decrypts and decompresses one validated record payload. | decodePayload
 // 解密并解压一条已校验记录的负载。
 func (w *WAL) decodePayload(seg *segment, off int64, hdr recordHeader, rawHeader, payload, buf, scratch []byte) ([]byte, []byte, []byte, error) {
+	if err := w.checkDecodedRecordLimit(hdr); err != nil {
+		return nil, buf, scratch, err
+	}
 	plain := payload
 	if hdr.cipher != cipherNone {
 		if !w.encrypted {
@@ -876,4 +891,34 @@ func ensureCap(buf []byte, n int) []byte {
 		return make([]byte, n)
 	}
 	return buf[:n]
+}
+
+// decodeLimit returns the effective per-record read/decode bound. | decodeLimit
+// 返回生效的单记录读取/解码上限。
+func (w *WAL) decodeLimit() int {
+	if w.opts.maxRecordBytes > 0 {
+		return w.opts.maxRecordBytes
+	}
+	return defaultMaxRecordBytes
+}
+
+// checkDecodedRecordLimit rejects a record whose declared key+data length or
+// on-disk size exceeds maxRecordBytes before any read or decompression buffer
+// is allocated. | checkDecodedRecordLimit 在分配任何读取或解压缓冲之前，拒绝声明
+// key+data 长度或磁盘大小超过 maxRecordBytes 的记录。
+func (w *WAL) checkDecodedRecordLimit(hdr recordHeader) error {
+	limit := uint64(w.decodeLimit())
+	declared := uint64(hdr.keyLen) + uint64(hdr.dataLen)
+	if declared > limit {
+		return errs.Detail(ErrTooLarge, "record declares %[1]d payload bytes, limit %[2]d | 记录声明 %[1]d 字节负载，上限 %[2]d",
+			declared, limit)
+	}
+	// The on-disk size includes the header and AEAD tag; allow that small fixed
+	// overhead on top of the payload limit. | 磁盘大小包含头与 AEAD tag，因此允许在
+	// 负载上限之上附加这段固定开销。
+	if uint64(hdr.size) > limit+recordHeaderSizeEncrypted+aeadTagSize {
+		return errs.Detail(ErrTooLarge, "record size %[1]d exceeds the decode limit derived from %[2]d | 记录大小 %[1]d 超过由 %[2]d 推导的解码上限",
+			hdr.size, limit)
+	}
+	return nil
 }

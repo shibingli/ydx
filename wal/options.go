@@ -171,7 +171,12 @@ func WithSegmentMaxAge(d time.Duration) Option { return func(o *options) { o.seg
 // WithSegmentMaxRecords sets the rotation record threshold; zero disables it. | WithSegmentMaxRecords 设置按记录数轮转的阈值，0 表示关闭。
 func WithSegmentMaxRecords(n uint64) Option { return func(o *options) { o.segmentMaxRecords = n } }
 
-// WithMaxRecordBytes sets the maximum size of a newly written record. | WithMaxRecordBytes 设置新写入记录的最大字节数。
+// WithMaxRecordBytes sets the maximum size of a newly written record and the
+// read-side decode bound for a record's declared key+data length. Reading a
+// record that exceeds the bound returns ErrTooLarge without allocating the
+// declared size. | WithMaxRecordBytes 设置新写入记录的最大字节数，以及读取时对记录
+// 声明的 key+data 长度的解码上限。读取超过上限的记录返回 ErrTooLarge，且不会按声明
+// 长度分配内存。
 func WithMaxRecordBytes(n int) Option { return func(o *options) { o.maxRecordBytes = n } }
 
 // WithQueueSize sets the bounded append queue capacity. | WithQueueSize 设置有界追加队列容量。

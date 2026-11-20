@@ -1925,6 +1925,9 @@ func (w *WAL) readRawRecord(f *os.File, off, limit int64, buf []byte) (recordHea
 	if err := validatePayloadLength(hdr); err != nil {
 		return recordHeader{}, raw, nil, buf, err
 	}
+	if err := w.checkDecodedRecordLimit(hdr); err != nil {
+		return recordHeader{}, raw, nil, buf, err
+	}
 	payloadLen := int(hdr.size) - hdr.headerLen
 	buf = ensureCap(buf, payloadLen)
 	if payloadLen > 0 {
