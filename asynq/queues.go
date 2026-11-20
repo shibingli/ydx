@@ -32,8 +32,9 @@ const defaultQueue = "default"
 // callers treat the same way as Options.Queues being left empty. | 调用方对它的处理与 Options.Queues 留空一致。
 //
 // Malformed input is reported through declared sentinels and yields a nil table: | 非法输入通过已声明的哨兵错误上报并返回 nil 表：
-// ErrInvalidQueueSpec for a broken segment or a repeated name, ErrInvalidQueueWeight when | 片段损坏或名称重复返回 ErrInvalidQueueSpec，权重不是正整数返回 ErrInvalidQueueWeight。
-// the weight is not a positive integer.
+// ErrInvalidQueueSpec for a broken segment or a repeated name, ErrInvalidQueueWeight when | 片段损坏或名称重复返回 ErrInvalidQueueSpec，权重不是正整数返回 ErrInvalidQueueWeight，
+// the weight is not a positive integer, and ErrQueueWeightTooLarge when a single weight | 单个权重或权重总和超过上限返回 ErrQueueWeightTooLarge。
+// or the total exceeds the ceilings.
 func ParseQueues(s string) (map[string]int, error) {
 	spec := strings.TrimSpace(s)
 	out := make(map[string]int)
@@ -55,7 +56,35 @@ func ParseQueues(s string) (map[string]int, error) {
 		}
 		out[name] = weight
 	}
+	if err := validateQueueWeights(out); err != nil {
+		return nil, err
+	}
 	return out, nil
+}
+
+// validateQueueWeights enforces the per-queue and total weight ceilings. | validateQueueWeights
+// 校验单队列与总权重上限。
+//
+// Entries with an empty name or a non-positive weight are ignored, matching
+// queueWeights, so only usable queues count towards the total. | 空名称或非正权重的
+// 条目会被忽略，与 queueWeights 一致，因此只有可用的队列计入总权重。
+func validateQueueWeights(weights map[string]int) error {
+	total := 0
+	for name, weight := range weights {
+		if strings.TrimSpace(name) == "" || weight <= 0 {
+			continue
+		}
+		if weight > MaxQueueWeight {
+			return errs.Detail(ErrQueueWeightTooLarge, "queue %[1]q weight %[2]d exceeds %[3]d | 队列 %[1]q 的权重 %[2]d 超过 %[3]d",
+				name, weight, MaxQueueWeight)
+		}
+		total += weight
+		if total > MaxTotalQueueWeight {
+			return errs.Detail(ErrQueueWeightTooLarge, "total weight %[1]d exceeds %[2]d | 权重总和 %[1]d 超过 %[2]d",
+				total, MaxTotalQueueWeight)
+		}
+	}
+	return nil
 }
 
 // ExponentialBackoff returns an asynq retry-delay policy that doubles the delay per retry. | ExponentialBackoff 返回按重试次数逐次翻倍的 asynq 重试延迟策略。

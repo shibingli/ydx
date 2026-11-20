@@ -45,6 +45,28 @@ var (
 	ErrServerStartFailed = errs.New("asynq: server start failed | asynq：服务端启动失败")
 	// ErrCloseFailed indicates the client failed to release its connections. | ErrCloseFailed 表示客户端释放连接失败。
 	ErrCloseFailed = errs.New("asynq: close client failed | asynq：关闭客户端失败")
+	// ErrPayloadTooLarge indicates a serialized task body exceeds MaxPayloadBytes.
+	// It also matches ErrEncodeFailed so callers treating every unserializable
+	// payload alike keep working. | ErrPayloadTooLarge 表示序列化后的任务载荷超过
+	// MaxPayloadBytes；它同时匹配 ErrEncodeFailed，使把所有无法处理载荷同等对待的
+	// 调用方保持兼容。
+	ErrPayloadTooLarge = errs.Wrap(errs.New("asynq: payload too large | asynq：载荷过大"), ErrEncodeFailed)
+	// ErrQueueWeightTooLarge indicates a queue weight or the total queue weight
+	// exceeds its limit. It also matches ErrInvalidQueueWeight. | ErrQueueWeightTooLarge
+	// 表示单个队列权重或权重总和超过上限；它同时匹配 ErrInvalidQueueWeight。
+	ErrQueueWeightTooLarge = errs.Wrap(errs.New("asynq: queue weight exceeds the limit | asynq：队列权重超过上限"), ErrInvalidQueueWeight)
+)
+
+// Payload and queue-weight limits. | 载荷与队列权重上限。
+const (
+	// DefaultMaxPayloadBytes is the serialized task-body limit used when
+	// Options.MaxPayloadBytes is not positive. | DefaultMaxPayloadBytes 是
+	// Options.MaxPayloadBytes 非正时使用的任务载荷上限。
+	DefaultMaxPayloadBytes = 1 << 20
+	// MaxQueueWeight is the maximum weight of one queue. | MaxQueueWeight 是单个队列的权重上限。
+	MaxQueueWeight = 1000
+	// MaxTotalQueueWeight is the maximum sum of all queue weights. | MaxTotalQueueWeight 是所有队列权重总和的上限。
+	MaxTotalQueueWeight = 1000
 )
 
 // defaultRetention is how long a finished task stays queryable through the Inspector. | defaultRetention 是已完成任务可通过 Inspector 查询的保留时长。
@@ -88,18 +110,39 @@ type Options struct {
 	// StrictPriority makes the server drain a higher-weight queue before touching a lower one; | StrictPriority 让服务端先清空高权重队列再处理低权重队列；
 	// false makes the weight a sampling ratio that avoids starving low-weight queues. | false 时权重退化为采样比例，低权重队列不会被饿死。
 	StrictPriority bool
+	// MaxPayloadBytes bounds one serialized task body on both the client and the
+	// server; <=0 means DefaultMaxPayloadBytes (1 MiB). | MaxPayloadBytes 限制单个
+	// 序列化任务载荷，客户端与服务端都会校验；<=0 表示 DefaultMaxPayloadBytes（1 MiB）。
+	MaxPayloadBytes int
 }
 
 // Err returns the latent error recorded while the options were built; nil when they are usable. | Err 返回构建选项时记录的潜在错误；选项可用时为 nil。
 //
-// It is the hook that lets OptionsFromConfig stay error-free while a malformed asynq.queues | 它让 OptionsFromConfig 保持无错误返回，同时把非法的 asynq.queues
-// still stops the service at startup instead of being silently ignored. | 留到启动期阻断服务，而不是被静默忽略。
-func (o Options) Err() error { return o.err }
+// It is the hook that lets OptionsFromConfig stay error-free while a malformed asynq.queues
+// still stops the service at startup instead of being silently ignored. Queue weights
+// supplied programmatically are validated here as well. | 它让 OptionsFromConfig 保持
+// 无错误返回，同时把非法的 asynq.queues 留到启动期阻断服务，而不是被静默忽略；
+// 程序化设置的队列权重也在此校验。
+func (o Options) Err() error {
+	if o.err != nil {
+		return o.err
+	}
+	return validateQueueWeights(o.Queues)
+}
+
+// payloadLimit returns the effective payload bound. | payloadLimit 返回生效的载荷上限。
+func (o Options) payloadLimit() int {
+	if o.MaxPayloadBytes <= 0 {
+		return DefaultMaxPayloadBytes
+	}
+	return o.MaxPayloadBytes
+}
 
 // Client enqueues tasks into the queues described by Options. | Client 把任务入队到 Options 描述的队列中。
 type Client struct {
-	cli *asynqio.Client
-	rc  asynqio.RedisClientOpt
+	cli        *asynqio.Client
+	rc         asynqio.RedisClientOpt
+	maxPayload int
 }
 
 // NewClient builds a client for the deployment described by r and o. | NewClient 为 r 与 o 描述的部署构建客户端。
@@ -118,7 +161,7 @@ func NewClient(r asynqio.RedisClientOpt, o Options) (*Client, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Client{cli: asynqio.NewClient(rc), rc: rc}, nil
+	return &Client{cli: asynqio.NewClient(rc), rc: rc, maxPayload: o.payloadLimit()}, nil
 }
 
 // Enqueue puts a task of taskType on its queue and returns the asynq task info. | Enqueue 把 taskType 类型的任务放入其队列，并返回 asynq 任务信息。
@@ -138,6 +181,9 @@ func (c *Client) Enqueue(ctx context.Context, taskType string, payload any, opts
 	raw, err := encodePayload(payload)
 	if err != nil {
 		return nil, err
+	}
+	if len(raw) > c.maxPayload {
+		return nil, errs.Detail(ErrPayloadTooLarge, "payload %[1]d bytes exceeds %[2]d | 载荷 %[1]d 字节超过 %[2]d", len(raw), c.maxPayload)
 	}
 	info, err := c.cli.EnqueueContext(ctx, newTask(taskType, raw, traceHeaders(ctx)), withDefaults(opts)...)
 	if err != nil {
@@ -322,7 +368,11 @@ func (s *Server) ProcessTask(ctx context.Context, t *asynqio.Task) error {
 	}
 
 	base := func(ctx context.Context, t *asynqio.Task) error {
-		p, err := decodePayload(t.Payload())
+		raw := t.Payload()
+		if limit := s.opt.payloadLimit(); len(raw) > limit {
+			return errs.Detail(ErrPayloadTooLarge, "payload %[1]d bytes exceeds %[2]d | 载荷 %[1]d 字节超过 %[2]d", len(raw), limit)
+		}
+		p, err := decodePayload(raw)
 		if err != nil {
 			return err
 		}

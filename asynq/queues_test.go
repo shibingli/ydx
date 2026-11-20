@@ -33,6 +33,10 @@ func TestQueueWeightsParsedFromString(t *testing.T) {
 		{"负权重", "critical:-2", nil, asynq.ErrInvalidQueueWeight},
 		{"重复队列", "a:1,a:2", nil, asynq.ErrInvalidQueueSpec},
 		{"逗号空段", "a:1,,b:2", nil, asynq.ErrInvalidQueueSpec},
+		{"单队列权重达到上限", "critical:1000", map[string]int{"critical": 1000}, nil},
+		{"单队列权重超限", "critical:1001", nil, asynq.ErrQueueWeightTooLarge},
+		{"总权重达到上限", "a:500,b:500", map[string]int{"a": 500, "b": 500}, nil},
+		{"总权重超限", "a:600,b:401", nil, asynq.ErrQueueWeightTooLarge},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

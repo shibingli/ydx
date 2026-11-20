@@ -19,6 +19,7 @@ import "github.com/shibingli/ydx/config"
 //	asynq.shutdown_timeout  graceful-shutdown budget, parsed by Config.Duration | 优雅关闭预算，经 Config.Duration 解析
 //	asynq.retry_base        base retry delay; > 0 installs ExponentialBackoff | 重试基准延迟；> 0 时安装 ExponentialBackoff
 //	asynq.retry_max         cap of the retry delay | 重试延迟上限
+//	asynq.max_payload_bytes serialized task-body limit; <=0 uses 1 MiB | 序列化任务载荷上限；<=0 时使用 1 MiB
 //
 // Accessors are used instead of Unmarshal, so the mapping is unaffected by mapstructure tags | 使用访问器而非 Unmarshal，因此不受 mapstructure 标签与键名大小写差异影响。
 // or key-name case. A malformed asynq.queues is not swallowed: it stays on Options.Err and | 非法的 asynq.queues 不会被吞掉，而是留在 Options.Err 上，
@@ -35,6 +36,7 @@ func OptionsFromConfig(c *config.Config) Options {
 		Concurrency:     c.GetInt("asynq.concurrency"),
 		StrictPriority:  c.GetBool("asynq.strict_priority"),
 		ShutdownTimeout: c.Duration("asynq.shutdown_timeout"),
+		MaxPayloadBytes: c.GetInt("asynq.max_payload_bytes"),
 	}
 	queues, err := ParseQueues(c.GetString("asynq.queues"))
 	if err != nil {
