@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"context"
+	"math"
 	"sort"
 	"strconv"
 	"strings"
@@ -173,6 +174,16 @@ func (s *Service) evaluateAuto(ctx context.Context, tx *runtimeTxn, node Node, e
 			continue
 		}
 		if rule.UseAI {
+			// The model is only a signal: every configured deterministic condition must hold
+			// independently before the decider is even consulted. A malformed condition degrades
+			// to manual approval rather than letting model text decide. | 模型只是信号：在咨询决策器
+			// 之前，每个配置的确定性条件都必须独立成立。条件非法时退化为人工审批，而不是让模型文本决定。
+			if condition := strings.TrimSpace(rule.Condition); condition != "" {
+				matched, err := EvaluateCondition(condition, tx.vars)
+				if err != nil || !matched {
+					continue
+				}
+			}
 			if s.decider == nil {
 				continue
 			}
@@ -209,21 +220,50 @@ func (s *Service) evaluateAuto(ctx context.Context, tx *runtimeTxn, node Node, e
 			if entry.skip {
 				continue
 			}
-			result := entry.result
-			if result.Decision != DecisionApprove && result.Decision != DecisionReject {
+			result, accepted := s.sanitizeAIDecision(entry.result, rule)
+			if !accepted {
 				continue
-			}
-			if result.Confidence > 0 && result.Confidence < s.options.MinAIConfidence {
-				continue
-			}
-			if strings.TrimSpace(result.Reason) == "" {
-				result.Reason = "AI 自动审批 | automated by AI"
 			}
 			return result, rule, true, nil
 		}
 		return DecisionResult{Decision: rule.Decision, Reason: rule.Name, Confidence: 1}, rule, true, nil
 	}
 	return DecisionResult{}, AutoRule{}, false, nil
+}
+
+// sanitizeAIDecision validates the decider's answer before it can finish a node. The decision
+// must be a known value, an approval must agree with the rule's deterministic decision, and
+// confidence is clamped to [0, 1]; non-finite, negative or below-threshold values degrade to
+// manual approval. | sanitizeAIDecision 在决策结束节点之前校验决策器答案。决策必须是已知值，通过
+// 结论必须与规则的确定性决策一致，置信度被钳制到 [0, 1]；非有限、负数或低于阈值的值退化为人工审批。
+func (s *Service) sanitizeAIDecision(result DecisionResult, rule AutoRule) (DecisionResult, bool) {
+	decision := strings.ToLower(strings.TrimSpace(result.Decision))
+	if decision != DecisionApprove && decision != DecisionReject {
+		return DecisionResult{}, false
+	}
+	// The model's approval is only a signal: it cannot override a rule whose deterministic
+	// policy is rejection. A model rejection stays fail-closed and is honoured. | 模型的通过结论只是
+	// 信号：它不能覆盖确定性策略为驳回的规则。模型的驳回结论保持失败关闭并被采纳。
+	if decision == DecisionApprove && rule.Decision != DecisionApprove {
+		return DecisionResult{}, false
+	}
+	confidence := result.Confidence
+	if math.IsNaN(confidence) || math.IsInf(confidence, 0) || confidence < 0 {
+		return DecisionResult{}, false
+	}
+	if confidence > 1 {
+		confidence = 1
+	}
+	if confidence < s.options.MinAIConfidence {
+		return DecisionResult{}, false
+	}
+	result.Decision = decision
+	result.Confidence = confidence
+	result.Reason = strings.TrimSpace(result.Reason)
+	if result.Reason == "" {
+		result.Reason = "AI 自动审批 | automated by AI"
+	}
+	return result, true
 }
 
 // ruleMatches reports whether the rule's scope matches the current instance and node. |
@@ -319,7 +359,7 @@ func (s *Service) createNodeTasks(ctx context.Context, tx *runtimeTxn, token *To
 		if node.Completion.Sequential && i > 0 {
 			status = TaskQueued
 		}
-		task, err := s.createTask(ctx, tx, token, node, assignee, i, status)
+		task, err := s.createTask(ctx, tx, token, node, assignee, "system", i, status)
 		if err != nil {
 			return err
 		}
@@ -339,8 +379,10 @@ func (s *Service) createNodeTasks(ctx context.Context, tx *runtimeTxn, token *To
 	return nil
 }
 
-// createTask inserts one task for one assignee. | createTask 为一个审批人插入一条任务。
-func (s *Service) createTask(ctx context.Context, tx *runtimeTxn, token *Token, node Node, assignee Assignee, seq int, status string) (Task, error) {
+// createTask inserts one task for one assignee. creator records who added the task through
+// add-sign; planned tasks use "system". | createTask 为一个审批人插入一条任务。creator 记录通过加签
+// 添加任务的用户；计划任务使用 "system"。
+func (s *Service) createTask(ctx context.Context, tx *runtimeTxn, token *Token, node Node, assignee Assignee, creator string, seq int, status string) (Task, error) {
 	id, err := s.options.NewID("wftsk_")
 	if err != nil {
 		return Task{}, errs.Wrap(err, ErrUnavailable)
@@ -379,6 +421,7 @@ func (s *Service) createTask(ctx context.Context, tx *runtimeTxn, token *Token, 
 		NodeName:           node.Name,
 		NodeNameEN:         node.NameEN,
 		AssigneeType:       node.Assignee.Type,
+		CreatedBy:          creator,
 		Status:             status,
 		Decision:           DecisionNone,
 		Seq:                seq,
@@ -553,6 +596,48 @@ func boolValue(value any) (bool, bool) {
 	default:
 		return false, false
 	}
+}
+
+// formVariablePrefix is the reserved namespace that lets a caller submit ad-hoc form values
+// without colliding with server-owned variables. | formVariablePrefix 是保留命名空间，允许调用方
+// 提交临时表单值而不与服务器变量冲突。
+const formVariablePrefix = "form."
+
+// formValueAllowed reports whether one submitted key may be merged into the instance variables.
+// A key is allowed only when it is a declared form field or lives in the form.* namespace. |
+// formValueAllowed 报告一个提交键是否可以合并进实例变量。仅当它是声明的表单字段或位于 form.*
+// 命名空间时才允许。
+func formValueAllowed(fields []FormField, key string) bool {
+	if strings.HasPrefix(key, formVariablePrefix) && len(key) > len(formVariablePrefix) {
+		return true
+	}
+	for _, field := range fields {
+		if field.Key == key {
+			return true
+		}
+	}
+	return false
+}
+
+// filterFormData drops every submitted key that is neither a declared field nor inside the
+// form.* namespace, so unknown keys can never overwrite server variables. | filterFormData 丢弃
+// 既不是声明字段也不在 form.* 命名空间内的提交键，未知键无法覆盖服务端变量。
+func filterFormData(fields []FormField, values map[string]any) map[string]any {
+	if len(values) == 0 {
+		return nil
+	}
+	out := make(map[string]any, len(values))
+	for key, value := range values {
+		key = strings.TrimSpace(key)
+		if key == "" || !formValueAllowed(fields, key) {
+			continue
+		}
+		out[key] = value
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 // mergeFormData merges submitted form values into the instance variables. | mergeFormData

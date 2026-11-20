@@ -345,16 +345,22 @@ func (s *Service) Approve(ctx context.Context, tenantID string, actor Actor, tas
 			notes = rt.notes
 			return nil
 		}
+		// Validation always reads the canonical Design.FormFor form; Forms is normative and
+		// Node.Form is only a legacy fallback. Unknown submitted keys are dropped before the
+		// values can reach instance variables. | 校验始终读取规范的 Design.FormFor 表单；Forms 是
+		// 规范来源，Node.Form 仅作旧兼容回退。未知提交键在进入实例变量之前即被丢弃。
+		fields := rt.design.FormFor(task.NodeID)
+		submitted := filterFormData(fields, in.FormData)
 		if in.Decision == DecisionApprove {
-			if err := s.validateSubmittedForm(node.Form, in.FormData); err != nil {
+			if err := s.validateSubmittedForm(fields, submitted); err != nil {
 				return err
 			}
-			rt.mergeFormData(in.FormData)
+			rt.mergeFormData(submitted)
 		}
 		task.Status = TaskCompleted
 		task.Decision = in.Decision
 		task.Comment = comment
-		task.FormData = taskJSON(in.FormData)
+		task.FormData = taskJSON(submitted)
 		task.CompletedAt = rt.now
 		task.UpdatedAt = rt.now
 		if err := st.UpdateTask(ctx, task); err != nil {
@@ -665,7 +671,7 @@ func (s *Service) AddSign(ctx context.Context, tenantID string, actor Actor, tas
 				status = TaskQueued
 			}
 			seq := baseSeq + i
-			newTask, err := s.createTask(ctx, rt, &Token{ID: task.TokenID, TenantID: tenantID, InstanceID: inst.ID}, node, user, seq, status)
+			newTask, err := s.createTask(ctx, rt, &Token{ID: task.TokenID, TenantID: tenantID, InstanceID: inst.ID}, node, user, actor.ID, seq, status)
 			if err != nil {
 				return err
 			}
@@ -696,7 +702,13 @@ func (s *Service) AddSign(ctx context.Context, tenantID string, actor Actor, tas
 	return created, nil
 }
 
-// RemoveSign cancels one queued or pending task of a running node. | RemoveSign 取消运行中节点的一条排队或待处理任务。
+// RemoveSign cancels one queued or pending task of a running node. The instance initiator, an
+// administrator and the task creator may cancel another assignee; an ordinary approver may only
+// cancel a task they created or one they own. Node completion is recomputed after the removal,
+// so an authorised removal can finish the node while an unauthorised one cannot bypass a
+// countersign. | RemoveSign 取消运行中节点的一条排队或待处理任务。实例发起人、管理员与任务创建者
+// 可以取消他人的任务；普通审批人只能取消自己创建或自己拥有的任务。减签后会重新计算节点完成度，
+// 因此授权减签可以结束节点，而未授权的减签不能绕过会签。
 func (s *Service) RemoveSign(ctx context.Context, tenantID string, actor Actor, taskID, targetTaskID, comment string) error {
 	tenantID = strings.TrimSpace(tenantID)
 	taskID = strings.TrimSpace(taskID)
@@ -724,15 +736,15 @@ func (s *Service) RemoveSign(ctx context.Context, tenantID string, actor Actor, 
 		if rt.design.Settings.ForbidAddSign {
 			return errs.Detail(ErrForbidden, "remove-sign is disabled by the process | 流程已关闭减签")
 		}
-		if !actor.Admin && task.AssigneeID != actor.ID {
-			return ErrTaskNotMine
-		}
 		target, err := s.loadTaskRow(ctx, st, tenantID, targetTaskID)
 		if err != nil {
 			return err
 		}
 		if target.TokenID != task.TokenID || target.Status == TaskCompleted || target.Status == TaskCancelled {
 			return ErrTaskClosed
+		}
+		if !s.canRemoveSign(*rt.inst, target, actor) {
+			return errs.Detail(ErrForbidden, "only the initiator, an administrator or the task creator may remove another assignee | 只有发起人、管理员或任务创建者可以减签他人")
 		}
 		open, err := st.ListTasksByToken(ctx, tenantID, target.TokenID)
 		if err != nil {
@@ -744,24 +756,46 @@ func (s *Service) RemoveSign(ctx context.Context, tenantID string, actor Actor, 
 				live++
 			}
 		}
-		if live <= 1 {
-			return errs.Detail(ErrConflict, "the last open task cannot be removed | 最后一条未结束任务不可减签")
-		}
 		target.Status = TaskCancelled
 		target.Comment = comment
 		target.UpdatedAt = rt.now
 		if err := st.UpdateTask(ctx, target); err != nil {
 			return err
 		}
-		node, _ := rt.design.FindNode(target.NodeID)
+		rt.event(ctx, EventTaskRemoved, target.ID, target.NodeID, actor.ID, actor.Name, comment, "")
+		if comment != "" {
+			s.appendComment(ctx, rt, target.ID, actor, comment, "comment")
+		}
+		node, ok := rt.design.FindNode(target.NodeID)
+		if !ok {
+			return ErrInvalidDesign
+		}
 		if node.Completion.Sequential {
 			if _, _, err := s.promoteQueuedTask(ctx, rt, target.TokenID); err != nil {
 				return err
 			}
 		}
-		rt.event(ctx, EventTaskRemoved, target.ID, target.NodeID, actor.ID, actor.Name, comment, "")
-		if comment != "" {
-			s.appendComment(ctx, rt, target.ID, actor, comment, "comment")
+		token, err := st.GetToken(ctx, tenantID, target.TokenID)
+		if err != nil {
+			return err
+		}
+		decision, err := s.evaluateCompletion(ctx, rt, &token, node)
+		if err != nil {
+			return err
+		}
+		// Removing the last open task is allowed only when the remaining decisions already
+		// decide the node; otherwise the node would be left with no way to progress. |
+		// 仅当剩余决策已能决定节点时才允许移除最后一条未结束任务；否则节点将无法推进。
+		if live <= 1 && decision == DecisionNone {
+			return errs.Detail(ErrConflict, "the last open task cannot be removed | 最后一条未结束任务不可减签")
+		}
+		if decision != DecisionNone {
+			if err := s.cancelOpenTasks(ctx, rt, token.ID, "node decided | 节点已决策"); err != nil {
+				return err
+			}
+			if err := s.completeNode(ctx, rt, &token, node, decision, actor.ID, actor.Name, comment); err != nil {
+				return err
+			}
 		}
 		if err := rt.refreshCurrentNodes(ctx); err != nil {
 			return err
@@ -777,6 +811,23 @@ func (s *Service) RemoveSign(ctx context.Context, tenantID string, actor Actor, 
 	}
 	s.flushNotifications(ctx, notes)
 	return nil
+}
+
+// canRemoveSign reports whether actor may cancel target. The initiator, an administrator and the
+// task creator may cancel any assignee of the node; an ordinary approver may only cancel a task
+// they created or one they own. | canRemoveSign 报告调用方能否取消目标任务。发起人、管理员与任务
+// 创建者可以取消节点内任意审批人的任务；普通审批人只能取消自己创建或自己拥有的任务。
+func (s *Service) canRemoveSign(inst Instance, target Task, actor Actor) bool {
+	if actor.Admin || inst.InitiatorID == actor.ID {
+		return true
+	}
+	if target.CreatedBy != "" && target.CreatedBy == actor.ID {
+		return true
+	}
+	if target.AssigneeID == actor.ID || target.OriginalAssigneeID == actor.ID {
+		return true
+	}
+	return containsFold(target.CandidateList(), actor.ID)
 }
 
 // Return sends the instance back to a visited user task or to the initiator. The target must
@@ -1145,26 +1196,35 @@ func (s *Service) Stats(ctx context.Context, tenantID string) (Stats, error) {
 	return s.store.Stats(ctx, strings.TrimSpace(tenantID))
 }
 
-// visibleTo reports whether the actor may read one task's instance. | visibleTo 报告调用方能否读取任务所属实例。
-func (s *Service) visibleTo(ctx context.Context, tenantID string, inst Instance, actor Actor) (bool, error) {
+// instanceParticipant reports whether actor is the initiator, an administrator or an assignee,
+// candidate or delegation owner of one task of the instance. | instanceParticipant 报告调用方是否
+// 为实例发起人、管理员，或实例某条任务的指派人、候选人与委派前所有者。
+func (s *Service) instanceParticipant(ctx context.Context, st Store, tenantID string, inst Instance, actor Actor) (bool, error) {
 	if actor.Admin || inst.InitiatorID == actor.ID {
 		return true, nil
 	}
-	tasks, _, err := s.store.ListTasks(ctx, tenantID, TaskFilter{InstanceID: inst.ID, Page: 1, PageSize: s.options.MaxPageSize})
-	if err != nil {
-		return false, err
-	}
-	for _, task := range tasks {
-		if task.AssigneeID == actor.ID {
-			return true, nil
+	for page := 1; ; page++ {
+		tasks, total, err := st.ListTasks(ctx, tenantID, TaskFilter{InstanceID: inst.ID, Page: page, PageSize: s.options.MaxPageSize})
+		if err != nil {
+			return false, err
 		}
-		for _, candidate := range task.CandidateList() {
-			if candidate == actor.ID {
+		for _, task := range tasks {
+			if task.AssigneeID == actor.ID || task.OriginalAssigneeID == actor.ID {
+				return true, nil
+			}
+			if containsFold(task.CandidateList(), actor.ID) {
 				return true, nil
 			}
 		}
+		if len(tasks) == 0 || page*s.options.MaxPageSize >= total {
+			return false, nil
+		}
 	}
-	return false, nil
+}
+
+// visibleTo reports whether the actor may read one task's instance. | visibleTo 报告调用方能否读取任务所属实例。
+func (s *Service) visibleTo(ctx context.Context, tenantID string, inst Instance, actor Actor) (bool, error) {
+	return s.instanceParticipant(ctx, s.store, tenantID, inst, actor)
 }
 
 // InstanceVisible reports whether the actor may read the instance. | InstanceVisible 报告调用方能否读取实例。

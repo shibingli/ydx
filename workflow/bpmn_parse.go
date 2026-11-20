@@ -101,8 +101,14 @@ func (e bpmnElement) children(name string) []bpmnElement {
 	return out
 }
 
-// ParseBPMN parses and validates a BPMN 2.0 XML document. | ParseBPMN 解析并校验 BPMN 2.0 XML 文档。
+// ParseBPMN parses and validates a BPMN 2.0 XML document. The raw document is bounded by the
+// default import ceiling before any trimming or decoding, so an oversized payload cannot force
+// an unbounded allocation. | ParseBPMN 解析并校验 BPMN 2.0 XML 文档。原始文档在裁剪或解码前先按默认
+// 导入上限设界，超大载荷无法强制无界分配。
 func ParseBPMN(raw string) (BPMNProcess, error) {
+	if limit := DefaultOptions().MaxImportBytes; len(raw) > limit {
+		return BPMNProcess{}, errs.Detail(ErrLimit, "BPMN document exceeds %[1]d bytes | BPMN 文档超过 %[1]d 字节", limit)
+	}
 	if strings.TrimSpace(raw) == "" {
 		return BPMNProcess{}, ErrBPMNInvalid
 	}

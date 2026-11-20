@@ -138,6 +138,11 @@ type Task struct {
 	AssigneeName string `json:"assignee_name,omitempty" gorm:"column:assignee_name;type:varchar(120)"`
 	// AssigneeType is user, role or initiator as configured. | AssigneeType 是配置的 user、role 或 initiator。
 	AssigneeType string `json:"assignee_type,omitempty" gorm:"column:assignee_type;type:varchar(16)"`
+	// CreatedBy is the user who created the task through add-sign, or "system" for planned and
+	// automatic tasks. It lets the creator remove a sign task they added without granting every
+	// approver the right to cancel other approvers. | CreatedBy 是通过加签创建任务的用户，计划任务与
+	// 自动任务为 "system"。它让加签人可以撤销自己创建的任务，而不会把取消他人任务的权限授予每个审批人。
+	CreatedBy string `json:"created_by,omitempty" gorm:"column:created_by;type:varchar(64)"`
 	// OriginalAssigneeID is the owner before delegation; empty when not delegated. | OriginalAssigneeID
 	// 是委派前的任务所有者；未委派时为空。
 	OriginalAssigneeID string `json:"original_assignee_id,omitempty" gorm:"column:original_assignee_id;type:varchar(64)"`

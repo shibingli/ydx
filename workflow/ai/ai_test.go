@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -165,6 +166,43 @@ func TestAIFailureModes(t *testing.T) {
 				if !errors.Is(err, ai.ErrResponse) && !errors.Is(err, ai.ErrRequest) {
 					t.Fatalf("%s 错误 = %v", name, err)
 				}
+			}
+		})
+	}
+}
+
+// TestAIConfidenceValidation covers missing, negative and out-of-range confidence values. |
+// TestAIConfidenceValidation 覆盖缺失、负数与越界置信度。
+func TestAIConfidenceValidation(t *testing.T) {
+	cases := []struct {
+		name       string
+		content    string
+		want       string
+		confidence float64
+	}{
+		{name: "missing", content: `{"decision":"approve","reason":"no confidence"}`, want: workflow.DecisionNone, confidence: 0},
+		{name: "negative", content: `{"decision":"approve","reason":"negative","confidence":-0.5}`, want: workflow.DecisionNone, confidence: 0},
+		{name: "above-one", content: `{"decision":"approve","reason":"over","confidence":2}`, want: workflow.DecisionApprove, confidence: 1},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				_, _ = w.Write([]byte(`{"choices":[{"message":{"content":` + strconv.Quote(tc.content) + `}}]}`))
+			}))
+			defer server.Close()
+			decider, err := ai.New(ai.Options{
+				Enabled: true, Provider: ai.ProviderOpenAI, BaseURL: server.URL,
+				APIKey: "k", Model: "m", Client: server.Client(), Timeout: time.Second, MinConfidence: 0.7,
+			})
+			if err != nil {
+				t.Fatalf("构造决策器失败: %v", err)
+			}
+			result, err := decider.Decide(context.Background(), decisionInput())
+			if err != nil {
+				t.Fatalf("决策失败: %v", err)
+			}
+			if result.Decision != tc.want || result.Confidence != tc.confidence {
+				t.Fatalf("决策 = %+v, 期望 %s / %v", result, tc.want, tc.confidence)
 			}
 		})
 	}

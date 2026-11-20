@@ -341,11 +341,16 @@ func DefaultDesign() Design {
 // StartForm returns the start form fields. | StartForm 返回发起表单字段。
 func (d Design) StartForm() []FormField { return d.Forms["start"] }
 
-// FormFor returns the form fields of one node, falling back to the start form. | FormFor
-// 返回某个节点的表单字段，缺失时回退到发起表单。
+// FormFor returns the canonical form fields of one node. Forms is the normative source; the
+// legacy Node.Form field is consulted only when the map has no entry, and the synthetic
+// initiator task falls back to the start form. | FormFor 返回某个节点的规范表单字段。Forms 是规范
+// 来源；仅当映射没有条目时才读取旧的 Node.Form 字段，合成的发起人任务回退到发起表单。
 func (d Design) FormFor(nodeID string) []FormField {
 	if fields, ok := d.Forms[nodeID]; ok && len(fields) > 0 {
 		return fields
+	}
+	if node, ok := d.FindNode(nodeID); ok && len(node.Form) > 0 {
+		return node.Form
 	}
 	if nodeID == InitiatorNodeID {
 		return d.StartForm()

@@ -36,7 +36,9 @@ type StartInput struct {
 	Title string
 	// BusinessKey is the caller's external reference. | BusinessKey 是调用方的外部业务键。
 	BusinessKey string
-	// Category overrides the definition category. | Category 覆盖定义分类。
+	// Category is deprecated and ignored. The instance always copies Definition.Category so a
+	// caller cannot forge the category used by automatic-approval rules. | Category 已弃用并被忽略。
+	// 实例始终复制 Definition.Category，调用方无法伪造自动审批规则使用的分类。
 	Category string
 	// Version pins a published version; zero selects the latest published version. | Version
 	// 绑定一个已发布版本；零值选择最新已发布版本。
@@ -100,11 +102,15 @@ func (s *Service) Start(ctx context.Context, tenantID string, actor Actor, in St
 	if err != nil {
 		return Instance{}, err
 	}
-	variables, err := mergeStartVariables(in.FormData, in.Variables)
+	startForm := design.FormFor("start")
+	// Only declared start-form fields and the form.* namespace may enter the instance
+	// variables; arbitrary caller keys cannot overwrite server variables. | 只有声明的发起表单字段与
+	// form.* 命名空间可以进入实例变量；任意调用方键不能覆盖服务端变量。
+	variables, err := mergeStartVariables(filterFormData(startForm, in.FormData), in.Variables)
 	if err != nil {
 		return Instance{}, err
 	}
-	if err := s.validateSubmittedForm(design.StartForm(), variables); err != nil {
+	if err := s.validateSubmittedForm(startForm, variables); err != nil {
 		return Instance{}, err
 	}
 	rawVariables, err := json.Marshal(variables)
@@ -125,13 +131,10 @@ func (s *Service) Start(ctx context.Context, tenantID string, actor Actor, in St
 	if !ok {
 		return Instance{}, ErrInvalidInput
 	}
-	category, ok := trimLen(in.Category, 64)
-	if !ok {
-		return Instance{}, ErrInvalidInput
-	}
-	if category == "" {
-		category = def.Category
-	}
+	// The instance category is always the definition category; StartInput.Category is ignored
+	// so automatic rules cannot be steered by a forged category. | 实例分类始终取自定义分类；
+	// StartInput.Category 被忽略，自动规则无法被伪造的分类左右。
+	category := def.Category
 	now := s.now()
 	// Generate identity once: an AI deferral replays the transaction, and a fresh instance id on
 	// each replay would also change the decider's input fingerprint and defeat the cache. |
@@ -535,6 +538,13 @@ func (s *Service) Signal(ctx context.Context, tenantID string, actor Actor, inst
 		}
 		if rt.inst.Status != InstanceRunning {
 			return ErrInstanceClosed
+		}
+		participant, err := s.instanceParticipant(ctx, st, tenantID, *rt.inst, actor)
+		if err != nil {
+			return err
+		}
+		if !participant {
+			return errs.Detail(ErrForbidden, "the caller does not participate in this instance | 调用方不是该实例的参与者")
 		}
 		tokens, err := st.ListMessageTokens(ctx, tenantID, instanceID, messageName)
 		if err != nil {
@@ -1126,6 +1136,7 @@ func (s *Service) createAutoTask(ctx context.Context, tx *runtimeTxn, token *Tok
 		NodeName:     node.Name,
 		NodeNameEN:   node.NameEN,
 		AssigneeType: "system",
+		CreatedBy:    "system",
 		AssigneeName: "system",
 		Status:       TaskCompleted,
 		Decision:     decision.Decision,
