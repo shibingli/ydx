@@ -292,3 +292,28 @@ func TestNativeChainSharesRequestID(t *testing.T) {
 		t.Fatalf("request_id = %q, header = %q", got, rec.Header().Get("X-Request-Id"))
 	}
 }
+
+// TestAccessLogRecordsUpgradeRequests pins that an Upgrade request is still audited. The
+// response writer must not be wrapped (the handshake needs http.Hijacker), but skipping the
+// record entirely would let any request with "Upgrade: x" bypass access logging. |
+// TestAccessLogRecordsUpgradeRequests 固化升级请求仍被审计。响应写入器不能包装（握手需要
+// http.Hijacker），但完全跳过记录会让任何带 "Upgrade: x" 的请求绕过访问日志。
+func TestAccessLogRecordsUpgradeRequests(t *testing.T) {
+	logger, buf := newTestLogger()
+	r := router.New()
+	r.Use(AccessLog(logger))
+	r.GET("/ws", func(c *router.Ctx) { c.WriteHeader(http.StatusSwitchingProtocols) })
+
+	doReq(r, http.MethodGet, "/ws", map[string]string{
+		"Connection": "Upgrade",
+		"Upgrade":    "websocket",
+	}, "")
+
+	entry := onlyRecord(t, buf)
+	if entry["path"] != "/ws" || entry["method"] != http.MethodGet {
+		t.Fatalf("升级请求日志 = %v, 期望 path=/ws method=GET", entry)
+	}
+	if got := numField(t, entry, "status"); got != http.StatusSwitchingProtocols {
+		t.Fatalf("status = %v, 期望 101 | want 101", got)
+	}
+}

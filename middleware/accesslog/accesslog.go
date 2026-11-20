@@ -38,8 +38,32 @@ func AccessLog(l *log.Logger, opts ...AccessLogOptions) router.Middleware {
 		trusted = opts[0].TrustedProxies
 	}
 	return func(c *router.Ctx) {
-		if l == nil || reqlog.IsUpgradeRequest(c.Request) {
+		if l == nil {
 			c.Next()
+			return
+		}
+		if reqlog.IsUpgradeRequest(c.Request) {
+			// The writer must stay unwrapped so the handshake keeps http.Hijacker, but the
+			// request itself still belongs in the audit trail. Skipping the record here would
+			// let any request carrying "Upgrade: x" disappear from access logs. |
+			// 写入器必须保持未包装，以保留握手的 http.Hijacker；但这次请求仍必须进入审计记录。
+			// 在这里跳过记录会让任何携带 "Upgrade: x" 的请求从访问日志中消失。
+			start := time.Now()
+			c.Next()
+			status := c.StatusCode()
+			if status == 0 {
+				status = http.StatusSwitchingProtocols
+			}
+			l.Info("access | 访问日志",
+				log.Str("request_id", requestid.FromContext(c)),
+				log.Str("method", c.Request.Method),
+				log.Str("path", c.Request.URL.Path),
+				log.Str("query", c.Request.URL.RawQuery),
+				log.Int("status", status),
+				log.Int64("bytes", 0),
+				log.Str("remote_ip", c.ClientIP(trusted)),
+				log.Dur("duration", time.Since(start)),
+			)
 			return
 		}
 		start := time.Now()
