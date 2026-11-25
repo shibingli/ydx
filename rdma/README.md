@@ -124,6 +124,12 @@ return conn.SendBuffer(buf, len(msg))
   `RecvBuffer`/`Release` 是零拷贝路径。
 - `SendBatch` / `SendBatchBuffers` 与 `RecvBuffers` / `ReleaseBatch` 用于吞吐。
 - 一个 `Conn` 不得被多个协程同时使用；每个工作协程使用独立 `Conn`。
+- 可选单边操作：两端 `ConnConfig.QPAccess` 授予 `AccessRemoteWrite` /
+  `AccessRemoteRead` 后，`Conn.WriteImm`、`Conn.Read`、`Conn.RecvImm` 可用；
+  远端内存经 `Device.NewMR`/`RegisterMemory` 注册并带外交换地址与 RKey。
+  `QPAccess` 零值保持旧的 SEND/RECV 权限。
+- 可选等待调优：`ConnConfig.CQPollBudget`、`SpinBeforeGosched`、
+  `DeadlineCheckSpins`、`BusyPoll`、`PrePostRecv`；全部零值保持旧行为。
 
 ## 快速开始：底层 verbs
 

@@ -15,6 +15,12 @@ import (
 // 事件属于发送池。
 const txBit = uint64(1) << 63
 
+// oneSidedBit marks a completion as belonging to a Conn.WriteImm or Conn.Read
+// operation, which carries its own pending channel instead of a pool slot. |
+// oneSidedBit 标记完成事件属于 Conn.WriteImm 或 Conn.Read 操作；该操作使用独立
+// 的等待通道而不是池槽位。
+const oneSidedBit = uint64(1) << 62
+
 // ConnConfig configures a message connection. Zero fields take tuned defaults.
 // | ConnConfig 配置消息连接。零值字段使用调优默认值。
 type ConnConfig struct {
@@ -48,6 +54,42 @@ type ConnConfig struct {
 	// MaxBatch caps one SendBatch or Process call. Zero means 64. | MaxBatch
 	// 限制单次 SendBatch 或 Process 的数量；零表示 64。
 	MaxBatch int
+	// CQPollBudget caps one completion-queue poll inside the wait loops of
+	// Alloc, Send, Recv, and the one-sided operations. Zero uses MaxBatch, which
+	// is the historical behavior. Values above 256 are clamped to the internal
+	// completion buffer. | CQPollBudget 限制 Alloc、Send、Recv 与单边操作等待循环中
+	// 单次完成队列轮询的数量。零使用 MaxBatch（历史行为）；大于 256 时按内部完成
+	// 缓冲区截断。
+	CQPollBudget int
+	// SpinBeforeGosched is the number of wait-loop iterations before the
+	// connection yields with runtime.Gosched. Zero means 4096. BusyPoll=true
+	// disables the yield. | SpinBeforeGosched 是等待循环调用 runtime.Gosched 前
+	// 的迭代次数；零表示 4096。BusyPoll=true 时禁用让出。
+	SpinBeforeGosched int
+	// DeadlineCheckSpins is the number of wait-loop iterations between
+	// time.Now deadline checks. Zero means 1024. | DeadlineCheckSpins 是等待循环
+	// 两次 time.Now 截止时间检查之间的迭代次数；零表示 1024。
+	DeadlineCheckSpins int
+	// BusyPoll keeps wait loops spinning without runtime.Gosched. The zero value
+	// preserves the historical periodic yield. | BusyPoll 让等待循环持续自旋而不
+	// 调用 runtime.Gosched；零值保持历史的周期性让出。
+	BusyPoll bool
+	// PrePostRecv caps the receive work requests posted during connection
+	// setup. Zero posts every granted receive slot, which is the historical
+	// behavior. A non-zero value must be at least 2; larger values are clamped
+	// to the granted receive slot count. | PrePostRecv 限制连接建立时提交的接收工作
+	// 请求数量。零提交全部获授接收槽位（历史行为）；非零值至少为 2，过大时按获授
+	// 接收槽位数截断。
+	PrePostRecv int
+	// QPAccess is the remote access permission granted to the peer on this
+	// connection's queue pair. Zero keeps the historical AccessLocalWrite, which
+	// rejects peer RDMA WRITE/READ with a remote invalid request. Set
+	// AccessRemoteWrite and/or AccessRemoteRead on both peers to enable
+	// Conn.WriteImm and Conn.Read. | QPAccess 是本连接队列对授予对端的远端访问
+	// 权限。零值保持历史的 AccessLocalWrite，对端 RDMA WRITE/READ 会收到远端非法
+	// 请求；要在两端启用 Conn.WriteImm 与 Conn.Read，请在对端与本端都设置
+	// AccessRemoteWrite 和/或 AccessRemoteRead。
+	QPAccess Access
 }
 
 // DefaultConnConfig returns a tuned connection configuration. | DefaultConnConfig
@@ -110,6 +152,18 @@ func (c *ConnConfig) normalize() error {
 	if c.MaxBatch < 1 {
 		return errs.Detail(ErrInvalidConfig, "max batch %d | 最大批量 %d", c.MaxBatch, c.MaxBatch)
 	}
+	if c.CQPollBudget < 0 {
+		return errs.Detail(ErrInvalidConfig, "cq poll budget %d | CQ 轮询预算 %d", c.CQPollBudget, c.CQPollBudget)
+	}
+	if c.SpinBeforeGosched < 0 {
+		return errs.Detail(ErrInvalidConfig, "spin before gosched %d | 让出前自旋次数 %d", c.SpinBeforeGosched, c.SpinBeforeGosched)
+	}
+	if c.DeadlineCheckSpins < 0 {
+		return errs.Detail(ErrInvalidConfig, "deadline check spins %d | 截止检查自旋次数 %d", c.DeadlineCheckSpins, c.DeadlineCheckSpins)
+	}
+	if c.PrePostRecv < 0 || c.PrePostRecv == 1 {
+		return errs.Detail(ErrInvalidConfig, "pre-post recv %d must be zero or at least 2 | 预投接收数 %d 必须为零或至少 2", c.PrePostRecv, c.PrePostRecv)
+	}
 	return nil
 }
 
@@ -149,6 +203,24 @@ type Conn struct {
 	cfg         ConnConfig
 	oneSend     [1]SendWR
 	oneRecv     [1]RecvWR
+
+	// osMu guards the pending one-sided completions. | osMu 保护在途单边完成。
+	osMu sync.Mutex
+
+	// osPending maps a one-sided operation id to its completion channel. |
+	// osPending 把单边操作 id 映射到其完成通道。
+	osPending map[uint32]chan Completion
+
+	// osNext allocates one-sided operation ids. | osNext 分配单边操作 id。
+	osNext atomic.Uint32
+
+	// immRing buffers RDMA Write-with-immediate notifications in arrival order.
+	// | immRing 按到达顺序缓存 RDMA 立即数写通知。
+	immRing []uint32
+
+	// immHead and immCount are the immRing consumer position and fill level. |
+	// immHead 与 immCount 是 immRing 的消费位置与填充数量。
+	immHead, immCount int
 
 	ops atomic.Int64
 
@@ -357,11 +429,18 @@ func newConn(dev *Device, tcp net.Conn, cfg ConnConfig, ownsDevice bool) (c *Con
 		_ = cq.Close()
 		return nil, err
 	}
+	// QPAccess zero keeps the historical SEND/RECV-only permission. One-sided
+	// callers opt in explicitly on both peers. | QPAccess 零值保持历史的仅
+	// SEND/RECV 权限；单边调用方需在两端显式启用。
+	qpAccess := cfg.QPAccess
+	if qpAccess == 0 {
+		qpAccess = AccessLocalWrite
+	}
 	qp, err := dev.NewQP(QPConfig{
 		Type: QPTypeRC, SendCQ: cq, RecvCQ: cq,
 		MaxSendWR: slots, MaxRecvWR: slots,
 		MaxSendSGE: 1, MaxRecvSGE: 1,
-		MaxInline: cfg.MaxInline, SignalAll: false, Access: AccessLocalWrite,
+		MaxInline: cfg.MaxInline, SignalAll: false, Access: qpAccess,
 	})
 	if err != nil {
 		_ = rx.Close()
@@ -374,8 +453,11 @@ func newConn(dev *Device, tcp net.Conn, cfg ConnConfig, ownsDevice bool) (c *Con
 	}
 	conn := &Conn{
 		dev: dev, qp: qp, cq: cq, rx: rx, tcp: tcp, cfg: cfg,
-		rxBufs: make([]*Buffer, recvSlots),
-		ring:   newRxRing(recvSlots), events: make([]Completion, 256),
+		rxBufs:     make([]*Buffer, recvSlots),
+		ring:       newRxRing(recvSlots),
+		events:     make([]Completion, 256),
+		immRing:    make([]uint32, recvSlots),
+		osPending:  make(map[uint32]chan Completion),
 		ownsDevice: ownsDevice,
 		localAddr:  tcp.LocalAddr(), remoteAddr: tcp.RemoteAddr(),
 	}
@@ -392,7 +474,20 @@ func newConn(dev *Device, tcp net.Conn, cfg ConnConfig, ownsDevice bool) (c *Con
 			"provider granted %d receive slots, need at least 2 | 提供方仅授予 %d 个接收槽位，至少需要 2 个",
 			recvSlots, recvSlots)
 	}
-	recvs := make([]RecvWR, recvSlots)
+	// PrePostRecv lets callers cap the receive work requests posted at setup.
+	// The zero value keeps the historical behavior of posting every granted
+	// receive slot. | PrePostRecv 允许调用方限制建立时提交的接收工作请求；零值保持
+	// 提交全部获授接收槽位的历史行为。
+	postRecv := recvSlots
+	if cfg.PrePostRecv > 0 && cfg.PrePostRecv < postRecv {
+		postRecv = cfg.PrePostRecv
+	}
+	if postRecv < 2 {
+		return nil, errs.Detail(ErrInvalidConfig,
+			"pre-post recv %d leaves fewer than 2 posted slots | 预投接收数 %d 使已提交槽位少于 2",
+			cfg.PrePostRecv, cfg.PrePostRecv)
+	}
+	recvs := make([]RecvWR, postRecv)
 	for i := 0; i < recvSlots; i++ {
 		b, ok := rx.Acquire()
 		if !ok {
@@ -400,8 +495,10 @@ func newConn(dev *Device, tcp net.Conn, cfg ConnConfig, ownsDevice bool) (c *Con
 		}
 		conn.rxBufs[i] = b
 		b.rx = true
-		b.posted.Store(true)
-		recvs[i] = RecvWR{WRID: uint64(i), Addr: b.Addr(), Length: uint32(b.Len()), LKey: b.LKey()}
+		b.posted.Store(i < postRecv)
+		if i < postRecv {
+			recvs[i] = RecvWR{WRID: uint64(i), Addr: b.Addr(), Length: uint32(b.Len()), LKey: b.LKey()}
+		}
 	}
 	psn := cfg.PSN & 0xffffff
 	if psn == 0 {
@@ -415,9 +512,12 @@ func newConn(dev *Device, tcp net.Conn, cfg ConnConfig, ownsDevice bool) (c *Con
 		QPN: local.QPN, PSN: local.PSN, GID: local.GID, LID: local.LID, MTU: uint16(local.MTU),
 		MaxInline: uint32(qp.MaxInline()),
 		// The Conn data path is SEND/RECV only; its pools are registered with
-		// local-write access and no remote key is advertised. | Conn 数据路径只
-		// 使用 SEND/RECV；其内存池仅注册本地写权限，不公布远端密钥。
-		SlotSize: uint32(rx.SlotSize()), Slots: uint32(recvSlots),
+		// local-write access and no remote key is advertised. Slots advertises
+		// the number of receive work requests actually posted so a sender never
+		// outruns an intentionally reduced receive window. | Conn 数据路径只
+		// 使用 SEND/RECV；其内存池仅注册本地写权限，不公布远端密钥。Slots 公布实际
+		// 提交的接收工作请求数，使发送方不会超过被有意缩小的接收窗口。
+		SlotSize: uint32(rx.SlotSize()), Slots: uint32(postRecv),
 	}
 	remote, err := exchangeQPInfo(tcp, info, cfg.HandshakeTimeout)
 	if err != nil {
@@ -472,9 +572,9 @@ func newConn(dev *Device, tcp net.Conn, cfg ConnConfig, ownsDevice bool) (c *Con
 	}
 	// Receive requests are only accepted once the queue pair leaves RESET. |
 	// 队列对离开 RESET 后才接受接收请求。
-	if n, perr := qp.PostRecv(recvs); perr != nil || n != recvSlots {
+	if n, perr := qp.PostRecv(recvs); perr != nil || n != postRecv {
 		return nil, errs.Detail(ErrDevice, "post receive slots %d/%d: %v | 提交接收槽位 %d/%d 失败",
-			n, recvSlots, perr, n, recvSlots)
+			n, postRecv, perr, n, postRecv)
 	}
 	success = true
 	return conn, nil
