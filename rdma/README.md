@@ -171,6 +171,77 @@ _, err = qp.PostRecv([]rdma.RecvWR{{
 }})
 ```
 
+## 小消息与单边操作：配置与应用场景
+
+`ConnConfig` 的新增字段全部**零值兼容**：不设置时与旧版本行为一致。可按场景
+组合使用；建议先用默认值跑通，再只调整有实测收益的项。
+
+| 配置 | 默认/零值 | 适用场景 | 说明 |
+|---|---|---|---|
+| `CQPollBudget` | `MaxBatch` | 低延迟小消息 | 等待循环单次 `ibv_poll_cq` 预算；过大增加空转 |
+| `SpinBeforeGosched` | 4096 | 延迟敏感 | 调用 `runtime.Gosched` 前的自旋次数 |
+| `DeadlineCheckSpins` | 1024 | 延迟敏感 | 两次 `time.Now` 截止检查之间的自旋次数 |
+| `BusyPoll` | false | 极致延迟/独占核心 | 禁止 `Gosched`；需配合 `runtime.LockOSThread` 与 CPU 绑核，否则浪费 CPU |
+| `PrePostRecv` | 0（全部） | 小消息、突发 | 建连时预投的接收 WR 数；至少 2，过大按获授槽位截断 |
+| `SlotSize` | 4096 | 小消息 | 消息槽位；小消息可用 64 KiB，减少碎片与注册内存 |
+| `Slots` | 1024 | 小消息 | 每池槽位；小消息 8–32 足够，降低门铃/注册开销 |
+| `QPAccess` | 0 | 单边写/读 | 显式授予 `AccessRemoteWrite`/`AccessRemoteRead`；零值保持旧 SEND/RECV 权限 |
+
+### 场景一：推理 TP/EP 的小消息 AllReduce（2–50 KiB）
+
+- 每层激活/部分和通常 20–50 KiB；用**两段小消息集合**（recursive doubling 或
+  rank-0 gather/broadcast）替代 N−1 步 ring，可把 3 rank 20 KiB 从 176µs 降到
+  **61µs**。
+- 连接建议：`SlotSize = 64<<10`、`Slots = 8`、`PrePostRecv = 8`、
+  `CQPollBudget = 64`、`BusyPoll = true`（独占核心时）；`DeadlineCheckSpins`
+  可提高到 4096。默认 `BusyPoll=false` 便于与计算协程共存。
+- 数据面与训练/管理网络分离：RoCE/IB 使用 `192.168.2.0/24` 高速网，SSH/管理走
+  `192.168.8.0/24`；`Config.Device`/`NetDev` 显式绑定高速网卡。
+- 若 GPU 侧集合通信由 RCCL/NCCL/HCCL 设备直通完成，ydx/rdma 用于主机侧小消息或
+  控制面；两者可在同一任务中组合（RDMA+RCCL）。
+
+### 场景二：训练大梯度 AllReduce（MiB 级）
+
+- 保留默认大槽位（`SlotSize≈8 MiB`）、环 reduce-scatter/all-gather；
+  用 `SendBatchBuffers`、`RecvBuffers`/`ReleaseBatch` 批量提交与回收。
+- 大消息不要开 `BusyPoll` 长时间空转；按吞吐设置 `Slots`，并让每个工作协程
+  独占一个 `Conn`。
+
+### 场景三：单边写/读（参数分发、KV/激活搬运、gather）
+
+两端显式授予权限后，可用单边操作避免远端 CPU 参与：
+
+```go
+cfg := rdma.DefaultConnConfig()
+cfg.QPAccess = rdma.AccessRemoteWrite | rdma.AccessRemoteRead
+// 两端建连后，带外交换已注册内存的地址与 RKey（不要经日志/明文配置传播）。
+
+// 本地写远端：把本地 buf 写入远端注册内存，并投递一个 immediate。
+if err := conn.WriteImm(buf, remoteAddr, remoteRKey, 0x1234); err != nil {
+    return err
+}
+// 远端等待通知：
+imm, err := conn.RecvImm()
+```
+
+- 适合 rank-0 gather/broadcast、参数服务器式权重分发、checkpoint 传输；
+- `WriteImm`/`Read` 需要远端 MR 的地址与 RKey，必须带外、可信通道交换；
+- 最小权限：不需要单边访问时保持 `QPAccess=0`；不要向不可信对端授予远端写。
+
+### 实测（3 机 100 Gb RoCE，02/03/04；SSH 管理网/数据网分离）
+
+| 负载 | 3-rank gather | 3-rank ring |
+|---:|---:|---:|
+| 20 KiB | **61.1 µs** | 176.2 µs |
+| 30 KiB | **83.3 µs** | 196.2 µs |
+| 40 KiB | 106.3 µs | 212.7 µs |
+| 50 KiB | 127.5 µs | 245.7 µs |
+
+2-rank recursive：20 KiB **32.3 µs**、50 KiB **72.3 µs**；10,000 次结果逐位
+确定。40/50 KiB 的 3-rank gather 受根节点串行带宽限制；4-rank 结果待
+`minibox-01` 恢复后补测。算法选择与阈值在 `dist` 侧（`auto/ring/recursive/
+gather`），ydx/rdma 只提供可配置的连接与单边原语。
+
 ## 性能建议
 
 - 热路径使用忙轮询。`RecvBuffer`/`Alloc` 在无进展时先自旋 4096 次再让出处理器。
