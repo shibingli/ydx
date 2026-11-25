@@ -209,3 +209,69 @@ func TestConnLargeMessage(t *testing.T) {
 		t.Fatalf("echo length = %d, want %d | 回显不符", len(got), len(msg))
 	}
 }
+
+// TestConnOneSided proves Conn.WriteImm and Conn.Read reach caller-registered
+// remote memory and that WriteImm delivers its immediate to RecvImm. |
+// TestConnOneSided 证明 Conn.WriteImm 与 Conn.Read 可访问调用方注册的远端内存，
+// 且 WriteImm 的立即数由 RecvImm 交付。
+func TestConnOneSided(t *testing.T) {
+	cfg := testConnConfig(t)
+	cfg.QPAccess = AccessLocalWrite | AccessRemoteWrite | AccessRemoteRead
+	client, server := dialPair(t, cfg)
+	region := make([]byte, 4096)
+	mr, err := server.Device().RegisterMemory(region, AccessLocalWrite|AccessRemoteWrite|AccessRemoteRead)
+	if err != nil {
+		t.Fatalf("RegisterMemory = %v | 注册内存失败", err)
+	}
+	t.Cleanup(func() { _ = mr.Close() })
+
+	payload := []byte("one-sided write payload")
+	if err := client.WriteImm(payload, uint64(mr.Addr()), mr.RKey(), 0xfeed); err != nil {
+		t.Fatalf("WriteImm = %v | 单边写失败", err)
+	}
+	imm, err := server.RecvImm()
+	if err != nil {
+		t.Fatalf("RecvImm = %v | 接收立即数失败", err)
+	}
+	if imm != 0xfeed {
+		t.Fatalf("imm = %#x, want 0xfeed | 立即数不符", imm)
+	}
+	if !bytes.Equal(region[:len(payload)], payload) {
+		t.Fatalf("remote payload = %q, want %q | 远端负载不符", region[:len(payload)], payload)
+	}
+
+	readPayload := []byte("payload for rdma read")
+	copy(region, readPayload)
+	out := make([]byte, len(readPayload))
+	if err := client.Read(out, uint64(mr.Addr()), mr.RKey()); err != nil {
+		t.Fatalf("Read = %v | 单边读失败", err)
+	}
+	if !bytes.Equal(out, readPayload) {
+		t.Fatalf("read payload = %q, want %q | 单边读负载不符", out, readPayload)
+	}
+}
+
+// TestConnTunedPollPreservesMessaging proves BusyPoll and the widened poll
+// budget do not change Send/Recv semantics. | TestConnTunedPollPreservesMessaging
+// 证明 BusyPoll 与更大的轮询预算不改变 Send/Recv 语义。
+func TestConnTunedPollPreservesMessaging(t *testing.T) {
+	cfg := testConnConfig(t)
+	cfg.CQPollBudget = 256
+	cfg.BusyPoll = true
+	cfg.SpinBeforeGosched = 1 << 20
+	cfg.DeadlineCheckSpins = 4096
+	client, server := dialPair(t, cfg)
+	for i := 0; i < 32; i++ {
+		msg := bytes.Repeat([]byte{byte(i)}, 1024)
+		if err := client.Send(msg); err != nil {
+			t.Fatalf("Send %d = %v | 发送失败", i, err)
+		}
+		got, err := server.Recv()
+		if err != nil {
+			t.Fatalf("Recv %d = %v | 接收失败", i, err)
+		}
+		if !bytes.Equal(got, msg) {
+			t.Fatalf("message %d mismatch | 第 %d 条消息不符", i, i)
+		}
+	}
+}

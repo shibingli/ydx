@@ -97,6 +97,26 @@
 // posting and recycling. A Conn must not be shared by goroutines; use one Conn
 // per worker.
 //
+// # 可选单边操作 | Optional one-sided operations
+//
+// 两端 ConnConfig.QPAccess 显式授予 AccessRemoteWrite/AccessRemoteRead 后，
+// Conn.WriteImm 可将本地数据 RDMA WRITE_WITH_IMM 到对端预注册内存，Conn.Read
+// 可单边读取，Conn.RecvImm 取出立即数。远端内存用 Device.NewMR 或
+// Device.RegisterMemory 以对应权限注册，地址与 RKey 经任意控制通道交换。
+// QPAccess 零值保持历史的 SEND/RECV 权限，行为不变。 | With
+// ConnConfig.QPAccess explicitly granting AccessRemoteWrite/AccessRemoteRead on
+// both peers, Conn.WriteImm posts an RDMA WRITE_WITH_IMM into peer-registered
+// memory, Conn.Read performs a one-sided read, and Conn.RecvImm returns the
+// immediate. Register remote memory with Device.NewMR or
+// Device.RegisterMemory and exchange its address and RKey out of band. A zero
+// QPAccess keeps the historical SEND/RECV-only permission.
+//
+// ConnConfig 的 CQPollBudget、SpinBeforeGosched、DeadlineCheckSpins、BusyPoll
+// 与 PrePostRecv 是可选的等待/轮询/预投调优；全部零值保持旧行为。 |
+// ConnConfig.CQPollBudget, SpinBeforeGosched, DeadlineCheckSpins, BusyPoll and
+// PrePostRecv are optional wait/poll/pre-post tuning knobs; all zero values
+// preserve the previous behavior.
+//
 // # 底层 verbs | Low-level verbs
 //
 //	cfg := rdma.DefaultConfig()

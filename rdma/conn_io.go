@@ -8,6 +8,59 @@ import (
 	"github.com/shibingli/ydx/errs"
 )
 
+// pollBudget returns the completion-queue poll budget used by internal wait
+// loops. CQPollBudget=0 keeps the historical MaxBatch behavior. |
+// pollBudget 返回内部等待循环使用的完成队列轮询预算；CQPollBudget=0 保持历史的
+// MaxBatch 行为。
+func (c *Conn) pollBudget() int {
+	if c.cfg.CQPollBudget > 0 {
+		return c.cfg.CQPollBudget
+	}
+	return c.cfg.MaxBatch
+}
+
+// yieldSpins returns the wait-loop iteration count before runtime.Gosched.
+// Zero keeps the historical 4096. | yieldSpins 返回调用 runtime.Gosched 前的等待
+// 循环迭代次数；零保持历史的 4096。
+func (c *Conn) yieldSpins() int {
+	if c.cfg.SpinBeforeGosched > 0 {
+		return c.cfg.SpinBeforeGosched
+	}
+	return 4096
+}
+
+// deadlineSpins returns the wait-loop iteration count between deadline checks.
+// Zero keeps the historical 1024. | deadlineSpins 返回两次截止时间检查之间的等待
+// 循环迭代次数；零保持历史的 1024。
+func (c *Conn) deadlineSpins() int {
+	if c.cfg.DeadlineCheckSpins > 0 {
+		return c.cfg.DeadlineCheckSpins
+	}
+	return 1024
+}
+
+// deadlineDue reports whether the wait loop should compare the clock now. |
+// deadlineDue 报告等待循环本轮是否应比较时钟。
+func (c *Conn) deadlineDue(spins int) bool {
+	interval := c.deadlineSpins()
+	if interval <= 0 {
+		return false
+	}
+	if interval&(interval-1) == 0 {
+		return spins&(interval-1) == 0
+	}
+	return spins%interval == 0
+}
+
+// mayYield reports whether the wait loop should yield the processor now. |
+// mayYield 报告等待循环本轮是否应让出处理器。
+func (c *Conn) mayYield(spins int) bool {
+	if c.cfg.BusyPoll {
+		return false
+	}
+	return spins >= c.yieldSpins()
+}
+
 // Process polls up to budget completions. | Process 轮询至多 budget 个完成事件。
 func (c *Conn) Process(budget int) (int, error) {
 	if !c.enter() {
@@ -157,6 +210,21 @@ func (c *Conn) processLocked(budget int) (int, error) {
 			}
 			continue
 		}
+		if wc.WRID&oneSidedBit != 0 {
+			id := uint32(wc.WRID &^ oneSidedBit)
+			c.osMu.Lock()
+			ch := c.osPending[id]
+			delete(c.osPending, id)
+			c.osMu.Unlock()
+			if ch == nil {
+				if firstErr == nil {
+					firstErr = errs.Detail(ErrDevice, "completion for unknown one-sided id %d | 未知单边操作 %d 的完成", id, id)
+				}
+				continue
+			}
+			ch <- wc
+			continue
+		}
 		if wc.IsError() {
 			if firstErr == nil {
 				firstErr = errs.Detail(ErrConnReset, "completion %s status %s | 完成 %s 状态 %s",
@@ -176,6 +244,20 @@ func (c *Conn) processLocked(budget int) (int, error) {
 			if firstErr == nil {
 				firstErr = errs.Detail(ErrDevice, "receive completion for unposted slot %d | 未提交槽位 %d 的接收完成",
 					idx, idx)
+			}
+			continue
+		}
+		if wc.Opcode == CompRecvRDMAWithImm {
+			// A one-sided WRITE_WITH_IMM consumes one receive work request but
+			// does not place payload in its slot; the immediate is delivered to
+			// RecvImm and the slot is re-posted immediately. | 单边
+			// WRITE_WITH_IMM 消耗一个接收工作请求，但不把负载放入槽位；立即数交给
+			// RecvImm，槽位立即重新提交。
+			if !c.pushImm(wc.Imm) && firstErr == nil {
+				firstErr = errs.Detail(ErrQueueFull, "immediate notification ring full | 立即数通知环已满")
+			}
+			if rerr := c.releaseLocked(b); rerr != nil && firstErr == nil {
+				firstErr = rerr
 			}
 			continue
 		}
@@ -221,14 +303,14 @@ func (c *Conn) allocLocked(size int) (*Buffer, error) {
 		if b, ok := c.tx.Acquire(); ok {
 			return b, nil
 		}
-		if _, err := c.processLocked(c.cfg.MaxBatch); err != nil {
+		if _, err := c.processLocked(c.pollBudget()); err != nil {
 			return nil, err
 		}
 		spins++
-		if spins&1023 == 0 && !deadline.IsZero() && time.Now().After(deadline) {
+		if c.deadlineDue(spins) && !deadline.IsZero() && time.Now().After(deadline) {
 			return nil, ErrTimeout
 		}
-		if spins >= 4096 {
+		if c.mayYield(spins) {
 			spins = 0
 			runtime.Gosched()
 		}
@@ -312,18 +394,18 @@ func (c *Conn) sendBufferLocked(b *Buffer, n int) error {
 			c.setErr(err)
 			return err
 		}
-		if _, perr := c.processLocked(c.cfg.MaxBatch); perr != nil {
+		if _, perr := c.processLocked(c.pollBudget()); perr != nil {
 			b.posted.Store(false)
 			c.tx.Release(b)
 			return perr
 		}
 		spins++
-		if spins&1023 == 0 && !deadline.IsZero() && time.Now().After(deadline) {
+		if c.deadlineDue(spins) && !deadline.IsZero() && time.Now().After(deadline) {
 			b.posted.Store(false)
 			c.tx.Release(b)
 			return ErrTimeout
 		}
-		if spins >= 4096 {
+		if c.mayYield(spins) {
 			spins = 0
 			runtime.Gosched()
 		}
@@ -447,7 +529,7 @@ func (c *Conn) sendBatchBuffersLocked(bufs []*Buffer, lens []int) (int, error) {
 		// A partial post is normal under backpressure: the prefix is in flight
 		// and the suffix is retried after draining completions. | 背压下部分提交
 		// 属正常：前缀已在途，排空完成事件后重试后缀。
-		if _, perr := c.processLocked(c.cfg.MaxBatch); perr != nil {
+		if _, perr := c.processLocked(c.pollBudget()); perr != nil {
 			for i := total; i < len(bufs); i++ {
 				bufs[i].posted.Store(false)
 				c.tx.Release(bufs[i])
@@ -455,14 +537,14 @@ func (c *Conn) sendBatchBuffersLocked(bufs []*Buffer, lens []int) (int, error) {
 			return total, perr
 		}
 		spins++
-		if spins&1023 == 0 && !deadline.IsZero() && time.Now().After(deadline) {
+		if c.deadlineDue(spins) && !deadline.IsZero() && time.Now().After(deadline) {
 			for i := total; i < len(bufs); i++ {
 				bufs[i].posted.Store(false)
 				c.tx.Release(bufs[i])
 			}
 			return total, ErrTimeout
 		}
-		if spins >= 4096 {
+		if c.mayYield(spins) {
 			spins = 0
 			runtime.Gosched()
 		}
@@ -535,14 +617,14 @@ func (c *Conn) recvBufferLocked() (*Buffer, int, error) {
 		if b, n, ok := c.ring.pop(); ok {
 			return b, n, nil
 		}
-		if _, err := c.processLocked(c.cfg.MaxBatch); err != nil {
+		if _, err := c.processLocked(c.pollBudget()); err != nil {
 			return nil, 0, err
 		}
 		spins++
-		if spins&1023 == 0 && !deadline.IsZero() && time.Now().After(deadline) {
+		if c.deadlineDue(spins) && !deadline.IsZero() && time.Now().After(deadline) {
 			return nil, 0, ErrTimeout
 		}
-		if spins >= 4096 {
+		if c.mayYield(spins) {
 			spins = 0
 			runtime.Gosched()
 		}
@@ -606,7 +688,7 @@ func (c *Conn) recvBuffersLocked(dst []*Buffer, lens []int) (int, error) {
 	if n > 0 {
 		return n, nil
 	}
-	if _, err := c.processLocked(c.cfg.MaxBatch); err != nil {
+	if _, err := c.processLocked(c.pollBudget()); err != nil {
 		return 0, err
 	}
 	for n < len(dst) {
@@ -704,4 +786,250 @@ func (c *Conn) releaseLocked(b *Buffer) error {
 		return err
 	}
 	return nil
+}
+
+// WriteImm posts one RDMA WRITE_WITH_IMM from src into remote memory and waits
+// for the local completion. The remote region must have been registered with
+// AccessRemoteWrite and its address and RKey exchanged out of band. The
+// immediate is delivered to the peer's Conn.RecvImm; the peer must post receive
+// work requests, which every Conn does at setup. src is copied into one send
+// slot, so the caller may reuse it after WriteImm returns. WriteImm is optional:
+// the zero ConnConfig value leaves the historical Send/Recv path untouched. |
+// WriteImm 从 src 向远端内存提交一次 RDMA WRITE_WITH_IMM 并等待本地完成。远端
+// 内存区必须以 AccessRemoteWrite 注册，其地址与 RKey 经带外交换。立即数投递到
+// 对端的 Conn.RecvImm；对端必须提交接收工作请求（每个 Conn 建立时都会提交）。
+// src 被复制到一个发送槽位，WriteImm 返回后调用方可复用。WriteImm 是可选能力：
+// ConnConfig 零值不改变历史的 Send/Recv 路径。
+func (c *Conn) WriteImm(src []byte, remoteAddr uint64, rkey uint32, imm uint32) error {
+	if !c.enter() {
+		return ErrClosed
+	}
+	defer c.leave()
+	if len(src) == 0 {
+		return errs.Detail(ErrInvalidConfig, "empty write payload | 写负载为空")
+	}
+	if remoteAddr == 0 || rkey == 0 {
+		return errs.Detail(ErrInvalidConfig, "remote address %#x and rkey %#x are required | 需要远端地址 %#x 与 rkey %#x",
+			remoteAddr, rkey, remoteAddr, rkey)
+	}
+	b, err := c.allocLocked(len(src))
+	if err != nil {
+		return err
+	}
+	copy(b.Bytes(), src)
+	ch, err := c.postOneSidedLocked(b, len(src), OpRDMAWriteWithImm, remoteAddr, rkey, imm)
+	if err != nil {
+		b.posted.Store(false)
+		c.tx.Release(b)
+		c.setErr(err)
+		return err
+	}
+	werr := c.waitOneSided(ch, c.cfg.SendTimeout)
+	if werr != nil {
+		// A timed-out WRITE may still complete and write into remote memory, so
+		// the slot is left posted and the connection is marked failed. | 超时的
+		// WRITE 仍可能完成并写入远端内存，因此槽位保持已提交状态并将连接标记为失败。
+		c.setErr(werr)
+		return werr
+	}
+	b.posted.Store(false)
+	c.tx.Release(b)
+	return nil
+}
+
+// Read posts one RDMA READ from remote memory into dst and waits for the local
+// completion. dst must not exceed SlotSize. The remote region must have been
+// registered with AccessRemoteRead. Read uses a send-pool slot as the landing
+// buffer and copies into dst before returning. It is optional and does not
+// change the historical Send/Recv path. |
+// Read 从远端内存向 dst 提交一次 RDMA READ 并等待本地完成。dst 不得超过
+// SlotSize。远端内存区必须以 AccessRemoteRead 注册。Read 使用发送池槽位作为落点
+// 缓冲，返回前复制到 dst。它是可选能力，不改变历史的 Send/Recv 路径。
+func (c *Conn) Read(dst []byte, remoteAddr uint64, rkey uint32) error {
+	if !c.enter() {
+		return ErrClosed
+	}
+	defer c.leave()
+	if len(dst) == 0 {
+		return errs.Detail(ErrInvalidConfig, "empty read length | 读长度为 0")
+	}
+	if remoteAddr == 0 || rkey == 0 {
+		return errs.Detail(ErrInvalidConfig, "remote address %#x and rkey %#x are required | 需要远端地址 %#x 与 rkey %#x",
+			remoteAddr, rkey, remoteAddr, rkey)
+	}
+	b, err := c.allocLocked(len(dst))
+	if err != nil {
+		return err
+	}
+	ch, err := c.postOneSidedLocked(b, len(dst), OpRDMARead, remoteAddr, rkey, 0)
+	if err != nil {
+		b.posted.Store(false)
+		c.tx.Release(b)
+		c.setErr(err)
+		return err
+	}
+	werr := c.waitOneSided(ch, c.cfg.RecvTimeout)
+	if werr != nil {
+		c.setErr(werr)
+		return werr
+	}
+	copy(dst, b.Bytes()[:len(dst)])
+	b.posted.Store(false)
+	c.tx.Release(b)
+	return nil
+}
+
+// postOneSidedLocked registers a completion channel and posts one RDMA WRITE or
+// READ work request on the send queue. The caller owns b and must release it
+// after the completion arrives. | postOneSidedLocked 注册完成通道并在发送队列上
+// 提交一个 RDMA WRITE 或 READ 工作请求。调用方拥有 b，必须在完成到达后释放。
+func (c *Conn) postOneSidedLocked(b *Buffer, n int, opcode SendOpcode, remoteAddr uint64, rkey uint32, imm uint32) (chan Completion, error) {
+	if err := c.check(); err != nil {
+		return nil, err
+	}
+	if b == nil || b.owner != c.tx || n < 0 || n > b.Len() {
+		return nil, errs.Detail(ErrInvalidConfig, "invalid one-sided buffer or length | 单边缓冲区或长度非法")
+	}
+	if !b.posted.CompareAndSwap(false, true) {
+		return nil, errs.Detail(ErrInvalidConfig, "buffer already posted | 缓冲区已提交")
+	}
+	id := c.osNext.Add(1) & 0x3fffffff
+	for id == 0 {
+		id = c.osNext.Add(1) & 0x3fffffff
+	}
+	ch := make(chan Completion, 1)
+	c.osMu.Lock()
+	if c.osPending == nil {
+		c.osPending = make(map[uint32]chan Completion)
+	}
+	c.osPending[id] = ch
+	c.osMu.Unlock()
+	cancel := func() {
+		c.osMu.Lock()
+		delete(c.osPending, id)
+		c.osMu.Unlock()
+	}
+	wr := SendWR{
+		WRID: oneSidedBit | uint64(id), Addr: b.Addr(), Length: uint32(n), LKey: b.LKey(),
+		RemoteAddr: remoteAddr, RKey: rkey, Opcode: opcode, Flags: SendSignaled, Imm: imm,
+	}
+	deadline := c.deadline(c.cfg.SendTimeout)
+	spins := 0
+	for {
+		posted, err := c.qp.PostSend([]SendWR{wr})
+		if err == nil && posted == 1 {
+			return ch, nil
+		}
+		if err == nil {
+			cancel()
+			return nil, errs.Detail(ErrDevice, "provider posted %d/1 one-sided requests | 提供方提交了 %d/1 个单边请求", posted, posted)
+		}
+		if !errors.Is(err, ErrQueueFull) {
+			cancel()
+			return nil, err
+		}
+		if _, perr := c.processLocked(c.pollBudget()); perr != nil {
+			cancel()
+			return nil, perr
+		}
+		spins++
+		if c.deadlineDue(spins) && !deadline.IsZero() && time.Now().After(deadline) {
+			cancel()
+			return nil, ErrTimeout
+		}
+		if c.mayYield(spins) {
+			spins = 0
+			runtime.Gosched()
+		}
+	}
+}
+
+// waitOneSided waits for one registered one-sided completion. |
+// waitOneSided 等待一个已注册的单边完成。
+func (c *Conn) waitOneSided(ch chan Completion, timeout time.Duration) error {
+	deadline := c.deadline(timeout)
+	spins := 0
+	for {
+		select {
+		case wc := <-ch:
+			if wc.IsError() {
+				return errs.Detail(ErrConnReset, "one-sided completion %s status %s | 单边完成 %s 状态 %s",
+					wc.Opcode, wc.Status, wc.Opcode, wc.Status)
+			}
+			return nil
+		default:
+		}
+		if _, err := c.processLocked(c.pollBudget()); err != nil {
+			return err
+		}
+		spins++
+		if c.deadlineDue(spins) && !deadline.IsZero() && time.Now().After(deadline) {
+			return ErrTimeout
+		}
+		if c.mayYield(spins) {
+			spins = 0
+			runtime.Gosched()
+		}
+	}
+}
+
+// RecvImm waits for one RDMA Write-with-immediate notification. The payload was
+// written directly into the registered remote region; only the immediate is
+// returned. Connections that never receive one-sided writes never block the
+// historical Recv path. | RecvImm 等待一个 RDMA 立即数写通知。负载已直接写入
+// 注册的远端内存区，只返回立即数。从不接收单边写的连接不受历史 Recv 路径影响。
+func (c *Conn) RecvImm() (uint32, error) {
+	if !c.enter() {
+		return 0, ErrClosed
+	}
+	defer c.leave()
+	return c.recvImmLocked()
+}
+
+// recvImmLocked waits for one buffered immediate. | recvImmLocked 等待一个缓存的
+// 立即数。
+func (c *Conn) recvImmLocked() (uint32, error) {
+	if err := c.check(); err != nil {
+		return 0, err
+	}
+	deadline := c.deadline(c.cfg.RecvTimeout)
+	spins := 0
+	for {
+		if v, ok := c.popImm(); ok {
+			return v, nil
+		}
+		if _, err := c.processLocked(c.pollBudget()); err != nil {
+			return 0, err
+		}
+		spins++
+		if c.deadlineDue(spins) && !deadline.IsZero() && time.Now().After(deadline) {
+			return 0, ErrTimeout
+		}
+		if c.mayYield(spins) {
+			spins = 0
+			runtime.Gosched()
+		}
+	}
+}
+
+// pushImm appends one immediate notification. | pushImm 追加一个立即数通知。
+func (c *Conn) pushImm(v uint32) bool {
+	if len(c.immRing) == 0 || c.immCount == len(c.immRing) {
+		return false
+	}
+	idx := (c.immHead + c.immCount) % len(c.immRing)
+	c.immRing[idx] = v
+	c.immCount++
+	return true
+}
+
+// popImm removes the oldest immediate notification. | popImm 取出最旧的立即数通知。
+func (c *Conn) popImm() (uint32, bool) {
+	if c.immCount == 0 || len(c.immRing) == 0 {
+		return 0, false
+	}
+	v := c.immRing[c.immHead]
+	c.immHead = (c.immHead + 1) % len(c.immRing)
+	c.immCount--
+	return v, true
 }
