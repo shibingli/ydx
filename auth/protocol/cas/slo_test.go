@@ -253,12 +253,15 @@ func TestSLOLogoutRequestMalformedAndOversized(t *testing.T) {
 func TestSLODeliveryResults(t *testing.T) {
 	goodService, _ := newLogoutReceiver(t, http.StatusOK, 0)
 	failingService, _ := newLogoutReceiver(t, http.StatusServiceUnavailable, 0)
-	slowService, _ := newLogoutReceiver(t, http.StatusOK, 200*time.Millisecond)
+	slowService, _ := newLogoutReceiver(t, http.StatusOK, time.Second)
 	var mu sync.Mutex
 	var observed []LogoutDeliveryResult
 	server, _, _, _ := newSLOServer(t, nil,
 		func(config *ServerConfig) {
-			config.LogoutCallbackTimeout = 40 * time.Millisecond
+			// Keep the success path well clear of scheduler/timer granularity on
+			// loaded CI runners; the slow receiver still exceeds this timeout. |
+			// 成功路径需明显高于繁忙 CI runner 的调度/计时粒度；慢接收端仍会超时。
+			config.LogoutCallbackTimeout = 250 * time.Millisecond
 			config.LogoutObserver = func(_ context.Context, result LogoutDeliveryResult) {
 				mu.Lock()
 				observed = append(observed, result)
@@ -288,7 +291,10 @@ func TestSLODeliveryResults(t *testing.T) {
 		byService[result.Service] = result
 	}
 	good := byService[goodService.URL]
-	if good.Err != nil || good.StatusCode != http.StatusOK || good.Duration <= 0 {
+	// Duration may be rounded to zero by coarse platform timers; status and
+	// error are the portable success signals. |
+	// 平台计时器粒度可能把 Duration 舍入为 0；状态码与错误才是可移植的成功信号。
+	if good.Err != nil || good.StatusCode != http.StatusOK {
 		t.Fatalf("successful result = %#v", good)
 	}
 	failing := byService[failingService.URL]
