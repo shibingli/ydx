@@ -95,7 +95,7 @@ func TestStreamingFSMSnapshotSkipsMemoryImage(t *testing.T) {
 	if got := fsm.calls(); got != 1 {
 		t.Fatalf("SnapshotTo calls = %d, want 1", got)
 	}
-	loaded, err := readSnapshotFile(snap.file)
+	loaded, err := readSnapshotFileWith(snap.file, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

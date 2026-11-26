@@ -75,6 +75,13 @@ type Config struct {
 	// and must not call back into the Node. | OnStateChange 观察角色变化。它由 Raft
 	// 事件循环调用，不得回调 Node。
 	OnStateChange func(from, to State)
+
+	// senderFilter optionally overrides the membership query used to accept
+	// inbound messages. It is unexported so only in-package tests can inject an
+	// alternative view; production nodes validate against the active
+	// configuration. | senderFilter 可选地覆盖入站消息的成员查询。它不导出，只有包内
+	// 测试可注入其他视图；生产节点按生效配置校验。
+	senderFilter func(NodeID) bool
 	// Peers seeds a brand-new cluster. It is ignored when Storage already holds
 	// state. The local ID is added automatically when absent. | Peers 用于初始化全
 	// 新集群；Storage 已有状态时忽略。本地 ID 缺失时会自动加入。
@@ -225,13 +232,6 @@ type Config struct {
 	// a heartbeat round. | DisableLeaseRead 强制每次线性一致读都通过心跳轮次确认
 	// 领导权。
 	DisableLeaseRead bool
-
-	// senderFilter optionally overrides the membership query used to accept
-	// inbound messages. It is unexported so only in-package tests can inject an
-	// alternative view; production nodes validate against the active
-	// configuration. | senderFilter 可选地覆盖入站消息的成员查询。它不导出，只有包内
-	// 测试可注入其他视图；生产节点按生效配置校验。
-	senderFilter func(NodeID) bool
 }
 
 // defaults fills unset fields. | defaults 填充未设置的字段。

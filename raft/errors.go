@@ -97,4 +97,21 @@ var (
 	// ErrUnknownGroup reports a NodeHost group that is not running. | ErrUnknownGroup
 	// 表示 NodeHost 组未运行。
 	ErrUnknownGroup = errs.New("raft: unknown group | raft：未知组")
+
+	// ErrInvalidKey reports malformed key material or an unusable key ring.
+	// | ErrInvalidKey 表示密钥材料非法或密钥环不可用。
+	ErrInvalidKey = errs.New("raft: invalid encryption key | raft：非法加密密钥")
+
+	// ErrKeyNotFound reports an encryption key ID that is absent from the
+	// configured ring. | ErrKeyNotFound 表示加密密钥 ID 不在已配置的密钥环中。
+	ErrKeyNotFound = errs.New("raft: encryption key not found | raft：加密密钥不存在")
+
+	// ErrAuth reports a failed AEAD authentication check. The ciphertext, its
+	// additional data or the key was wrong, or the data was tampered with.
+	// | ErrAuth 表示 AEAD 认证失败：密文、附加数据或密钥不匹配，或数据被篡改。
+	ErrAuth = errs.New("raft: authentication failed | raft：认证失败")
+
+	// ErrRandom reports a failure while reading cryptographic randomness.
+	// | ErrRandom 表示读取密码学随机数失败。
+	ErrRandom = errs.New("raft: random source failure | raft：随机源失败")
 )

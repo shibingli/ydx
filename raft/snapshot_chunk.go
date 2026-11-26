@@ -84,6 +84,16 @@ func (n *Node) snapshotChunkData(snap *Snapshot, offset uint64, size int) ([]byt
 		return nil, errs.Detail(ErrCorrupt,
 			"snapshot %d/%d has no image data | 快照缺少镜像数据", snap.Index, snap.Term)
 	}
+	if snap.crypto == nil {
+		if store, ok := n.storage.(*FileStorage); ok &&
+			store.cipher.encrypts(EncryptSnapshots) && !store.cipher.allowPlaintextFiles {
+			return nil, errs.Detail(ErrInvalidConfig,
+				"plaintext snapshot with snapshot encryption enabled | 启用快照加密时遇到明文快照")
+		}
+	}
+	if snap.crypto != nil {
+		return readSnapshotRange(snap, offset, uint64(size))
+	}
 	f, err := os.Open(snap.file)
 	if err != nil {
 		return nil, errs.Wrap(err, ErrStorage)

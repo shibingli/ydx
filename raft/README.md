@@ -24,6 +24,7 @@
 | 线性一致读 | ✅ | ReadIndex（领导者与跟随者转发）、租约读 |
 | 持久化 WAL | ✅ | 分段、组提交、撕裂写检测、快照标记恢复 |
 | 传输 | ✅ | 内存、TCP、HTTP、可选 RDMA |
+| 数据加密 | ✅ | WAL/快照/HARDSTATE 静态加密：AES-256-GCM、SM4-GCM、ChaCha20-Poly1305；多密钥轮换；一次性与流式 API |
 | 安全 | ✅ | TCP/HTTP 可配 TLS；TCP/HTTP/RDMA 可配 HMAC-SHA256 |
 | 可观测性 | ✅ | `Stats` 无锁计数器、`Status` 事件循环快照 |
 | 多组 Raft | ✅ | `NodeHost` 共享传输/节点身份，每组独立 WAL/FSM/选举/快照 |
@@ -265,7 +266,8 @@ node.TransferLeader(ctx, 2)
 
 > **格式变更**：WAL 目录自本次重构起由 `ydx/wal` 管理，与此前的 `YDRWAL01`
 > 分段不兼容。升级前必须备份目录；旧 `wal/*.wal` 不会被新版本读取，回退旧版本
-> 也无法读取新格式。快照文件与 `HARDSTATE` 的格式未变。
+> 也无法读取新格式。快照文件与 `HARDSTATE` 的默认格式未变；启用加密后分别使用
+> 快照版本 3 与硬状态版本 2，未启用加密的旧版本无法读取这些文件。
 
 - `HARDSTATE` 独立保存 term/vote/commit，恢复时与 WAL 硬状态合并取最高任期与
   对应选票。它使跟随者在安装大型快照镜像期间仍能持久化并应答选票，避免旧 leader
@@ -280,7 +282,10 @@ node.TransferLeader(ctx, 2)
   META/MANIFEST/RECOVERY 与尾部撕裂截断均由该模块维护。恢复按 LSN 重放记录，
   大日志项使用其平台向量写路径。raft 仍自行维护快照文件与 `HARDSTATE`。
 - 快照文件包含索引、任期、配置、数据长度、CRC32C；默认还包含 SHA-256。仅 CRC
-  模式使用版本 2 头部（带校验标志），恢复同时支持版本 1 与 2。
+  模式使用版本 2 头部（带校验标志），恢复同时支持版本 1、2，以及配置了密钥时的
+  版本 3。启用快照加密时使用版本 3 与逐块 AEAD；数据块的附加认证数据绑定头部摘要
+  （索引、任期、密钥 ID、套件、标志、salt、分块大小与配置）、块序号、长度与结束
+  标记，结束标记还绑定明文总长度，防止截断或调换。
 - 快照先落盘，再写 WAL 标记；恢复只信任带标记的快照，避免“快照已写但未提交”
   的悬空状态。本地快照标记可与后续连续 WAL 批次共用一条记录和一次 fsync。
 - `InstallSnapshot` 标记会清除旧日志项；本地压缩快照保留快照之后的日志尾。
@@ -292,6 +297,77 @@ node.TransferLeader(ctx, 2)
   `Status.Peers[].SnapshotError` 会暴露 `ErrTooLarge` 及实际大小/上限，此时应提高
   `MaxBodyBytes`/`MaxFrameBytes`、启用分块或减小快照。
 - `FileStorageOptions.NoSync` 只用于临时测试/基准；生产必须保持 fsync。
+
+## 数据加密
+
+`FileStorageOptions.Encryption` 为 WAL 记录、快照文件与 `HARDSTATE` 提供静态
+加密，并提供可复用的一次性与流式加解密 API。
+
+| 套件 | 类型 | 覆盖目标 |
+|---|---|---|
+| AES-256-GCM | 国际 | WAL / 快照 / HARDSTATE / 一次性与流式 API |
+| SM4-GCM | 国标（GB/T 32907-2016） | WAL / 快照 / HARDSTATE / 一次性与流式 API |
+| ChaCha20-Poly1305 | 国际 | 快照 / HARDSTATE / 一次性与流式 API（WAL 不支持） |
+
+```go
+opts := raft.FileStorageOptions{
+    Dir: "/data/raft",
+    Encryption: raft.EncryptionOptions{
+        Keys: []raft.EncryptionKey{
+            {ID: 1, Suite: raft.EncryptionAES256GCM, Bytes: aesKey32},
+            {ID: 2, Suite: raft.EncryptionSM4GCM, Bytes: sm4Key16},
+        },
+        ActiveKeyID: 2,
+        Targets:     raft.EncryptAll, // 零值同样表示全部目标
+        ChunkSize:   64 << 10,        // 流式/快照分块，零值即 64 KiB
+    },
+}
+store, err := raft.NewFileStorage(opts)
+```
+
+同一组密钥也可用于应用数据的一次性与流式加解密：
+
+```go
+enc, err := raft.NewEncryptor(raft.EncryptionOptions{
+    Keys: keys, ActiveKeyID: 2, ChunkSize: 32 << 10,
+})
+sealed, err := enc.Encrypt(nil, plaintext, aad) // 一次性
+opened, err := enc.Decrypt(nil, sealed, aad)
+
+w, err := enc.NewEncryptWriter(file, aad) // 流式
+_, err = w.Write(chunk)
+err = w.Close() // 写入认证结束标记
+
+r, err := enc.NewDecryptReader(file, aad)
+_, err = io.Copy(dst, r)
+```
+
+- 一次性 API：`Encryptor.Encrypt` / `Encryptor.Decrypt`。密文自带魔数、版本、
+  密钥 ID、套件与随机 nonce，解密按密钥 ID 选择密钥，支持多代密钥共存。
+- 流式 API：`Encryptor.NewEncryptWriter` / `Encryptor.NewDecryptReader`，逐块
+  独立封装；必须调用 `Close` 写入认证结束标记，读取端会拒绝篡改、乱序、截断与
+  尾部多余数据。
+- 轮换：保留旧密钥并调用 `FileStorage.SetActiveEncryptionKey(id)` 切换新写入的
+  密钥；应用数据可用 `Encryptor.WithActiveKey(id)` 在不重建密钥环的情况下切换。
+  WAL、快照与 `HARDSTATE` 各自携带密钥 ID，旧文件仍可读取。
+- 目标可独立选择：`EncryptWAL`、`EncryptSnapshots`、`EncryptHardState` 或其组合；
+  `Keys` 非空且 `Targets` 为零时加密全部目标。启用 WAL 加密时，密钥环中的每个
+  密钥都必须是 AES-256-GCM 或 SM4-GCM。读取已加密的 WAL 必须继续启用
+  `EncryptWAL`；快照与 `HARDSTATE` 只要求密钥环保留对应密钥。
+- 密钥环在构建时深拷贝。密钥非法或缺失分别返回 `ErrInvalidKey`、`ErrKeyNotFound`；
+  AEAD 认证失败（密钥错误或数据被篡改）在存储读取中映射为 `ErrCorrupt`，一次性与
+  流式 API 直接返回 `ErrAuth`；随机源失败返回 `ErrRandom`。
+- 加密只作用于新写入。对应目标未启用时既有明文快照与 `HARDSTATE` 仍可读取；
+  启用快照/HARDSTATE 加密后，读取旧明文文件需显式设置 `AllowPlaintextFiles`。
+  带密钥打开既有非空明文 WAL 需要 `AllowPlaintextWAL`，且 WAL 保持已持久化的
+  明文策略，要在既有数据上启用加密应使用新的 WAL 目录。迁移既有明文目录时可同时
+  设置 `AllowPlaintextWAL` 与 `AllowPlaintextFiles`，完成一次新快照与 HARDSTATE
+  写入后移除 `AllowPlaintextFiles`。
+- WAL 使用 `ydx/wal` 的记录级 AEAD；快照与 `HARDSTATE` 在读取时先验证再交给
+  FSM，篡改不会被静默忽略。加密覆盖 WAL 记录负载、快照负载与 `HARDSTATE` 内容；
+  WAL 记录头与快照头部的索引、任期、配置及校验和保持明文（快照配置参与 AEAD）。
+- 本节的加密针对静态数据；节点间传输的保密性仍由 TLS（TCP/HTTP）或
+  IPsec/MACsec（RDMA）提供。
 
 ## 性能
 
@@ -457,6 +533,9 @@ res, err := host.Propose(ctx, 10, []byte("set key=value"))
 
 - `github.com/shibingli/ydx/errs`：哨兵错误与上下文包装。
 - `github.com/shibingli/ydx/log`：结构化日志（可选注入）。
+- `github.com/shibingli/ydx/wal`：WAL 分段、组提交与记录级加密。
+- `github.com/shibingli/ydx/guomi`：SM4-GCM 国密套件。
+- `golang.org/x/crypto`（BSD-3-Clause）：ChaCha20-Poly1305。
 - `github.com/shibingli/ydx/rdma`（仅 `-tags rdma`）：纯 Go RDMA verbs 传输，
   经 purego 运行时加载 `libibverbs`；默认构建不启用、不需要 cgo。
 - 设计参考：Ongaro & Ousterhout, *In Search of an Understandable Consensus

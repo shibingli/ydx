@@ -1,6 +1,7 @@
 package raft
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -52,6 +53,15 @@ type FileStorageOptions struct {
 	// 镜像放在与 WAL 不同的卷；为空时使用 Dir/snapshots。该目录由本存储实例独占；
 	// 锁仍位于 Dir。
 	SnapshotDir string
+	// Encryption configures data-at-rest encryption for WAL records, snapshot
+	// files and HARDSTATE. Empty Keys disables encryption. | Encryption 配置 WAL
+	// 记录、快照文件与 HARDSTATE 的静态数据加密；Keys 为空表示关闭加密。
+	Encryption EncryptionOptions
+	// SizePolicy overrides ydx/wal's size-dependent write thresholds (CRC
+	// combination, staging join, write buffer). The zero value learns them from
+	// measured costs. | SizePolicy 覆盖 ydx/wal 与数据大小相关的写阈值（CRC 合并、
+	// 暂存合并、写缓冲）。零值根据实测成本自动学习。
+	SizePolicy wal.SizePolicy
 	// SegmentSize rotates the WAL after this many bytes. Default 64 MiB.
 	// | SegmentSize 在达到该字节数后轮转 WAL，默认 64 MiB。
 	SegmentSize int64
@@ -63,21 +73,20 @@ type FileStorageOptions struct {
 	// 不测试崩溃持久性的临时基准与测试。
 	NoSync bool
 	// SnapshotChecksum selects the integrity check for new snapshot images.
-	// Existing v1 and v2 files remain readable. Default CRC32C + SHA-256. |
-	// SnapshotChecksum 选择新快照镜像的完整性校验。已有的 v1 与 v2 文件仍可读取。
-	// 默认 CRC32C + SHA-256。
+	// Existing v1 and v2 files remain readable while snapshot encryption is
+	// disabled or during the AllowPlaintextFiles migration; encrypted v3 files
+	// remain readable with the key ring. Default CRC32C + SHA-256. |
+	// SnapshotChecksum 选择新快照镜像的完整性校验。快照加密未启用或处于
+	// AllowPlaintextFiles 迁移期时，已有 v1/v2 文件仍可读取；加密 v3 文件在有密钥环
+	// 时仍可读取。默认 CRC32C + SHA-256。
 	SnapshotChecksum SnapshotChecksum
-	// SizePolicy overrides ydx/wal's size-dependent write thresholds (CRC
-	// combination, staging join, write buffer). The zero value learns them from
-	// measured costs. | SizePolicy 覆盖 ydx/wal 与数据大小相关的写阈值（CRC 合并、
-	// 暂存合并、写缓冲）。零值根据实测成本自动学习。
-	SizePolicy wal.SizePolicy
 }
 
 // FileStorage is a crash-safe Storage backed by WAL segments and snapshot files.
 // | FileStorage 是由 WAL 分段与快照文件支撑的崩溃安全 Storage。
 type FileStorage struct {
 	wlog             *walStore
+	cipher           *dataCipher
 	snapshot         *Snapshot
 	lockFile         *os.File
 	dir              string
@@ -85,13 +94,13 @@ type FileStorage struct {
 	snapDir          string
 	hsPath           string
 	recovery         Recovery
+	sizePolicy       wal.SizePolicy
 	segmentSize      int64
 	snapshotKeep     int
 	mu               sync.Mutex
 	hsMu             sync.Mutex
 	snapshotChecksum SnapshotChecksum
 	noSync           bool
-	sizePolicy       wal.SizePolicy
 	loaded           bool
 	closed           bool
 	hsClosed         bool
@@ -112,6 +121,10 @@ func NewFileStorage(opts FileStorageOptions) (*FileStorage, error) {
 		opts.SnapshotChecksum != SnapshotChecksumCRC32C {
 		return nil, errs.Detail(ErrInvalidConfig, "unknown SnapshotChecksum %d", opts.SnapshotChecksum)
 	}
+	cipher, err := newDataCipher(opts.Encryption)
+	if err != nil {
+		return nil, err
+	}
 	snapDir := opts.SnapshotDir
 	if snapDir == "" {
 		snapDir = filepath.Join(opts.Dir, "snapshots")
@@ -126,6 +139,7 @@ func NewFileStorage(opts FileStorageOptions) (*FileStorage, error) {
 		sizePolicy:       opts.SizePolicy,
 		snapshotKeep:     opts.SnapshotKeep,
 		snapshotChecksum: opts.SnapshotChecksum,
+		cipher:           cipher,
 	}
 	if err := os.MkdirAll(s.walDir, 0o700); err != nil {
 		return nil, errs.Wrap(err, ErrStorage)
@@ -185,15 +199,19 @@ func (s *FileStorage) Load() (Recovery, error) {
 // loadLocked opens the snapshot referenced by the WAL and replays segments.
 // | loadLocked 打开 WAL 引用的快照并重放分段。
 func (s *FileStorage) loadLocked() (Recovery, error) {
-	w, rec, marker, err := openWALStore(s.walDir, s.noSync, s.segmentSize, s.sizePolicy)
+	w, rec, marker, err := openWALStore(s.walDir, s.noSync, s.segmentSize, s.sizePolicy, s.cipher)
 	if err != nil {
 		return Recovery{}, err
 	}
 	var snap *Snapshot
 	if marker.found {
-		snap, err = readSnapshotFile(s.snapshotPath(marker.index, marker.term))
+		snap, err = readSnapshotFileWith(s.snapshotPath(marker.index, marker.term), s.cipher)
 		if err != nil {
 			_ = w.close()
+			if errors.Is(err, ErrInvalidConfig) || errors.Is(err, ErrInvalidKey) ||
+				errors.Is(err, ErrKeyNotFound) {
+				return Recovery{}, err
+			}
 			return Recovery{}, errs.Wrap(err, ErrCorrupt)
 		}
 		if snap.Index != marker.index || snap.Term != marker.term {

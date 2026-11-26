@@ -199,7 +199,13 @@ func (n *Node) snapshotData(snap *Snapshot) ([]byte, error) {
 		return nil, errs.Detail(ErrCorrupt,
 			"snapshot %d/%d has no image data | 快照缺少镜像数据", snap.Index, snap.Term)
 	}
-	loaded, err := readSnapshotFile(snap.file)
+	var cipher *dataCipher
+	if snap.crypto != nil {
+		cipher = snap.crypto.cipher
+	} else if store, ok := n.storage.(*FileStorage); ok {
+		cipher = store.cipher
+	}
+	loaded, err := readSnapshotFileWith(snap.file, cipher)
 	if err != nil {
 		return nil, err
 	}

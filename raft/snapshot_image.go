@@ -73,17 +73,21 @@ func encodeSnapshotFileHeader(dst []byte, conf []byte, index, term, dataLen uint
 // partial image. | fileSnapshotImage 将一个本地镜像流式写入临时文件，直到
 // Finalize 成功才重命名就位，因此恢复不会信任不完整镜像。
 type fileSnapshotImage struct {
-	storage *FileStorage
-	snap    *Snapshot
-	tmp     *os.File
-	crc     hash.Hash32
-	sha     hash.Hash
-	tmpName string
-	size    int64
-	header  int
-	sealed  bool
-	done    bool
-	useSHA  bool
+	crc       hash.Hash32
+	sha       hash.Hash
+	storage   *FileStorage
+	snap      *Snapshot
+	seal      *snapshotSealWriter
+	enc       *snapshotCrypto
+	tmp       *os.File
+	tmpName   string
+	confState ConfState
+	conf      []byte
+	size      int64
+	header    int
+	sealed    bool
+	done      bool
+	useSHA    bool
 }
 
 // NewSnapshotImage creates a temporary image writer for one snapshot. | NewSnapshotImage
@@ -109,12 +113,16 @@ func (s *FileStorage) NewSnapshotImage(snap *Snapshot, conf ConfState) (snapshot
 	}
 	dir := s.snapDir
 	useSHA := s.snapshotChecksum != SnapshotChecksumCRC32C
+	encrypted := s.cipher.encrypts(EncryptSnapshots)
 	s.mu.Unlock()
 	tmp, err := os.CreateTemp(dir, ".snap-*")
 	if err != nil {
 		return nil, errs.Wrap(err, ErrStorage)
 	}
 	header := snapshotHeaderSize(len(confBytes), useSHA)
+	if encrypted {
+		header = encryptedSnapshotHeaderSize(len(confBytes))
+	}
 	if err := tmp.Chmod(0o600); err != nil {
 		_ = tmp.Close()
 		_ = os.Remove(tmp.Name())
@@ -134,13 +142,42 @@ func (s *FileStorage) NewSnapshotImage(snap *Snapshot, conf ConfState) (snapshot
 		return nil, errs.Wrap(err, ErrStorage)
 	}
 	img := &fileSnapshotImage{
-		storage: s,
-		snap:    snap,
-		tmp:     tmp,
-		tmpName: tmp.Name(),
-		crc:     crc32.New(castagnoli),
-		header:  header,
-		useSHA:  useSHA,
+		storage:   s,
+		snap:      snap,
+		conf:      append([]byte(nil), confBytes...),
+		confState: conf.clone(),
+		tmp:       tmp,
+		tmpName:   tmp.Name(),
+		crc:       crc32.New(castagnoli),
+		header:    header,
+		useSHA:    useSHA,
+	}
+	if encrypted {
+		key := s.cipher.activeKey()
+		salt, err := snapshotSalt()
+		if err != nil {
+			_ = tmp.Close()
+			_ = os.Remove(tmp.Name())
+			return nil, err
+		}
+		img.enc = &snapshotCrypto{
+			cipher:    s.cipher,
+			keyID:     key.id,
+			suite:     key.suite,
+			salt:      salt,
+			chunkSize: s.cipher.chunkSize,
+			index:     snap.Index,
+			term:      snap.Term,
+			headerLen: int64(header),
+			prefixHash: snapshotPrefixHash(snap.Index, snap.Term, key.id, key.suite,
+				snapshotChecksumFlag(useSHA), salt, s.cipher.chunkSize, confBytes),
+		}
+		img.seal, err = newSnapshotSealWriter(tmp, img.enc)
+		if err != nil {
+			_ = tmp.Close()
+			_ = os.Remove(tmp.Name())
+			return nil, err
+		}
 	}
 	if useSHA {
 		img.sha = sha256.New()
@@ -153,7 +190,13 @@ func (w *fileSnapshotImage) Write(p []byte) (int, error) {
 	if w.tmp == nil || w.sealed || w.done {
 		return 0, errs.Detail(ErrStorage, "snapshot image is closed | 快照镜像已关闭")
 	}
-	n, err := w.tmp.Write(p)
+	var n int
+	var err error
+	if w.seal != nil {
+		n, err = w.seal.Write(p)
+	} else {
+		n, err = w.tmp.Write(p)
+	}
 	if n > 0 {
 		_, _ = w.crc.Write(p[:n])
 		if w.sha != nil {
@@ -176,6 +219,11 @@ func (w *fileSnapshotImage) Seal() error {
 		return errs.Detail(ErrStorage, "snapshot image already finalized | 快照镜像已定稿")
 	}
 	w.sealed = true
+	if w.seal != nil {
+		if err := w.seal.Close(uint64(w.size)); err != nil {
+			return errs.Wrap(err, ErrStorage)
+		}
+	}
 	if w.tmp == nil {
 		return nil
 	}
@@ -202,13 +250,32 @@ func (w *fileSnapshotImage) Finalize() error {
 		w.Abort()
 		return errs.Wrap(err, ErrStorage)
 	}
-	conf := appendConfState(nil, w.snap.ConfState)
+	conf := w.conf
+	if conf == nil {
+		conf = appendConfState(nil, w.snap.ConfState)
+	}
 	var sum []byte
 	if w.sha != nil {
 		sum = w.sha.Sum(nil)
 	}
-	header := encodeSnapshotFileHeader(nil, conf, w.snap.Index, w.snap.Term,
-		uint64(w.size), w.crc.Sum32(), sum, w.useSHA)
+	// The image identity is fixed at capture time. Use the values recorded with
+	// the encryption prefix so header, file name and AAD can never diverge. |
+	// 镜像身份在捕获时固定。使用加密前缀记录的值，确保头部、文件名与 AAD 不会分叉。
+	index, term := w.snap.Index, w.snap.Term
+	if w.enc != nil {
+		index, term = w.enc.index, w.enc.term
+	}
+	var header []byte
+	if w.enc != nil {
+		w.enc.dataLen = w.size
+		w.enc.headerLen = int64(w.header)
+		w.enc.cipher = w.storage.cipher
+		header = encodeEncryptedSnapshotHeader(nil, conf, index, term,
+			uint64(w.size), w.crc.Sum32(), sum, w.useSHA, w.enc.keyID, w.enc.suite, w.enc.salt, w.enc.chunkSize)
+	} else {
+		header = encodeSnapshotFileHeader(nil, conf, index, term,
+			uint64(w.size), w.crc.Sum32(), sum, w.useSHA)
+	}
 	if len(header) != w.header {
 		_ = f.Close()
 		w.Abort()
@@ -230,7 +297,7 @@ func (w *fileSnapshotImage) Finalize() error {
 		w.Abort()
 		return errs.Wrap(err, ErrStorage)
 	}
-	final := w.storage.snapshotPath(w.snap.Index, w.snap.Term)
+	final := w.storage.snapshotPath(index, term)
 	if err := os.Rename(w.tmpName, final); err != nil {
 		w.Abort()
 		return errs.Wrap(err, ErrStorage)
@@ -241,9 +308,13 @@ func (w *fileSnapshotImage) Finalize() error {
 			return errs.Wrap(err, ErrStorage)
 		}
 	}
+	w.snap.Index = index
+	w.snap.Term = term
+	w.snap.ConfState = w.confState
 	w.snap.file = final
 	w.snap.dataSize = w.size
 	w.snap.dataOffset = int64(w.header)
+	w.snap.crypto = w.enc
 	w.snap.Data = nil
 	w.done = true
 	w.tmpName = ""

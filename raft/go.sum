@@ -14,14 +14,10 @@ github.com/shibingli/ydx/json v0.1.20 h1:ffp21mWYiXi9HrHo8jsXZH130wjKILusejkESeE
 github.com/shibingli/ydx/json v0.1.20/go.mod h1:NzzLpxptfu5GQquG8IZPIa9xzVDNWZkiJfnZd1+H/0o=
 github.com/shibingli/ydx/log v0.1.14 h1:UvCgFPiSJC99vUzn8JaDNZf7WezvFhbrLMIY9ecrrf8=
 github.com/shibingli/ydx/log v0.1.14/go.mod h1:4XXz6bmahSRH8SgM+pkNDRBQjcKB64eoTBLqfwMX1fo=
-github.com/shibingli/ydx/rdma v0.1.8 h1:6vRXbypIhr1UWvwKTMyEN6pi6LzUfqYFw8YpWhMqyyE=
-github.com/shibingli/ydx/rdma v0.1.8/go.mod h1:1MEuvDJuye15Ce5Bm8pRG8pqRnJxQIXKhLuNMYbeLzU=
 github.com/shibingli/ydx/rdma v0.1.9 h1:QHBKJLuZA3gRGPUMSisuUZ++KThRnUa9yqzHrkWw4hw=
 github.com/shibingli/ydx/rdma v0.1.9/go.mod h1:ogkTYe+yzy0jhsxacvz792lV+UA4cMauJzektHthHJ4=
 github.com/shibingli/ydx/sysinfo v0.1.6 h1:5SEHSqUdVDqAgLxk7xqI4S2bldiO0CDz5XjYUnfHYRY=
 github.com/shibingli/ydx/sysinfo v0.1.6/go.mod h1:HF5vZvUUidCMnOWPlYUC3sSjYT23COYXm55KP9cdsMc=
-github.com/shibingli/ydx/wal v0.3.5 h1:/CNfoqBv0CpVXJeLmEi+wxbDNCY1D0lnr5S5rkibUcM=
-github.com/shibingli/ydx/wal v0.3.5/go.mod h1:p8xRF/OPjRxrY4Thze8EbATBTJ8ZSTrWpnXhwnFUYeo=
 github.com/shibingli/ydx/wal v0.3.6 h1:2K8FdJjYVc9pYqPOBkvzTChr8IWtKKalSRuUyL3xlRs=
 github.com/shibingli/ydx/wal v0.3.6/go.mod h1:9YqJFCMwp0XwsXQ6pb8HwfjNE++dK0tlHrpt3cumPSc=
 golang.org/x/crypto v0.58.0 h1:COkYLr4k7nDI4r6QtMML2AfzeIswWHAJthLS6K/M/54=

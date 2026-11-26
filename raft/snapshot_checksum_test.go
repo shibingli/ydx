@@ -23,7 +23,7 @@ func TestSnapshotCRCOnlyRoundTripAndRecovery(t *testing.T) {
 	if err := s.Persist(PersistBatch{Snapshot: snap, HardState: &HardState{Term: 3, Commit: 12}}); err != nil {
 		t.Fatal(err)
 	}
-	loaded, err := readSnapshotFile(s.snapshotPath(12, 3))
+	loaded, err := readSnapshotFileWith(s.snapshotPath(12, 3), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -88,7 +88,7 @@ func TestStreamingSnapshotCRCOnly(t *testing.T) {
 	if raw[8] != snapshotVersionCRCOnly {
 		t.Fatalf("snapshot version = %d, want %d", raw[8], snapshotVersionCRCOnly)
 	}
-	loaded, err := readSnapshotFile(snap.file)
+	loaded, err := readSnapshotFileWith(snap.file, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -122,7 +122,7 @@ func TestSnapshotCRCOnlyDetectsCorruption(t *testing.T) {
 	if err := os.WriteFile(path, raw, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := readSnapshotFile(path); err == nil {
+	if _, err := readSnapshotFileWith(path, nil); err == nil {
 		t.Fatal("corrupt CRC-only snapshot was accepted")
 	}
 }

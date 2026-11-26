@@ -126,12 +126,44 @@ func (s *FileStorage) writeSnapshotFile(snap *Snapshot, noSync bool) error {
 		return errs.Wrap(err, ErrStorage)
 	}
 	useSHA := s.snapshotChecksum != SnapshotChecksumCRC32C
+	encrypted := s.cipher.encrypts(EncryptSnapshots)
 	headerLen := snapshotHeaderSize(len(conf), useSHA)
+	if encrypted {
+		headerLen = encryptedSnapshotHeaderSize(len(conf))
+	}
 	if _, err := tmp.Write(make([]byte, headerLen)); err != nil {
 		return errs.Wrap(err, ErrStorage)
 	}
 	dataCRC := crc32.New(castagnoli)
-	writers := []io.Writer{tmp, dataCRC}
+	sink := io.Writer(tmp)
+	var meta *snapshotCrypto
+	var seal *snapshotSealWriter
+	if encrypted {
+		key := s.cipher.activeKey()
+		salt, err := snapshotSalt()
+		if err != nil {
+			return err
+		}
+		meta = &snapshotCrypto{
+			cipher:    s.cipher,
+			keyID:     key.id,
+			suite:     key.suite,
+			salt:      salt,
+			chunkSize: s.cipher.chunkSize,
+			index:     snap.Index,
+			term:      snap.Term,
+			dataLen:   int64(len(snap.Data)),
+			headerLen: int64(headerLen),
+			prefixHash: snapshotPrefixHash(snap.Index, snap.Term, key.id, key.suite,
+				snapshotChecksumFlag(useSHA), salt, s.cipher.chunkSize, conf),
+		}
+		seal, err = newSnapshotSealWriter(tmp, meta)
+		if err != nil {
+			return err
+		}
+		sink = seal
+	}
+	writers := []io.Writer{sink, dataCRC}
 	var dataHash hash.Hash
 	if useSHA {
 		dataHash = sha256.New()
@@ -142,12 +174,28 @@ func (s *FileStorage) writeSnapshotFile(snap *Snapshot, noSync bool) error {
 	} else if n != len(snap.Data) {
 		return errs.Detail(ErrStorage, "short snapshot write %d/%d | 快照写入不完整 %d/%d", n, len(snap.Data), n, len(snap.Data))
 	}
+	if seal != nil {
+		if err := seal.Close(uint64(len(snap.Data))); err != nil {
+			return errs.Wrap(err, ErrStorage)
+		}
+	}
 	var sum []byte
 	if dataHash != nil {
 		sum = dataHash.Sum(nil)
 	}
-	header := encodeSnapshotFileHeader(make([]byte, 0, headerLen), conf,
-		snap.Index, snap.Term, uint64(len(snap.Data)), dataCRC.Sum32(), sum, useSHA)
+	var header []byte
+	if encrypted {
+		header = encodeEncryptedSnapshotHeader(make([]byte, 0, headerLen), conf,
+			snap.Index, snap.Term, uint64(len(snap.Data)), dataCRC.Sum32(), sum, useSHA,
+			meta.keyID, meta.suite, meta.salt, meta.chunkSize)
+	} else {
+		header = encodeSnapshotFileHeader(make([]byte, 0, headerLen), conf,
+			snap.Index, snap.Term, uint64(len(snap.Data)), dataCRC.Sum32(), sum, useSHA)
+	}
+	if len(header) != headerLen {
+		return errs.Detail(ErrStorage, "snapshot header size %d, want %d | 快照头部长度 %d，期望 %d",
+			len(header), headerLen, len(header), headerLen)
+	}
 	if _, err := tmp.Seek(0, io.SeekStart); err != nil {
 		return errs.Wrap(err, ErrStorage)
 	}
@@ -184,12 +232,14 @@ func (s *FileStorage) writeSnapshotFile(snap *Snapshot, noSync bool) error {
 	snap.file = final
 	snap.dataSize = int64(len(snap.Data))
 	snap.dataOffset = int64(headerLen)
+	snap.crypto = meta
 	return nil
 }
 
-// readSnapshotFile loads and validates one snapshot image. | readSnapshotFile 加载
-// 并校验一个快照镜像。
-func readSnapshotFile(path string) (*Snapshot, error) {
+// readSnapshotFileWith loads and validates one snapshot image, decrypting a
+// version 3 image when cipher is configured. | readSnapshotFileWith 加载并校验快照
+// 镜像；配置 cipher 时解密版本 3 镜像。
+func readSnapshotFileWith(path string, cipher *dataCipher) (*Snapshot, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, errs.Wrap(err, ErrStorage)
@@ -207,8 +257,14 @@ func readSnapshotFile(path string) (*Snapshot, error) {
 		return nil, errs.Detail(ErrCorrupt, "bad snapshot magic %s", path)
 	}
 	version := prefix[8]
-	if version != snapshotVersion && version != snapshotVersionCRCOnly {
+	if version != snapshotVersion && version != snapshotVersionCRCOnly &&
+		version != snapshotVersionEncrypted {
 		return nil, errs.Detail(ErrCorrupt, "snapshot version %d", version)
+	}
+	if version != snapshotVersionEncrypted && cipher != nil &&
+		cipher.encrypts(EncryptSnapshots) && !cipher.allowPlaintextFiles {
+		return nil, errs.Detail(ErrInvalidConfig,
+			"plaintext snapshot with snapshot encryption enabled | 启用快照加密时遇到明文快照")
 	}
 	var fixed [20]byte
 	if _, err := io.ReadFull(f, fixed[:]); err != nil {
@@ -234,6 +290,9 @@ func readSnapshotFile(path string) (*Snapshot, error) {
 	}
 	dataLen := binary.LittleEndian.Uint64(tail[:8])
 	wantCRC := binary.LittleEndian.Uint32(tail[8:12])
+	if version == snapshotVersionEncrypted {
+		return readEncryptedSnapshot(path, f, info, conf, confData, confLen, index, term, dataLen, wantCRC, cipher)
+	}
 	hasSHA := version == snapshotVersion
 	trailerLen := int64(32)
 	if version == snapshotVersionCRCOnly {

@@ -173,7 +173,13 @@ FileStorage 新增独立 `HARDSTATE` 文件，保存 term/vote/commit：
 - 默认 `SnapshotChecksumCRC32CSHA256`：版本 1，CRC32C + SHA-256。
 - `SnapshotChecksumCRC32C`：版本 2，带校验标志字节，只写 CRC32C，32 字节 SHA
   字段保留为零；恢复仍校验 CRC，检测意外损坏。
-- 读取同时支持版本 1 与版本 2，切换配置后旧文件仍可恢复。
+- 启用快照加密时写入版本 3：头部增加密钥 ID、套件、每文件 salt、分块大小与
+  校验标志；负载按固定明文分块逐块 AEAD，附加认证数据绑定头部摘要（索引、任期、
+  密钥 ID、套件、标志、salt、分块大小与配置）、块序号、长度与结束标记，结束标记
+  还绑定明文总长度。版本 3 文件与未启用加密的旧版本不兼容。
+- 读取同时支持版本 1、版本 2 与配置了密钥时的版本 3；切换校验配置后旧文件仍可
+  恢复。启用快照加密后，旧明文镜像只有在设置 `AllowPlaintextFiles` 的迁移期才可
+  读取，避免明文降级替换。
 - 代价是失去 SHA-256 的更强完整性/篡改检测，不改变崩溃一致性边界。
 
 ## 4. 实测（Windows/i9-10980HK，Go 1.27.3）
@@ -292,10 +298,11 @@ Clone，供解码后的 `Entry.Data` 安全持有。
 | `Config.PersistBatchDelay` | 0 | 组提交基础窗口；零关闭，实际窗口自适应 |
 | `FileStorageOptions.SnapshotDir` | 空 | 快照镜像独立目录，空为 `Dir/snapshots` |
 | `FileStorageOptions.SnapshotChecksum` | CRC32C+SHA256 | 选择仅 CRC32C 的 v2 镜像 |
+| `FileStorageOptions.Encryption` | 关闭 | 快照/WAL/HARDSTATE 静态加密与密钥轮换 |
 | `FileStorageOptions.SnapshotKeep` | 2 | 保留的快照文件数量 |
 | `Config.SnapshotCatchUpEntries` | 256 | 内存中保留的追赶日志条数 |
 
 兼容性提示：`SnapshotChunkBytes > 0` 会发送新的 `MsgSnapChunk` /
 `MsgSnapChunkResp` 消息类型，所有对端必须先升级；默认 0 保持旧线格式。仅 CRC
-快照文件使用版本 2，旧版本节点无法读取该文件；需要回退旧版本时应在升级前保留
-CRC+SHA 配置或先创建兼容快照。
+快照文件使用版本 2，加密快照使用版本 3，旧版本节点无法读取这两种文件；需要回退
+旧版本时应在升级前保留 CRC+SHA 配置、关闭加密或先创建兼容快照。

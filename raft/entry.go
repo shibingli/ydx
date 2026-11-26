@@ -113,6 +113,10 @@ func contains(ids []NodeID, id NodeID) bool {
 // Snapshot is a point-in-time state machine image and the configuration that
 // produced it. | Snapshot 是某一时刻的状态机镜像及其对应的配置。
 type Snapshot struct {
+	// crypto describes the encrypted image layout when file was written with
+	// encryption. It is nil for plaintext images. | crypto 描述 file 使用加密写入时
+	// 的镜像布局；明文镜像为 nil。
+	crypto *snapshotCrypto
 	// file is the durable image backing a local streaming snapshot. Data is nil
 	// in that case and the payload is loaded only when a follower needs it. It is
 	// internal and never serialized. | file 是本地流式快照的持久镜像路径。此时

@@ -112,6 +112,62 @@
 // 恢复时与 WAL 硬状态合并；跟随者因此能在大型快照镜像写入期间应答选票，而不是让
 // 组一直无 leader 到快照 fsync 结束。
 //
+// # Encryption | 加密
+//
+// FileStorageOptions.Encryption enables data-at-rest encryption for WAL records,
+// snapshot images and HARDSTATE. AES-256-GCM and SM4-GCM cover every target;
+// ChaCha20-Poly1305 is available for snapshots, HARDSTATE and the Encryptor API,
+// while the WAL supports only AES-256-GCM and SM4-GCM. A key ring may hold
+// several keys; ActiveKeyID selects the key for new snapshots and HARDSTATE and
+// the initial key for an empty WAL, while SetActiveEncryptionKey rotates a
+// running store. | FileStorageOptions.Encryption 启用 WAL 记录、快照镜像与
+// HARDSTATE 的静态数据加密。AES-256-GCM 与 SM4-GCM 覆盖全部目标；
+// ChaCha20-Poly1305 可用于快照、HARDSTATE 与 Encryptor API，而 WAL 仅支持
+// AES-256-GCM 与 SM4-GCM。密钥环可保存多个密钥；ActiveKeyID 选择新快照与
+// HARDSTATE 的密钥以及空 WAL 的初始密钥，SetActiveEncryptionKey 可在运行中轮换密钥。
+//
+//	opts := raft.FileStorageOptions{
+//		Dir: "/data/raft",
+//		Encryption: raft.EncryptionOptions{
+//			Keys: []raft.EncryptionKey{
+//				{ID: 1, Suite: raft.EncryptionAES256GCM, Bytes: aesKey},
+//				{ID: 2, Suite: raft.EncryptionSM4GCM, Bytes: sm4Key},
+//			},
+//			ActiveKeyID: 2,
+//			Targets:     raft.EncryptAll,
+//		},
+//	}
+//
+// The same keys drive the standalone one-shot and streaming API, which is
+// suitable for encrypting application payloads before Propose or after Apply:
+// | 同一组密钥也驱动独立的一次性与流式 API，适合在 Propose 前或 Apply 后加密应用
+// 负载：
+//
+//	enc, err := raft.NewEncryptor(raft.EncryptionOptions{Keys: keys, ActiveKeyID: 2})
+//	sealed, err := enc.Encrypt(nil, plaintext, aad)
+//	opened, err := enc.Decrypt(nil, sealed, aad)
+//
+//	w, err := enc.NewEncryptWriter(file, aad)
+//	_, err = w.Write(chunk)
+//	err = w.Close()
+//
+//	r, err := enc.NewDecryptReader(file, aad)
+//	_, err = io.Copy(dst, r)
+//
+// Streaming writers seal independent chunks and require Close to write the
+// authenticated end marker; readers reject tampering, reordering, truncation and
+// trailing data. Encryption applies to new writes; existing plaintext snapshots
+// and HARDSTATE remain readable while their target is disabled, and enabling a
+// target requires AllowPlaintextFiles to read legacy plaintext files during
+// migration. Opening an existing non-empty plaintext WAL with keys requires
+// AllowPlaintextWAL, and the WAL keeps its persisted plaintext policy, so
+// enabling encryption on existing data needs a fresh WAL directory.
+// | 流式写入器逐块独立封装，必须调用 Close 写入认证结束标记；读取器拒绝篡改、乱序、
+// 截断与尾部多余数据。加密作用于新写入；对应目标未启用时既有明文快照与 HARDSTATE
+// 仍可读取，启用目标后迁移期需用 AllowPlaintextFiles 读取旧明文文件。带密钥打开既有
+// 非空明文 WAL 需要 AllowPlaintextWAL，且 WAL 保持已持久化的明文策略，因此要在既有
+// 数据上启用加密必须使用新的 WAL 目录。
+//
 // # Snapshots | 快照
 //
 // FileStorage writes local images outside the WAL persist goroutine and records

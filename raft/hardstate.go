@@ -65,7 +65,10 @@ func (s *FileStorage) PersistHardState(hs *HardState) error {
 	if s.hsClosed {
 		return ErrStopped
 	}
-	data := encodeHardStateFile(*hs)
+	data, err := s.encodeHardState(*hs)
+	if err != nil {
+		return err
+	}
 	tmp := s.hsPath + ".tmp"
 	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
 	if err != nil {
@@ -113,7 +116,7 @@ func (s *FileStorage) mergeHardStateFile(hs *HardState) error {
 		}
 		return errs.Wrap(err, ErrStorage)
 	}
-	fileHS, err := decodeHardStateFile(data)
+	fileHS, err := s.decodeHardState(data)
 	if err != nil {
 		return err
 	}

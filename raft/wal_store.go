@@ -80,7 +80,8 @@ type walStore struct {
 
 // openWALStore opens the ydx/wal directory and replays every committed record.
 // | openWALStore 打开 ydx/wal 目录并重放全部已提交记录。
-func openWALStore(dir string, noSync bool, segmentSize int64, policy wal.SizePolicy) (*walStore, walRecovery, snapshotMarker, error) {
+func openWALStore(dir string, noSync bool, segmentSize int64, policy wal.SizePolicy,
+	cipher *dataCipher) (*walStore, walRecovery, snapshotMarker, error) {
 	opts := []wal.Option{
 		wal.WithSegmentMaxBytes(segmentSize),
 		wal.WithSizePolicy(policy),
@@ -95,6 +96,12 @@ func openWALStore(dir string, noSync bool, segmentSize int64, policy wal.SizePol
 		// raft 启动时总是重放全部存活记录，活动段的周期检查点只会增加侧车写入与
 		// 同步，并不会缩短恢复时间；封段在轮转时仍会写侧车。
 		wal.WithCheckpointBytes(1 << 40),
+	}
+	if cipher != nil && cipher.walRing != nil {
+		opts = append(opts, wal.WithEncryption(cipher.walRing))
+		if cipher.allowPlaintextWAL {
+			opts = append(opts, wal.WithAllowPlaintext(true))
+		}
 	}
 	if noSync {
 		// NoSync explicitly trades durability for throughput; flushing a whole
@@ -304,6 +311,18 @@ func (st *walStore) compactAll() error {
 	return nil
 }
 
+// setActiveKey switches the key used by subsequent WAL records. | setActiveKey
+// 切换后续 WAL 记录使用的密钥。
+func (st *walStore) setActiveKey(id uint32) error {
+	if st == nil || st.log == nil {
+		return ErrStopped
+	}
+	if err := st.log.SetActiveKey(id); err != nil {
+		return mapWALWriteError(err)
+	}
+	return nil
+}
+
 // close flushes and releases the ydx/wal directory. | close 刷新并释放 ydx/wal 目录。
 func (st *walStore) close() error {
 	if st == nil || st.log == nil {
@@ -323,6 +342,14 @@ func mapWALOpenError(err error) error {
 	switch {
 	case errors.Is(err, wal.ErrLocked):
 		return errs.Wrap(err, ErrStorageLocked)
+	case errors.Is(err, wal.ErrInvalidKey):
+		return errs.Wrap(err, ErrInvalidKey)
+	case errors.Is(err, wal.ErrKeyNotFound):
+		return errs.Wrap(err, ErrKeyNotFound)
+	case errors.Is(err, wal.ErrCipherMismatch):
+		return errs.Wrap(err, ErrInvalidConfig)
+	case errors.Is(err, wal.ErrAuth):
+		return errs.WrapDetail(err, ErrCorrupt, "WAL authentication failed | WAL 认证失败")
 	case errors.Is(err, wal.ErrCorrupt), errors.Is(err, wal.ErrMissingSegment),
 		errors.Is(err, wal.ErrUnsupported):
 		return errs.Wrap(err, ErrCorrupt)
@@ -340,6 +367,14 @@ func mapWALReadError(err error) error {
 	switch {
 	case errors.Is(err, wal.ErrClosed):
 		return ErrStopped
+	case errors.Is(err, wal.ErrInvalidKey):
+		return errs.Wrap(err, ErrInvalidKey)
+	case errors.Is(err, wal.ErrKeyNotFound):
+		return errs.Wrap(err, ErrKeyNotFound)
+	case errors.Is(err, wal.ErrCipherMismatch):
+		return errs.Wrap(err, ErrInvalidConfig)
+	case errors.Is(err, wal.ErrAuth):
+		return errs.WrapDetail(err, ErrCorrupt, "WAL authentication failed | WAL 认证失败")
 	case errors.Is(err, wal.ErrCorrupt), errors.Is(err, wal.ErrMissingSegment),
 		errors.Is(err, wal.ErrUnsupported):
 		return errs.Wrap(err, ErrCorrupt)
@@ -357,6 +392,14 @@ func mapWALWriteError(err error) error {
 	switch {
 	case errors.Is(err, wal.ErrClosed):
 		return ErrStopped
+	case errors.Is(err, wal.ErrInvalidKey):
+		return errs.Wrap(err, ErrInvalidKey)
+	case errors.Is(err, wal.ErrKeyNotFound):
+		return errs.Wrap(err, ErrKeyNotFound)
+	case errors.Is(err, wal.ErrCipherMismatch):
+		return errs.Wrap(err, ErrInvalidConfig)
+	case errors.Is(err, wal.ErrAuth):
+		return errs.Wrap(err, ErrAuth)
 	case errors.Is(err, wal.ErrRecordTooLarge), errors.Is(err, wal.ErrTooLarge):
 		return errs.Wrap(err, ErrTooLarge)
 	default:
