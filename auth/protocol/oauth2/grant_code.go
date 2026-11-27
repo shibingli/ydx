@@ -18,33 +18,33 @@ func (s *Server) grantAuthorizationCode(r *http.Request, client *Client, form ur
 	if raw == "" {
 		return nil, errs.Detail(ErrInvalidRequest, "code is required | code 必填")
 	}
-	record, err := s.config.Store.ConsumeAuthorizationCode(r.Context(), auth.HashToken(raw), s.Now())
-	if err != nil {
-		return nil, err
-	}
-	if record.ClientID != client.ID {
-		return nil, errs.Detail(ErrInvalidGrant, "authorization code belongs to another client | 授权码属于其他客户端")
-	}
-	redirectURI := form.Get("redirect_uri")
-	if record.RedirectURIProvided && redirectURI == "" {
-		// RFC 6749 section 4.1.3: redirect_uri is REQUIRED when it was included in the
-		// authorization request. | RFC 6749 第 4.1.3 节：授权请求包含 redirect_uri 时，令牌
-		// 请求必须提供该参数。
-		return nil, errs.Detail(ErrInvalidGrant, "redirect_uri is required | redirect_uri 必填")
-	}
-	if redirectURI != "" && redirectURI != record.RedirectURI {
-		return nil, errs.Detail(ErrInvalidGrant, "redirect_uri does not match the authorization request | redirect_uri 与授权请求不匹配")
-	}
-	if record.CodeChallenge != "" {
-		verifier := form.Get("code_verifier")
-		if verifier == "" {
-			return nil, errs.Detail(ErrInvalidGrant, "code_verifier is required | code_verifier 必填")
+	now := s.Now()
+	codeHash := auth.HashToken(raw)
+	var record *AuthorizationCode
+	var err error
+	if peeker, ok := s.config.Store.(AuthorizationCodePeeker); ok {
+		// Validate everything before consuming the single-use code; a request
+		// with the wrong client, redirect URI or PKCE verifier must not burn it. |
+		// 先校验再消费一次性授权码；错误的客户端、redirect_uri 或 PKCE 不得烧掉它。
+		record, err = peeker.PeekAuthorizationCode(r.Context(), codeHash, now)
+		if err != nil {
+			return nil, err
 		}
-		if !VerifyPKCE(verifier, record.CodeChallenge, record.CodeChallengeMethod) {
-			return nil, errs.Detail(ErrInvalidGrant, "PKCE verification failed | PKCE 校验失败")
+		if err := s.validateAuthorizationCode(record, client, form); err != nil {
+			return nil, err
 		}
-	} else if client.Public && !s.config.DisablePKCEEnforcement {
-		return nil, errs.Detail(ErrInvalidGrant, "public client authorization code has no PKCE binding | 公共客户端授权码没有 PKCE 绑定")
+		record, err = s.config.Store.ConsumeAuthorizationCode(r.Context(), codeHash, now)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		record, err = s.config.Store.ConsumeAuthorizationCode(r.Context(), codeHash, now)
+		if err != nil {
+			return nil, err
+		}
+		if err := s.validateAuthorizationCode(record, client, form); err != nil {
+			return nil, err
+		}
 	}
 	jkt, err := s.dpopForTokenRequest(r.Context(), r, record.DPoPJKT, "")
 	if err != nil {
@@ -135,4 +135,35 @@ func ensureTime(t, now time.Time) time.Time {
 		return now
 	}
 	return t
+}
+
+// validateAuthorizationCode checks the client binding, redirect URI and PKCE
+// proof of a redeemed authorization code. | validateAuthorizationCode 校验兑换授权码
+// 的客户端绑定、redirect_uri 与 PKCE 证明。
+func (s *Server) validateAuthorizationCode(record *AuthorizationCode, client *Client, form url.Values) error {
+	if record.ClientID != client.ID {
+		return errs.Detail(ErrInvalidGrant, "authorization code belongs to another client | 授权码属于其他客户端")
+	}
+	redirectURI := form.Get("redirect_uri")
+	if record.RedirectURIProvided && redirectURI == "" {
+		// RFC 6749 section 4.1.3: redirect_uri is REQUIRED when it was included in the
+		// authorization request. | RFC 6749 第 4.1.3 节：授权请求包含 redirect_uri 时，令牌
+		// 请求必须提供该参数。
+		return errs.Detail(ErrInvalidGrant, "redirect_uri is required | redirect_uri 必填")
+	}
+	if redirectURI != "" && redirectURI != record.RedirectURI {
+		return errs.Detail(ErrInvalidGrant, "redirect_uri does not match the authorization request | redirect_uri 与授权请求不匹配")
+	}
+	if record.CodeChallenge != "" {
+		verifier := form.Get("code_verifier")
+		if verifier == "" {
+			return errs.Detail(ErrInvalidGrant, "code_verifier is required | code_verifier 必填")
+		}
+		if !VerifyPKCE(verifier, record.CodeChallenge, record.CodeChallengeMethod) {
+			return errs.Detail(ErrInvalidGrant, "PKCE verification failed | PKCE 校验失败")
+		}
+	} else if client.Public && !s.config.DisablePKCEEnforcement {
+		return errs.Detail(ErrInvalidGrant, "public client authorization code has no PKCE binding | 公共客户端授权码没有 PKCE 绑定")
+	}
+	return nil
 }

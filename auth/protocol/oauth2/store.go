@@ -14,6 +14,22 @@ import (
 // Implementations must be safe for concurrent use. Hash-keyed lookups receive the value produced by
 // auth.HashToken; raw bearer values are never stored by the server. | 实现必须可并发安全使用。按哈希
 // 查询的键接收 auth.HashToken 的产物；服务器从不存储原始承载值。
+// AuthorizationCodePeeker is an optional Store extension that reads a code
+// without consuming it. It lets the token endpoint validate the client,
+// redirect URI and PKCE before burning a one-time credential. |
+// AuthorizationCodePeeker 是可选 Store 扩展，读取授权码但不消费。它让令牌端点
+// 在烧掉一次性凭据前校验客户端、redirect_uri 与 PKCE。
+type AuthorizationCodePeeker interface {
+	PeekAuthorizationCode(ctx context.Context, codeHash string, now time.Time) (*AuthorizationCode, error)
+}
+
+// PARPeeker is an optional Store extension that reads a pushed authorization
+// request without consuming it. | PARPeeker 是可选 Store 扩展，读取推送授权请求
+// 但不消费。
+type PARPeeker interface {
+	PeekPAR(ctx context.Context, requestURI string, now time.Time) (*PARRequest, error)
+}
+
 type Store interface {
 	// SaveAuthorizationCode stores a new code. | SaveAuthorizationCode 保存新授权码。
 	SaveAuthorizationCode(ctx context.Context, code *AuthorizationCode) error

@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"strings"
 	"testing"
@@ -648,5 +649,57 @@ func TestAuthorizeRefreshIssuanceRules(t *testing.T) {
 	}, noRefresh.ID, "super-secret")
 	if status != http.StatusOK || token.RefreshToken != "" {
 		t.Fatalf("no-refresh client token = %+v status=%d", token, status)
+	}
+}
+
+// TestAuthorizationCodeWrongClientDoesNotBurn ensures validation failures do not
+// consume the one-time code before the legitimate client redeems it. |
+// TestAuthorizationCodeWrongClientDoesNotBurn 确保校验失败不会在合法客户端兑换前
+// 消费一次性授权码。
+func TestAuthorizationCodeWrongClientDoesNotBurn(t *testing.T) {
+	server, client := flowServer(t, nil)
+	other := flowClient()
+	other.ID = "other"
+	other.SetSecret("other-secret")
+	server.config.Clients = NewMemoryClientStore(client, other)
+	if _, ok := server.config.Store.(AuthorizationCodePeeker); !ok {
+		t.Fatalf("store does not implement AuthorizationCodePeeker: %T", server.config.Store)
+	}
+	do := func(form url.Values, id, secret string) (int, string) {
+		req := httptest.NewRequest(http.MethodPost, "/token", strings.NewReader(form.Encode()))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		req.SetBasicAuth(url.QueryEscape(id), url.QueryEscape(secret))
+		w := httptest.NewRecorder()
+		server.Token(w, req)
+		return w.Code, w.Body.String()
+	}
+	verifier, _ := pkcePair(t)
+	resp := authorize(t, server, codeAuthorizationValues(client, verifier))
+	code := locationValues(t, resp).Get("code")
+	if code == "" {
+		t.Fatalf("no code: %v", locationValues(t, resp))
+	}
+	form := url.Values{
+		"grant_type":    {GrantAuthorizationCode},
+		"code":          {code},
+		"redirect_uri":  {client.RedirectURIs[0]},
+		"code_verifier": {verifier},
+	}
+	if status, body := do(form, other.ID, "other-secret"); status == http.StatusOK {
+		t.Fatal("wrong client redeemed the code")
+	} else {
+		t.Logf("wrong client status=%d body=%s", status, body)
+	}
+	// A wrong PKCE verifier must not burn the code either. | 错误的 PKCE 校验值
+	// 同样不得烧掉授权码。
+	bad := form.Clone()
+	bad.Set("code_verifier", strings.Repeat("x", len(verifier)))
+	if status, body := do(bad, client.ID, "super-secret"); status == http.StatusOK {
+		t.Fatal("bad PKCE verifier redeemed the code")
+	} else {
+		t.Logf("bad PKCE status=%d body=%s", status, body)
+	}
+	if status, body := do(form, client.ID, "super-secret"); status != http.StatusOK {
+		t.Fatalf("legitimate client status = %d body=%s", status, body)
 	}
 }

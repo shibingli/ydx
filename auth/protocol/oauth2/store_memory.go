@@ -62,6 +62,24 @@ func (s *MemoryStore) SaveAuthorizationCode(_ context.Context, code *Authorizati
 }
 
 // ConsumeAuthorizationCode atomically consumes a code. | ConsumeAuthorizationCode 原子消费授权码。
+// PeekAuthorizationCode reads a code without marking it used. |
+// PeekAuthorizationCode 读取授权码但不标记已使用。
+func (s *MemoryStore) PeekAuthorizationCode(_ context.Context, codeHash string, now time.Time) (*AuthorizationCode, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	code, ok := s.codes[codeHash]
+	if !ok {
+		return nil, errs.Detail(ErrInvalidGrant, "unknown authorization code | 未知授权码")
+	}
+	if code.Used {
+		return nil, errs.Detail(ErrInvalidGrant, "authorization code already used | 授权码已被使用")
+	}
+	if !code.ExpiresAt.IsZero() && !now.Before(code.ExpiresAt) {
+		return nil, errs.Detail(ErrInvalidGrant, "authorization code expired | 授权码已过期")
+	}
+	return code.Clone(), nil
+}
+
 func (s *MemoryStore) ConsumeAuthorizationCode(_ context.Context, codeHash string, now time.Time) (*AuthorizationCode, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -335,6 +353,24 @@ func (s *MemoryStore) SavePAR(_ context.Context, request *PARRequest) error {
 	}
 	s.pars[request.RequestURI] = request.Clone()
 	return nil
+}
+
+// PeekPAR reads a pushed authorization request without consuming it. |
+// PeekPAR 读取推送授权请求但不消费。
+func (s *MemoryStore) PeekPAR(_ context.Context, requestURI string, now time.Time) (*PARRequest, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	req, ok := s.pars[requestURI]
+	if !ok {
+		return nil, errs.Detail(ErrInvalidRequest, "unknown request_uri | 未知 request_uri")
+	}
+	if req.Used {
+		return nil, errs.Detail(ErrInvalidRequest, "request_uri already used | request_uri 已被使用")
+	}
+	if !req.ExpiresAt.IsZero() && !now.Before(req.ExpiresAt) {
+		return nil, errs.Detail(ErrInvalidRequest, "request_uri expired | request_uri 已过期")
+	}
+	return req.Clone(), nil
 }
 
 // ConsumePAR atomically consumes a pushed authorization request. | ConsumePAR 原子消费推送授权请求。

@@ -91,6 +91,13 @@ type Hooks struct {
 	AfterAudit func(ctx context.Context, event *AuditEvent)
 }
 
+// Hooks run while Service holds the per-user lock for login, registration and
+// credential mutations. A hook must not call back into Service methods for the
+// same user (it would deadlock) and should be short; use a queue or goroutine
+// for slow external work. | 钩子在 Service 持有登录、注册与凭据变更的每用户锁时运行。
+// 钩子不得回调同一用户的 Service 方法（会死锁）且应保持短小；慢速外部工作请使用队列
+// 或协程。
+
 // Config configures Service. | Config 配置 Service。
 type Config struct {
 	// Stores are the persistence ports. | Stores 是持久化端口。
@@ -159,6 +166,35 @@ type Service struct {
 	mfaTokenTTL time.Duration
 	logger      *log.Logger
 	now         func() time.Time
+	// userLocks serializes read-verify-write sequences per user stripe. Without
+	// it, a slow password verification could write back a stale user record and
+	// undo a concurrent reset, disable or lock; parallel failures could also
+	// lose lockout increments. | userLocks 按用户分片串行化读-校验-写序列。否则慢速
+	// 口令校验会写回过期用户记录，撤销并发的重置/禁用/锁定；并发失败也会丢失锁定计数。
+	userLocks [userLockStripes]sync.Mutex
+}
+
+// userLockStripes is the number of per-user lock stripes. | userLockStripes 是每
+// 用户锁分片数。
+const userLockStripes = 256
+
+// userLockIndex maps a user identifier to a lock stripe with FNV-1a. |
+// userLockIndex 用 FNV-1a 把用户标识映射到锁分片。
+func userLockIndex(id string) uint32 {
+	var h uint32 = 2166136261
+	for i := 0; i < len(id); i++ {
+		h ^= uint32(id[i])
+		h *= 16777619
+	}
+	return h % userLockStripes
+}
+
+// lockUser acquires the stripe lock for id and returns its release function. |
+// lockUser 获取 id 对应的分片锁并返回释放函数。
+func (s *Service) lockUser(id string) func() {
+	lock := &s.userLocks[userLockIndex(id)]
+	lock.Lock()
+	return lock.Unlock
 }
 
 // New returns a Service. | New 返回 Service。
@@ -382,6 +418,21 @@ func (s *Service) Authenticate(ctx context.Context, input AuthenticateInput) (*A
 		})
 		return nil, ErrInvalidCredentials
 	}
+	unlock := s.lockUser(user.ID)
+	defer unlock()
+	current, err := s.stores.Users.GetUser(ctx, user.ID)
+	if err != nil {
+		if !errors.Is(err, ErrUserNotFound) {
+			return nil, err
+		}
+		s.verifyDummyPassword(input.Password)
+		s.audit(ctx, &AuditEvent{
+			Type: "login.failed", IP: requestIP(input.Request), UserAgent: userAgent(input.Request),
+			Outcome: "failure", Detail: map[string]string{"reason": "unknown_login"},
+		})
+		return nil, ErrInvalidCredentials
+	}
+	user = current
 	if err := user.CanLogin(now); err != nil {
 		s.audit(ctx, &AuditEvent{
 			Type: "login.denied", UserID: user.ID, IP: requestIP(input.Request), UserAgent: userAgent(input.Request),
@@ -591,6 +642,11 @@ func (s *Service) CompleteMFA(ctx context.Context, input CompleteMFAInput) (*Aut
 	if err != nil {
 		return nil, err
 	}
+	unlock := s.lockUser(user.ID)
+	defer unlock()
+	if user, err = s.stores.Users.GetUser(ctx, user.ID); err != nil {
+		return nil, err
+	}
 	if err := user.CanLogin(now); err != nil {
 		return nil, err
 	}
@@ -764,6 +820,11 @@ func (s *Service) ChangePassword(ctx context.Context, userID, oldPassword, newPa
 	if err != nil {
 		return err
 	}
+	unlock := s.lockUser(user.ID)
+	defer unlock()
+	if user, err = s.stores.Users.GetUser(ctx, user.ID); err != nil {
+		return err
+	}
 	ok, err := s.hash.Verify(oldPassword, user.PasswordHash)
 	if err != nil || !ok {
 		return ErrInvalidCredentials
@@ -831,6 +892,11 @@ func (s *Service) ResetPassword(ctx context.Context, rawToken, newPassword strin
 	}
 	user, err := s.stores.Users.GetUser(ctx, token.UserID)
 	if err != nil {
+		return err
+	}
+	unlock := s.lockUser(user.ID)
+	defer unlock()
+	if user, err = s.stores.Users.GetUser(ctx, user.ID); err != nil {
 		return err
 	}
 	if err := s.policy.Validate(ctx, newPassword, user); err != nil {
@@ -913,6 +979,12 @@ func (s *Service) VerifyEmail(ctx context.Context, rawToken string) (*User, erro
 	if err != nil {
 		return nil, err
 	}
+	unlock := s.lockUser(user.ID)
+	defer unlock()
+	user, err = s.stores.Users.GetUser(ctx, token.UserID)
+	if err != nil {
+		return nil, err
+	}
 	user.EmailVerified = true
 	if user.Status == UserPending {
 		user.Status = UserActive
@@ -932,6 +1004,11 @@ func (s *Service) RegisterCredential(ctx context.Context, credential *Credential
 	}
 	user, err := s.stores.Users.GetUser(ctx, credential.UserID)
 	if err != nil {
+		return nil, err
+	}
+	unlock := s.lockUser(user.ID)
+	defer unlock()
+	if user, err = s.stores.Users.GetUser(ctx, user.ID); err != nil {
 		return nil, err
 	}
 	now := s.nowTime()
@@ -978,6 +1055,8 @@ func (s *Service) ListCredentials(ctx context.Context, userID string) ([]*Creden
 
 // RemoveCredential deletes a factor and clears MFAEnabled when no factor remains. | RemoveCredential 删除因素，并在无剩余因素时清除 MFAEnabled。
 func (s *Service) RemoveCredential(ctx context.Context, userID, credentialID string) error {
+	unlock := s.lockUser(userID)
+	defer unlock()
 	credential, err := s.stores.Credentials.GetCredential(ctx, credentialID)
 	if err != nil {
 		return err
@@ -1146,6 +1225,8 @@ func sanitizeUsername(s string) string {
 
 // LockUser locks an account until the given time. | LockUser 把账号锁定到给定时间。
 func (s *Service) LockUser(ctx context.Context, userID string, until time.Time) error {
+	unlock := s.lockUser(userID)
+	defer unlock()
 	user, err := s.stores.Users.GetUser(ctx, userID)
 	if err != nil {
 		return err
@@ -1165,6 +1246,8 @@ func (s *Service) LockUser(ctx context.Context, userID string, until time.Time) 
 
 // UnlockUser removes a lock and resets failed attempts. | UnlockUser 解除锁定并重置失败次数。
 func (s *Service) UnlockUser(ctx context.Context, userID string) error {
+	unlock := s.lockUser(userID)
+	defer unlock()
 	user, err := s.stores.Users.GetUser(ctx, userID)
 	if err != nil {
 		return err
@@ -1184,6 +1267,8 @@ func (s *Service) UnlockUser(ctx context.Context, userID string) error {
 
 // DisableUser disables an account and revokes its sessions. | DisableUser 禁用账号并撤销其会话。
 func (s *Service) DisableUser(ctx context.Context, userID string) error {
+	unlock := s.lockUser(userID)
+	defer unlock()
 	user, err := s.stores.Users.GetUser(ctx, userID)
 	if err != nil {
 		return err
@@ -1202,6 +1287,8 @@ func (s *Service) DisableUser(ctx context.Context, userID string) error {
 
 // EnableUser re-enables a disabled account and clears any temporary lockout. | EnableUser 重新启用被禁用的账号并清除临时锁定。
 func (s *Service) EnableUser(ctx context.Context, userID string) error {
+	unlock := s.lockUser(userID)
+	defer unlock()
 	user, err := s.stores.Users.GetUser(ctx, userID)
 	if err != nil {
 		return err
@@ -1222,6 +1309,8 @@ func (s *Service) EnableUser(ctx context.Context, userID string) error {
 
 // DeleteUser removes an account and its sessions, identities, credentials and tokens. | DeleteUser 删除账号及其会话、身份、凭据与令牌。
 func (s *Service) DeleteUser(ctx context.Context, userID string) error {
+	unlock := s.lockUser(userID)
+	defer unlock()
 	if _, err := s.stores.Users.GetUser(ctx, userID); err != nil {
 		return err
 	}

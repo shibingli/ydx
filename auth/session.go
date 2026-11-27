@@ -84,6 +84,18 @@ type SessionManager struct {
 	// duplicated and a concurrent touch cannot resurrect a revoked session. | locks 按会话分片串行化
 	// 校验与轮换，避免并发轮换重复执行，也避免并发触碰把已撤销会话写回。
 	locks [sessionLockStripes]sync.Mutex
+	// userLocks serializes session creation/rotation with RevokeUser so a replacement session cannot
+	// be created after the revocation list was read. Lock order is user then session. | userLocks
+	// 串行化会话创建/轮换与 RevokeUser，避免在撤销列表读取后创建替代会话。锁顺序为用户再会话。
+	userLocks [sessionLockStripes]sync.Mutex
+}
+
+// lockUser acquires the per-user stripe lock used by Create and RevokeUser. |
+// lockUser 获取 Create 与 RevokeUser 使用的每用户分片锁。
+func (m *SessionManager) lockUser(id string) func() {
+	lock := &m.userLocks[sessionLockIndex(id)]
+	lock.Lock()
+	return lock.Unlock
 }
 
 // sessionLockStripes is the number of per-session lock stripes. | sessionLockStripes 是每会话锁分片数。
@@ -174,6 +186,8 @@ func (m *SessionManager) Create(ctx context.Context, userID, clientID string, r 
 	if userID == "" {
 		return nil, errs.Detail(ErrInvalidRequest, "user id is empty | 用户 ID 为空")
 	}
+	unlockUser := m.lockUser(userID)
+	defer unlockUser()
 	now := m.now()
 	id, err := RandomToken(32)
 	if err != nil {
@@ -240,14 +254,28 @@ func (m *SessionManager) enforceMaxSessions(ctx context.Context, userID string, 
 		excess = len(active)
 	}
 	for i := 0; i < excess; i++ {
-		session := active[i]
+		unlock := m.lockSession(active[i].ID)
+		session, err := m.store.GetSession(ctx, active[i].ID)
+		if err != nil {
+			unlock()
+			if errors.Is(err, ErrSessionNotFound) {
+				continue
+			}
+			return err
+		}
+		if session.RevokedAt != nil {
+			unlock()
+			continue
+		}
 		revoked := now
 		session.RevokedAt = &revoked
 		session.RevokeReason = "max_sessions"
 		session.UpdatedAt = now
 		if err := m.store.UpdateSession(ctx, session); err != nil {
+			unlock()
 			return err
 		}
+		unlock()
 	}
 	return nil
 }
@@ -326,6 +354,12 @@ func (m *SessionManager) rotate(ctx context.Context, oldID string, preserveCSRF 
 	if oldID == "" {
 		return nil, errs.Detail(ErrSessionNotFound, "session id is empty | 会话 ID 为空")
 	}
+	probe, err := m.store.GetSession(ctx, oldID)
+	if err != nil {
+		return nil, err
+	}
+	unlockUser := m.lockUser(probe.UserID)
+	defer unlockUser()
 	unlock := m.lockSession(oldID)
 	defer unlock()
 	now := m.now()
@@ -411,6 +445,8 @@ func (m *SessionManager) rotateIfDue(ctx context.Context, session *Session, opts
 
 // Revoke marks a session revoked. | Revoke 标记会话已撤销。
 func (m *SessionManager) Revoke(ctx context.Context, id, reason string) error {
+	unlock := m.lockSession(id)
+	defer unlock()
 	session, err := m.store.GetSession(ctx, id)
 	if err != nil {
 		return err
@@ -427,23 +463,36 @@ func (m *SessionManager) Revoke(ctx context.Context, id, reason string) error {
 
 // RevokeUser revokes every session of a user. | RevokeUser 撤销用户的全部会话。
 func (m *SessionManager) RevokeUser(ctx context.Context, userID, reason string) (int, error) {
+	unlockUser := m.lockUser(userID)
+	defer unlockUser()
 	sessions, err := m.store.ListSessionsByUser(ctx, userID)
 	if err != nil {
 		return 0, err
 	}
 	now := m.now()
 	n := 0
-	for _, session := range sessions {
-		if session.RevokedAt != nil {
-			continue
-		}
-		session.RevokedAt = &now
-		session.RevokeReason = reason
-		session.UpdatedAt = now
-		if err := m.store.UpdateSession(ctx, session); err != nil {
+	for _, listed := range sessions {
+		unlock := m.lockSession(listed.ID)
+		session, err := m.store.GetSession(ctx, listed.ID)
+		if err != nil {
+			unlock()
+			if errors.Is(err, ErrSessionNotFound) {
+				continue
+			}
 			return n, err
 		}
-		n++
+		if session.RevokedAt == nil {
+			revoked := now
+			session.RevokedAt = &revoked
+			session.RevokeReason = reason
+			session.UpdatedAt = now
+			if err := m.store.UpdateSession(ctx, session); err != nil {
+				unlock()
+				return n, err
+			}
+			n++
+		}
+		unlock()
 	}
 	return n, nil
 }
