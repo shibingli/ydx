@@ -16,7 +16,7 @@ import (
 func TestFrameAuthRoundTrip(t *testing.T) {
 	secret := []byte("0123456789abcdef")
 	msgs := []Message{{Type: MsgHeartbeat, From: 1, To: 2, Term: 3}}
-	auth := &frameAuth{timestamp: time.Now().UnixNano(), counter: 7}
+	auth := &frameAuth{timestamp: time.Now().UnixNano(), counter: 7, incarnation: 1}
 	frame, err := encodeHTTPFrameInto(nil, msgs, auth)
 	if err != nil {
 		t.Fatal(err)
@@ -29,7 +29,7 @@ func TestFrameAuthRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(got) != 1 || got[0].From != 1 || gotAuth == nil ||
-		gotAuth.timestamp != auth.timestamp || gotAuth.counter != auth.counter {
+		gotAuth.timestamp != auth.timestamp || gotAuth.counter != auth.counter || gotAuth.incarnation != auth.incarnation {
 		t.Fatalf("messages=%+v auth=%+v", got, gotAuth)
 	}
 	signed, err := encodeStreamFrame(msgs, secret, 1<<20, auth)
@@ -61,7 +61,7 @@ func TestReplayGuard(t *testing.T) {
 	g := newReplayGuard(time.Minute)
 	g.now = func() time.Time { return now }
 	fresh := func(counter uint64) *frameAuth {
-		return &frameAuth{timestamp: now.UnixNano(), counter: counter}
+		return &frameAuth{timestamp: now.UnixNano(), counter: counter, incarnation: 1}
 	}
 	if !g.accept(1, fresh(1)) {
 		t.Fatal("first frame rejected")
@@ -72,11 +72,24 @@ func TestReplayGuard(t *testing.T) {
 	if !g.accept(1, fresh(2)) {
 		t.Fatal("newer counter rejected")
 	}
-	if g.accept(1, &frameAuth{timestamp: now.Add(-2 * time.Minute).UnixNano(), counter: 3}) {
+	if g.accept(1, &frameAuth{timestamp: now.Add(-2 * time.Minute).UnixNano(), counter: 3, incarnation: 1}) {
 		t.Fatal("stale frame accepted")
 	}
-	if g.accept(1, &frameAuth{timestamp: now.Add(2 * time.Minute).UnixNano(), counter: 4}) {
+	if g.accept(1, &frameAuth{timestamp: now.Add(2 * time.Minute).UnixNano(), counter: 4, incarnation: 1}) {
 		t.Fatal("future frame accepted")
+	}
+	// A backward clock step with an increasing counter must not partition. |
+	// 计数器递增的时钟回拨不得造成分片。
+	if !g.accept(1, &frameAuth{timestamp: now.Add(-time.Second).UnixNano(), counter: 5, incarnation: 1}) {
+		t.Fatal("monotonic counter rejected after clock step")
+	}
+	// A new incarnation is accepted, but replaying the retired one is not. |
+	// 新 incarnation 被接受，但重放已退役的旧 incarnation 被拒绝。
+	if !g.accept(1, &frameAuth{timestamp: now.UnixNano(), counter: 1, incarnation: 2}) {
+		t.Fatal("new incarnation rejected")
+	}
+	if g.accept(1, &frameAuth{timestamp: now.UnixNano(), counter: 99, incarnation: 1}) {
+		t.Fatal("retired incarnation replay accepted")
 	}
 	if g.accept(2, fresh(1)) != true {
 		t.Fatal("independent sender rejected")
@@ -104,7 +117,7 @@ func TestHTTPFrameAuthReplay(t *testing.T) {
 	}
 	srv := httptest.NewServer(tr.Handler())
 	defer srv.Close()
-	auth := &frameAuth{timestamp: time.Now().UnixNano(), counter: 1000}
+	auth := &frameAuth{timestamp: time.Now().UnixNano(), counter: 1000, incarnation: 1}
 	frame, err := encodeHTTPFrameInto(nil, []Message{{Type: MsgHeartbeat, From: 1, To: 2, Term: 3}}, auth)
 	if err != nil {
 		t.Fatal(err)

@@ -95,6 +95,8 @@ type HTTPTransport struct {
 	queue       int
 	frameMaxAge time.Duration
 	authSeq     atomic.Uint64
+	authTS      atomic.Int64
+	incarnation uint64
 	replay      *replayGuard
 
 	drops atomic.Uint64
@@ -151,6 +153,7 @@ func NewHTTPTransport(opts HTTPTransportOptions) (*HTTPTransport, error) {
 		maxBody:     opts.MaxBodyBytes,
 		queue:       opts.Queue,
 		frameMaxAge: opts.FrameMaxAge,
+		incarnation: newIncarnation(),
 		replay:      newReplayGuard(opts.FrameMaxAge),
 		peers:       make(map[NodeID]*httpPeer),
 		stopCh:      make(chan struct{}),
@@ -303,7 +306,7 @@ func (t *HTTPTransport) peerLoop(p *httpPeer) {
 		t.mu.RUnlock()
 		var auth *frameAuth
 		if t.frameMaxAge > 0 {
-			auth = &frameAuth{timestamp: time.Now().UnixNano(), counter: t.authSeq.Add(1)}
+			auth = t.nextAuth()
 		}
 		frame, err := encodeHTTPFrameInto(nil, mergeBatches(batches), auth)
 		if err != nil {
@@ -312,7 +315,7 @@ func (t *HTTPTransport) peerLoop(p *httpPeer) {
 			for _, one := range batches {
 				var oneAuth *frameAuth
 				if t.frameMaxAge > 0 {
-					oneAuth = &frameAuth{timestamp: time.Now().UnixNano(), counter: t.authSeq.Add(1)}
+					oneAuth = t.nextAuth()
 				}
 				frame, err := encodeHTTPFrameInto(nil, one, oneAuth)
 				if err != nil {
@@ -364,6 +367,22 @@ func (t *HTTPTransport) tryBatch(p *httpPeer, control bool) ([]Message, bool) {
 		return batch, true
 	default:
 		return nil, false
+	}
+}
+
+// nextAuth returns the next freshness block with a monotonic timestamp. |
+// nextAuth 返回带单调时间戳的下一个新鲜度块。
+func (t *HTTPTransport) nextAuth() *frameAuth {
+	now := time.Now().UnixNano()
+	for {
+		last := t.authTS.Load()
+		ts := now
+		if ts <= last {
+			ts = last + 1
+		}
+		if t.authTS.CompareAndSwap(last, ts) {
+			return &frameAuth{timestamp: ts, counter: t.authSeq.Add(1), incarnation: t.incarnation}
+		}
 	}
 }
 
@@ -503,6 +522,7 @@ func encodeHTTPFrameInto(dst []byte, msgs []Message, auth *frameAuth) ([]byte, e
 		flags |= flagFrameAuth
 		dst = binary.LittleEndian.AppendUint64(dst, uint64(auth.timestamp))
 		dst = binary.LittleEndian.AppendUint64(dst, auth.counter)
+		dst = binary.LittleEndian.AppendUint64(dst, auth.incarnation)
 	}
 	dst = binary.AppendUvarint(dst, uint64(len(msgs)))
 	for i := range msgs {
@@ -556,8 +576,9 @@ func decodeHTTPFrameAuth(frame []byte) ([]Message, *frameAuth, error) {
 			return nil, nil, errs.Detail(ErrCorrupt, "short http frame auth")
 		}
 		auth = &frameAuth{
-			timestamp: int64(binary.LittleEndian.Uint64(payload[0:8])),
-			counter:   binary.LittleEndian.Uint64(payload[8:16]),
+			timestamp:   int64(binary.LittleEndian.Uint64(payload[0:8])),
+			counter:     binary.LittleEndian.Uint64(payload[8:16]),
+			incarnation: binary.LittleEndian.Uint64(payload[16:24]),
 		}
 		d.pos = frameAuthLen
 	}

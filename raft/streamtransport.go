@@ -99,6 +99,8 @@ type streamTransport struct {
 	readTTL     time.Duration
 	frameMaxAge time.Duration
 	authSeq     atomic.Uint64
+	authTS      atomic.Int64
+	incarnation uint64
 	replay      *replayGuard
 
 	drops atomic.Uint64
@@ -165,6 +167,7 @@ func newStreamTransport(backend streamBackend, listenAddr string, secret []byte,
 		timeout:     timeout,
 		readTTL:     defaultReadTimeout,
 		frameMaxAge: frameMaxAge,
+		incarnation: newIncarnation(),
 		replay:      newReplayGuard(frameMaxAge),
 		peers:       make(map[NodeID]*streamPeer),
 		conns:       make(map[io.ReadWriteCloser]struct{}),
@@ -397,7 +400,7 @@ func (t *streamTransport) readLoop(conn io.ReadWriteCloser) {
 		if t.frameMaxAge > 0 {
 			if len(msgs) == 0 || !t.replay.accept(msgs[0].From, auth) {
 				t.drops.Add(1)
-				return
+				continue
 			}
 			for i := 1; i < len(msgs); i++ {
 				if msgs[i].From != msgs[0].From {
@@ -412,6 +415,22 @@ func (t *streamTransport) readLoop(conn io.ReadWriteCloser) {
 		}
 		for i := range msgs {
 			(*h)(msgs[i])
+		}
+	}
+}
+
+// nextAuth returns the next freshness block with a monotonic timestamp. |
+// nextAuth 返回带单调时间戳的下一个新鲜度块。
+func (t *streamTransport) nextAuth() *frameAuth {
+	now := time.Now().UnixNano()
+	for {
+		last := t.authTS.Load()
+		ts := now
+		if ts <= last {
+			ts = last + 1
+		}
+		if t.authTS.CompareAndSwap(last, ts) {
+			return &frameAuth{timestamp: ts, counter: t.authSeq.Add(1), incarnation: t.incarnation}
 		}
 	}
 }
@@ -482,7 +501,7 @@ func (t *streamTransport) peerLoop(p *streamPeer) {
 		merged := mergeBatches(batches)
 		var auth *frameAuth
 		if t.frameMaxAge > 0 {
-			auth = &frameAuth{timestamp: time.Now().UnixNano(), counter: t.authSeq.Add(1)}
+			auth = t.nextAuth()
 		}
 		frame, err := encodeStreamFrame(merged, t.secret, t.maxFrame, auth)
 		if err != nil {
@@ -492,7 +511,7 @@ func (t *streamTransport) peerLoop(p *streamPeer) {
 			for idx, one := range batches {
 				var oneAuth *frameAuth
 				if t.frameMaxAge > 0 {
-					oneAuth = &frameAuth{timestamp: time.Now().UnixNano(), counter: t.authSeq.Add(1)}
+					oneAuth = t.nextAuth()
 				}
 				frame, err := encodeStreamFrame(one, t.secret, t.maxFrame, oneAuth)
 				if err != nil {
