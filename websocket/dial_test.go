@@ -3,6 +3,8 @@ package websocket
 import (
 	"bufio"
 	"context"
+	"errors"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -52,4 +54,35 @@ func readerSize(r *bufio.Reader) int {
 		return 0
 	}
 	return r.Size()
+}
+
+// TestDialRejectsHandshakeHeaderInjection rejects CR/LF and non-token header
+// or subprotocol input before writing the raw handshake. |
+// TestDialRejectsHandshakeHeaderInjection 在写出原始握手前拒绝 CR/LF 与非 token
+// 的头或子协议。
+func TestDialRejectsHandshakeHeaderInjection(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			_ = conn.Close()
+		}
+	}()
+	cases := []DialOptions{
+		{Headers: http.Header{"X-Test": {"a\r\nX-Admin: 1"}}},
+		{Headers: http.Header{"Bad Name": {"v"}}},
+		{Subprotocols: []string{"chat\r\nX-Admin: 1"}},
+	}
+	for i, opts := range cases {
+		if _, err := Dial(context.Background(), "ws://"+ln.Addr().String(), opts); !errors.Is(err, ErrHandshake) {
+			t.Fatalf("case %d: error = %v, want ErrHandshake", i, err)
+		}
+	}
 }

@@ -137,6 +137,28 @@ func Dial(ctx context.Context, rawURL string, o DialOptions) (*Conn, error) {
 	if reqPath == "" {
 		reqPath = "/"
 	}
+	if strings.ContainsAny(reqPath, "\r\n") || strings.ContainsAny(u.Host, "\r\n") {
+		_ = netConn.Close()
+		return nil, errs.Detail(ErrHandshake, "invalid request target or host")
+	}
+	for _, protocol := range o.Subprotocols {
+		if !validHeaderToken(protocol) {
+			_ = netConn.Close()
+			return nil, errs.Detail(ErrHandshake, "invalid subprotocol %q", protocol)
+		}
+	}
+	for name, values := range o.Headers {
+		if !validHeaderToken(name) {
+			_ = netConn.Close()
+			return nil, errs.Detail(ErrHandshake, "invalid header name %q", name)
+		}
+		for _, value := range values {
+			if !validHeaderValue(value) {
+				_ = netConn.Close()
+				return nil, errs.Detail(ErrHandshake, "invalid header value for %q", name)
+			}
+		}
+	}
 
 	// Build the request directly in a byte slice so the handshake does not pay
 	// for a builder-to-string-to-bytes copy. | 直接在字节切片中构造请求，避免
@@ -396,4 +418,38 @@ func dialExtended(ctx context.Context, u *url.URL, o DialOptions, timeout time.D
 		c.enableReadAhead()
 	}
 	return c, nil
+}
+
+// validHeaderToken reports whether s is a non-empty RFC 7230 token. |
+// validHeaderToken 报告 s 是否为非空的 RFC 7230 token。
+func validHeaderToken(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9':
+		case strings.ContainsRune("!#$%&'*+-.^_`|~", rune(c)):
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// validHeaderValue reports whether s is free of CR, LF and other controls
+// (HTAB is allowed; obs-text bytes are preserved). | validHeaderValue 报告 s 是否
+// 不含 CR、LF 与控制字符（允许 HTAB，保留 obs-text 字节）。
+func validHeaderValue(s string) bool {
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c == '\t' {
+			continue
+		}
+		if c < 0x20 || c == 0x7f {
+			return false
+		}
+	}
+	return true
 }
