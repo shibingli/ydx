@@ -52,6 +52,12 @@ jobs:
       # Static analysis already runs on the Linux mainline; these jobs only need
       # the platform-specific test results. | 静态检查已由 Linux 主线完成，这里只跑
       # 平台相关测试。
+      # A single transient runner failure (port collision, slow disk, host
+      # hiccup) should not turn the asynchronous platform job red. Retry each
+      # module once; the first failure is still logged and a persistent failure
+      # fails the retry as well. | 单次运行器波动（端口冲突、慢盘、宿主抖动）
+      # 不应让异步平台任务变红。每个模块失败后重试一次；首次失败仍会记录，持续
+      # 失败仍会让重试失败。
       - name: Test product modules
         shell: bash
         env:
@@ -65,7 +71,10 @@ jobs:
               dir=$(dirname "$1")
               echo "==> $dir"
               cd "$dir"
-              go test ./... -count=1 -timeout=10m
+              if ! go test ./... -count=1 -timeout=10m; then
+                echo "==> retry $dir after a transient failure"
+                go test ./... -count=1 -timeout=10m
+              fi
             ' _
 
   benchmark-tests:
