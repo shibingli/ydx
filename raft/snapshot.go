@@ -100,6 +100,10 @@ func (n *Node) handleSnapshot(m *Message) {
 	}
 	ready := make(chan struct{})
 	n.applyQueue.push(applyTask{snapshot: snap, snapshotReady: ready})
+	// m is a pooled message released when this handler returns; capture the
+	// sender before the asynchronous snapshot persistence callback runs. |
+	// m 是处理函数返回后即被释放的池化消息；在异步快照持久化回调运行前捕获发送者。
+	from := m.From
 	n.logf("info", "raft installing snapshot | raft 安装快照",
 		ydlog.Uint64("node", uint64(n.id)), ydlog.Uint64("index", snap.Index),
 		ydlog.Uint64("term", snap.Term))
@@ -109,7 +113,7 @@ func (n *Node) handleSnapshot(m *Message) {
 		}
 		close(ready)
 		n.metrics.snapshotsApplied.Add(1)
-		n.send(Message{Type: MsgSnapResp, To: m.From, Term: n.term,
+		n.send(Message{Type: MsgSnapResp, To: from, Term: n.term,
 			Index: snap.Index, LogIndex: snap.Index})
 	})
 }
