@@ -168,6 +168,38 @@ func TestDeploymentIsolationForGenericRemote(t *testing.T) {
 	}
 }
 
+// TestDefaultDeploymentScopesGenericRemote pins that the derived default deployment ID also
+// isolates custom remotes that do not implement DeploymentScoper. Two binaries sharing one
+// store must not read or overwrite each other's values. |
+// TestDefaultDeploymentScopesGenericRemote 固定：推导出的默认部署 ID 同样隔离未实现
+// DeploymentScoper 的自定义远端。共享同一存储的两个二进制不得互相读取或覆盖缓存值。
+func TestDefaultDeploymentScopesGenericRemote(t *testing.T) {
+	f := newFakeRemote()
+	mgr := newTestManager(t, f)
+	raw, err := mgr.Raw("shared")
+	if err != nil {
+		t.Fatalf("Raw: %v", err)
+	}
+	if err := raw.Set(context.Background(), "k", []byte("v")); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	if _, _, ok := f.value("shared:k"); ok {
+		t.Fatal("custom remote stored an unscoped key | 自定义远端写入了未限定部署的键")
+	}
+	found := false
+	f.mu.Lock()
+	for key := range f.items {
+		if strings.HasSuffix(key, ":shared:k") {
+			found = true
+			break
+		}
+	}
+	f.mu.Unlock()
+	if !found {
+		t.Fatal("custom remote has no deployment-scoped key | 自定义远端缺少部署限定键")
+	}
+}
+
 // containsKey reports whether keys contains want. | containsKey 报告 keys 是否包含 want。
 func containsKey(keys []string, want string) bool {
 	for _, key := range keys {

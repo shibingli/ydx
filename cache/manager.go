@@ -57,11 +57,6 @@ func NewManager(opts ...Option) (*Manager, error) {
 			fn(&o)
 		}
 	}
-	// A deployment ID counts as explicit only when the caller supplied one; the
-	// derived default is applied by remotes that implement DeploymentScoper. |
-	// 只有调用方提供了部署 ID 才算显式；推导出的默认值交由实现 DeploymentScoper 的
-	// 远端应用。
-	explicitDeployment := o.DeploymentID != ""
 	o = o.withDefaults()
 	remote := o.Remote
 	if remote != nil {
@@ -69,11 +64,12 @@ func NewManager(opts ...Option) (*Manager, error) {
 			if scoped := scoper.ScopeDeployment(o.DeploymentID); scoped != nil {
 				remote = scoped
 			}
-		} else if explicitDeployment {
-			// Custom remotes get logical key prefixing and event filtering so an
-			// explicit deployment ID still isolates two managers sharing the store. |
-			// 自定义远端的键加逻辑前缀并过滤事件，使共享存储的两个管理器在显式部署 ID
-			// 下仍然隔离。
+		} else if o.DeploymentID != "" {
+			// Custom remotes get logical key prefixing and event filtering for the
+			// effective deployment ID, including the derived default: two binaries
+			// sharing one store must not read or overwrite each other's values. |
+			// 自定义远端的键加逻辑前缀并过滤事件，使用生效的部署 ID（含推导出的默认值）：
+			// 共享同一存储的两个二进制不得互相读取或覆盖对方的缓存值。
 			remote = &deploymentRemote{Remote: remote, deployment: o.DeploymentID}
 		}
 	}

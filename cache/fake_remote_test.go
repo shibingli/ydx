@@ -206,3 +206,15 @@ func (f *fakeRemote) events() []Event {
 	defer f.mu.Unlock()
 	return append([]Event(nil), f.published...)
 }
+
+// scopedKey applies the manager's effective deployment prefix to a raw remote key. |
+// scopedKey 把管理器生效的部署前缀应用到原始远端键。
+func scopedKey(m *Manager, key string) string {
+	if m == nil || m.remote == nil {
+		return key
+	}
+	if remote, ok := m.remote.(*deploymentRemote); ok {
+		return remote.scopedKey(key)
+	}
+	return key
+}

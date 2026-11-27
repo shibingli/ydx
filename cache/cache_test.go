@@ -207,7 +207,7 @@ func TestCASRejectsStaleWriteBack(t *testing.T) {
 	if st := r.Stats(); st.CASLost != 1 {
 		t.Fatalf("CASLost = %d, want 1 | CAS 失败计数不符", st.CASLost)
 	}
-	if data, _, ok := f.value("cas:k"); !ok || string(data) != "new" {
+	if data, _, ok := f.value(scopedKey(m, "cas:k")); !ok || string(data) != "new" {
 		t.Fatalf("L2 value = %q,%v, want new | L2 最终值不符", data, ok)
 	}
 }
@@ -458,7 +458,7 @@ func TestOversizedValuePolicy(t *testing.T) {
 	if err := r2.Set(ctx, "k", value); err != nil {
 		t.Fatalf("two-level oversized Set = %v | 两级超大值写入失败", err)
 	}
-	if data, _, ok := f.value("big:k"); !ok || len(data) != len(value) || data[0] != 'x' {
+	if data, _, ok := f.value(scopedKey(m2, "big:k")); !ok || len(data) != len(value) || data[0] != 'x' {
 		t.Fatalf("L2 did not retain the oversized value | L2 未保留超大值")
 	}
 }
@@ -471,7 +471,7 @@ func TestFreshReadsBypassL1(t *testing.T) {
 	if err := r.Set(ctx, "k", []byte("v1")); err != nil {
 		t.Fatalf("Set: %v | 写入失败", err)
 	}
-	if _, err := f.Store(ctx, "fresh:k", []byte("v2"), FlagNone, 0); err != nil {
+	if _, err := f.Store(ctx, scopedKey(m, "fresh:k"), []byte("v2"), FlagNone, 0); err != nil {
 		t.Fatalf("L2 write: %v | 远端写入失败", err)
 	}
 	if got, ok, _ := r.Get(ctx, "k"); !ok || string(got) != "v1" {
@@ -484,7 +484,7 @@ func TestFreshReadsBypassL1(t *testing.T) {
 	if got, _, _ := r.Get(ctx, "k"); string(got) != "v2" {
 		t.Fatalf("fresh read did not refresh L1: %q | 严格读未刷新 L1", got)
 	}
-	if _, err := f.Remove(ctx, "fresh:k", FlagTombstone, time.Minute); err != nil {
+	if _, err := f.Remove(ctx, scopedKey(m, "fresh:k"), FlagTombstone, time.Minute); err != nil {
 		t.Fatalf("L2 remove: %v | 远端删除失败", err)
 	}
 	if got, ok, _ := r.Get(ctx, "k"); !ok || string(got) != "v2" {
@@ -510,7 +510,7 @@ func TestTypedFreshRead(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal: %v | 序列化失败", err)
 	}
-	if _, err := f.Store(ctx, "fresh-typed:u", body, FlagNone, 0); err != nil {
+	if _, err := f.Store(ctx, scopedKey(m, "fresh-typed:u"), body, FlagNone, 0); err != nil {
 		t.Fatalf("L2 write: %v | 远端写入失败", err)
 	}
 	got, ok, err := c.GetFresh(ctx, "u")
