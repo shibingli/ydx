@@ -61,10 +61,21 @@ func Dial(ctx context.Context, rawURL string, o DialOptions) (*Session, error) {
 		clientTLS.NextProtos = []string{"h3"}
 	}
 
+	quicConfig := &quic.Config{}
+	if o.QUICConfig != nil {
+		cloned := *o.QUICConfig
+		quicConfig = &cloned
+	}
+	// WebTransport requires datagrams and stream-reset partial delivery; the
+	// library rejects a custom QUICConfig that does not enable them. |
+	// WebTransport 要求数据报与流重置部分交付；库会拒绝未启用它们的自定义
+	// QUICConfig。
+	quicConfig.EnableDatagrams = true
+	quicConfig.EnableStreamResetPartialDelivery = true
 	transport := &wtgo.Transport{
 		TLSClientConfig:      clientTLS,
 		ApplicationProtocols: o.ApplicationProtocols,
-		QUICConfig:           o.QUICConfig,
+		QUICConfig:           quicConfig,
 	}
 	_, raw, err := transport.Dial(ctx, rawURL, o.Header)
 	if err != nil {

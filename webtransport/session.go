@@ -171,6 +171,27 @@ func (s *Session) setUntrack(fn func()) {
 	}
 	s.untrack = fn
 	s.untrackMu.Unlock()
+	if fn == nil {
+		return
+	}
+	// A session ended by the peer never calls Close; untrack and mark it closed
+	// when its context ends so the tracker cannot grow for the process lifetime. |
+	// 由对端结束的会话不会调用 Close；在其上下文结束时取消登记并标记已关闭，避免
+	// Tracker 在进程生命周期内持续增长。
+	context.AfterFunc(s.Context(), func() {
+		s.untrackMu.Lock()
+		if s.closed {
+			s.untrackMu.Unlock()
+			return
+		}
+		s.closed = true
+		untrack := s.untrack
+		s.untrack = nil
+		s.untrackMu.Unlock()
+		if untrack != nil {
+			untrack()
+		}
+	})
 }
 
 // Channel is a framed message channel over one bidirectional stream. | Channel 是一条
