@@ -94,13 +94,16 @@
 // MaxFrameBytes and HTTP MaxBodyBytes must exceed the largest encoded snapshot
 // unless chunking is enabled. Config.SnapshotChunkBytes transfers large images
 // as ack-gated MsgSnapChunk messages, removing the transport frame limit; the
-// receiver still reassembles the whole image, so the protocol cap of 256 MiB
-// remains. Config.MaxSnapshotReceiveBytes lowers the per-install heap budget;
+// receiver stages chunked images on disk when the Storage implements
+// SnapshotStager (FileStorage does), so the protocol cap of 256 MiB bounds
+// disk use rather than heap. A StreamingRestoreFSM consumes the staged payload
+// from a reader; otherwise the node loads the bounded image for Restore.
+// Config.MaxSnapshotReceiveBytes caps the accepted image,
 // NodeHostConfig.MaxSnapshotInstalls (default 2) bounds concurrent chunked
-// reassembly on one host, and a busy slot makes the leader retry later.
-// Chunk messages are an opt-in extension and require every peer to support
-// them. Without chunking, a leader logs an explicit error when a snapshot
-// cannot fit instead of retrying silently. |
+// installs on one host, and a busy slot makes the leader retry later. Chunk
+// messages are an opt-in extension and require every peer to support them.
+// Without chunking, a leader logs an explicit error when a snapshot cannot fit
+// instead of retrying silently. |
 // 入站消息默认不认证。因此 NewTCPTransport 与 NewHTTPTransport 在 SharedSecret 为空
 // 时拒绝创建，除非显式设置 AllowInsecure；所有多节点部署必须配置 TLS 和/或至少
 // 16 字节的 SharedSecret，并建议同时使用以获得加密与帧完整性。RDMA 需要 HMAC 与

@@ -183,11 +183,11 @@ IPsec/MACsec，或改用启用 TLS 的 TCP/HTTP 传输。
   ReadIndex 与快照确认走控制通道，AppendEntries、完整快照与快照分块走数据通道。
   大数据批次因此不会阻塞心跳；各通道内部保序，跨通道可能重排，Raft 能容忍。
   控制通道满时会回退到数据通道，优先保证不丢失活性消息。
-- 入站快照默认在内存重组，最多 256 MiB。可用 `Config.MaxSnapshotReceiveBytes`
-  降低单次安装的堆上限；NodeHost 还可用 `MaxSnapshotInstalls`（默认 2，负值不限）
-  限制整台主机并发重组数，名额繁忙时领导者稍后重试。超过上限的快照会被拒绝。
-  真正的流式落盘需要 FSM/Storage 侧扩展，当前版本未提供，超大状态机应优先使用
-  `StreamingFSM` 生成本地快照并控制单镜像大小。
+- 分块入站快照在 `FileStorage` 上会暂存到快照目录的私有临时文件（崩溃后由临时
+  文件清理回收），并通过 `StreamingRestoreFSM.RestoreFrom` 流式还原，避免整镜像
+  驻留堆内存；未实现该扩展的 FSM 仍会加载有界镜像。`Config.MaxSnapshotReceiveBytes`
+  限制可接受镜像大小，`NodeHostConfig.MaxSnapshotInstalls`（默认 2，负值不限）
+  限制整台主机并发安装数；临时文件在还原后删除，最终快照按正常格式持久化。
 - RDMA 的 `ReadTimeout`（默认 60 秒，负值关闭）关闭长时间收不到完整帧的连接，
   防止停滞对端永久占用注册缓冲区与读协程；正常心跳会让健康连接远低于该值。
 - 应用只在日志项**本地持久化后**执行，跟随者不会把尚未落盘的已提交项交给 FSM。
@@ -582,9 +582,10 @@ res, err := host.Propose(ctx, 10, []byte("set key=value"))
 - 快照编码为一个帧；RDMA 传输会按 `BufferSize` 自动分块重组，TCP/HTTP 受单帧
   上限约束（默认 64 MiB，可配置 `MaxFrameBytes`/`MaxBodyBytes`）。超大状态机在
   TCP/HTTP 上应调大上限或自行分块。
-- 入站快照仍在内存重组，单次可达协议上限 256 MiB；`MaxSnapshotReceiveBytes` 与
-  `NodeHostConfig.MaxSnapshotInstalls` 提供预算与并发上限，但流式落盘尚未提供。
-  超大状态机应优先控制单镜像大小或使用支持流式本地快照的 `StreamingFSM`。
+- 入站分块快照在支持 `SnapshotStager` 的存储上落盘暂存，但整包 `MsgSnap` 仍会
+  在传输层解码时占用内存；`MaxSnapshotReceiveBytes` 与
+  `NodeHostConfig.MaxSnapshotInstalls` 提供预算与并发上限。未实现
+  `StreamingRestoreFSM` 的 FSM 在还原时仍会加载完整镜像，超大状态机应实现该扩展。
 - 帧级 HMAC 只认证完整性，不提供抗重放；不可信网络必须使用 TLS/mTLS，或在
   网络层限制 Raft 端口访问。RDMA 无内置加密，需要 IPsec/MACsec。
 - TCP/HTTP/RDMA 的控制/数据双通道允许控制消息越过大数据批次；同一通道内保序。

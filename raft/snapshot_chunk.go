@@ -18,6 +18,7 @@ type incomingSnapshot struct {
 	total    uint64
 	received uint64
 	slot     bool
+	stage    SnapshotStage
 }
 
 // acquireSnapshotSlot reserves one host-wide chunked-install slot. It returns
@@ -58,6 +59,10 @@ func (n *Node) discardIncomingSnapshot() {
 		return
 	}
 	n.incomingSnapshot = nil
+	if inc.stage != nil {
+		_ = inc.stage.Close()
+		_ = os.Remove(inc.stage.Name())
+	}
 	if inc.slot {
 		n.releaseSnapshotSlot()
 	}
@@ -349,14 +354,37 @@ func (n *Node) handleSnapshotChunk(m *Message) {
 			n.sendSnapshotChunkResp(m.From, 0, offset, snap.Index)
 			return
 		}
-		inc = &incomingSnapshot{
-			from: m.From, term: m.Term, total: total, slot: true,
-			snap: &Snapshot{
-				Index:     snap.Index,
-				Term:      snap.Term,
-				ConfState: snap.ConfState.clone(),
-				Data:      make([]byte, int(total)),
-			},
+		var stage SnapshotStage
+		if stager, ok := n.storage.(SnapshotStager); ok {
+			var err error
+			stage, err = stager.StageSnapshot(snap.Index, snap.Term)
+			if err != nil {
+				n.releaseSnapshotSlot()
+				n.sendSnapshotChunkResp(m.From, 0, offset, snap.Index)
+				return
+			}
+		}
+		if stage != nil {
+			inc = &incomingSnapshot{
+				from: m.From, term: m.Term, total: total, slot: true, stage: stage,
+				snap: &Snapshot{
+					Index:     snap.Index,
+					Term:      snap.Term,
+					ConfState: snap.ConfState.clone(),
+					file:      stage.Name(),
+					dataSize:  int64(total),
+				},
+			}
+		} else {
+			inc = &incomingSnapshot{
+				from: m.From, term: m.Term, total: total, slot: true,
+				snap: &Snapshot{
+					Index:     snap.Index,
+					Term:      snap.Term,
+					ConfState: snap.ConfState.clone(),
+					Data:      make([]byte, int(total)),
+				},
+			}
 		}
 		n.incomingSnapshot = inc
 	}
@@ -369,11 +397,29 @@ func (n *Node) handleSnapshotChunk(m *Message) {
 		n.sendSnapshotChunkResp(m.From, 0, offset, snap.Index)
 		return
 	}
-	copy(inc.snap.Data[inc.received:], snap.Data)
+	if inc.stage != nil {
+		if _, err := inc.stage.Write(snap.Data); err != nil {
+			n.discardIncomingSnapshot()
+			n.sendSnapshotChunkResp(m.From, 0, offset, snap.Index)
+			return
+		}
+	} else {
+		copy(inc.snap.Data[inc.received:], snap.Data)
+	}
 	inc.received += uint64(len(snap.Data))
 	n.sendSnapshotChunkResp(m.From, inc.received, offset, snap.Index)
 	if inc.received == inc.total {
 		complete := inc.snap
+		if inc.stage != nil {
+			if err := inc.stage.Close(); err != nil {
+				n.discardIncomingSnapshot()
+				n.sendSnapshotChunkResp(m.From, 0, offset, snap.Index)
+				return
+			}
+			// Detach: the completed file is now owned by handleSnapshot. |
+			// 分离：完成后的文件交给 handleSnapshot 所有。
+			inc.stage = nil
+		}
 		n.discardIncomingSnapshot()
 		n.handleSnapshot(&Message{Type: MsgSnap, From: m.From, To: n.id,
 			Term: m.Term, Snapshot: complete})

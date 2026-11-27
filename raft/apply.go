@@ -2,6 +2,8 @@ package raft
 
 import (
 	"context"
+	"io"
+	"os"
 	"sync"
 	"sync/atomic"
 
@@ -81,7 +83,11 @@ const maxApplyBatchEntries = 4096
 type applyTask struct {
 	snapshot      *Snapshot
 	snapshotReady chan struct{}
-	entries       []Entry
+	// snapshotFile is a staged raw payload to restore from; when set, snapshot
+	// holds metadata only. | snapshotFile 是待还原的暂存原始负载；非空时 snapshot
+	// 只携带元数据。
+	snapshotFile string
+	entries      []Entry
 }
 
 // applyQueue is an unbounded handoff from the event loop to the apply worker.
@@ -222,9 +228,22 @@ func (n *Node) processApplyTask(task applyTask) bool {
 				return false
 			}
 		}
-		if err := n.restoreSafe(task.snapshot.Data); err != nil {
+		var err error
+		if task.snapshotFile != "" {
+			file, openErr := os.Open(task.snapshotFile)
+			if openErr != nil {
+				err = openErr
+			} else {
+				err = n.restoreFromSafe(file)
+				_ = file.Close()
+			}
+			_ = os.Remove(task.snapshotFile)
+		} else {
+			err = n.restoreSafe(task.snapshot.Data)
+		}
+		if err != nil {
 			n.metrics.applyErrors.Add(1)
-			n.fatal(err)
+			n.fatal(errs.Wrap(err, ErrFSMPanic))
 			return false
 		}
 		if task.snapshot.Index > n.applied.Load() {
@@ -330,6 +349,26 @@ func (n *Node) restoreSafe(data []byte) (err error) {
 			err = errs.Detail(ErrFSMPanic, "restore: %v", r)
 		}
 	}()
+	return n.fsm.Restore(data)
+}
+
+// restoreFromSafe streams a snapshot into the FSM when it implements
+// StreamingRestoreFSM, otherwise it loads the bounded image and calls Restore.
+// | restoreFromSafe 在 FSM 实现 StreamingRestoreFSM 时流式还原，否则加载有界镜像
+// 并调用 Restore。
+func (n *Node) restoreFromSafe(r io.Reader) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = errs.Detail(ErrFSMPanic, "restore: %v", r)
+		}
+	}()
+	if stream, ok := n.fsm.(StreamingRestoreFSM); ok {
+		return stream.RestoreFrom(r)
+	}
+	data, err := io.ReadAll(r)
+	if err != nil {
+		return err
+	}
 	return n.fsm.Restore(data)
 }
 

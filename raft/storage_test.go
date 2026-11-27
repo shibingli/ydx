@@ -471,3 +471,56 @@ func TestFileStorageSeparateWALAndSnapshotDirs(t *testing.T) {
 		t.Fatalf("entries = %+v", rec.Entries)
 	}
 }
+
+// TestFileStorageWritesSnapshotFromStagedFile streams a raw payload file into
+// the normal snapshot format without loading it into memory. |
+// TestFileStorageWritesSnapshotFromStagedFile 将原始负载文件流式写入标准快照格式，
+// 不加载到内存。
+func TestFileStorageWritesSnapshotFromStagedFile(t *testing.T) {
+	opts := FileStorageOptions{Dir: t.TempDir(), NoSync: true}
+	st, err := NewFileStorage(opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload := []byte("alpha=1\nbeta=2\n")
+	staged, err := os.CreateTemp(t.TempDir(), "payload-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := staged.Write(payload); err != nil {
+		t.Fatal(err)
+	}
+	if err := staged.Close(); err != nil {
+		t.Fatal(err)
+	}
+	snap := &Snapshot{
+		Index: 7, Term: 3, ConfState: ConfState{Voters: []NodeID{1}},
+		file: staged.Name(), dataSize: int64(len(payload)),
+	}
+	if err := st.Persist(PersistBatch{
+		HardState: &HardState{Term: 3}, Snapshot: snap, SnapshotReplacesLog: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if snap.finalFile == "" {
+		t.Fatal("persist did not record the final snapshot file")
+	}
+	if snap.file != staged.Name() {
+		t.Fatalf("staged path changed before apply: %q", snap.file)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatal(err)
+	}
+	st2, err := NewFileStorage(opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st2.Close()
+	rec, err := st2.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec.Snapshot == nil || !bytes.Equal(rec.Snapshot.Data, payload) {
+		t.Fatalf("recovered snapshot = %+v", rec.Snapshot)
+	}
+}

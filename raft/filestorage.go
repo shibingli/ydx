@@ -193,6 +193,24 @@ func NewFileStorage(opts FileStorageOptions) (*FileStorage, error) {
 	return s, nil
 }
 
+// StageSnapshot implements SnapshotStager by creating a private temp file in
+// the snapshot directory. A crash leaves it for cleanupSnapshotTemps; the node
+// removes it after a successful install or abort. | StageSnapshot 在快照目录创建
+// 私有临时文件实现 SnapshotStager。崩溃后由 cleanupSnapshotTemps 清理；节点在安装
+// 成功或中止后删除。
+func (s *FileStorage) StageSnapshot(uint64, uint64) (SnapshotStage, error) {
+	f, err := os.CreateTemp(s.snapDir, snapshotTempPattern)
+	if err != nil {
+		return nil, errs.Wrap(err, ErrStorage)
+	}
+	if err := f.Chmod(0o600); err != nil {
+		_ = f.Close()
+		_ = os.Remove(f.Name())
+		return nil, errs.Wrap(err, ErrStorage)
+	}
+	return f, nil
+}
+
 // cleanupSnapshotTemps removes partial snapshot files from a prior crash. | cleanupSnapshotTemps
 // 清理上次崩溃遗留的不完整快照文件。
 func cleanupSnapshotTemps(dir string) {

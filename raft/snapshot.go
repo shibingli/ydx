@@ -1,6 +1,7 @@
 package raft
 
 import (
+	"os"
 	"time"
 
 	"github.com/shibingli/ydx/errs"
@@ -12,6 +13,15 @@ import (
 // barrier so later entries can never be applied before it. | handleSnapshot 安装
 // 领导者快照。镜像在成功响应前持久化；状态机还原排在持久化屏障之后，保证后续日志项
 // 不会先于它被应用。
+// stagedPath returns the raw payload file for a staged received snapshot. |
+// stagedPath 返回暂存接收快照的原始负载文件。
+func stagedPath(snap *Snapshot) string {
+	if snap == nil || snap.Data != nil || snap.file == "" {
+		return ""
+	}
+	return snap.file
+}
+
 func (n *Node) handleSnapshot(m *Message) {
 	if m.Term < n.term {
 		n.send(Message{Type: MsgSnapResp, To: m.From, Term: n.term, Reject: true, Index: n.committed})
@@ -28,13 +38,20 @@ func (n *Node) handleSnapshot(m *Message) {
 			Index: n.committed})
 		return
 	}
+	stagedFile := stagedPath(snap)
+	stagedOwned := stagedFile != ""
+	defer func() {
+		if stagedOwned {
+			_ = os.Remove(stagedFile)
+		}
+	}()
 	if snap.Index == 0 || snap.Index > maxCounter || snap.Term == 0 || snap.Term > maxCounter ||
 		snap.Term > m.Term {
 		n.send(Message{Type: MsgSnapResp, To: m.From, Term: n.term, Reject: true,
 			Index: n.committed, LogIndex: snap.Index})
 		return
 	}
-	if int64(len(snap.Data)) > n.maxSnapshotReceive {
+	if n.snapshotSize(snap) > n.maxSnapshotReceive {
 		// The image was already decoded within the wire limit, but this node's
 		// configured install budget is smaller; reject without restoring or
 		// retaining it. | 镜像已在协议线格式上限内解码，但本节点配置的安装预算更小；
@@ -82,9 +99,11 @@ func (n *Node) handleSnapshot(m *Message) {
 	// retries for that range can be acknowledged without another persist. |
 	// 恢复镜像使 snap.Index 之前的日志项在本地持久化，因此该区间的重试可直接确认。
 	n.persistPendingIndex = snap.Index
-	// Keep the newest image if a concurrent local snapshot already completed at a
-	// higher index. | 若并发本地快照已在更高索引完成，保留最新镜像。
-	if n.latestSnapshot == nil || snap.Index > n.latestSnapshot.Index {
+	staged := snap.Data == nil && snap.file != ""
+	// A staged image is published as latestSnapshot only after its final file is
+	// durable; an in-memory image has no such write. | 暂存镜像只有在最终文件持久化
+	// 后才发布为 latestSnapshot；内存镜像没有这一步。
+	if !staged && (n.latestSnapshot == nil || snap.Index > n.latestSnapshot.Index) {
 		n.latestSnapshot = snap
 	}
 	n.lastSnapshot.Store(snap.Index)
@@ -108,7 +127,8 @@ func (n *Node) handleSnapshot(m *Message) {
 		n.cfg.OnConfChange(n.conf.confState())
 	}
 	ready := make(chan struct{})
-	n.applyQueue.push(applyTask{snapshot: snap, snapshotReady: ready})
+	n.applyQueue.push(applyTask{snapshot: snap, snapshotReady: ready, snapshotFile: stagedFile})
+	stagedOwned = false
 	// m is a pooled message released when this handler returns; capture the
 	// sender before the asynchronous snapshot persistence callback runs. |
 	// m 是处理函数返回后即被释放的池化消息；在异步快照持久化回调运行前捕获发送者。
@@ -119,6 +139,14 @@ func (n *Node) handleSnapshot(m *Message) {
 	n.persistSnapshot(snap, true, func(err error) {
 		if err != nil {
 			return
+		}
+		if snap.finalFile != "" {
+			snap.file = snap.finalFile
+			snap.dataOffset = snap.finalOffset
+			snap.crypto = snap.finalCrypto
+			if n.latestSnapshot == nil || snap.Index > n.latestSnapshot.Index {
+				n.latestSnapshot = snap
+			}
 		}
 		close(ready)
 		n.metrics.snapshotsApplied.Add(1)

@@ -18,9 +18,10 @@ import (
 // 方法失败，使测试能够证明实际走的是流式路径。
 type streamingKVFSM struct {
 	*kvFSM
-	mu          sync.Mutex
-	streamCalls int
-	streamErr   error
+	mu           sync.Mutex
+	streamCalls  int
+	restoreCalls int
+	streamErr    error
 }
 
 func newStreamingKVFSM() *streamingKVFSM {
@@ -51,6 +52,25 @@ func (f *streamingKVFSM) calls() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.streamCalls
+}
+
+// RestoreFrom implements StreamingRestoreFSM. | RestoreFrom 实现 StreamingRestoreFSM。
+func (f *streamingKVFSM) RestoreFrom(r io.Reader) error {
+	data, err := io.ReadAll(r)
+	if err != nil {
+		return err
+	}
+	f.mu.Lock()
+	f.restoreCalls++
+	f.mu.Unlock()
+	return f.kvFSM.Restore(data)
+}
+
+// restores returns the streaming restore count. | restores 返回流式还原次数。
+func (f *streamingKVFSM) restores() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.restoreCalls
 }
 
 // TestStreamingFSMSnapshotSkipsMemoryImage verifies a StreamingFSM writes the

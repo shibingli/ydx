@@ -1,5 +1,7 @@
 package raft
 
+import "io"
+
 // Recovery is the durable state loaded at startup. Entries must be contiguous
 // and immediately follow Snapshot. | Recovery 是启动时加载的持久状态。Entries 必须
 // 连续，且紧接在 Snapshot 之后。
@@ -23,6 +25,27 @@ type PersistBatch struct {
 	Entries             []Entry
 	Truncate            uint64
 	SnapshotReplacesLog bool
+}
+
+// SnapshotStage is a temporary file that receives a chunked inbound snapshot.
+// The node writes chunks sequentially, then either hands the file to the
+// snapshot writer or aborts it. Name is the path under the storage's private
+// directory, so a crash leaves it for normal temp cleanup. | SnapshotStage 是接收
+// 分块入站快照的临时文件。节点按顺序写入分块，随后交给快照写入器或中止；Name 是
+// 存储私有目录下的路径，崩溃后会由常规临时文件清理处理。
+type SnapshotStage interface {
+	io.Writer
+	io.Closer
+	Name() string
+}
+
+// SnapshotStager is an optional Storage extension that stages inbound chunked
+// snapshots on disk instead of reassembling them in memory. Implementations
+// must create a private, unique file and must tolerate its removal at any time
+// after Abort/Close. | SnapshotStager 是可选存储扩展，把入站分块快照暂存到磁盘而
+// 非在内存重组。实现必须创建私有唯一文件，并允许在 Abort/Close 后随时删除。
+type SnapshotStager interface {
+	StageSnapshot(index, term uint64) (SnapshotStage, error)
 }
 
 // localSnapshotFileStorage is implemented by storages that can write a local

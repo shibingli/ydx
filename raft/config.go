@@ -48,6 +48,20 @@ type StreamingFSM interface {
 	SnapshotTo(w io.Writer) error
 }
 
+// StreamingRestoreFSM is an optional FSM extension that restores a snapshot
+// from a reader instead of a whole []byte image. A FileStorage-backed node can
+// stage large inbound snapshots on disk and hand the file directly to this
+// method, keeping the image out of the heap. RestoreFrom runs on the apply
+// goroutine, must consume the reader fully, must be deterministic, and must not
+// retain the reader after it returns. | StreamingRestoreFSM 是可选的 FSM 扩展，
+// 从 reader 还原快照而不是完整 []byte 镜像。基于 FileStorage 的节点可以把大入站
+// 快照暂存到磁盘并直接交给该方法，避免镜像驻留堆内存。RestoreFrom 在 apply 协程
+// 运行，必须读完 reader、保持确定性，且返回后不得保留 reader。
+type StreamingRestoreFSM interface {
+	FSM
+	RestoreFrom(r io.Reader) error
+}
+
 // Config configures a Node. The zero value is not usable: ID, Storage and FSM
 // are required. Boolean safety features default to enabled. | Config 配置 Node。零值
 // 不可用：ID、Storage 与 FSM 必填。布尔安全特性默认开启。
@@ -201,10 +215,13 @@ type Config struct {
 	SnapshotChunkBytes int
 	// MaxSnapshotReceiveBytes caps one inbound snapshot image reassembled from
 	// chunks or delivered whole. Zero uses the protocol maximum (256 MiB). A
-	// lower value bounds heap use per install at the cost of rejecting larger
-	// snapshots; it does not change what peers may send. | MaxSnapshotReceiveBytes
-	// 限制单个入站快照镜像（分块重组或整包）的大小。零值使用协议上限 256 MiB。
-	// 更低的值以拒绝更大快照为代价限制每次安装的堆占用，不改变对端可发送的大小。
+	// FileStorage-backed node stages chunked images on disk, so this bounds the
+	// accepted image and the fallback heap load for an FSM without
+	// StreamingRestoreFSM; it does not change what peers may send. |
+	// MaxSnapshotReceiveBytes 限制单个入站快照镜像（分块重组或整包）的大小。零值
+	// 使用协议上限 256 MiB。基于 FileStorage 的节点把分块镜像暂存到磁盘，因此该值
+	// 约束可接受的镜像以及未实现 StreamingRestoreFSM 时的回退堆加载；不改变对端可
+	// 发送的大小。
 	MaxSnapshotReceiveBytes int64
 
 	// PersistBatchDelay is the base group-commit window for durable writes. The

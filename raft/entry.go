@@ -117,13 +117,23 @@ type Snapshot struct {
 	// encryption. It is nil for plaintext images. | crypto 描述 file 使用加密写入时
 	// 的镜像布局；明文镜像为 nil。
 	crypto *snapshotCrypto
-	// file is the durable image backing a local streaming snapshot. Data is nil
-	// in that case and the payload is loaded only when a follower needs it. It is
-	// internal and never serialized. | file 是本地流式快照的持久镜像路径。此时
-	// Data 为空，只在跟随者需要发送时加载负载。该字段仅内部使用，不参与序列化。
-	file      string
-	ConfState ConfState
-	Data      []byte
+	// file is the durable image backing a local streaming snapshot, or the
+	// staged raw payload of a received chunked snapshot before it is persisted.
+	// Data is nil in both cases and never serialized. | file 是本地流式快照的持久
+	// 镜像路径，或接收分块快照在持久化前的暂存原始负载。两种情况下 Data 均为空，
+	// 且不参与序列化。
+	file string
+	// finalFile/finalOffset/finalCrypto are filled by the persist goroutine for
+	// a received staged snapshot. The event loop copies them into file/dataOffset/
+	// crypto after the durability acknowledgement, so senders never observe a
+	// half-written image. | finalFile/finalOffset/finalCrypto 由持久化协程为接收的
+	// 暂存快照填写；事件循环在持久化确认后复制到 file/dataOffset/crypto，发送方
+	// 不会看到写了一半的镜像。
+	finalFile   string
+	finalOffset int64
+	finalCrypto *snapshotCrypto
+	ConfState   ConfState
+	Data        []byte
 	// dataSize is the payload size for a file-backed snapshot. | dataSize 是文件
 	// 快照的负载大小。
 	dataSize int64

@@ -106,6 +106,28 @@ func (s *FileStorage) writeSnapshotFile(snap *Snapshot, noSync bool) error {
 	if len(conf) > maxConfBytes {
 		return errs.Detail(ErrTooLarge, "snapshot conf state %d bytes", len(conf))
 	}
+	// A received chunked snapshot is staged in a temp file and must be copied
+	// through the normal header/checksum/encryption writer without loading it
+	// into the heap. | 接收的分块快照暂存在临时文件，必须经过正常的头部/校验/加密
+	// 写入器复制，而不能载入堆内存。
+	dataLen := int64(len(snap.Data))
+	var dataSrc io.Reader
+	if snap.file != "" {
+		src, err := os.Open(snap.file)
+		if err != nil {
+			return errs.Wrap(err, ErrStorage)
+		}
+		defer src.Close()
+		if snap.dataSize > 0 {
+			dataLen = snap.dataSize
+		} else if info, err := src.Stat(); err == nil {
+			dataLen = info.Size()
+		}
+		if dataLen <= 0 {
+			return errs.Detail(ErrStorage, "empty staged snapshot")
+		}
+		dataSrc = src
+	}
 	// Compute checksums while the payload is written, not in separate full
 	// passes over a potentially large image. CRC-only mode skips the SHA-256
 	// scan entirely. | 在写入负载时计算校验和，避免对可能很大的镜像做多次完整扫描。
@@ -152,7 +174,7 @@ func (s *FileStorage) writeSnapshotFile(snap *Snapshot, noSync bool) error {
 			chunkSize: s.cipher.chunkSize,
 			index:     snap.Index,
 			term:      snap.Term,
-			dataLen:   int64(len(snap.Data)),
+			dataLen:   dataLen,
 			headerLen: int64(headerLen),
 			prefixHash: snapshotPrefixHash(snap.Index, snap.Term, key.id, key.suite,
 				snapshotChecksumFlag(useSHA), salt, s.cipher.chunkSize, conf),
@@ -169,13 +191,23 @@ func (s *FileStorage) writeSnapshotFile(snap *Snapshot, noSync bool) error {
 		dataHash = sha256.New()
 		writers = append(writers, dataHash)
 	}
-	if n, err := io.MultiWriter(writers...).Write(snap.Data); err != nil {
-		return errs.Wrap(err, ErrStorage)
-	} else if n != len(snap.Data) {
-		return errs.Detail(ErrStorage, "short snapshot write %d/%d | 快照写入不完整 %d/%d", n, len(snap.Data), n, len(snap.Data))
+	var written int64
+	var writeErr error
+	if dataSrc != nil {
+		written, writeErr = io.Copy(io.MultiWriter(writers...), dataSrc)
+	} else {
+		var n int
+		n, writeErr = io.MultiWriter(writers...).Write(snap.Data)
+		written = int64(n)
+	}
+	if writeErr != nil {
+		return errs.Wrap(writeErr, ErrStorage)
+	}
+	if written != dataLen {
+		return errs.Detail(ErrStorage, "short snapshot write %d/%d | 快照写入不完整 %d/%d", written, dataLen, written, dataLen)
 	}
 	if seal != nil {
-		if err := seal.Close(uint64(len(snap.Data))); err != nil {
+		if err := seal.Close(uint64(dataLen)); err != nil {
 			return errs.Wrap(err, ErrStorage)
 		}
 	}
@@ -186,11 +218,11 @@ func (s *FileStorage) writeSnapshotFile(snap *Snapshot, noSync bool) error {
 	var header []byte
 	if encrypted {
 		header = encodeEncryptedSnapshotHeader(make([]byte, 0, headerLen), conf,
-			snap.Index, snap.Term, uint64(len(snap.Data)), dataCRC.Sum32(), sum, useSHA,
+			snap.Index, snap.Term, uint64(dataLen), dataCRC.Sum32(), sum, useSHA,
 			meta.keyID, meta.suite, meta.salt, meta.chunkSize)
 	} else {
 		header = encodeSnapshotFileHeader(make([]byte, 0, headerLen), conf,
-			snap.Index, snap.Term, uint64(len(snap.Data)), dataCRC.Sum32(), sum, useSHA)
+			snap.Index, snap.Term, uint64(dataLen), dataCRC.Sum32(), sum, useSHA)
 	}
 	if len(header) != headerLen {
 		return errs.Detail(ErrStorage, "snapshot header size %d, want %d | 快照头部长度 %d，期望 %d",
@@ -226,11 +258,21 @@ func (s *FileStorage) writeSnapshotFile(snap *Snapshot, noSync bool) error {
 			return errs.Wrap(err, ErrStorage)
 		}
 	}
+	if dataSrc != nil {
+		// The input was a staged raw payload. Keep snap.file pointing at it for
+		// the apply restore; the event loop publishes the final image fields
+		// after this write is acknowledged. | 输入是暂存的原始负载。保持 snap.file
+		// 指向它供 apply 还原；事件循环在写入确认后发布最终镜像字段。
+		snap.finalFile = final
+		snap.finalOffset = int64(headerLen)
+		snap.finalCrypto = meta
+		return nil
+	}
 	// Record the backing file so a completed local image can release its heap
 	// payload and later senders can read it on demand. | 记录底层文件，使完成的本地
 	// 镜像可释放堆负载，后续发送方也能按需读取。
 	snap.file = final
-	snap.dataSize = int64(len(snap.Data))
+	snap.dataSize = dataLen
 	snap.dataOffset = int64(headerLen)
 	snap.crypto = meta
 	return nil

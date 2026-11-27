@@ -3,6 +3,9 @@ package raft
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -316,5 +319,106 @@ func TestSnapshotThresholdJitter(t *testing.T) {
 		if got < 50 || got > 150 {
 			t.Fatalf("jittered threshold = %d outside [50,150]", got)
 		}
+	}
+}
+
+// TestSnapshotChunkInstallStreamsToFile installs a chunked snapshot on a
+// FileStorage learner, restores it through RestoreFrom, and verifies the staged
+// temp file is replaced by a durable final snapshot. |
+// TestSnapshotChunkInstallStreamsToFile 在 FileStorage 学习者上安装分块快照，通过
+// RestoreFrom 还原，并验证暂存临时文件被持久快照替换。
+func TestSnapshotChunkInstallStreamsToFile(t *testing.T) {
+	net := NewMemNetwork()
+	defer net.Close()
+	peers := []Peer{{ID: 1}, {ID: 2}, {ID: 3}}
+	nodes := make(map[NodeID]*Node, 4)
+	for i := 1; i <= 3; i++ {
+		tr, err := net.NewTransport(NodeID(i))
+		if err != nil {
+			t.Fatal(err)
+		}
+		node, err := New(Config{
+			ID: NodeID(i), Peers: peers, Storage: NewMemStorage(), FSM: newKVFSM(),
+			Transport: tr, TickInterval: 5 * time.Millisecond, HeartbeatTicks: 1, ElectionTicks: 8,
+			SnapshotEntries: 5, SnapshotCatchUpEntries: 1, SnapshotChunkBytes: 64,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		nodes[NodeID(i)] = node
+	}
+	defer func() {
+		for _, node := range nodes {
+			_ = node.Close()
+		}
+	}()
+	leader := waitOneLeader(t, nodes, 8*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	for i := 0; i < 40; i++ {
+		if _, err := leader.Propose(ctx, []byte(fmt.Sprintf("k%d=%d", i, i))); err != nil {
+			t.Fatalf("propose %d: %v", i, err)
+		}
+	}
+	waitSnapshot(t, leader, 10*time.Second)
+
+	dir := t.TempDir()
+	store, err := NewFileStorage(FileStorageOptions{Dir: dir, NoSync: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fsm := newStreamingKVFSM()
+	tr4, err := net.NewTransport(4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	node4, err := New(Config{
+		ID: 4, Join: true, Storage: store, FSM: fsm, Transport: tr4,
+		TickInterval: 5 * time.Millisecond, HeartbeatTicks: 1, ElectionTicks: 8,
+		MaxBatchEntries: 64,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	nodes[4] = node4
+	if err := leader.AddLearner(ctx, 4, ""); err != nil {
+		t.Fatalf("add learner: %v", err)
+	}
+	waitAppliedOn(t, node4, leader.Commit(), 15*time.Second)
+	if fsm.restores() == 0 {
+		t.Fatal("learner did not use StreamingRestoreFSM")
+	}
+	if got := fsm.value("k39"); got != "39" {
+		t.Fatalf("restored value = %q", got)
+	}
+	entries, err := os.ReadDir(filepath.Join(dir, snapshotDirName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	final := 0
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), snapshotTempPrefix) {
+			t.Fatalf("staged temp survived install: %s", entry.Name())
+		}
+		if strings.HasSuffix(entry.Name(), snapshotFileSuffix) {
+			final++
+		}
+	}
+	if final == 0 {
+		t.Fatal("final snapshot file missing")
+	}
+}
+
+// TestRestoreFromSafeFallback loads a bounded image for an FSM without
+// StreamingRestoreFSM. | TestRestoreFromSafeFallback 为未实现 StreamingRestoreFSM
+// 的 FSM 加载有界镜像。
+func TestRestoreFromSafeFallback(t *testing.T) {
+	fsm := newKVFSM()
+	n := &Node{fsm: fsm}
+	if err := n.restoreFromSafe(strings.NewReader("a=1\n")); err != nil {
+		t.Fatal(err)
+	}
+	if got := fsm.value("a"); got != "1" {
+		t.Fatalf("value = %q", got)
 	}
 }
