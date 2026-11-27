@@ -237,8 +237,12 @@ func (n *Node) handleSnapshotFileResult(result snapshotFileResult) {
 	// a single MsgSnap does not touch the filesystem on the event loop. |
 	// 将以分块发送的大镜像不再需要堆副本；发送方按需读取有界切片。小镜像保留负载，
 	// 使单条 MsgSnap 不必在事件循环上访问文件系统。
-	if result.snap != nil && result.snap.file != "" && n.snapshotChunkBytes > 0 &&
-		result.snap.dataSize > int64(n.snapshotChunkBytes) {
+	chunk := n.snapshotChunkBytes
+	if chunk <= 0 {
+		chunk = n.snapshotAutoChunkBytes
+	}
+	if result.snap != nil && result.snap.file != "" && chunk > 0 &&
+		result.snap.dataSize > int64(chunk) {
 		result.snap.Data = nil
 	}
 	n.persistSeq++

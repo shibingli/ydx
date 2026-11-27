@@ -68,11 +68,11 @@ func writeFrame(conn io.ReadWriteCloser, frame []byte) error {
 
 // readFrame reads one frame using message mode when available. | readFrame 在可用时
 // 使用消息模式读取一个帧。
-func readFrame(conn io.ReadWriteCloser, secret []byte, maxFrame int) ([]Message, error) {
+func readFrame(conn io.ReadWriteCloser, secret []byte, maxFrame int) ([]Message, *frameAuth, error) {
 	if fc, ok := conn.(frameConn); ok {
 		frame, err := fc.recvFrame(maxFrame)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		return decodeStreamFrame(frame, secret, maxFrame)
 	}
@@ -88,15 +88,18 @@ type streamTransport struct {
 	peers    map[NodeID]*streamPeer
 	conns    map[io.ReadWriteCloser]struct{}
 
-	handler  atomic.Pointer[func(Message)]
-	stopCh   chan struct{}
-	secret   []byte
-	wg       sync.WaitGroup
-	queue    int
-	maxFrame int
-	maxConns int
-	timeout  time.Duration
-	readTTL  time.Duration
+	handler     atomic.Pointer[func(Message)]
+	stopCh      chan struct{}
+	secret      []byte
+	wg          sync.WaitGroup
+	queue       int
+	maxFrame    int
+	maxConns    int
+	timeout     time.Duration
+	readTTL     time.Duration
+	frameMaxAge time.Duration
+	authSeq     atomic.Uint64
+	replay      *replayGuard
 
 	drops atomic.Uint64
 
@@ -125,7 +128,7 @@ type streamPeer struct {
 // transport. maxConns zero uses defaultMaxConns, a negative value means
 // unlimited. | newStreamTransport 绑定监听并返回在 Start 前不投递的传输。
 // maxConns 为零时使用 defaultMaxConns，负值表示不限制。
-func newStreamTransport(backend streamBackend, listenAddr string, secret []byte, queue, maxFrame, maxConns int, timeout time.Duration) (*streamTransport, error) {
+func newStreamTransport(backend streamBackend, listenAddr string, secret []byte, queue, maxFrame, maxConns int, timeout, frameMaxAge time.Duration) (*streamTransport, error) {
 	if queue <= 0 {
 		queue = 64
 	}
@@ -153,17 +156,19 @@ func newStreamTransport(backend streamBackend, listenAddr string, secret []byte,
 		}
 	}
 	return &streamTransport{
-		backend:  backend,
-		listener: listener,
-		secret:   append([]byte(nil), secret...),
-		queue:    queue,
-		maxFrame: maxFrame,
-		maxConns: maxConns,
-		timeout:  timeout,
-		readTTL:  defaultReadTimeout,
-		peers:    make(map[NodeID]*streamPeer),
-		conns:    make(map[io.ReadWriteCloser]struct{}),
-		stopCh:   make(chan struct{}),
+		backend:     backend,
+		listener:    listener,
+		secret:      append([]byte(nil), secret...),
+		queue:       queue,
+		maxFrame:    maxFrame,
+		maxConns:    maxConns,
+		timeout:     timeout,
+		readTTL:     defaultReadTimeout,
+		frameMaxAge: frameMaxAge,
+		replay:      newReplayGuard(frameMaxAge),
+		peers:       make(map[NodeID]*streamPeer),
+		conns:       make(map[io.ReadWriteCloser]struct{}),
+		stopCh:      make(chan struct{}),
 	}, nil
 }
 
@@ -385,9 +390,21 @@ func (t *streamTransport) readLoop(conn io.ReadWriteCloser) {
 		if dc, ok := conn.(interface{ SetReadDeadline(time.Time) error }); ok {
 			_ = dc.SetReadDeadline(time.Now().Add(t.readTTL))
 		}
-		msgs, err := readFrame(conn, t.secret, t.maxFrame)
+		msgs, auth, err := readFrame(conn, t.secret, t.maxFrame)
 		if err != nil {
 			return
+		}
+		if t.frameMaxAge > 0 {
+			if len(msgs) == 0 || !t.replay.accept(msgs[0].From, auth) {
+				t.drops.Add(1)
+				return
+			}
+			for i := 1; i < len(msgs); i++ {
+				if msgs[i].From != msgs[0].From {
+					t.drops.Add(1)
+					return
+				}
+			}
 		}
 		h := t.handler.Load()
 		if h == nil {
@@ -416,7 +433,7 @@ func (t *streamTransport) peerLoop(p *streamPeer) {
 		}
 	}()
 	for {
-		batch, ok := t.nextBatch(p)
+		batch, control, ok := t.nextBatchClass(p)
 		if !ok {
 			return
 		}
@@ -424,6 +441,16 @@ func (t *streamTransport) peerLoop(p *streamPeer) {
 		case <-p.stop:
 			return
 		default:
+		}
+		batches := [][]Message{batch}
+		total := len(batch)
+		for len(batches) < maxCoalesceBatches && total < maxCoalesceMessages {
+			more, ok := t.tryBatch(p, control)
+			if !ok {
+				break
+			}
+			batches = append(batches, more)
+			total += len(more)
 		}
 		t.mu.RLock()
 		addr := p.addr
@@ -438,7 +465,7 @@ func (t *streamTransport) peerLoop(p *streamPeer) {
 			c, err := t.backend.dial(ctx, addr)
 			cancel()
 			if err != nil {
-				t.drops.Add(uint64(len(batch)))
+				t.drops.Add(uint64(total))
 				continue
 			}
 			if !t.track(c) {
@@ -446,51 +473,117 @@ func (t *streamTransport) peerLoop(p *streamPeer) {
 				if t.stopped.Load() {
 					return
 				}
-				t.drops.Add(uint64(len(batch)))
+				t.drops.Add(uint64(total))
 				continue
 			}
 			conn = c
 			connAddr = addr
 		}
-		frame, err := encodeStreamFrame(batch, t.secret, t.maxFrame)
+		merged := mergeBatches(batches)
+		var auth *frameAuth
+		if t.frameMaxAge > 0 {
+			auth = &frameAuth{timestamp: time.Now().UnixNano(), counter: t.authSeq.Add(1)}
+		}
+		frame, err := encodeStreamFrame(merged, t.secret, t.maxFrame, auth)
 		if err != nil {
-			t.drops.Add(uint64(len(batch)))
+			// A merged frame over the transport limit is split back into the
+			// original batches; each batch still gets a chance to be written. |
+			// 合并帧超过传输上限时拆回原始批次，每个批次仍有机会写出。
+			for idx, one := range batches {
+				var oneAuth *frameAuth
+				if t.frameMaxAge > 0 {
+					oneAuth = &frameAuth{timestamp: time.Now().UnixNano(), counter: t.authSeq.Add(1)}
+				}
+				frame, err := encodeStreamFrame(one, t.secret, t.maxFrame, oneAuth)
+				if err != nil {
+					t.drops.Add(uint64(len(one)))
+					continue
+				}
+				if err := writeFrame(conn, frame); err != nil {
+					t.untrack(conn)
+					_ = conn.Close()
+					conn = nil
+					t.drops.Add(uint64(len(one)))
+					for _, rest := range batches[idx+1:] {
+						t.drops.Add(uint64(len(rest)))
+					}
+					break
+				}
+			}
 			continue
 		}
 		if err := writeFrame(conn, frame); err != nil {
 			t.untrack(conn)
 			_ = conn.Close()
 			conn = nil
-			t.drops.Add(uint64(len(batch)))
+			t.drops.Add(uint64(total))
 		}
 	}
 }
 
-// nextBatch prefers the control lane. The first non-blocking receive drains any
-// queued control batch before a data batch is considered; the blocking select
-// is only reached when the control lane is empty. | nextBatch 优先控制通道。第一次
-// 非阻塞接收会在考虑数据批次前排空已排队的控制批次；只有控制通道为空时才进入
-// 阻塞选择。
-func (t *streamTransport) nextBatch(p *streamPeer) ([]Message, bool) {
+// maxCoalesceBatches and maxCoalesceMessages bound one merged frame. Snapshot
+// chunks and replication batches are capped by the transport frame limit; if a
+// merged frame would exceed it, the sender falls back to the original batches.
+// | maxCoalesceBatches 与 maxCoalesceMessages 限制单个合并帧。快照分块与复制批次
+// 仍受传输帧上限约束；合并帧超限时回退为原始批次。
+const (
+	maxCoalesceBatches  = 8
+	maxCoalesceMessages = 256
+)
+
+// nextBatchClass prefers the control lane and reports which lane supplied the
+// batch, so coalescing never mixes a data batch ahead of a queued control batch.
+// | nextBatchClass 优先控制通道并报告来源通道，避免合并时把数据批次排到已排队的
+// 控制批次之前。
+func (t *streamTransport) nextBatchClass(p *streamPeer) ([]Message, bool, bool) {
 	select {
 	case <-t.stopCh:
-		return nil, false
+		return nil, false, false
 	case <-p.stop:
-		return nil, false
+		return nil, false, false
 	case batch := <-p.ctrl:
-		return batch, true
+		return batch, true, true
 	default:
 	}
 	select {
 	case <-t.stopCh:
-		return nil, false
+		return nil, false, false
 	case <-p.stop:
-		return nil, false
+		return nil, false, false
 	case batch := <-p.ctrl:
-		return batch, true
+		return batch, true, true
 	case batch := <-p.data:
-		return batch, true
+		return batch, false, true
 	}
+}
+
+// tryBatch drains one more batch from the same lane without blocking. |
+// tryBatch 非阻塞地从同一通道再取一个批次。
+func (t *streamTransport) tryBatch(p *streamPeer, control bool) ([]Message, bool) {
+	ch := p.data
+	if control {
+		ch = p.ctrl
+	}
+	select {
+	case batch := <-ch:
+		return batch, true
+	default:
+		return nil, false
+	}
+}
+
+// mergeBatches flattens queued batches while preserving their order. |
+// mergeBatches 按顺序展平排队的批次。
+func mergeBatches(batches [][]Message) []Message {
+	total := 0
+	for _, batch := range batches {
+		total += len(batch)
+	}
+	out := make([]Message, 0, total)
+	for _, batch := range batches {
+		out = append(out, batch...)
+	}
+	return out
 }
 
 // track registers a live connection for shutdown. | track 注册活动连接以便关闭。
@@ -534,14 +627,14 @@ func writeFull(w io.Writer, frame []byte) error {
 // frame bytes. It encodes directly into the final buffer so a large snapshot
 // image is not copied twice. | encodeStreamFrame 构建带长度前缀、CRC 校验与可选
 // HMAC 签名的帧字节。它直接编码到最终缓冲区，避免大快照镜像被复制两次。
-func encodeStreamFrame(msgs []Message, secret []byte, maxFrame int) ([]byte, error) {
+func encodeStreamFrame(msgs []Message, secret []byte, maxFrame int, auth *frameAuth) ([]byte, error) {
 	macLen := 0
 	if len(secret) > 0 {
 		macLen = sha256.Size
 	}
 	out := make([]byte, 4, 4+256+macLen)
 	var err error
-	out, err = encodeHTTPFrameInto(out, msgs)
+	out, err = encodeHTTPFrameInto(out, msgs, auth)
 	if err != nil {
 		return nil, err
 	}
@@ -561,36 +654,36 @@ func encodeStreamFrame(msgs []Message, secret []byte, maxFrame int) ([]byte, err
 
 // readStreamFrame reads and authenticates one frame. | readStreamFrame 读取并认证
 // 一个帧。
-func readStreamFrame(r io.Reader, secret []byte, maxFrame int) ([]Message, error) {
+func readStreamFrame(r io.Reader, secret []byte, maxFrame int) ([]Message, *frameAuth, error) {
 	var header [4]byte
 	if _, err := io.ReadFull(r, header[:]); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	length := binary.BigEndian.Uint32(header[:])
 	if length == 0 || uint64(length)+4 > uint64(maxMessageBytes) ||
 		(maxFrame > 0 && uint64(length)+4 > uint64(maxFrame)) {
-		return nil, errs.Detail(ErrTooLarge, "stream frame length %d", length)
+		return nil, nil, errs.Detail(ErrTooLarge, "stream frame length %d", length)
 	}
 	frame := make([]byte, 4+int(length))
 	copy(frame, header[:])
 	if _, err := io.ReadFull(r, frame[4:]); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	return decodeStreamFrame(frame, secret, maxFrame)
 }
 
 // decodeStreamFrame validates one complete frame, including its optional HMAC.
 // | decodeStreamFrame 校验一个完整帧，包括可选 HMAC。
-func decodeStreamFrame(frame, secret []byte, maxFrame int) ([]Message, error) {
+func decodeStreamFrame(frame, secret []byte, maxFrame int) ([]Message, *frameAuth, error) {
 	if len(frame) < 4 {
-		return nil, errs.Detail(ErrCorrupt, "short stream frame")
+		return nil, nil, errs.Detail(ErrCorrupt, "short stream frame")
 	}
 	length := binary.BigEndian.Uint32(frame[:4])
 	if length == 0 || uint64(length) > uint64(maxMessageBytes) || int(length) != len(frame)-4 {
-		return nil, errs.Detail(ErrCorrupt, "stream frame length %d, got %d", length, len(frame)-4)
+		return nil, nil, errs.Detail(ErrCorrupt, "stream frame length %d, got %d", length, len(frame)-4)
 	}
 	if maxFrame > 0 && len(frame) > maxFrame {
-		return nil, errs.Detail(ErrTooLarge, "stream frame %d bytes", len(frame))
+		return nil, nil, errs.Detail(ErrTooLarge, "stream frame %d bytes", len(frame))
 	}
 	macLen := 0
 	if len(secret) > 0 {
@@ -598,7 +691,7 @@ func decodeStreamFrame(frame, secret []byte, maxFrame int) ([]Message, error) {
 	}
 	body := frame[4:]
 	if len(body) < macLen {
-		return nil, errs.Detail(ErrCorrupt, "short stream frame body")
+		return nil, nil, errs.Detail(ErrCorrupt, "short stream frame body")
 	}
 	payload := body[:len(body)-macLen]
 	if macLen > 0 {
@@ -606,10 +699,10 @@ func decodeStreamFrame(frame, secret []byte, maxFrame int) ([]Message, error) {
 		_, _ = mac.Write(frame[:4])
 		_, _ = mac.Write(payload)
 		if !hmac.Equal(mac.Sum(nil), body[len(body)-macLen:]) {
-			return nil, errs.Detail(ErrCorrupt, "stream HMAC mismatch")
+			return nil, nil, errs.Detail(ErrCorrupt, "stream HMAC mismatch")
 		}
 	}
-	return decodeHTTPFrame(payload)
+	return decodeHTTPFrameAuth(payload)
 }
 
 // TCPTransportOptions configures the TCP stream transport. | TCPTransportOptions
@@ -648,6 +741,15 @@ type TCPTransportOptions struct {
 	// 不限制。每个对端通常需要一条各方向连接，默认值约可容纳 128 个对端；更大集群
 	// 应提高该值。
 	MaxConns int
+	// FrameMaxAge enables HMAC-covered frame freshness and replay rejection.
+	// Zero disables it. A positive value is the accepted clock window; frames
+	// carry a timestamp and a sender-wide monotonic counter. SharedSecret is
+	// required, and every peer must understand the auth frame flag; enable it
+	// only after the whole cluster is upgraded. | FrameMaxAge 启用 HMAC 覆盖的帧
+	// 新鲜度与重放拒绝。零值关闭；正值是接受的时钟窗口；帧携带时间戳与发送方全局
+	// 单调计数器。必须配置 SharedSecret，且所有对端都要理解 auth 帧标志；请在全集群
+	// 升级后再启用。
+	FrameMaxAge time.Duration
 }
 
 // TCPTransport is a TCP implementation of Transport with optional TLS and HMAC.
@@ -665,8 +767,14 @@ func NewTCPTransport(opts TCPTransportOptions) (*TCPTransport, error) {
 	if len(opts.SharedSecret) == 0 && !opts.AllowInsecure {
 		return nil, errs.Detail(ErrInvalidConfig, "shared secret is required unless AllowInsecure is set")
 	}
+	if opts.FrameMaxAge < 0 {
+		return nil, errs.Detail(ErrInvalidConfig, "FrameMaxAge must not be negative")
+	}
+	if opts.FrameMaxAge > 0 && len(opts.SharedSecret) == 0 {
+		return nil, errs.Detail(ErrInvalidConfig, "FrameMaxAge requires SharedSecret")
+	}
 	backend := &tcpBackend{tlsConfig: opts.TLSConfig, timeout: opts.DialTimeout}
-	st, err := newStreamTransport(backend, opts.ListenAddr, opts.SharedSecret, opts.Queue, opts.MaxFrameBytes, opts.MaxConns, opts.DialTimeout)
+	st, err := newStreamTransport(backend, opts.ListenAddr, opts.SharedSecret, opts.Queue, opts.MaxFrameBytes, opts.MaxConns, opts.DialTimeout, opts.FrameMaxAge)
 	if err != nil {
 		return nil, err
 	}

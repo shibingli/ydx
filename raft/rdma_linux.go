@@ -40,8 +40,14 @@ func NewRDMATransport(opts RDMATransportOptions) (*RDMATransport, error) {
 	if !RDMAAvailable() {
 		return nil, errs.Detail(ErrUnsupported, "libibverbs is not available | libibverbs 不可用")
 	}
+	if opts.FrameMaxAge < 0 {
+		return nil, errs.Detail(ErrInvalidConfig, "FrameMaxAge must not be negative")
+	}
+	if opts.FrameMaxAge > 0 && len(opts.SharedSecret) == 0 {
+		return nil, errs.Detail(ErrInvalidConfig, "FrameMaxAge requires SharedSecret")
+	}
 	backend := &rdmaBackend{opts: opts}
-	st, err := newStreamTransport(backend, opts.ListenAddr, opts.SharedSecret, opts.Queue, opts.MaxFrameBytes, opts.MaxConns, opts.DialTimeout)
+	st, err := newStreamTransport(backend, opts.ListenAddr, opts.SharedSecret, opts.Queue, opts.MaxFrameBytes, opts.MaxConns, opts.DialTimeout, opts.FrameMaxAge)
 	if err != nil {
 		return nil, err
 	}

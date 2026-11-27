@@ -136,19 +136,20 @@ type Node struct {
 	outControls         int
 
 	// Config-derived hot fields. | 由配置导出的热字段。
-	tickInterval       time.Duration
-	heartbeatTicks     int
-	electionTicks      int
-	maxBatchEntries    int
-	maxBatchBytes      int
-	maxProposalBytes   int
-	maxInflightMsgs    int
-	maxInflightBytes   int
-	snapshotEntries    uint64
-	snapshotCatchUp    uint64
-	snapshotChunkBytes int
-	maxSnapshotReceive int64
-	persistLatency     atomic.Int64
+	tickInterval           time.Duration
+	heartbeatTicks         int
+	electionTicks          int
+	maxBatchEntries        int
+	maxBatchBytes          int
+	maxProposalBytes       int
+	maxInflightMsgs        int
+	maxInflightBytes       int
+	snapshotEntries        uint64
+	snapshotCatchUp        uint64
+	snapshotChunkBytes     int
+	snapshotAutoChunkBytes int
+	maxSnapshotReceive     int64
+	persistLatency         atomic.Int64
 
 	electionRank int
 	closeOnce    sync.Once
@@ -323,56 +324,57 @@ func New(cfg Config) (*Node, error) {
 		maxSnapshotReceive = maxSnapshotBytes
 	}
 	n := &Node{
-		cfg:                cfg,
-		id:                 cfg.ID,
-		group:              cfg.Group,
-		storage:            cfg.Storage,
-		fsm:                cfg.FSM,
-		logger:             cfg.Logger,
-		metrics:            newMetrics(),
-		futures:            newFutureStore(),
-		appliedNotify:      newAppliedNotifier(),
-		remoteReads:        newRemoteReadStore(),
-		remoteEpoch:        newRemoteReadEpoch(),
-		recvCh:             make(chan *Message, cfg.MessageQueue),
-		controlCh:          make(chan *Message, controlQueueSize(cfg.MessageQueue)),
-		proposals:          newProposalQueue(cfg.ProposalQueue),
-		readCh:             make(chan *readRequest, 256),
-		tickCh:             make(chan struct{}, 1),
-		outCh:              make(chan outboundBatch, cfg.OutboundQueue),
-		persistNotify:      make(chan struct{}, 1),
-		persistAckCh:       make(chan persistAck, 256),
-		snapshotReadyCh:    make(chan snapshotReady, 16),
-		snapshotFileCh:     make(chan snapshotFileResult, 16),
-		snapshotConfCh:     make(chan *snapshotConfRequest, 16),
-		snapshotCh:         make(chan *snapshotRequest, 16),
-		campaignCh:         make(chan *campaignRequest, 16),
-		transferCh:         make(chan *transferRequest, 16),
-		statusCh:           make(chan chan Status, 16),
-		fatalCh:            make(chan error, 1),
-		stopCh:             make(chan struct{}),
-		doneCh:             make(chan struct{}),
-		closeDoneCh:        make(chan struct{}),
-		applySnapshotCh:    make(chan *snapshotRequest, 16),
-		applyDoneCh:        make(chan struct{}),
-		snapshotDoneCh:     make(chan struct{}, 1),
-		progress:           make(map[NodeID]*progress),
-		votes:              make(map[NodeID]bool),
-		preVotes:           make(map[NodeID]bool),
-		scratch:            make([]uint64, 0, 16),
-		tickInterval:       cfg.TickInterval,
-		heartbeatTicks:     cfg.HeartbeatTicks,
-		electionTicks:      cfg.ElectionTicks,
-		maxBatchEntries:    cfg.MaxBatchEntries,
-		maxBatchBytes:      cfg.MaxBatchBytes,
-		maxProposalBytes:   cfg.MaxProposalBytes,
-		maxInflightMsgs:    cfg.MaxInflightMsgs,
-		maxInflightBytes:   cfg.MaxInflightBytes,
-		snapshotEntries:    cfg.SnapshotEntries,
-		snapshotCatchUp:    cfg.SnapshotCatchUpEntries,
-		snapshotChunkBytes: cfg.SnapshotChunkBytes,
-		maxSnapshotReceive: maxSnapshotReceive,
-		pendingReadLimit:   cfg.pendingReadLimit(),
+		cfg:                    cfg,
+		id:                     cfg.ID,
+		group:                  cfg.Group,
+		storage:                cfg.Storage,
+		fsm:                    cfg.FSM,
+		logger:                 cfg.Logger,
+		metrics:                newMetrics(),
+		futures:                newFutureStore(),
+		appliedNotify:          newAppliedNotifier(),
+		remoteReads:            newRemoteReadStore(),
+		remoteEpoch:            newRemoteReadEpoch(),
+		recvCh:                 make(chan *Message, cfg.MessageQueue),
+		controlCh:              make(chan *Message, controlQueueSize(cfg.MessageQueue)),
+		proposals:              newProposalQueue(cfg.ProposalQueue),
+		readCh:                 make(chan *readRequest, 256),
+		tickCh:                 make(chan struct{}, 1),
+		outCh:                  make(chan outboundBatch, cfg.OutboundQueue),
+		persistNotify:          make(chan struct{}, 1),
+		persistAckCh:           make(chan persistAck, 256),
+		snapshotReadyCh:        make(chan snapshotReady, 16),
+		snapshotFileCh:         make(chan snapshotFileResult, 16),
+		snapshotConfCh:         make(chan *snapshotConfRequest, 16),
+		snapshotCh:             make(chan *snapshotRequest, 16),
+		campaignCh:             make(chan *campaignRequest, 16),
+		transferCh:             make(chan *transferRequest, 16),
+		statusCh:               make(chan chan Status, 16),
+		fatalCh:                make(chan error, 1),
+		stopCh:                 make(chan struct{}),
+		doneCh:                 make(chan struct{}),
+		closeDoneCh:            make(chan struct{}),
+		applySnapshotCh:        make(chan *snapshotRequest, 16),
+		applyDoneCh:            make(chan struct{}),
+		snapshotDoneCh:         make(chan struct{}, 1),
+		progress:               make(map[NodeID]*progress),
+		votes:                  make(map[NodeID]bool),
+		preVotes:               make(map[NodeID]bool),
+		scratch:                make([]uint64, 0, 16),
+		tickInterval:           cfg.TickInterval,
+		heartbeatTicks:         cfg.HeartbeatTicks,
+		electionTicks:          cfg.ElectionTicks,
+		maxBatchEntries:        cfg.MaxBatchEntries,
+		maxBatchBytes:          cfg.MaxBatchBytes,
+		maxProposalBytes:       cfg.MaxProposalBytes,
+		maxInflightMsgs:        cfg.MaxInflightMsgs,
+		maxInflightBytes:       cfg.MaxInflightBytes,
+		snapshotEntries:        cfg.SnapshotEntries,
+		snapshotCatchUp:        cfg.SnapshotCatchUpEntries,
+		snapshotChunkBytes:     cfg.SnapshotChunkBytes,
+		snapshotAutoChunkBytes: cfg.SnapshotAutoChunkBytes,
+		maxSnapshotReceive:     maxSnapshotReceive,
+		pendingReadLimit:       cfg.pendingReadLimit(),
 	}
 	n.applyQueue = newApplyQueue()
 	n.autoCampaign = false

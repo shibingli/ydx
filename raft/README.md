@@ -164,6 +164,9 @@ IPsec/MACsec，或改用启用 TLS 的 TCP/HTTP 传输。
   只适用于可信网络或已由 TLS/mTLS 在传输之外完成双向认证的场景。
 - 同一集群的所有成员必须使用相同的 `SharedSecret`。密钥只从环境变量或密钥管理
   系统读取，不得写入源码、配置样例或日志。
+- `FrameMaxAge`（TCP/HTTP/RDMA，默认 0 关闭）启用 HMAC 覆盖的时间戳与发送方单调
+  计数器：接收方拒绝过期、未来时间与重放帧。启用后必须配置 `SharedSecret`，且所有
+  对端需先升级；不可信网络仍应优先使用 TLS/mTLS。
 - TCP 的 `MaxFrameBytes` 与 HTTP 的 `MaxBodyBytes` 必须大于最大快照的编码大小
   （快照数据 + 配置 + 帧头/HMAC，建议留 1 MiB 余量）。默认 64 MiB；超过上限的
   快照无法发送，领导者会记录 `snapshot exceeds transport frame limit` 错误而不是
@@ -182,7 +185,9 @@ IPsec/MACsec，或改用启用 TLS 的 TCP/HTTP 传输。
 - TCP/HTTP/RDMA 传输为每个对端提供**控制/数据双通道**：选举、心跳、追加确认、
   ReadIndex 与快照确认走控制通道，AppendEntries、完整快照与快照分块走数据通道。
   大数据批次因此不会阻塞心跳；各通道内部保序，跨通道可能重排，Raft 能容忍。
-  控制通道满时会回退到数据通道，优先保证不丢失活性消息。
+  控制通道满时会回退到数据通道，优先保证不丢失活性消息。同一通道内已排队的多个
+  批次会合并为一个帧（最多 8 批/256 条），减少系统调用与帧开销；合并帧超限时自动
+  回退为逐批发送。
 - 分块入站快照在 `FileStorage` 上会暂存到快照目录的私有临时文件（崩溃后由临时
   文件清理回收），并通过 `StreamingRestoreFSM.RestoreFrom` 流式还原，避免整镜像
   驻留堆内存；未实现该扩展的 FSM 仍会加载有界镜像。`Config.MaxSnapshotReceiveBytes`
@@ -212,9 +217,9 @@ IPsec/MACsec，或改用启用 TLS 的 TCP/HTTP 传输。
   尚未与领导者校验的冲突后缀。`InstallSnapshot` 与本地快照并发时，旧镜像不会
   回退内存快照基点或配置基点。
 - 默认关闭“任意本地读”；`ReadIndex`/`Barrier` 是唯一的线性一致读入口。
-- 一次 `ReadIndex`/`Barrier` 返回的索引可用于读取任意多个 key；并发 `ReadIndex`
-  会在领导者当前心跳轮次内合并，调用方应把一批读合并到同一个索引，而不是每个 key
-  各做一次确认。`MaxPendingReads` 是背压上限，不是吞吐旋钮。
+- 一次 `ReadIndex`/`Barrier`/`BatchReadIndex` 返回的索引可用于读取任意多个 key；
+  并发读请求会在领导者当前心跳轮次内合并，调用方应把一批读合并到同一个索引，而不是
+  每个 key 各做一次确认。`MaxPendingReads` 是背压上限，不是吞吐旋钮。
 - 读多写少的 FSM 推荐写时复制模板：Apply 发布不可变状态并原子替换指针，读者无锁
   加载；`example_cow_test.go` 给出了可直接复用的实现与 `-race` 测试。多 key 一致
   读应先取得 ReadIndex，再在同一个已应用版本上读取。
@@ -583,11 +588,13 @@ res, err := host.Propose(ctx, 10, []byte("set key=value"))
   上限约束（默认 64 MiB，可配置 `MaxFrameBytes`/`MaxBodyBytes`）。超大状态机在
   TCP/HTTP 上应调大上限或自行分块。
 - 入站分块快照在支持 `SnapshotStager` 的存储上落盘暂存，但整包 `MsgSnap` 仍会
-  在传输层解码时占用内存；`MaxSnapshotReceiveBytes` 与
-  `NodeHostConfig.MaxSnapshotInstalls` 提供预算与并发上限。未实现
+  在传输层解码时占用内存。`SnapshotAutoChunkBytes > 0` 可让超过该值的整包镜像
+  自动改用分块传输（要求所有对端支持 `MsgSnapChunk`）；`MaxSnapshotReceiveBytes`
+  与 `NodeHostConfig.MaxSnapshotInstalls` 提供预算与并发上限。未实现
   `StreamingRestoreFSM` 的 FSM 在还原时仍会加载完整镜像，超大状态机应实现该扩展。
-- 帧级 HMAC 只认证完整性，不提供抗重放；不可信网络必须使用 TLS/mTLS，或在
-  网络层限制 Raft 端口访问。RDMA 无内置加密，需要 IPsec/MACsec。
+- 帧级 HMAC 认证完整性。`FrameMaxAge > 0` 时帧携带时间戳与发送方单调计数器，
+  接收方拒绝过期/未来/重放帧；该模式要求 `SharedSecret` 且所有对端已升级，默认
+  关闭。不可信网络仍应优先使用 TLS/mTLS；RDMA 无内置加密，需要 IPsec/MACsec。
 - TCP/HTTP/RDMA 的控制/数据双通道允许控制消息越过大数据批次；同一通道内保序。
   依赖传输层全局严格有序的自定义逻辑需要显式处理这种跨通道重排。
 - 多组之间没有全局快照或跨组事务：跨组读可能看到不同日志索引，跨组原子写需要

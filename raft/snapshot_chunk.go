@@ -87,7 +87,10 @@ func (n *Node) snapshotSize(snap *Snapshot) int64 {
 func (n *Node) snapshotChunkLimit(snap *Snapshot) int {
 	limit := n.snapshotChunkBytes
 	if limit <= 0 {
-		return 0
+		limit = n.snapshotAutoChunkBytes
+		if limit <= 0 || n.snapshotSize(snap) <= int64(limit) {
+			return 0
+		}
 	}
 	limiter, ok := n.transport.(interface{ FrameLimit() int64 })
 	if !ok {
@@ -509,8 +512,12 @@ func (n *Node) sendSnapshot(to NodeID) {
 	if limiter, ok := n.transport.(interface{ FrameLimit() int64 }); ok {
 		frameLimit = limiter.FrameLimit()
 	}
-	needsChunks := n.snapshotChunkBytes > 0 && total > 0 &&
-		(total > int64(n.snapshotChunkBytes) ||
+	chunkSize := n.snapshotChunkBytes
+	if chunkSize <= 0 && n.snapshotAutoChunkBytes > 0 && total > int64(n.snapshotAutoChunkBytes) {
+		chunkSize = n.snapshotAutoChunkBytes
+	}
+	needsChunks := chunkSize > 0 && total > 0 &&
+		(total > int64(chunkSize) ||
 			(frameLimit > 0 && total+overhead > frameLimit-64))
 	if needsChunks {
 		if total > maxSnapshotBytes {

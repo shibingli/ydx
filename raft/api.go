@@ -338,3 +338,15 @@ func (n *Node) basicStatus() Status {
 		Applied: n.Applied(),
 	}
 }
+
+// BatchReadIndex returns one linearizable index that can serve any number of
+// reads applied at or after it. It is equivalent to ReadIndex and names the
+// batching contract: callers should obtain one index for a batch of keys,
+// WaitApplied once, then read them from the same applied view instead of
+// confirming leadership per key. | BatchReadIndex 返回一个线性一致索引，可服务
+// 任意多个在该索引及之后应用的读。它等价于 ReadIndex，并明确批量契约：调用方应为
+// 一批 key 取得一个索引，WaitApplied 一次，然后在同一个已应用视图上读取，而不是为
+// 每个 key 单独确认领导权。
+func (n *Node) BatchReadIndex(ctx context.Context) (uint64, error) {
+	return n.ReadIndex(ctx)
+}

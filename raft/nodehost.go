@@ -276,6 +276,16 @@ func (h *NodeHost) ReadIndex(ctx context.Context, id GroupID) (uint64, error) {
 	return n.ReadIndex(ctx)
 }
 
+// BatchReadIndex returns one linearizable index for a batch of reads in one
+// group. | BatchReadIndex 为一个组的批量读返回一个线性一致索引。
+func (h *NodeHost) BatchReadIndex(ctx context.Context, id GroupID) (uint64, error) {
+	n, err := h.nodeFor(id)
+	if err != nil {
+		return 0, err
+	}
+	return n.BatchReadIndex(ctx)
+}
+
 // WaitApplied waits for one group's apply index. | WaitApplied 等待一个组的应用索引。
 func (h *NodeHost) WaitApplied(ctx context.Context, id GroupID, index uint64) error {
 	n, err := h.nodeFor(id)

@@ -422,3 +422,17 @@ func TestRestoreFromSafeFallback(t *testing.T) {
 		t.Fatalf("value = %q", got)
 	}
 }
+
+// TestSnapshotAutoChunkLimit selects an automatic chunk size only for large
+// images. | TestSnapshotAutoChunkLimit 只为大镜像选择自动分块大小。
+func TestSnapshotAutoChunkLimit(t *testing.T) {
+	n := &Node{snapshotAutoChunkBytes: 1024}
+	small := &Snapshot{Data: make([]byte, 512)}
+	if got := n.snapshotChunkLimit(small); got != 0 {
+		t.Fatalf("small limit = %d, want 0", got)
+	}
+	large := &Snapshot{Data: make([]byte, 4096)}
+	if got := n.snapshotChunkLimit(large); got != 1024 {
+		t.Fatalf("large limit = %d, want 1024", got)
+	}
+}

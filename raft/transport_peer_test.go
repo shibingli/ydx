@@ -339,7 +339,7 @@ func TestStreamControlLanePriority(t *testing.T) {
 	conn := &blockingConn{
 		writes: make(chan []byte, 8), release: make(chan struct{}), done: make(chan struct{}),
 	}
-	tr, err := newStreamTransport(&blockingBackend{conn: conn}, "", nil, 16, 1<<20, 0, time.Second)
+	tr, err := newStreamTransport(&blockingBackend{conn: conn}, "", nil, 16, 1<<20, 0, time.Second, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -369,7 +369,7 @@ func TestStreamControlLanePriority(t *testing.T) {
 	case <-time.After(3 * time.Second):
 		t.Fatal("control frame was not written")
 	}
-	msgs, err := decodeStreamFrame(second, nil, 1<<20)
+	msgs, _, err := decodeStreamFrame(second, nil, 1<<20)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -379,7 +379,7 @@ func TestStreamControlLanePriority(t *testing.T) {
 	conn.release <- struct{}{}
 	select {
 	case third := <-conn.writes:
-		msgs, err := decodeStreamFrame(third, nil, 1<<20)
+		msgs, _, err := decodeStreamFrame(third, nil, 1<<20)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -389,4 +389,50 @@ func TestStreamControlLanePriority(t *testing.T) {
 	case <-time.After(3 * time.Second):
 		t.Fatal("queued data frame was not written")
 	}
+}
+
+// TestStreamBatchCoalescing merges queued same-lane batches into one frame. |
+// TestStreamBatchCoalescing 将同通道的排队批次合并为一个帧。
+func TestStreamBatchCoalescing(t *testing.T) {
+	conn := &blockingConn{
+		writes: make(chan []byte, 8), release: make(chan struct{}), done: make(chan struct{}),
+	}
+	tr, err := newStreamTransport(&blockingBackend{conn: conn}, "", nil, 16, 1<<20, 0, time.Second, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tr.Close()
+	if err := tr.Start(func(Message) {}); err != nil {
+		t.Fatal(err)
+	}
+	tr.UpdatePeer(2, "blocking:2")
+	send := func(term uint64) {
+		t.Helper()
+		if err := tr.Send(context.Background(), []Message{{Type: MsgApp, From: 1, To: 2, Term: term}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	send(1)
+	select {
+	case <-conn.writes:
+	case <-time.After(3 * time.Second):
+		t.Fatal("first frame not written")
+	}
+	send(2)
+	send(3)
+	conn.release <- struct{}{}
+	var merged []byte
+	select {
+	case merged = <-conn.writes:
+	case <-time.After(3 * time.Second):
+		t.Fatal("merged frame not written")
+	}
+	msgs, _, err := decodeStreamFrame(merged, nil, 1<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(msgs) != 2 || msgs[0].Term != 2 || msgs[1].Term != 3 {
+		t.Fatalf("merged messages = %+v", msgs)
+	}
+	conn.release <- struct{}{}
 }

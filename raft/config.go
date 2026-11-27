@@ -213,6 +213,15 @@ type Config struct {
 	// 适配传输帧上限。分块消除帧上限限制，并让文件支持的镜像逐块读取而非整体物化；
 	// 它要求所有对端都理解 MsgSnapChunk。最后一块可以更小。
 	SnapshotChunkBytes int
+	// SnapshotAutoChunkBytes enables chunked transfer for a whole image larger
+	// than this many bytes when SnapshotChunkBytes is zero, with this value as
+	// the chunk payload size. Zero disables the automatic path. Enabling it
+	// requires every peer to understand MsgSnapChunk; prefer SnapshotChunkBytes
+	// for explicit control. | SnapshotAutoChunkBytes 在 SnapshotChunkBytes 为零
+	// 时，对超过该字节数的整包镜像自动改用分块传输，并把它作为分块负载大小。零值
+	// 关闭自动路径。启用要求所有对端理解 MsgSnapChunk；需要显式控制时优先使用
+	// SnapshotChunkBytes。
+	SnapshotAutoChunkBytes int
 	// MaxSnapshotReceiveBytes caps one inbound snapshot image reassembled from
 	// chunks or delivered whole. Zero uses the protocol maximum (256 MiB). A
 	// FileStorage-backed node stages chunked images on disk, so this bounds the
@@ -372,6 +381,9 @@ func (c *Config) validate() error {
 	if c.MaxSnapshotReceiveBytes < 0 || c.MaxSnapshotReceiveBytes > maxSnapshotBytes {
 		return errs.Detail(ErrInvalidConfig, "MaxSnapshotReceiveBytes %d outside (0, %d]",
 			c.MaxSnapshotReceiveBytes, maxSnapshotBytes)
+	}
+	if c.SnapshotAutoChunkBytes < 0 {
+		return errs.Detail(ErrInvalidConfig, "SnapshotAutoChunkBytes must not be negative")
 	}
 	if c.SnapshotJitter < 0 || c.SnapshotJitter > 50 {
 		return errs.Detail(ErrInvalidConfig, "SnapshotJitter %d outside [0, 50]", c.SnapshotJitter)

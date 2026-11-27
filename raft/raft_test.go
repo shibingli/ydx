@@ -406,3 +406,29 @@ func TestProposalSizeLimit(t *testing.T) {
 		t.Fatalf("limit proposal: %v", err)
 	}
 }
+
+// TestBatchReadIndexSingleNode exercises the batching API on a single node. |
+// TestBatchReadIndexSingleNode 在单节点上验证批量读 API。
+func TestBatchReadIndexSingleNode(t *testing.T) {
+	node, err := New(Config{ID: 1, Storage: NewMemStorage(), FSM: newKVFSM()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer node.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := node.WaitReady(ctx); err != nil {
+		t.Fatal(err)
+	}
+	res, err := node.Propose(ctx, []byte("a=1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	idx, err := node.BatchReadIndex(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if idx < res.Index {
+		t.Fatalf("batch read index %d < proposed %d", idx, res.Index)
+	}
+}

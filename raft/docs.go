@@ -90,8 +90,12 @@
 // NewHTTPTransport therefore reject an empty SharedSecret unless AllowInsecure
 // is set explicitly; every multi-node deployment must configure TLS and/or
 // SharedSecret (at least 16 bytes), and should use both for encryption plus
-// frame integrity. RDMA needs HMAC plus IPsec/MACsec for confidentiality. TCP
-// MaxFrameBytes and HTTP MaxBodyBytes must exceed the largest encoded snapshot
+// frame integrity. FrameMaxAge adds HMAC-covered timestamps and monotonic
+// counters, rejecting stale, future-dated and replayed frames; it requires a
+// shared secret and an all-upgraded cluster, and TLS remains the preferred
+// defense on untrusted networks. RDMA needs HMAC plus IPsec/MACsec for
+// confidentiality. TCP MaxFrameBytes and HTTP MaxBodyBytes must exceed the
+// largest encoded snapshot
 // unless chunking is enabled. Config.SnapshotChunkBytes transfers large images
 // as ack-gated MsgSnapChunk messages, removing the transport frame limit; the
 // receiver stages chunked images on disk when the Storage implements
@@ -106,8 +110,10 @@
 // instead of retrying silently. |
 // 入站消息默认不认证。因此 NewTCPTransport 与 NewHTTPTransport 在 SharedSecret 为空
 // 时拒绝创建，除非显式设置 AllowInsecure；所有多节点部署必须配置 TLS 和/或至少
-// 16 字节的 SharedSecret，并建议同时使用以获得加密与帧完整性。RDMA 需要 HMAC 与
-// IPsec/MACsec 才能保密。TCP MaxFrameBytes 与 HTTP MaxBodyBytes 必须大于最大快照
+// 16 字节的 SharedSecret，并建议同时使用以获得加密与帧完整性。FrameMaxAge 增加
+// HMAC 覆盖的时间戳与单调计数器，拒绝过期、未来时间与重放帧；它要求共享密钥且全
+// 集群已升级，不可信网络仍应优先使用 TLS。RDMA 需要 HMAC 与 IPsec/MACsec 才能
+// 保密。TCP MaxFrameBytes 与 HTTP MaxBodyBytes 必须大于最大快照
 // 的编码大小，除非启用分块。Config.SnapshotChunkBytes 通过逐块确认的
 // MsgSnapChunk 传输大镜像，解除传输帧上限；接收端仍会重组完整镜像，因此协议上限
 // 256 MiB 仍然有效。分块消息是显式扩展，要求所有对端支持。未启用分块时，快照无法

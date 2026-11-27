@@ -15,23 +15,23 @@ import (
 func TestStreamFrameAuthentication(t *testing.T) {
 	secret := []byte("0123456789abcdef")
 	msgs := []Message{{Type: MsgHeartbeat, From: 1, To: 2, Term: 4, Commit: 3}}
-	frame, err := encodeStreamFrame(msgs, secret, 1<<20)
+	frame, err := encodeStreamFrame(msgs, secret, 1<<20, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	got, err := readStreamFrame(bytes.NewReader(frame), secret, 1<<20)
+	got, _, err := readStreamFrame(bytes.NewReader(frame), secret, 1<<20)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(got) != 1 || got[0].From != 1 || got[0].To != 2 {
 		t.Fatalf("messages = %+v", got)
 	}
-	if _, err := readStreamFrame(bytes.NewReader(frame), []byte("abcdefghijklmnop"), 1<<20); err == nil {
+	if _, _, err := readStreamFrame(bytes.NewReader(frame), []byte("abcdefghijklmnop"), 1<<20); err == nil {
 		t.Fatal("accepted a frame with the wrong secret")
 	}
 	corrupt := append([]byte(nil), frame...)
 	corrupt[len(corrupt)-1] ^= 0xff
-	if _, err := readStreamFrame(bytes.NewReader(corrupt), secret, 1<<20); err == nil {
+	if _, _, err := readStreamFrame(bytes.NewReader(corrupt), secret, 1<<20); err == nil {
 		t.Fatal("accepted a corrupt frame")
 	}
 }
@@ -193,7 +193,7 @@ func TestClusterOverTCP(t *testing.T) {
 func TestStreamFrameLengthCap(t *testing.T) {
 	var header [4]byte
 	binary.BigEndian.PutUint32(header[:], ^uint32(0))
-	if _, err := readStreamFrame(bytes.NewReader(header[:]), nil, 0); !errors.Is(err, ErrTooLarge) {
+	if _, _, err := readStreamFrame(bytes.NewReader(header[:]), nil, 0); !errors.Is(err, ErrTooLarge) {
 		t.Fatalf("huge frame error = %v, want ErrTooLarge", err)
 	}
 }

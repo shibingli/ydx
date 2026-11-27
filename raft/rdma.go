@@ -72,6 +72,12 @@ type RDMATransportOptions struct {
 	// 读协程。零值使用 60 秒；负值关闭限制。Raft 心跳会让健康对端的空闲时间远低于
 	// 默认值。
 	ReadTimeout time.Duration
+	// FrameMaxAge enables HMAC-covered frame freshness and replay rejection;
+	// see TCPTransportOptions.FrameMaxAge. SharedSecret is required and every
+	// peer must understand the auth frame flag. | FrameMaxAge 启用 HMAC 覆盖的帧
+	// 新鲜度与重放拒绝；见 TCPTransportOptions.FrameMaxAge。必须配置 SharedSecret，
+	// 且所有对端都要理解 auth 帧标志。
+	FrameMaxAge time.Duration
 	// BusyPoll is retained for compatibility. ydx/rdma polls completion queues on
 	// the hot path with a bounded spin before yielding. | BusyPoll 为兼容保留。
 	// ydx/rdma 热路径轮询完成队列，并在有限自旋后让出处理器。

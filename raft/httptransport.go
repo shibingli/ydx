@@ -71,6 +71,12 @@ type HTTPTransportOptions struct {
 	// Queue is the per-peer outbound queue length. Default 64. | Queue 是每对端
 	// 出站队列长度，默认 64。
 	Queue int
+	// FrameMaxAge enables HMAC-covered frame freshness and replay rejection.
+	// See TCPTransportOptions.FrameMaxAge. SharedSecret is required and every
+	// peer must understand the auth frame flag. | FrameMaxAge 启用 HMAC 覆盖的帧
+	// 新鲜度与重放拒绝；见 TCPTransportOptions.FrameMaxAge。必须配置 SharedSecret，
+	// 且所有对端都要理解 auth 帧标志。
+	FrameMaxAge time.Duration
 }
 
 // HTTPTransport carries Raft messages as authenticated binary POST bodies. It is
@@ -78,15 +84,18 @@ type HTTPTransportOptions struct {
 // middleware. | HTTPTransport 以带认证的二进制 POST 体传递 Raft 消息，易挂载到现有
 // HTTP 服务器、TLS 终结器与认证中间件之后。
 type HTTPTransport struct {
-	client  *http.Client
-	peers   map[NodeID]*httpPeer
-	handler atomic.Pointer[func(Message)]
-	stopCh  chan struct{}
-	path    string
-	secret  []byte
-	id      NodeID
-	maxBody int64
-	queue   int
+	client      *http.Client
+	peers       map[NodeID]*httpPeer
+	handler     atomic.Pointer[func(Message)]
+	stopCh      chan struct{}
+	path        string
+	secret      []byte
+	id          NodeID
+	maxBody     int64
+	queue       int
+	frameMaxAge time.Duration
+	authSeq     atomic.Uint64
+	replay      *replayGuard
 
 	drops atomic.Uint64
 
@@ -128,15 +137,23 @@ func NewHTTPTransport(opts HTTPTransportOptions) (*HTTPTransport, error) {
 	if len(opts.SharedSecret) == 0 && !opts.AllowInsecure {
 		return nil, errs.Detail(ErrInvalidConfig, "shared secret is required unless AllowInsecure is set")
 	}
+	if opts.FrameMaxAge < 0 {
+		return nil, errs.Detail(ErrInvalidConfig, "FrameMaxAge must not be negative")
+	}
+	if opts.FrameMaxAge > 0 && len(opts.SharedSecret) == 0 {
+		return nil, errs.Detail(ErrInvalidConfig, "FrameMaxAge requires SharedSecret")
+	}
 	t := &HTTPTransport{
-		id:      opts.ID,
-		path:    opts.Path,
-		client:  opts.Client,
-		secret:  append([]byte(nil), opts.SharedSecret...),
-		maxBody: opts.MaxBodyBytes,
-		queue:   opts.Queue,
-		peers:   make(map[NodeID]*httpPeer),
-		stopCh:  make(chan struct{}),
+		id:          opts.ID,
+		path:        opts.Path,
+		client:      opts.Client,
+		secret:      append([]byte(nil), opts.SharedSecret...),
+		maxBody:     opts.MaxBodyBytes,
+		queue:       opts.Queue,
+		frameMaxAge: opts.FrameMaxAge,
+		replay:      newReplayGuard(opts.FrameMaxAge),
+		peers:       make(map[NodeID]*httpPeer),
+		stopCh:      make(chan struct{}),
 	}
 	if t.client == nil {
 		t.client = &http.Client{Timeout: 30 * time.Second}
@@ -267,43 +284,86 @@ func (t *HTTPTransport) Send(_ context.Context, msgs []Message) error {
 // 串行化发往一个对端的 POST，并优先控制通道。
 func (t *HTTPTransport) peerLoop(p *httpPeer) {
 	for {
-		batch, ok := t.nextBatch(p)
+		batch, control, ok := t.nextBatchClass(p)
 		if !ok {
 			return
+		}
+		batches := [][]Message{batch}
+		total := len(batch)
+		for len(batches) < maxCoalesceBatches && total < maxCoalesceMessages {
+			more, ok := t.tryBatch(p, control)
+			if !ok {
+				break
+			}
+			batches = append(batches, more)
+			total += len(more)
 		}
 		t.mu.RLock()
 		addr := p.addr
 		t.mu.RUnlock()
-		frame, err := encodeHTTPFrame(batch)
+		var auth *frameAuth
+		if t.frameMaxAge > 0 {
+			auth = &frameAuth{timestamp: time.Now().UnixNano(), counter: t.authSeq.Add(1)}
+		}
+		frame, err := encodeHTTPFrameInto(nil, mergeBatches(batches), auth)
 		if err != nil {
-			t.drops.Add(uint64(len(batch)))
+			// Split a merged frame that exceeded the body limit. | 合并帧超过请求体
+			// 上限时拆回原始批次。
+			for _, one := range batches {
+				var oneAuth *frameAuth
+				if t.frameMaxAge > 0 {
+					oneAuth = &frameAuth{timestamp: time.Now().UnixNano(), counter: t.authSeq.Add(1)}
+				}
+				frame, err := encodeHTTPFrameInto(nil, one, oneAuth)
+				if err != nil {
+					t.drops.Add(uint64(len(one)))
+					continue
+				}
+				t.post(addr, frame)
+			}
 			continue
 		}
 		t.post(addr, frame)
 	}
 }
 
-// nextBatch prefers the control lane before blocking on either lane. |
-// nextBatch 在阻塞等待任一通道前优先取控制通道。
-func (t *HTTPTransport) nextBatch(p *httpPeer) ([]Message, bool) {
+// nextBatchClass prefers the control lane before blocking on either lane and
+// reports the lane for coalescing. | nextBatchClass 在阻塞等待任一通道前优先取
+// 控制通道，并报告通道以便合并。
+func (t *HTTPTransport) nextBatchClass(p *httpPeer) ([]Message, bool, bool) {
 	select {
 	case <-t.stopCh:
-		return nil, false
+		return nil, false, false
 	case <-p.stop:
-		return nil, false
+		return nil, false, false
 	case batch := <-p.ctrl:
-		return batch, true
+		return batch, true, true
 	default:
 	}
 	select {
 	case <-t.stopCh:
-		return nil, false
+		return nil, false, false
 	case <-p.stop:
-		return nil, false
+		return nil, false, false
 	case batch := <-p.ctrl:
-		return batch, true
+		return batch, true, true
 	case batch := <-p.data:
+		return batch, false, true
+	}
+}
+
+// tryBatch drains one more batch from the same lane without blocking. |
+// tryBatch 非阻塞地从同一通道再取一个批次。
+func (t *HTTPTransport) tryBatch(p *httpPeer, control bool) ([]Message, bool) {
+	ch := p.data
+	if control {
+		ch = p.ctrl
+	}
+	select {
+	case batch := <-ch:
 		return batch, true
+	default:
+		return nil, false
 	}
 }
 
@@ -366,10 +426,22 @@ func (t *HTTPTransport) Handler() http.Handler {
 				return
 			}
 		}
-		msgs, err := decodeHTTPFrame(body)
+		msgs, auth, err := decodeHTTPFrameAuth(body)
 		if err != nil {
 			http.Error(w, "bad frame", http.StatusBadRequest)
 			return
+		}
+		if t.frameMaxAge > 0 {
+			if len(msgs) == 0 || !t.replay.accept(msgs[0].From, auth) {
+				http.Error(w, "stale or replayed frame", http.StatusUnauthorized)
+				return
+			}
+			for i := 1; i < len(msgs); i++ {
+				if msgs[i].From != msgs[0].From {
+					http.Error(w, "mixed senders", http.StatusBadRequest)
+					return
+				}
+			}
 		}
 		h := t.handler.Load()
 		if h == nil {
@@ -413,19 +485,25 @@ func (t *HTTPTransport) FrameLimit() int64 { return t.maxBody }
 // encodeHTTPFrame builds a checksummed, optionally authenticated frame. |
 // encodeHTTPFrame 构建带校验和、可选认证的帧。
 func encodeHTTPFrame(msgs []Message) ([]byte, error) {
-	return encodeHTTPFrameInto(nil, msgs)
+	return encodeHTTPFrameInto(nil, msgs, nil)
 }
 
 // encodeHTTPFrameInto appends one frame to dst, avoiding an intermediate
 // payload copy on the large snapshot path. | encodeHTTPFrameInto 将一帧追加到 dst，
 // 避免大快照路径上的中间负载复制。
-func encodeHTTPFrameInto(dst []byte, msgs []Message) ([]byte, error) {
+func encodeHTTPFrameInto(dst []byte, msgs []Message, auth *frameAuth) ([]byte, error) {
 	if len(msgs) > maxFrameMessages {
 		return nil, errs.Detail(ErrTooLarge, "http frame messages %d", len(msgs))
 	}
 	start := len(dst)
 	dst = append(dst, make([]byte, 10)...)
 	payloadStart := len(dst)
+	flags := byte(0)
+	if auth != nil {
+		flags |= flagFrameAuth
+		dst = binary.LittleEndian.AppendUint64(dst, uint64(auth.timestamp))
+		dst = binary.LittleEndian.AppendUint64(dst, auth.counter)
+	}
 	dst = binary.AppendUvarint(dst, uint64(len(msgs)))
 	for i := range msgs {
 		data, err := MarshalMessage(msgs[i])
@@ -438,7 +516,7 @@ func encodeHTTPFrameInto(dst []byte, msgs []Message) ([]byte, error) {
 	crc := crc32.Checksum(dst[payloadStart:], castagnoli)
 	copy(dst[start:start+4], httpFrameMagic)
 	dst[start+4] = httpFrameVersion
-	dst[start+5] = 0
+	dst[start+5] = flags
 	binary.LittleEndian.PutUint32(dst[start+6:start+10], crc)
 	return dst, nil
 }
@@ -446,61 +524,79 @@ func encodeHTTPFrameInto(dst []byte, msgs []Message) ([]byte, error) {
 // decodeHTTPFrame validates framing, checksum and message payloads. | decodeHTTPFrame
 // 校验帧结构、校验和与消息载荷。
 func decodeHTTPFrame(frame []byte) ([]Message, error) {
+	msgs, _, err := decodeHTTPFrameAuth(frame)
+	return msgs, err
+}
+
+// decodeHTTPFrameAuth validates a frame and returns its optional freshness
+// metadata. | decodeHTTPFrameAuth 校验帧并返回可选的新鲜度元数据。
+func decodeHTTPFrameAuth(frame []byte) ([]Message, *frameAuth, error) {
 	if len(frame) < 4+1+1+4 {
-		return nil, errs.Detail(ErrCorrupt, "short http frame")
+		return nil, nil, errs.Detail(ErrCorrupt, "short http frame")
 	}
 	if string(frame[:4]) != httpFrameMagic {
-		return nil, errs.Detail(ErrCorrupt, "bad http frame magic")
+		return nil, nil, errs.Detail(ErrCorrupt, "bad http frame magic")
 	}
 	if frame[4] != httpFrameVersion {
-		return nil, errs.Detail(ErrCorrupt, "http frame version %d", frame[4])
+		return nil, nil, errs.Detail(ErrCorrupt, "http frame version %d", frame[4])
 	}
 	flags := frame[5]
-	if flags&^httpFlagHMAC != 0 {
-		return nil, errs.Detail(ErrCorrupt, "http frame flags %d", flags)
+	if flags&^(httpFlagHMAC|flagFrameAuth) != 0 {
+		return nil, nil, errs.Detail(ErrCorrupt, "http frame flags %d", flags)
 	}
 	wantCRC := binary.LittleEndian.Uint32(frame[6:10])
 	payload := frame[10:]
 	if crc32.Checksum(payload, castagnoli) != wantCRC {
-		return nil, errs.Detail(ErrCorrupt, "http frame CRC mismatch")
+		return nil, nil, errs.Detail(ErrCorrupt, "http frame CRC mismatch")
 	}
 	d := decoder{src: payload}
+	var auth *frameAuth
+	if flags&flagFrameAuth != 0 {
+		if len(payload) < frameAuthLen {
+			return nil, nil, errs.Detail(ErrCorrupt, "short http frame auth")
+		}
+		auth = &frameAuth{
+			timestamp: int64(binary.LittleEndian.Uint64(payload[0:8])),
+			counter:   binary.LittleEndian.Uint64(payload[8:16]),
+		}
+		d.pos = frameAuthLen
+	}
 	count := d.uvarint()
 	if d.err != nil {
-		return nil, d.err
+		return nil, nil, d.err
 	}
 	if count > maxFrameMessages {
-		return nil, errs.Detail(ErrTooLarge, "http frame messages %d", count)
+		return nil, nil, errs.Detail(ErrTooLarge, "http frame messages %d", count)
 	}
 	// Reject counts that cannot fit in the remaining payload before allocating
 	// the message slice. | 在分配消息切片前拒绝剩余载荷不可能容纳的数量。
 	if count > uint64(len(payload)-d.pos)/minMessageWireBytes {
-		return nil, errs.Detail(ErrTooLarge, "http frame messages %d for %d bytes",
+		return nil, nil, errs.Detail(ErrTooLarge, "http frame messages %d for %d bytes",
 			count, len(payload)-d.pos)
 	}
 	msgs := make([]Message, 0, count)
 	for i := uint64(0); i < count; i++ {
 		length := d.uvarint()
 		if d.err != nil {
-			return nil, d.err
+			return nil, nil, d.err
 		}
 		if length > maxMessageBytes {
-			return nil, errs.Detail(ErrTooLarge, "http message %d bytes", length)
+			return nil, nil, errs.Detail(ErrTooLarge, "http message %d bytes", length)
 		}
 		data := d.take(int(length))
 		if d.err != nil {
-			return nil, d.err
+			return nil, nil, d.err
 		}
 		m, err := UnmarshalMessage(data)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		msgs = append(msgs, m)
 	}
 	if d.pos != len(payload) {
-		return nil, errs.Detail(ErrCorrupt, "http frame trailing bytes")
+		return nil, nil, errs.Detail(ErrCorrupt, "http frame trailing bytes")
 	}
-	return msgs, nil
+	return msgs, auth, nil
 }
 
 // signFrame returns a hex HMAC-SHA256. | signFrame 返回十六进制 HMAC-SHA256。
