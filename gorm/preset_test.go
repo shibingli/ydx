@@ -622,12 +622,16 @@ func TestPresetDSNLeavesEmptyAndUnknownAlone(t *testing.T) {
 //
 // 三个 pragma 都是可观测的落地证据：文件库的 journal_mode 默认是 delete、synchronous 默认是 full，
 // 只有预置真的执行了才会是下面这些取值。foreign_keys 不在预置中：框架不声明外键，关系全部由应用代码维护。
+// presetJournalModeWAL is the SQLite journal mode asserted by the preset test. |
+// presetJournalModeWAL 是预置测试断言的 SQLite journal 模式。
+const presetJournalModeWAL = "wal"
+
 func TestOpenAppliesPresetDSNToSQLite(t *testing.T) {
 	dsn := filepath.Join(t.TempDir(), "preset.db")
 	db := openPresetDB(t, dsn)
 
 	want := map[string]string{
-		"journal_mode": "wal",
+		"journal_mode": presetJournalModeWAL,
 		"synchronous":  "1",
 		"busy_timeout": "5000",
 	}

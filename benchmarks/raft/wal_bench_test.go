@@ -8,6 +8,10 @@ import (
 	ydx "github.com/shibingli/ydx/raft"
 )
 
+// walStorageRootName is the benchmark storage root directory. |
+// walStorageRootName 是基准存储根目录名。
+const walStorageRootName = "wal"
+
 // walEntries builds a contiguous batch of entries for storage benchmarks.
 // | walEntries 为存储基准构建连续日志批次。
 func walEntries(first uint64, count, size int) []ydx.Entry {
@@ -34,7 +38,7 @@ func BenchmarkYdxFileStoragePersist(b *testing.B) {
 			}
 			b.Run(name+"/batch"+itoa(batch), func(b *testing.B) {
 				storage, err := ydx.NewFileStorage(ydx.FileStorageOptions{
-					Dir:         filepath.Join(b.TempDir(), "wal"),
+					Dir:         filepath.Join(b.TempDir(), walStorageRootName),
 					NoSync:      noSync,
 					SegmentSize: 1 << 30,
 				})
@@ -75,7 +79,7 @@ func BenchmarkYdxFileStorageLargeEntry(b *testing.B) {
 			}
 			b.Run(mode+"/"+itoa(kib)+"KiB", func(b *testing.B) {
 				storage, err := ydx.NewFileStorage(ydx.FileStorageOptions{
-					Dir:         filepath.Join(b.TempDir(), "wal"),
+					Dir:         filepath.Join(b.TempDir(), walStorageRootName),
 					NoSync:      noSync,
 					SegmentSize: 1 << 30,
 				})
