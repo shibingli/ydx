@@ -4,5 +4,5 @@ go 1.27.4
 
 require (
 	github.com/shibingli/ydx/errs v0.1.6
-	github.com/shibingli/ydx/sysinfo v0.1.6
+	github.com/shibingli/ydx/sysinfo v0.1.7
 )
