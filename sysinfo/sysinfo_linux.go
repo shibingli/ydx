@@ -4,7 +4,7 @@ package sysinfo
 
 import (
 	"os"
-	"path/filepath"
+	"path"
 	"strings"
 )
 
@@ -19,6 +19,35 @@ func meminfo() map[string]uint64 {
 
 func readTotalMemory() uint64 {
 	return meminfo()["MemTotal"]
+}
+
+// pathWithin reports whether p is root or lies below it. | pathWithin 报告 p 是否等于 root
+// 或位于其下。
+func pathWithin(p, root string) bool {
+	return p == root || strings.HasPrefix(p, root+"/")
+}
+
+// cgroupAncestorMemoryFiles returns the memory limit files from base up to and including mount,
+// nearest first. In cgroup v2 the effective limit is the smallest memory.max along this path, so
+// every ancestor must be consulted rather than only the leaf and the mount root. |
+// cgroupAncestorMemoryFiles 返回从 base 到挂载根（含）的内存限额文件，由近及远。cgroup v2 的
+// 有效上限是路径上最小的 memory.max，因此必须检查每一层祖先，而不是只看叶子与挂载根。
+func cgroupAncestorMemoryFiles(base, mount, name string) []string {
+	if !pathWithin(base, mount) {
+		return nil
+	}
+	files := make([]string, 0, 8)
+	for {
+		files = append(files, path.Join(base, name))
+		if base == mount {
+			return files
+		}
+		parent := path.Dir(base)
+		if parent == base || !pathWithin(parent, mount) {
+			return files
+		}
+		base = parent
+	}
 }
 
 // cgroupMemoryFiles returns the cgroup v2 and v1 memory limit/usage files for
@@ -44,9 +73,13 @@ func cgroupMemoryFiles() (limits, usages []string) {
 		}
 		if parts[0] == "0" && parts[1] == "" {
 			rel := strings.TrimPrefix(parts[2], "/")
-			base := filepath.Join("/sys/fs/cgroup", rel)
-			limits = append([]string{filepath.Join(base, "memory.max")}, limits...)
-			usages = append([]string{filepath.Join(base, "memory.current")}, usages...)
+			mount := "/sys/fs/cgroup"
+			base := path.Join(mount, rel)
+			if !pathWithin(base, mount) {
+				continue
+			}
+			limits = append(cgroupAncestorMemoryFiles(base, mount, "memory.max"), limits...)
+			usages = append([]string{path.Join(base, "memory.current")}, usages...)
 			continue
 		}
 		// The controller list is comma-separated and often co-mounted, for example
@@ -62,9 +95,13 @@ func cgroupMemoryFiles() (limits, usages []string) {
 		}
 		if hasMemory {
 			rel := strings.TrimPrefix(parts[2], "/")
-			base := filepath.Join("/sys/fs/cgroup/memory", rel)
-			limits = append([]string{filepath.Join(base, "memory.limit_in_bytes")}, limits...)
-			usages = append([]string{filepath.Join(base, "memory.usage_in_bytes")}, usages...)
+			mount := "/sys/fs/cgroup/memory"
+			base := path.Join(mount, rel)
+			if !pathWithin(base, mount) {
+				continue
+			}
+			limits = append(cgroupAncestorMemoryFiles(base, mount, "memory.limit_in_bytes"), limits...)
+			usages = append([]string{path.Join(base, "memory.usage_in_bytes")}, usages...)
 		}
 	}
 	return limits, usages
@@ -82,9 +119,16 @@ func readMemoryLimit() uint64 {
 	limits, _ := cgroupMemoryFiles()
 	var cgroup uint64
 	for _, p := range limits {
-		if n := readFileUint(p); n != 0 {
+		n := readFileUint(p)
+		if n == 0 {
+			continue
+		}
+		// The effective cgroup v2 limit is the smallest numeric memory.max along the path;
+		// a leaf may say "max" while an ancestor is stricter, and a parent may be smaller
+		// than the leaf. | cgroup v2 的有效上限是路径上最小的数值 memory.max；叶子可能是
+		// "max" 而祖先更严格，父级也可能小于叶子。
+		if cgroup == 0 || n < cgroup {
 			cgroup = n
-			break
 		}
 	}
 	return clampLimit(cgroup, readTotalMemory())
