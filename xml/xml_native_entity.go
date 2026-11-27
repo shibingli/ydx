@@ -225,16 +225,22 @@ func (l *lexer) appendDTDEntity(dst []byte, value string, depth int) ([]byte, er
 	if depth > l.d.limits().MaxEntityDepth {
 		return dst, errs.Detail(ErrLimit, "entity expansion depth exceeded | 实体展开深度超限")
 	}
-	start := len(dst)
+	// direct counts only the bytes this call appends itself; nested calls charge their own
+	// output, so every expanded byte is charged exactly once instead of once per nesting
+	// level. | direct 只统计本次调用自身追加的字节；嵌套调用各自计费，使每个展开字节恰好
+	// 计费一次，而不是每层嵌套重复计费。
+	direct := 0
 	for i := 0; i < len(value); {
 		if value[i] != '&' {
 			dst = append(dst, value[i])
+			direct++
 			i++
 			continue
 		}
 		j := strings.IndexByte(value[i:], ';')
 		if j < 0 {
 			dst = append(dst, value[i:]...)
+			direct += len(value) - i
 			break
 		}
 		ref := value[i+1 : i+j]
@@ -247,13 +253,19 @@ func (l *lexer) appendDTDEntity(dst []byte, value string, depth int) ([]byte, er
 			}
 			n, err := strconv.ParseUint(digits, base, 64)
 			if err == nil && n <= unicode.MaxRune {
+				before := len(dst)
 				dst = append(dst, string(rune(n))...)
+				direct += len(dst) - before
 			} else {
 				dst = append(dst, value[i:i+j+1]...)
+				direct += j + 1
 			}
 		} else if v, ok := entityValues[ref]; ok {
 			dst = append(dst, v...)
+			direct += len(v)
 		} else if v, ok := l.entities[ref]; ok {
+			// The recursive call charges its own output; do not count it again here. |
+			// 递归调用自行计费其输出，这里不再重复计数。
 			var err error
 			dst, err = l.appendDTDEntity(dst, v, depth+1)
 			if err != nil {
@@ -262,25 +274,28 @@ func (l *lexer) appendDTDEntity(dst []byte, value string, depth int) ([]byte, er
 		} else if l.d.Entity != nil {
 			if v, ok := l.d.Entity[ref]; ok {
 				dst = append(dst, v...)
+				direct += len(v)
 			} else {
 				dst = append(dst, value[i:i+j+1]...)
+				direct += j + 1
 			}
 		} else {
 			dst = append(dst, value[i:i+j+1]...)
+			direct += j + 1
 		}
 		i += j + 1
 	}
-	if int64(len(dst)-start) > l.entityBudget {
+	if int64(direct) > l.entityBudget {
 		return dst, errs.Detail(ErrLimit, "entity expansion exceeds MaxEntityExpansion | 实体展开超过 MaxEntityExpansion")
 	}
-	l.entityBudget -= int64(len(dst) - start)
+	l.entityBudget -= int64(direct)
 	return dst, nil
 }
 
 // parseDTD records internal-subset general entity declarations from a DOCTYPE directive. External
 // entities are never loaded. | parseDTD 从 DOCTYPE 指令记录内部子集通用实体声明；绝不加载外部实体。
 func (l *lexer) parseDTD(data []byte) {
-	if !bytes.HasPrefix(data, []byte("DOCTYPE")) {
+	if !bytes.HasPrefix(data, []byte("DOCTYPE")) || l.dtdSeen {
 		return
 	}
 	open := bytes.IndexByte(data, '[')
@@ -308,6 +323,10 @@ func (l *lexer) parseDTD(data []byte) {
 	if closeIdx < 0 {
 		return
 	}
+	// XML permits at most one DOCTYPE; retaining declarations from repeated directives would
+	// grow the decoder's memory with the input. Later subsets are ignored. | XML 至多允许
+	// 一个 DOCTYPE；保留重复指令的声明会让解码器内存随输入增长。后续子集被忽略。
+	l.dtdSeen = true
 	subset := data[open+1 : closeIdx]
 	for i := 0; i < len(subset); {
 		if subset[i] != '<' {

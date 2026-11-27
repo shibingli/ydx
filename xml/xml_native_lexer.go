@@ -10,6 +10,14 @@ import (
 	"github.com/shibingli/ydx/errs"
 )
 
+// maxInternedNames bounds the decoder's shared-name cache. A streaming decoder may see an
+// unbounded number of distinct names; retaining every one for the decoder's lifetime would let
+// memory grow with the input even though each token stays under MaxTokenSize. Names beyond the
+// bound are copied per token and left to the garbage collector. | maxInternedNames 限制解码器的
+// 名称缓存。流式解码可能遇到任意多的唯一名称，若全部保留到解码器生命周期结束，内存会随输入
+// 增长（即使单个 token 未超过 MaxTokenSize）。超出上限的名称按 token 复制，交由垃圾回收。
+const maxInternedNames = 4096
+
 // rawName is a qualified name split into its optional prefix and local part. | rawName 是切分为
 // 可选前缀与本地名的限定名。
 type rawName struct {
@@ -35,6 +43,11 @@ type lexer struct {
 	pendingEndOK bool
 
 	budgetInit bool
+	// dtdSeen records that an internal subset was parsed. XML permits one DOCTYPE, so later
+	// declarations are ignored instead of accumulating for the decoder's lifetime. |
+	// dtdSeen 记录已解析内部子集。XML 只允许一个 DOCTYPE，后续声明被忽略，避免在解码器
+	// 生命周期内不断累积。
+	dtdSeen bool
 }
 
 func (l *lexer) syntax(msg string) error {
@@ -68,12 +81,17 @@ func (l *lexer) intern(b []byte) string {
 	if len(b) == 0 {
 		return ""
 	}
-	if l.names == nil {
-		l.names = make(map[string]string)
-	}
 	key := unsafe.String(unsafe.SliceData(b), len(b))
 	if v, ok := l.names[key]; ok {
 		return v
+	}
+	if len(l.names) >= maxInternedNames {
+		// The cache is full: return an owned copy without retaining it. | 缓存已满：返回
+		// 独立副本且不保留。
+		return string(b)
+	}
+	if l.names == nil {
+		l.names = make(map[string]string)
 	}
 	v := string(b)
 	l.names[v] = v
