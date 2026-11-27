@@ -242,3 +242,79 @@ func TestSnapshotChunkDataReadsFile(t *testing.T) {
 		t.Fatalf("snapshot size = %d, want %d", size, len(data))
 	}
 }
+
+// TestSnapshotReceiveCap rejects a chunk whose declared total exceeds the
+// configured install budget before allocating the image. |
+// TestSnapshotReceiveCap 在分配镜像前拒绝声明总大小超过配置安装预算的分块。
+func TestSnapshotReceiveCap(t *testing.T) {
+	n := &Node{id: 1, maxSnapshotReceive: 16, metrics: newMetrics()}
+	n.handleSnapshotChunk(&Message{
+		Type: MsgSnapChunk, From: 2, To: 1, Term: 1,
+		LogIndex: 0, LogTerm: 32,
+		Snapshot: &Snapshot{Index: 1, Term: 1},
+	})
+	if len(n.outBuf) != 1 || n.outBuf[0].Type != MsgSnapResp || !n.outBuf[0].Reject {
+		t.Fatalf("rejection = %+v", n.outBuf)
+	}
+}
+
+// TestSnapshotInstallSlots bounds concurrent chunked reassembly and releases a
+// discarded partial image. | TestSnapshotInstallSlots 限制并发分块重组，并在丢弃
+// 部分镜像时释放名额。
+func TestSnapshotInstallSlots(t *testing.T) {
+	n := &Node{id: 1, cfg: Config{snapshotSlots: make(chan struct{}, 1)}}
+	if !n.acquireSnapshotSlot() {
+		t.Fatal("first slot not acquired")
+	}
+	if n.acquireSnapshotSlot() {
+		t.Fatal("second slot acquired past the limit")
+	}
+	n.incomingSnapshot = &incomingSnapshot{slot: true}
+	n.discardIncomingSnapshot()
+	if !n.acquireSnapshotSlot() {
+		t.Fatal("slot not released by discard")
+	}
+	n.releaseSnapshotSlot()
+}
+
+// TestNodeHostSnapshotInstallLimit wires the host limit into every group. |
+// TestNodeHostSnapshotInstallLimit 将主机级上限接入每个组。
+func TestNodeHostSnapshotInstallLimit(t *testing.T) {
+	net := NewMemNetwork()
+	defer net.Close()
+	tr, err := net.NewTransport(1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	host, err := NewNodeHost(NodeHostConfig{
+		ID: 1, Transport: tr,
+		Storage: func(GroupID) (Storage, error) { return NewMemStorage(), nil },
+		FSM:     func(GroupID) (FSM, error) { return newKVFSM(), nil },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer host.Close()
+	g, err := host.StartGroup(GroupConfig{ID: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := cap(g.Node().cfg.snapshotSlots); got != 2 {
+		t.Fatalf("snapshot slots = %d, want 2", got)
+	}
+}
+
+// TestSnapshotThresholdJitter keeps the threshold inside the configured band.
+// | TestSnapshotThresholdJitter 保证阈值位于配置区间内。
+func TestSnapshotThresholdJitter(t *testing.T) {
+	if got := (&Node{snapshotEntries: 100}).snapshotThreshold(); got != 100 {
+		t.Fatalf("plain threshold = %d", got)
+	}
+	jittered := &Node{snapshotEntries: 100, cfg: Config{SnapshotJitter: 50}}
+	for i := 0; i < 200; i++ {
+		got := jittered.snapshotThreshold()
+		if got < 50 || got > 150 {
+			t.Fatalf("jittered threshold = %d outside [50,150]", got)
+		}
+	}
+}

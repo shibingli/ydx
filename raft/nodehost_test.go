@@ -245,10 +245,10 @@ func TestNodeHostTCPGroups(t *testing.T) {
 // TestListGroups scans persisted group directories. | TestListGroups 扫描持久化组目录。
 func TestListGroups(t *testing.T) {
 	dir := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(dir, "group-3"), 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Join(dir, groupDirPrefix+"3"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.MkdirAll(filepath.Join(dir, "group-1"), 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Join(dir, groupDirPrefix+"1"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.MkdirAll(filepath.Join(dir, "not-a-group"), 0o700); err != nil {

@@ -76,7 +76,7 @@ func TestFileStorageEncryptionRoundTrip(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			if raw := readTree(t, filepath.Join(dir, "wal")); bytes.Contains(raw, entryMarker) {
+			if raw := readTree(t, filepath.Join(dir, walDirName)); bytes.Contains(raw, entryMarker) {
 				t.Fatal("WAL contains plaintext entry payload")
 			}
 			snapRaw, err := os.ReadFile(snapPath)
@@ -89,7 +89,7 @@ func TestFileStorageEncryptionRoundTrip(t *testing.T) {
 			if bytes.Contains(snapRaw, snapMarker) {
 				t.Fatal("snapshot contains plaintext payload")
 			}
-			hsRaw, err := os.ReadFile(filepath.Join(dir, "HARDSTATE"))
+			hsRaw, err := os.ReadFile(filepath.Join(dir, hardStateFileName))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -199,10 +199,10 @@ func TestFileStorageEncryptionDefaultTargets(t *testing.T) {
 	if err := store.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if bytes.Contains(readTree(t, filepath.Join(dir, "wal")), marker) {
+	if bytes.Contains(readTree(t, filepath.Join(dir, walDirName)), marker) {
 		t.Fatal("default targets left WAL plaintext")
 	}
-	hsRaw, err := os.ReadFile(filepath.Join(dir, "HARDSTATE"))
+	hsRaw, err := os.ReadFile(filepath.Join(dir, hardStateFileName))
 	if err != nil {
 		t.Fatal(err)
 	}

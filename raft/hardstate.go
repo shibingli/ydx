@@ -69,7 +69,7 @@ func (s *FileStorage) PersistHardState(hs *HardState) error {
 	if err != nil {
 		return err
 	}
-	tmp := s.hsPath + ".tmp"
+	tmp := s.hsPath + hardStateTempSuffix
 	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
 	if err != nil {
 		return errs.Wrap(err, ErrStorage)

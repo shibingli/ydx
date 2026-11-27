@@ -2,11 +2,14 @@ package raft
 
 import "context"
 
-// Transport carries Raft messages between nodes. Implementations must preserve
-// the per-sender order of Send calls; Raft itself tolerates loss, duplication
-// and reordering, but ordered delivery keeps the pipeline efficient. | Transport
-// 在节点之间传递 Raft 消息。实现必须保持每个发送者 Send 调用的顺序；Raft 本身能
-// 容忍丢失、重复与乱序，但有序交付能让流水线更高效。
+// Transport carries Raft messages between nodes. Implementations should
+// preserve the per-sender order of Send calls within a traffic class; control
+// messages (elections, heartbeats, acknowledgements, reads) may overtake large
+// data batches (AppendEntries, snapshots) so a busy replication stream cannot
+// delay liveness. Raft tolerates loss, duplication and reordering. | Transport
+// 在节点之间传递 Raft 消息。实现应保持同一流量类别内每个发送者 Send 调用的顺序；
+// 控制消息（选举、心跳、确认、读）可以越过大数据批次（AppendEntries、快照），
+// 避免繁忙的复制流延迟活性。Raft 能容忍丢失、重复与乱序。
 type Transport interface {
 	// Start installs the inbound handler and starts any listeners. The handler
 	// must be safe for concurrent calls. | Start 安装入站处理器并启动监听。处理器

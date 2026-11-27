@@ -176,21 +176,32 @@ const (
 	StateShutdown
 )
 
+// State names are part of the JSON and admin API contract. | 状态名属于 JSON 与
+// 管理 API 契约。
+const (
+	stateNameFollower     = "follower"
+	stateNamePreCandidate = "pre-candidate"
+	stateNameCandidate    = "candidate"
+	stateNameLeader       = "leader"
+	stateNameShutdown     = "shutdown"
+	stateNameUnknown      = "unknown"
+)
+
 // String renders a stable role name. | String 输出稳定的角色名。
 func (s State) String() string {
 	switch s {
 	case StateFollower:
-		return "follower"
+		return stateNameFollower
 	case StatePreCandidate:
-		return "pre-candidate"
+		return stateNamePreCandidate
 	case StateCandidate:
-		return "candidate"
+		return stateNameCandidate
 	case StateLeader:
-		return "leader"
+		return stateNameLeader
 	case StateShutdown:
-		return "shutdown"
+		return stateNameShutdown
 	default:
-		return "unknown"
+		return stateNameUnknown
 	}
 }
 

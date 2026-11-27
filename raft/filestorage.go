@@ -12,6 +12,25 @@ import (
 )
 
 const (
+	// Storage layout names are referenced by recovery, tests and operations.
+	// Keep them in one place instead of repeating path literals. | 存储布局名称由
+	// 恢复、测试与运维引用；集中定义，避免重复路径字面量。
+	walDirName          = "wal"
+	snapshotDirName     = "snapshots"
+	hardStateFileName   = "HARDSTATE"
+	hardStateTempSuffix = ".tmp"
+	lockFileName        = "LOCK"
+	groupDirPrefix      = "group-"
+	snapshotFileSuffix  = ".snap"
+	snapshotTempPrefix  = ".snap-"
+	snapshotTempPattern = snapshotTempPrefix + "*"
+	snapshotNameFormat  = "%020d-%020d" + snapshotFileSuffix
+	// walSegmentSuffix and walLockFileName are owned by ydx/wal and only used
+	// to locate its files from raft tests and documentation. | walSegmentSuffix
+	// 与 walLockFileName 属于 ydx/wal，仅在 raft 测试与文档中定位其文件。
+	walSegmentSuffix = ".wal"
+	walLockFileName  = "wal.lock"
+
 	snapshotMagic   = "YDRSNP01"
 	snapshotVersion = byte(1)
 	// snapshotVersionCRCOnly adds a checksum-flags byte and omits the SHA-256
@@ -47,6 +66,11 @@ type FileStorageOptions struct {
 	// Dir/snapshots. | Dir 是存储根目录；WAL 位于 Dir/wal，快照默认为
 	// Dir/snapshots。
 	Dir string
+	// WALDir optionally places WAL segments on a different volume from the
+	// snapshots. Empty uses Dir/wal. The directory is owned exclusively by this
+	// storage instance; the lock remains in Dir. | WALDir 可选地将 WAL 分段放在与
+	// 快照不同的卷；为空时使用 Dir/wal。该目录由本存储实例独占；锁仍位于 Dir。
+	WALDir string
 	// SnapshotDir optionally places snapshot images on a different volume from
 	// the WAL. Empty uses Dir/snapshots. The directory is owned exclusively by
 	// this storage instance; the lock remains in Dir. | SnapshotDir 可选地将快照
@@ -125,15 +149,19 @@ func NewFileStorage(opts FileStorageOptions) (*FileStorage, error) {
 	if err != nil {
 		return nil, err
 	}
+	walDir := opts.WALDir
+	if walDir == "" {
+		walDir = filepath.Join(opts.Dir, walDirName)
+	}
 	snapDir := opts.SnapshotDir
 	if snapDir == "" {
-		snapDir = filepath.Join(opts.Dir, "snapshots")
+		snapDir = filepath.Join(opts.Dir, snapshotDirName)
 	}
 	s := &FileStorage{
 		dir:              opts.Dir,
-		walDir:           filepath.Join(opts.Dir, "wal"),
+		walDir:           walDir,
 		snapDir:          snapDir,
-		hsPath:           filepath.Join(opts.Dir, "HARDSTATE"),
+		hsPath:           filepath.Join(opts.Dir, hardStateFileName),
 		noSync:           opts.NoSync,
 		segmentSize:      opts.SegmentSize,
 		sizePolicy:       opts.SizePolicy,
@@ -147,7 +175,7 @@ func NewFileStorage(opts FileStorageOptions) (*FileStorage, error) {
 	if err := os.MkdirAll(s.snapDir, 0o700); err != nil {
 		return nil, errs.Wrap(err, ErrStorage)
 	}
-	lockPath := filepath.Join(opts.Dir, "LOCK")
+	lockPath := filepath.Join(opts.Dir, lockFileName)
 	lockFile, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
 		return nil, errs.Wrap(err, ErrStorage)
@@ -161,7 +189,7 @@ func NewFileStorage(opts FileStorageOptions) (*FileStorage, error) {
 	// by a process that crashed mid-write. | 目录锁使清理崩溃进程遗留的临时快照
 	// 文件变得安全。
 	cleanupSnapshotTemps(s.snapDir)
-	_ = os.Remove(s.hsPath + ".tmp")
+	_ = os.Remove(s.hsPath + hardStateTempSuffix)
 	return s, nil
 }
 
@@ -173,7 +201,7 @@ func cleanupSnapshotTemps(dir string) {
 		return
 	}
 	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasPrefix(entry.Name(), ".snap-") {
+		if entry.IsDir() || !strings.HasPrefix(entry.Name(), snapshotTempPrefix) {
 			continue
 		}
 		_ = os.Remove(filepath.Join(dir, entry.Name()))

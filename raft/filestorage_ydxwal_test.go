@@ -53,7 +53,7 @@ func TestFileStorageUsesYdxWAL(t *testing.T) {
 	if _, err := s.Load(); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := os.Stat(filepath.Join(dir, "wal", "wal.lock")); err != nil {
+	if _, err := os.Stat(filepath.Join(dir, walDirName, walLockFileName)); err != nil {
 		t.Fatalf("ydx/wal lock file missing: %v", err)
 	}
 }

@@ -17,7 +17,7 @@ func TestStatusMarshalJSON(t *testing.T) {
 		SnapshotIndex: 5, Snapshotting: true, Joint: true,
 		Voters: []NodeID{1, 2}, Learners: []NodeID{3},
 		Peers: []PeerStatus{{
-			ID: 2, Addr: "tcp://2", State: "replicate", Match: 9, Next: 10,
+			ID: 2, Addr: "tcp://2", State: progressNameReplicate, Match: 9, Next: 10,
 			InflightMsgs: 1, InflightBytes: 128, PendingSnapshot: 4,
 			SnapshotError: "frame limit", RecentActive: true,
 		}},
@@ -30,7 +30,7 @@ func TestStatusMarshalJSON(t *testing.T) {
 	if err := ydxjson.Unmarshal(raw, &got); err != nil {
 		t.Fatal(err)
 	}
-	if got["state"] != "leader" {
+	if got["state"] != stateNameLeader {
 		t.Fatalf("state = %v", got["state"])
 	}
 	if got["id"] != float64(1) || got["last_index"] != float64(10) ||
@@ -45,7 +45,7 @@ func TestStatusMarshalJSON(t *testing.T) {
 	if !ok {
 		t.Fatalf("peer = %#v", peers[0])
 	}
-	if peer["state"] != "replicate" || peer["match"] != float64(9) ||
+	if peer["state"] != progressNameReplicate || peer["match"] != float64(9) ||
 		peer["snapshot_error"] != "frame limit" {
 		t.Fatalf("peer json = %v", peer)
 	}

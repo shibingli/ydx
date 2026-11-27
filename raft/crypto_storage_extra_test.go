@@ -177,7 +177,7 @@ func TestFileStorageEncryptionRotation(t *testing.T) {
 	if err := store.Close(); err != nil {
 		t.Fatal(err)
 	}
-	hsRaw, err := os.ReadFile(filepath.Join(dir, "HARDSTATE"))
+	hsRaw, err := os.ReadFile(filepath.Join(dir, hardStateFileName))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -214,8 +214,8 @@ func TestFileStorageEncryptionTargets(t *testing.T) {
 		snapPlain bool
 		hardPlain bool
 	}{
-		{"snapshots", EncryptSnapshots, true, false, true},
-		{"wal", EncryptWAL, false, true, true},
+		{snapshotDirName, EncryptSnapshots, true, false, true},
+		{walDirName, EncryptWAL, false, true, true},
 		{"hardstate", EncryptHardState, true, true, false},
 	}
 	for _, tc := range cases {
@@ -242,7 +242,7 @@ func TestFileStorageEncryptionTargets(t *testing.T) {
 			if err := store.Close(); err != nil {
 				t.Fatal(err)
 			}
-			walPlain := bytes.Contains(readTree(t, filepath.Join(dir, "wal")), entryMarker)
+			walPlain := bytes.Contains(readTree(t, filepath.Join(dir, walDirName)), entryMarker)
 			if walPlain != tc.walPlain {
 				t.Fatalf("WAL plaintext = %v, want %v", walPlain, tc.walPlain)
 			}
@@ -254,7 +254,7 @@ func TestFileStorageEncryptionTargets(t *testing.T) {
 			if snapPlain != tc.snapPlain {
 				t.Fatalf("snapshot plaintext = %v, want %v", snapPlain, tc.snapPlain)
 			}
-			hsRaw, err := os.ReadFile(filepath.Join(dir, "HARDSTATE"))
+			hsRaw, err := os.ReadFile(filepath.Join(dir, hardStateFileName))
 			if err != nil {
 				t.Fatal(err)
 			}

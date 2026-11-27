@@ -75,15 +75,44 @@ func (n *Node) snapshotConf(index uint64) (ConfState, bool) {
 	}
 }
 
+// snapshotThreshold returns the current applied-entry threshold. SnapshotJitter
+// spreads automatic snapshots across nodes and groups so their disk and CPU
+// bursts do not align; the value always stays within the configured band. |
+// snapshotThreshold 返回当前已应用日志项阈值。SnapshotJitter 让不同节点与组的
+// 自动快照错开，避免磁盘与 CPU 峰值叠加；结果始终位于配置区间内。
+func (n *Node) snapshotThreshold() uint64 {
+	if n.snapshotEntries == 0 {
+		return 0
+	}
+	jitter := n.cfg.SnapshotJitter
+	if jitter <= 0 {
+		return n.snapshotEntries
+	}
+	if jitter > 50 {
+		jitter = 50
+	}
+	span := int64(n.snapshotEntries) * int64(jitter) / 100
+	if span <= 0 {
+		return n.snapshotEntries
+	}
+	delta := int64(fastrand()%uint64(2*span+1)) - span
+	threshold := int64(n.snapshotEntries) + delta
+	if threshold < 1 {
+		return 1
+	}
+	return uint64(threshold)
+}
+
 // shouldSnapshot reports whether the applied-entry threshold was crossed.
 // | shouldSnapshot 报告是否跨过已应用日志项阈值。
 func (n *Node) shouldSnapshot() bool {
-	if n.snapshotEntries == 0 {
+	threshold := n.snapshotThreshold()
+	if threshold == 0 {
 		return false
 	}
 	applied := n.applied.Load()
 	base := n.lastSnapshot.Load()
-	return applied > base && applied-base >= n.snapshotEntries
+	return applied > base && applied-base >= threshold
 }
 
 // createSnapshot captures the state machine at the current applied index. It

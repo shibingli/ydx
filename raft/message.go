@@ -57,45 +57,67 @@ const (
 // maxMessageType is the largest valid wire type. | maxMessageType 是最大合法线类型。
 const maxMessageType = MsgSnapChunkResp
 
+// RPC names are part of the metrics and log contract. | RPC 名称属于指标与日志契约。
+const (
+	messageNameHup            = "hup"
+	messageNamePreVote        = "prevote"
+	messageNamePreVoteResp    = "prevote-resp"
+	messageNameVote           = "vote"
+	messageNameVoteResp       = "vote-resp"
+	messageNameApp            = "append"
+	messageNameAppResp        = "append-resp"
+	messageNameHeartbeat      = "heartbeat"
+	messageNameHeartbeatResp  = "heartbeat-resp"
+	messageNameSnap           = "snapshot"
+	messageNameSnapResp       = "snapshot-resp"
+	messageNameTransferLeader = "transfer-leader"
+	messageNameTimeoutNow     = "timeout-now"
+	messageNameReadIndex      = "read-index"
+	messageNameReadIndexResp  = "read-index-resp"
+	messageNameSnapChunk      = "snapshot-chunk"
+	messageNameSnapChunkResp  = "snapshot-chunk-resp"
+	messageNameUnknown        = "unknown"
+)
+
 // String renders a stable RPC name. | String 输出稳定的 RPC 名称。
 func (m MessageType) String() string {
 	switch m {
 	case MsgHup:
-		return "hup"
+		return messageNameHup
 	case MsgPreVote:
-		return "prevote"
+		return messageNamePreVote
 	case MsgPreVoteResp:
-		return "prevote-resp"
+		return messageNamePreVoteResp
 	case MsgVote:
-		return "vote"
+		return messageNameVote
 	case MsgVoteResp:
-		return "vote-resp"
+		return messageNameVoteResp
 	case MsgApp:
-		return "append"
+		return messageNameApp
 	case MsgAppResp:
-		return "append-resp"
+		return messageNameAppResp
 	case MsgHeartbeat:
-		return "heartbeat"
+		return messageNameHeartbeat
 	case MsgHeartbeatResp:
-		return "heartbeat-resp"
+		return messageNameHeartbeatResp
 	case MsgSnap:
-		return "snapshot"
+		return messageNameSnap
 	case MsgSnapResp:
-		return "snapshot-resp"
+		return messageNameSnapResp
 	case MsgTransferLeader:
-		return "transfer-leader"
+		return messageNameTransferLeader
 	case MsgTimeoutNow:
-		return "timeout-now"
+		return messageNameTimeoutNow
 	case MsgReadIndex:
-		return "read-index"
+		return messageNameReadIndex
 	case MsgReadIndexResp:
-		return "read-index-resp"
+		return messageNameReadIndexResp
 	case MsgSnapChunk:
-		return "snapshot-chunk"
+		return messageNameSnapChunk
 	case MsgSnapChunkResp:
-		return "snapshot-chunk-resp"
+		return messageNameSnapChunkResp
 	default:
-		return "unknown"
+		return messageNameUnknown
 	}
 }
 
@@ -177,6 +199,43 @@ func isControlMessage(t MessageType) bool {
 	default:
 		return false
 	}
+}
+
+// isTransportControl reports whether a message takes the transport's
+// high-priority lane. Unlike isControlMessage, whole snapshots and snapshot
+// chunks are data here: they are large and must not delay elections,
+// heartbeats, append acknowledgements, linearizable reads or snapshot
+// acknowledgements. The two lanes preserve order within each class but may
+// reorder a data message past a later control message, which Raft tolerates. |
+// isTransportControl 报告消息是否进入传输层高优先级通道。与 isControlMessage 不同，
+// 完整快照与快照分块在这里属于数据：它们体积大，不能阻塞选举、心跳、追加确认、
+// 线性一致读或快照确认。两个通道各自保序，但数据消息可能被之后到达的控制消息超越，
+// Raft 能容忍这种重排。
+func isTransportControl(t MessageType) bool {
+	switch t {
+	case MsgPreVote, MsgPreVoteResp, MsgVote, MsgVoteResp,
+		MsgHeartbeat, MsgHeartbeatResp, MsgAppResp,
+		MsgTransferLeader, MsgTimeoutNow,
+		MsgReadIndex, MsgReadIndexResp,
+		MsgSnapResp, MsgSnapChunkResp:
+		return true
+	default:
+		return false
+	}
+}
+
+// splitTransportMessages separates one destination batch into control and data
+// lanes while preserving order within each lane. | splitTransportMessages 将一个
+// 目的地批次拆分为控制与数据通道，并保持各通道内顺序。
+func splitTransportMessages(msgs []Message) (control, data []Message) {
+	for i := range msgs {
+		if isTransportControl(msgs[i].Type) {
+			control = append(control, msgs[i])
+		} else {
+			data = append(data, msgs[i])
+		}
+	}
+	return control, data
 }
 
 // isResponse reports whether the message answers a request. | isResponse 报告消息

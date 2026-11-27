@@ -17,6 +17,50 @@ type incomingSnapshot struct {
 	term     uint64
 	total    uint64
 	received uint64
+	slot     bool
+}
+
+// acquireSnapshotSlot reserves one host-wide chunked-install slot. It returns
+// false immediately when every slot is busy; the leader retries later. |
+// acquireSnapshotSlot 预留一个主机级分块安装名额。所有名额繁忙时立即返回 false，
+// 由领导者稍后重试。
+func (n *Node) acquireSnapshotSlot() bool {
+	slots := n.cfg.snapshotSlots
+	if slots == nil {
+		return true
+	}
+	select {
+	case slots <- struct{}{}:
+		return true
+	default:
+		return false
+	}
+}
+
+// releaseSnapshotSlot returns one host-wide install slot. | releaseSnapshotSlot
+// 归还一个主机级安装名额。
+func (n *Node) releaseSnapshotSlot() {
+	slots := n.cfg.snapshotSlots
+	if slots == nil {
+		return
+	}
+	select {
+	case <-slots:
+	default:
+	}
+}
+
+// discardIncomingSnapshot drops a partial reassembly and releases its slot. |
+// discardIncomingSnapshot 丢弃未完成的重组并释放其名额。
+func (n *Node) discardIncomingSnapshot() {
+	inc := n.incomingSnapshot
+	if inc == nil {
+		return
+	}
+	n.incomingSnapshot = nil
+	if inc.slot {
+		n.releaseSnapshotSlot()
+	}
 }
 
 // snapshotSize returns the payload size of a snapshot. | snapshotSize 返回快照负载
@@ -246,7 +290,7 @@ func (n *Node) handleSnapshotChunk(m *Message) {
 	}
 	offset := m.LogIndex
 	total := m.LogTerm
-	if total > maxSnapshotBytes || offset > total || validateConfState(snap.ConfState) != nil {
+	if total > uint64(n.maxSnapshotReceive) || offset > total || validateConfState(snap.ConfState) != nil {
 		n.send(Message{Type: MsgSnapResp, To: m.From, Term: n.term, Reject: true,
 			Index: n.committed, LogIndex: snap.Index})
 		return
@@ -294,8 +338,19 @@ func (n *Node) handleSnapshotChunk(m *Message) {
 			n.sendSnapshotChunkResp(m.From, 0, offset, snap.Index)
 			return
 		}
+		// A stale partial image from another sender/term/index must release its
+		// slot before the new one is reserved. | 来自其它发送者/任期/索引的过期
+		// 部分镜像必须先释放名额，再预留新名额。
+		n.discardIncomingSnapshot()
+		if !n.acquireSnapshotSlot() {
+			// Every host-wide slot is busy. Ask the leader to restart from zero
+			// later instead of allocating another image. | 主机级名额已满。让领导者
+			// 稍后从零重试，而不是再分配一个镜像。
+			n.sendSnapshotChunkResp(m.From, 0, offset, snap.Index)
+			return
+		}
 		inc = &incomingSnapshot{
-			from: m.From, term: m.Term, total: total,
+			from: m.From, term: m.Term, total: total, slot: true,
 			snap: &Snapshot{
 				Index:     snap.Index,
 				Term:      snap.Term,
@@ -310,7 +365,7 @@ func (n *Node) handleSnapshotChunk(m *Message) {
 		return
 	}
 	if uint64(len(snap.Data)) > inc.total-inc.received {
-		n.incomingSnapshot = nil
+		n.discardIncomingSnapshot()
 		n.sendSnapshotChunkResp(m.From, 0, offset, snap.Index)
 		return
 	}
@@ -319,7 +374,7 @@ func (n *Node) handleSnapshotChunk(m *Message) {
 	n.sendSnapshotChunkResp(m.From, inc.received, offset, snap.Index)
 	if inc.received == inc.total {
 		complete := inc.snap
-		n.incomingSnapshot = nil
+		n.discardIncomingSnapshot()
 		n.handleSnapshot(&Message{Type: MsgSnap, From: m.From, To: n.id,
 			Term: m.Term, Snapshot: complete})
 	}

@@ -20,7 +20,7 @@ import (
 // snapshotPath returns the canonical file name for an index and term. | snapshotPath
 // 返回索引与任期的规范文件名。
 func (s *FileStorage) snapshotPath(index, term uint64) string {
-	return filepath.Join(s.snapDir, fmt.Sprintf("%020d-%020d.snap", index, term))
+	return filepath.Join(s.snapDir, fmt.Sprintf(snapshotNameFormat, index, term))
 }
 
 // WriteSnapshotFile writes and fsyncs one local snapshot image without touching
@@ -110,7 +110,7 @@ func (s *FileStorage) writeSnapshotFile(snap *Snapshot, noSync bool) error {
 	// passes over a potentially large image. CRC-only mode skips the SHA-256
 	// scan entirely. | 在写入负载时计算校验和，避免对可能很大的镜像做多次完整扫描。
 	// 仅 CRC 模式完全跳过 SHA-256 扫描。
-	tmp, err := os.CreateTemp(s.snapDir, ".snap-*")
+	tmp, err := os.CreateTemp(s.snapDir, snapshotTempPattern)
 	if err != nil {
 		return errs.Wrap(err, ErrStorage)
 	}
@@ -351,10 +351,10 @@ func (s *FileStorage) pruneSnapshotsLocked() {
 	}
 	var files []snapFile
 	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".snap") {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), snapshotFileSuffix) {
 			continue
 		}
-		base := strings.TrimSuffix(entry.Name(), ".snap")
+		base := strings.TrimSuffix(entry.Name(), snapshotFileSuffix)
 		parts := strings.Split(base, "-")
 		if len(parts) != 2 {
 			continue

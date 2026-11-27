@@ -179,6 +179,17 @@ IPsec/MACsec，或改用启用 TLS 的 TCP/HTTP 传输。
   地址、队列与协程；实现 `raft.PeerDirectory` 的传输让 `Config.Peers` 只回填缺失
   地址，不会覆盖显式 `UpdatePeer` 或其它组学到的成员地址；`TCPTransport`、`HTTP`、
   `RDMA` 均已实现两者。
+- TCP/HTTP/RDMA 传输为每个对端提供**控制/数据双通道**：选举、心跳、追加确认、
+  ReadIndex 与快照确认走控制通道，AppendEntries、完整快照与快照分块走数据通道。
+  大数据批次因此不会阻塞心跳；各通道内部保序，跨通道可能重排，Raft 能容忍。
+  控制通道满时会回退到数据通道，优先保证不丢失活性消息。
+- 入站快照默认在内存重组，最多 256 MiB。可用 `Config.MaxSnapshotReceiveBytes`
+  降低单次安装的堆上限；NodeHost 还可用 `MaxSnapshotInstalls`（默认 2，负值不限）
+  限制整台主机并发重组数，名额繁忙时领导者稍后重试。超过上限的快照会被拒绝。
+  真正的流式落盘需要 FSM/Storage 侧扩展，当前版本未提供，超大状态机应优先使用
+  `StreamingFSM` 生成本地快照并控制单镜像大小。
+- RDMA 的 `ReadTimeout`（默认 60 秒，负值关闭）关闭长时间收不到完整帧的连接，
+  防止停滞对端永久占用注册缓冲区与读协程；正常心跳会让健康连接远低于该值。
 - 应用只在日志项**本地持久化后**执行，跟随者不会把尚未落盘的已提交项交给 FSM。
 
 
@@ -201,6 +212,14 @@ IPsec/MACsec，或改用启用 TLS 的 TCP/HTTP 传输。
   尚未与领导者校验的冲突后缀。`InstallSnapshot` 与本地快照并发时，旧镜像不会
   回退内存快照基点或配置基点。
 - 默认关闭“任意本地读”；`ReadIndex`/`Barrier` 是唯一的线性一致读入口。
+- 一次 `ReadIndex`/`Barrier` 返回的索引可用于读取任意多个 key；并发 `ReadIndex`
+  会在领导者当前心跳轮次内合并，调用方应把一批读合并到同一个索引，而不是每个 key
+  各做一次确认。`MaxPendingReads` 是背压上限，不是吞吐旋钮。
+- 读多写少的 FSM 推荐写时复制模板：Apply 发布不可变状态并原子替换指针，读者无锁
+  加载；`example_cow_test.go` 给出了可直接复用的实现与 `-race` 测试。多 key 一致
+  读应先取得 ReadIndex，再在同一个已应用版本上读取。
+- 分布式无序访问仍可能打散读：按地域把读路由到 follower/learner，并让写请求保持
+  在领导者；跨组读不提供全局快照，需要一致视图时把相关 key 放在同一组。
 
 ## 可观测性与 JSON
 
@@ -542,6 +561,16 @@ res, err := host.Propose(ctx, 10, []byte("set key=value"))
 - 每个组独立选举、独立快照、独立成员变更；一个组不可用不会阻塞其它组。
 - 每组的 `Node` 各有独立事件循环/apply 协程；大量组可共享基础传输与磁盘目录，
   但 CPU 调度由 Go runtime 负责。
+- 设置 `GroupConfig.ElectionStagger > 0` 后，组 ID 会轮换首选竞选顺序：同一批
+  组不再全部由低 ID 主机优先当选，写与心跳负载更均匀；偏好只影响竞选延迟，首选
+  节点故障时其它副本仍会按 stagger 依次竞选。该行为对 `GroupID != 0` 生效，独立
+  `Node` 保持原有排序。
+- `NodeHostConfig.MaxSnapshotInstalls`（默认 2，负值不限）限制整台主机并发的
+  分块快照重组；`Config.SnapshotJitter`（0-50）让各组自动快照阈值上下浮动，
+  避免同时快照争抢磁盘与 CPU。
+- `FileStorageOptions.WALDir`/`SnapshotDir` 可把 WAL 与快照放到不同卷，配合
+  `NodeHost` 的每组独立目录降低 fsync 与快照 I/O 相互干扰；目录仍需 0700 权限，
+  `Dir` 下的锁保证单写者。
 
 ## 限制与边界
 
@@ -553,6 +582,15 @@ res, err := host.Propose(ctx, 10, []byte("set key=value"))
 - 快照编码为一个帧；RDMA 传输会按 `BufferSize` 自动分块重组，TCP/HTTP 受单帧
   上限约束（默认 64 MiB，可配置 `MaxFrameBytes`/`MaxBodyBytes`）。超大状态机在
   TCP/HTTP 上应调大上限或自行分块。
+- 入站快照仍在内存重组，单次可达协议上限 256 MiB；`MaxSnapshotReceiveBytes` 与
+  `NodeHostConfig.MaxSnapshotInstalls` 提供预算与并发上限，但流式落盘尚未提供。
+  超大状态机应优先控制单镜像大小或使用支持流式本地快照的 `StreamingFSM`。
+- 帧级 HMAC 只认证完整性，不提供抗重放；不可信网络必须使用 TLS/mTLS，或在
+  网络层限制 Raft 端口访问。RDMA 无内置加密，需要 IPsec/MACsec。
+- TCP/HTTP/RDMA 的控制/数据双通道允许控制消息越过大数据批次；同一通道内保序。
+  依赖传输层全局严格有序的自定义逻辑需要显式处理这种跨通道重排。
+- 多组之间没有全局快照或跨组事务：跨组读可能看到不同日志索引，跨组原子写需要
+  应用层 2PC 或把相关 key 放在同一组。
 
 ## 依赖与鸣谢
 

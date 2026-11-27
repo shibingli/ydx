@@ -95,9 +95,12 @@
 // unless chunking is enabled. Config.SnapshotChunkBytes transfers large images
 // as ack-gated MsgSnapChunk messages, removing the transport frame limit; the
 // receiver still reassembles the whole image, so the protocol cap of 256 MiB
-// remains. Chunk messages are an opt-in extension and require every peer to
-// support them. Without chunking, a leader logs an explicit error when a
-// snapshot cannot fit instead of retrying silently. |
+// remains. Config.MaxSnapshotReceiveBytes lowers the per-install heap budget;
+// NodeHostConfig.MaxSnapshotInstalls (default 2) bounds concurrent chunked
+// reassembly on one host, and a busy slot makes the leader retry later.
+// Chunk messages are an opt-in extension and require every peer to support
+// them. Without chunking, a leader logs an explicit error when a snapshot
+// cannot fit instead of retrying silently. |
 // 入站消息默认不认证。因此 NewTCPTransport 与 NewHTTPTransport 在 SharedSecret 为空
 // 时拒绝创建，除非显式设置 AllowInsecure；所有多节点部署必须配置 TLS 和/或至少
 // 16 字节的 SharedSecret，并建议同时使用以获得加密与帧完整性。RDMA 需要 HMAC 与
@@ -220,6 +223,15 @@
 // confidentiality. SharedSecret adds frame-level HMAC authentication. | 显式
 // Config.Transport 优先于 Config.RDMA。RDMA 提供可靠传输但不加密；保密性请使用
 // IPsec/MACsec 或启用 TLS 的 TCP/HTTP 传输。SharedSecret 增加帧级 HMAC 认证。
+//
+// TCP, HTTP and RDMA transports keep a per-peer control lane for elections,
+// heartbeats, acknowledgements and reads, and a data lane for AppendEntries and
+// snapshots, so a large batch cannot delay liveness. Order is preserved within
+// each lane; Raft tolerates cross-lane reordering. RDMATransportOptions.ReadTimeout
+// closes connections that stop delivering frames. | TCP、HTTP 与 RDMA 传输为每个
+// 对端保留控制通道（选举、心跳、确认、读）与数据通道（AppendEntries、快照），大
+// 批次不会延迟活性；各通道内部保序，Raft 容忍跨通道重排。
+// RDMATransportOptions.ReadTimeout 关闭长时间不投递帧的连接。
 //
 // # Multi-group NodeHost | 多组 NodeHost
 //

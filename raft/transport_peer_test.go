@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"sync"
 	"testing"
 	"time"
 )
@@ -252,5 +253,140 @@ func TestGroupMuxPeerRefcount(t *testing.T) {
 	mux.unregister(2)
 	if got := base.addr(3); got != "" {
 		t.Fatalf("peer survived the last group unregister: %q", got)
+	}
+}
+
+// TestSplitTransportMessages checks the control/data classification. |
+// TestSplitTransportMessages 检查控制/数据分类。
+func TestSplitTransportMessages(t *testing.T) {
+	control, data := splitTransportMessages([]Message{
+		{Type: MsgHeartbeat}, {Type: MsgApp}, {Type: MsgSnapChunkResp},
+		{Type: MsgSnap}, {Type: MsgAppResp}, {Type: MsgVote},
+	})
+	if len(control) != 4 || len(data) != 2 {
+		t.Fatalf("control=%d data=%d", len(control), len(data))
+	}
+	for _, m := range control {
+		if !isTransportControl(m.Type) {
+			t.Fatalf("data message %v in control lane", m.Type)
+		}
+	}
+	for _, m := range data {
+		if isTransportControl(m.Type) {
+			t.Fatalf("control message %v in data lane", m.Type)
+		}
+	}
+}
+
+// blockingConn blocks each write until released, letting the test order queued
+// lanes deterministically. | blockingConn 阻塞每次写入直到被释放，使测试可以确定
+// 通道顺序。
+type blockingConn struct {
+	writes    chan []byte
+	release   chan struct{}
+	done      chan struct{}
+	closeOnce sync.Once
+}
+
+// Write implements io.Writer. | Write 实现 io.Writer。
+func (c *blockingConn) Write(p []byte) (int, error) {
+	cp := append([]byte(nil), p...)
+	select {
+	case c.writes <- cp:
+	case <-c.done:
+		return 0, io.ErrClosedPipe
+	}
+	select {
+	case <-c.release:
+		return len(p), nil
+	case <-c.done:
+		return 0, io.ErrClosedPipe
+	}
+}
+
+// Read implements io.Reader. | Read 实现 io.Reader。
+func (c *blockingConn) Read([]byte) (int, error) {
+	<-c.done
+	return 0, io.EOF
+}
+
+// Close implements io.Closer. | Close 实现 io.Closer。
+func (c *blockingConn) Close() error {
+	c.closeOnce.Do(func() { close(c.done) })
+	return nil
+}
+
+// blockingBackend returns one blocking connection for every dial. |
+// blockingBackend 每次拨号都返回同一个阻塞连接。
+type blockingBackend struct {
+	conn *blockingConn
+}
+
+// listen implements streamBackend. | listen 实现 streamBackend。
+func (b *blockingBackend) listen(string) (streamListener, error) {
+	return nil, errors.New("listen not used")
+}
+
+// dial implements streamBackend. | dial 实现 streamBackend。
+func (b *blockingBackend) dial(context.Context, string) (io.ReadWriteCloser, error) {
+	return b.conn, nil
+}
+
+// TestStreamControlLanePriority verifies a queued heartbeat overtakes a later
+// data batch once the in-flight write completes. | TestStreamControlLanePriority
+// 验证已排队的控制帧在当前写入完成后越过后续数据批次。
+func TestStreamControlLanePriority(t *testing.T) {
+	conn := &blockingConn{
+		writes: make(chan []byte, 8), release: make(chan struct{}), done: make(chan struct{}),
+	}
+	tr, err := newStreamTransport(&blockingBackend{conn: conn}, "", nil, 16, 1<<20, 0, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tr.Close()
+	if err := tr.Start(func(Message) {}); err != nil {
+		t.Fatal(err)
+	}
+	tr.UpdatePeer(2, "blocking:2")
+	send := func(typ MessageType) {
+		t.Helper()
+		if err := tr.Send(context.Background(), []Message{{Type: typ, From: 1, To: 2, Term: 1}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	send(MsgApp)
+	select {
+	case <-conn.writes:
+	case <-time.After(3 * time.Second):
+		t.Fatal("first data frame was not written")
+	}
+	send(MsgApp)
+	send(MsgHeartbeat)
+	conn.release <- struct{}{}
+	var second []byte
+	select {
+	case second = <-conn.writes:
+	case <-time.After(3 * time.Second):
+		t.Fatal("control frame was not written")
+	}
+	msgs, err := decodeStreamFrame(second, nil, 1<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(msgs) != 1 || msgs[0].Type != MsgHeartbeat {
+		t.Fatalf("second frame = %+v, want heartbeat", msgs)
+	}
+	conn.release <- struct{}{}
+	select {
+	case third := <-conn.writes:
+		msgs, err := decodeStreamFrame(third, nil, 1<<20)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(msgs) != 1 || msgs[0].Type != MsgApp {
+			t.Fatalf("third frame = %+v, want append", msgs)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("queued data frame was not written")
 	}
 }

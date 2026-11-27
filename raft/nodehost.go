@@ -32,6 +32,13 @@ type NodeHostConfig struct {
 	// ID is this host's member identifier; it is shared by every group. | ID 是本
 	// 主机的成员标识，所有组共用。
 	ID NodeID
+	// MaxSnapshotInstalls bounds concurrent chunked snapshot reassembly across
+	// all groups of this host. Zero uses 2; a negative value disables the bound.
+	// A busy slot makes the leader retry later instead of letting every group
+	// allocate its own image. | MaxSnapshotInstalls 限制本主机所有组并发的分块快照
+	// 重组数。零值使用 2；负值关闭限制。名额繁忙时让领导者稍后重试，避免每个组各自
+	// 分配镜像。
+	MaxSnapshotInstalls int
 }
 
 // GroupConfig starts one Raft group. Zero tuning fields use Config defaults.
@@ -101,11 +108,12 @@ func (g *Group) Node() *Node { return g.node }
 // 多个 Raft 组。所有组共享基础传输与节点身份，但每个组拥有独立的日志、WAL、FSM、选举
 // 状态、快照与复制进度。
 type NodeHost struct {
-	mux    *groupMux
-	groups map[GroupID]*Group
-	cfg    NodeHostConfig
-	mu     sync.RWMutex
-	closed bool
+	mux           *groupMux
+	groups        map[GroupID]*Group
+	cfg           NodeHostConfig
+	snapshotSlots chan struct{}
+	mu            sync.RWMutex
+	closed        bool
 }
 
 // NewNodeHost creates a host and starts the shared transport. | NewNodeHost 创建
@@ -125,7 +133,23 @@ func NewNodeHost(cfg NodeHostConfig) (*NodeHost, error) {
 		_ = cfg.Transport.Close()
 		return nil, errs.Wrap(err, ErrInvalidConfig)
 	}
-	return &NodeHost{cfg: cfg, mux: mux, groups: make(map[GroupID]*Group)}, nil
+	slots := 0
+	switch {
+	case cfg.MaxSnapshotInstalls < 0:
+		slots = 0
+	case cfg.MaxSnapshotInstalls == 0:
+		slots = 2
+	default:
+		slots = cfg.MaxSnapshotInstalls
+	}
+	var snapshotSlots chan struct{}
+	if slots > 0 {
+		snapshotSlots = make(chan struct{}, slots)
+	}
+	return &NodeHost{
+		cfg: cfg, mux: mux, groups: make(map[GroupID]*Group),
+		snapshotSlots: snapshotSlots,
+	}, nil
 }
 
 // StartGroup creates and starts one group. | StartGroup 创建并启动一个组。
@@ -151,7 +175,9 @@ func (h *NodeHost) StartGroup(cfg GroupConfig) (*Group, error) {
 		return nil, err
 	}
 	tr := &GroupTransport{mux: h.mux, group: cfg.ID}
-	node, err := New(cfg.groupNodeConfig(h.cfg.ID, storage, fsm, tr, h.cfg.Logger))
+	nodeCfg := cfg.groupNodeConfig(h.cfg.ID, storage, fsm, tr, h.cfg.Logger)
+	nodeCfg.snapshotSlots = h.snapshotSlots
+	node, err := New(nodeCfg)
 	if err != nil {
 		_ = tr.Close()
 		_ = storage.Close()
@@ -391,7 +417,7 @@ func (h *NodeHost) Close() error {
 // GroupDir returns the conventional directory for one group. | GroupDir 返回一个组的
 // 约定目录。
 func GroupDir(baseDir string, id GroupID) string {
-	return filepath.Join(baseDir, "group-"+strconv.FormatUint(uint64(id), 10))
+	return filepath.Join(baseDir, groupDirPrefix+strconv.FormatUint(uint64(id), 10))
 }
 
 // FileStorageFactory creates one FileStorage per group below baseDir. | FileStorageFactory
@@ -417,10 +443,10 @@ func ListGroups(baseDir string) ([]GroupID, error) {
 	}
 	var ids []GroupID
 	for _, entry := range entries {
-		if !entry.IsDir() || !strings.HasPrefix(entry.Name(), "group-") {
+		if !entry.IsDir() || !strings.HasPrefix(entry.Name(), groupDirPrefix) {
 			continue
 		}
-		raw := strings.TrimPrefix(entry.Name(), "group-")
+		raw := strings.TrimPrefix(entry.Name(), groupDirPrefix)
 		id, err := strconv.ParseUint(raw, 10, 64)
 		if err != nil || id == 0 {
 			continue

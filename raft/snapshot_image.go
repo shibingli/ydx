@@ -115,7 +115,7 @@ func (s *FileStorage) NewSnapshotImage(snap *Snapshot, conf ConfState) (snapshot
 	useSHA := s.snapshotChecksum != SnapshotChecksumCRC32C
 	encrypted := s.cipher.encrypts(EncryptSnapshots)
 	s.mu.Unlock()
-	tmp, err := os.CreateTemp(dir, ".snap-*")
+	tmp, err := os.CreateTemp(dir, snapshotTempPattern)
 	if err != nil {
 		return nil, errs.Wrap(err, ErrStorage)
 	}

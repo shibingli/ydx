@@ -63,17 +63,26 @@ const (
 	EncryptionSM4GCM
 )
 
+// Encryption suite names are part of the configuration and documentation
+// contract. | 加密套件名称属于配置与文档契约。
+const (
+	suiteNameAES256GCM        = "AES-256-GCM"
+	suiteNameChaCha20Poly1305 = "ChaCha20-Poly1305"
+	suiteNameSM4GCM           = "SM4-GCM"
+	suiteNameUnknown          = "unknown"
+)
+
 // String returns the canonical suite name. | String 返回套件的规范名称。
 func (s EncryptionSuite) String() string {
 	switch s {
 	case EncryptionAES256GCM:
-		return "AES-256-GCM"
+		return suiteNameAES256GCM
 	case EncryptionChaCha20Poly1305:
-		return "ChaCha20-Poly1305"
+		return suiteNameChaCha20Poly1305
 	case EncryptionSM4GCM:
-		return "SM4-GCM"
+		return suiteNameSM4GCM
 	default:
-		return "unknown"
+		return suiteNameUnknown
 	}
 }
 

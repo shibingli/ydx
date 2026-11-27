@@ -43,7 +43,7 @@ func TestWALDropsCoveredMarkerRecords(t *testing.T) {
 	deadline := time.Now().Add(5 * time.Second)
 	var files []string
 	for {
-		files, err = filepath.Glob(filepath.Join(dir, "wal", "*.wal"))
+		files, err = filepath.Glob(filepath.Join(dir, walDirName, "*"+walSegmentSuffix))
 		if err != nil {
 			t.Fatal(err)
 		}

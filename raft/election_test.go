@@ -145,3 +145,29 @@ func TestLargeClusterPreVoteSubsetElectsLeader(t *testing.T) {
 		}
 	}
 }
+
+// TestElectionRankRotatesByGroup verifies NodeHost groups derive different
+// preferred leaders from the same voter set. | TestElectionRankRotatesByGroup
+// 验证 NodeHost 组从相同投票集合推导出不同的首选领导者。
+func TestElectionRankRotatesByGroup(t *testing.T) {
+	conf := newMembership([]NodeID{1, 2, 3}, nil, nil)
+	for _, tc := range []struct {
+		group GroupID
+		node  NodeID
+		rank  int
+	}{
+		{group: 0, node: 1, rank: 0},
+		{group: 1, node: 1, rank: 2},
+		{group: 1, node: 2, rank: 0},
+		{group: 1, node: 3, rank: 1},
+		{group: 2, node: 1, rank: 1},
+		{group: 2, node: 2, rank: 2},
+		{group: 2, node: 3, rank: 0},
+	} {
+		n := &Node{id: tc.node, group: tc.group, conf: conf}
+		n.refreshElectionRank()
+		if n.electionRank != tc.rank {
+			t.Fatalf("group %d node %d rank = %d, want %d", tc.group, tc.node, n.electionRank, tc.rank)
+		}
+	}
+}

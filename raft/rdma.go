@@ -64,6 +64,14 @@ type RDMATransportOptions struct {
 	// 不限制。每个对端通常需要一条各方向连接，默认值约可容纳 128 个对端；更大集群
 	// 应提高该值。
 	MaxConns int
+	// ReadTimeout closes a connection that receives no complete frame for this
+	// long, preventing a stalled peer from pinning registered buffers and a
+	// reader goroutine forever. Zero uses 60s; a negative value disables the
+	// bound. Raft heartbeats keep healthy peers well below the default. |
+	// ReadTimeout 关闭长时间收不到完整帧的连接，避免停滞对端永久占用注册缓冲区与
+	// 读协程。零值使用 60 秒；负值关闭限制。Raft 心跳会让健康对端的空闲时间远低于
+	// 默认值。
+	ReadTimeout time.Duration
 	// BusyPoll is retained for compatibility. ydx/rdma polls completion queues on
 	// the hot path with a bounded spin before yielding. | BusyPoll 为兼容保留。
 	// ydx/rdma 热路径轮询完成队列，并在有限自旋后让出处理器。

@@ -170,7 +170,7 @@ func TestFileStorageCorruptTailTruncates(t *testing.T) {
 	if err := s.Close(); err != nil {
 		t.Fatal(err)
 	}
-	files, err := filepath.Glob(filepath.Join(dir, "wal", "*.wal"))
+	files, err := filepath.Glob(filepath.Join(dir, walDirName, "*"+walSegmentSuffix))
 	if err != nil || len(files) == 0 {
 		t.Fatalf("wal files: %v %v", files, err)
 	}
@@ -208,7 +208,7 @@ func TestFileStorageCorruptSnapshotFails(t *testing.T) {
 	if err := s.Close(); err != nil {
 		t.Fatal(err)
 	}
-	files, err := filepath.Glob(filepath.Join(dir, "snapshots", "*.snap"))
+	files, err := filepath.Glob(filepath.Join(dir, snapshotDirName, "*"+snapshotFileSuffix))
 	if err != nil || len(files) != 1 {
 		t.Fatalf("snapshot files: %v %v", files, err)
 	}
@@ -367,7 +367,7 @@ func TestFileStorageSegmentRotation(t *testing.T) {
 	if err := s.Close(); err != nil {
 		t.Fatal(err)
 	}
-	files, err := filepath.Glob(filepath.Join(dir, "wal", "*.wal"))
+	files, err := filepath.Glob(filepath.Join(dir, walDirName, "*"+walSegmentSuffix))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -431,5 +431,43 @@ func TestNodePersistBatchDelay(t *testing.T) {
 	}
 	if got := fsm.value("k19"); got != "19" {
 		t.Fatalf("value = %q", got)
+	}
+}
+
+// TestFileStorageSeparateWALAndSnapshotDirs places WAL and snapshots on
+// different volumes and verifies recovery. | TestFileStorageSeparateWALAndSnapshotDirs
+// 将 WAL 与快照放在不同卷并验证恢复。
+func TestFileStorageSeparateWALAndSnapshotDirs(t *testing.T) {
+	root := t.TempDir()
+	walDir := filepath.Join(t.TempDir(), "wal-vol")
+	snapDir := filepath.Join(t.TempDir(), "snap-vol")
+	opts := FileStorageOptions{Dir: root, WALDir: walDir, SnapshotDir: snapDir, NoSync: true}
+	s, err := NewFileStorage(opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Persist(PersistBatch{HardState: &HardState{Term: 1}, Entries: entriesRange(1, 3, 1)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(walDir); err != nil {
+		t.Fatalf("wal dir: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, walDirName)); !os.IsNotExist(err) {
+		t.Fatalf("default wal dir created: %v", err)
+	}
+	s2, err := NewFileStorage(opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s2.Close()
+	rec, err := s2.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rec.Entries) != 3 || rec.Entries[2].Index != 3 {
+		t.Fatalf("entries = %+v", rec.Entries)
 	}
 }

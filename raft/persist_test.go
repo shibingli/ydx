@@ -190,14 +190,14 @@ func TestFileStorageSeparateSnapshotDir(t *testing.T) {
 	}
 	found := false
 	for _, entry := range entries {
-		if strings.HasSuffix(entry.Name(), ".snap") {
+		if strings.HasSuffix(entry.Name(), snapshotFileSuffix) {
 			found = true
 		}
 	}
 	if !found {
 		t.Fatal("snapshot image not written to SnapshotDir")
 	}
-	if _, err := os.Stat(filepath.Join(root, "snapshots")); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(root, snapshotDirName)); !os.IsNotExist(err) {
 		t.Fatalf("default snapshot directory unexpectedly used: %v", err)
 	}
 	reopened, err := NewFileStorage(FileStorageOptions{Dir: root, SnapshotDir: snapDir, NoSync: true})

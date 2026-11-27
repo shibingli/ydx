@@ -20,6 +20,14 @@ import (
 )
 
 const (
+	// defaultHTTPPath is the endpoint used when HTTPTransportOptions.Path is
+	// empty; scheme prefixes are recognized in peer addresses. | defaultHTTPPath
+	// 是 HTTPTransportOptions.Path 为空时的端点；scheme 前缀用于识别对端地址。
+	defaultHTTPPath   = "/raft/message"
+	httpTransportName = "http-transport"
+	schemeHTTP        = "http://"
+	schemeHTTPS       = "https://"
+
 	httpFrameMagic    = "YDRF"
 	httpFrameVersion  = byte(1)
 	httpFlagHMAC      = byte(1)
@@ -88,9 +96,12 @@ type HTTPTransport struct {
 	ownClient bool
 }
 
-// httpPeer owns one ordered outbound queue. | httpPeer 持有一条有序出站队列。
+// httpPeer owns the ordered outbound queues for one peer. Control traffic uses
+// a separate lane so a large snapshot POST cannot delay heartbeats. | httpPeer
+// 持有一个对端的有序出站队列。控制流量使用独立通道，避免大快照 POST 阻塞心跳。
 type httpPeer struct {
-	ch   chan []Message
+	ctrl chan []Message
+	data chan []Message
 	stop chan struct{}
 	addr string
 	id   NodeID
@@ -100,7 +111,7 @@ type httpPeer struct {
 // 返回端点路径已规范化的传输。
 func NewHTTPTransport(opts HTTPTransportOptions) (*HTTPTransport, error) {
 	if opts.Path == "" {
-		opts.Path = "/raft/message"
+		opts.Path = defaultHTTPPath
 	}
 	if !strings.HasPrefix(opts.Path, "/") {
 		opts.Path = "/" + opts.Path
@@ -155,7 +166,16 @@ func (t *HTTPTransport) UpdatePeer(id NodeID, addr string) {
 		p.addr = addr
 		return
 	}
-	p := &httpPeer{id: id, addr: addr, ch: make(chan []Message, t.queue), stop: make(chan struct{})}
+	ctrlQueue := t.queue / 4
+	if ctrlQueue < 8 {
+		ctrlQueue = 8
+	}
+	p := &httpPeer{
+		id: id, addr: addr,
+		ctrl: make(chan []Message, ctrlQueue),
+		data: make(chan []Message, t.queue),
+		stop: make(chan struct{}),
+	}
 	t.peers[id] = p
 	go t.peerLoop(p)
 }
@@ -214,37 +234,76 @@ func (t *HTTPTransport) Send(_ context.Context, msgs []Message) error {
 			}
 			continue
 		}
-		select {
-		case p.ch <- batch:
-		default:
-			t.drops.Add(uint64(len(batch)))
-			if firstErr == nil {
-				firstErr = errs.Detail(ErrProposalDropped, "http queue for %d is full", id)
+		control, data := splitTransportMessages(batch)
+		if len(control) > 0 {
+			select {
+			case p.ctrl <- control:
+			default:
+				select {
+				case p.data <- control:
+				default:
+					t.drops.Add(uint64(len(control)))
+					if firstErr == nil {
+						firstErr = errs.Detail(ErrProposalDropped, "http queue for %d is full", id)
+					}
+				}
+			}
+		}
+		if len(data) > 0 {
+			select {
+			case p.data <- data:
+			default:
+				t.drops.Add(uint64(len(data)))
+				if firstErr == nil {
+					firstErr = errs.Detail(ErrProposalDropped, "http queue for %d is full", id)
+				}
 			}
 		}
 	}
 	return firstErr
 }
 
-// peerLoop serializes posts to one peer. | peerLoop 串行化发往一个对端的 POST。
+// peerLoop serializes posts to one peer, preferring the control lane. | peerLoop
+// 串行化发往一个对端的 POST，并优先控制通道。
 func (t *HTTPTransport) peerLoop(p *httpPeer) {
 	for {
-		select {
-		case <-t.stopCh:
+		batch, ok := t.nextBatch(p)
+		if !ok {
 			return
-		case <-p.stop:
-			return
-		case batch := <-p.ch:
-			t.mu.RLock()
-			addr := p.addr
-			t.mu.RUnlock()
-			frame, err := encodeHTTPFrame(batch)
-			if err != nil {
-				t.drops.Add(uint64(len(batch)))
-				continue
-			}
-			t.post(addr, frame)
 		}
+		t.mu.RLock()
+		addr := p.addr
+		t.mu.RUnlock()
+		frame, err := encodeHTTPFrame(batch)
+		if err != nil {
+			t.drops.Add(uint64(len(batch)))
+			continue
+		}
+		t.post(addr, frame)
+	}
+}
+
+// nextBatch prefers the control lane before blocking on either lane. |
+// nextBatch 在阻塞等待任一通道前优先取控制通道。
+func (t *HTTPTransport) nextBatch(p *httpPeer) ([]Message, bool) {
+	select {
+	case <-t.stopCh:
+		return nil, false
+	case <-p.stop:
+		return nil, false
+	case batch := <-p.ctrl:
+		return batch, true
+	default:
+	}
+	select {
+	case <-t.stopCh:
+		return nil, false
+	case <-p.stop:
+		return nil, false
+	case batch := <-p.ctrl:
+		return batch, true
+	case batch := <-p.data:
+		return batch, true
 	}
 }
 
@@ -275,10 +334,10 @@ func (t *HTTPTransport) post(addr string, frame []byte) {
 
 // peerURL combines an address with the endpoint path. | peerURL 将地址与端点路径组合。
 func (t *HTTPTransport) peerURL(addr string) string {
-	if strings.HasPrefix(addr, "http://") || strings.HasPrefix(addr, "https://") {
+	if strings.HasPrefix(addr, schemeHTTP) || strings.HasPrefix(addr, schemeHTTPS) {
 		return strings.TrimRight(addr, "/") + t.path
 	}
-	return "http://" + strings.TrimRight(addr, "/") + t.path
+	return schemeHTTP + strings.TrimRight(addr, "/") + t.path
 }
 
 // Handler returns the inbound HTTP handler. Mount it with net/http or
@@ -453,5 +512,5 @@ func signFrame(secret, frame []byte) string {
 
 // String renders the transport kind and local ID. | String 输出传输类型与本地标识。
 func (t *HTTPTransport) String() string {
-	return fmt.Sprintf("http-transport(%d)", t.id)
+	return fmt.Sprintf("%s(%d)", httpTransportName, t.id)
 }

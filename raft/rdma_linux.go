@@ -90,7 +90,14 @@ func (b *rdmaBackend) connConfig() (ydxrdma.ConnConfig, int, error) {
 	cfg.CQDepth = slots * 2
 	cfg.HugePages = true
 	cfg.SendTimeout = 5 * time.Second
-	cfg.RecvTimeout = -1
+	readTimeout := b.opts.ReadTimeout
+	switch {
+	case readTimeout == 0:
+		readTimeout = defaultReadTimeout
+	case readTimeout < 0:
+		readTimeout = -1
+	}
+	cfg.RecvTimeout = readTimeout
 	cfg.MaxBatch = rdmaSendBatch
 	if b.opts.DialTimeout > 0 {
 		cfg.HandshakeTimeout = b.opts.DialTimeout

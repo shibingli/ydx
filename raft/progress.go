@@ -17,17 +17,26 @@ const (
 	snapshot
 )
 
+// Progress mode names are part of the status JSON contract. | 进度模式名属于状态
+// JSON 契约。
+const (
+	progressNameProbe     = "probe"
+	progressNameReplicate = "replicate"
+	progressNameSnapshot  = "snapshot"
+	progressNameUnknown   = "unknown"
+)
+
 // String renders a stable mode name. | String 输出稳定的模式名。
 func (s progressState) String() string {
 	switch s {
 	case probe:
-		return "probe"
+		return progressNameProbe
 	case replicate:
-		return "replicate"
+		return progressNameReplicate
 	case snapshot:
-		return "snapshot"
+		return progressNameSnapshot
 	default:
-		return "unknown"
+		return progressNameUnknown
 	}
 }
 

@@ -19,6 +19,10 @@ import (
 // 限制流式连接建立时间。
 const defaultDialTimeout = 5 * time.Second
 
+// tcpNetwork is the network name for plain TCP listeners and dialers. |
+// tcpNetwork 是纯 TCP 监听与拨号的网络名。
+const tcpNetwork = "tcp"
+
 // defaultMaxConns bounds tracked inbound and outbound connections. | defaultMaxConns
 // 限制跟踪的入站与出站连接数。
 const defaultMaxConns = 256
@@ -103,10 +107,15 @@ type streamTransport struct {
 	started   bool
 }
 
-// streamPeer owns the ordered outbound queue for one peer. | streamPeer 持有一个
-// 对端的有序出站队列。
+// streamPeer owns the ordered outbound queues for one peer. Control traffic
+// uses a separate lane so a large replication or snapshot batch cannot delay
+// heartbeats and elections. Each lane preserves order; Raft tolerates
+// cross-lane reordering. | streamPeer 持有一个对端的有序出站队列。控制流量使用
+// 独立通道，避免大批复制或快照阻塞心跳与选举。各通道内部保序；Raft 容忍跨通道
+// 重排。
 type streamPeer struct {
-	ch   chan []Message
+	ctrl chan []Message
+	data chan []Message
 	stop chan struct{}
 	addr string
 	id   NodeID
@@ -193,7 +202,16 @@ func (t *streamTransport) UpdatePeer(id NodeID, addr string) {
 	t.mu.Lock()
 	p := t.peers[id]
 	if p == nil {
-		p = &streamPeer{id: id, addr: addr, ch: make(chan []Message, t.queue), stop: make(chan struct{})}
+		ctrlQueue := t.queue / 4
+		if ctrlQueue < 8 {
+			ctrlQueue = 8
+		}
+		p = &streamPeer{
+			id: id, addr: addr,
+			ctrl: make(chan []Message, ctrlQueue),
+			data: make(chan []Message, t.queue),
+			stop: make(chan struct{}),
+		}
 		t.peers[id] = p
 		if t.started {
 			t.wg.Add(1)
@@ -257,12 +275,32 @@ func (t *streamTransport) Send(_ context.Context, msgs []Message) error {
 			}
 			continue
 		}
-		select {
-		case p.ch <- batch:
-		default:
-			t.drops.Add(uint64(len(batch)))
-			if firstErr == nil {
-				firstErr = errs.Detail(ErrProposalDropped, "stream queue for %d is full", id)
+		control, data := splitTransportMessages(batch)
+		if len(control) > 0 {
+			select {
+			case p.ctrl <- control:
+			default:
+				// A full control lane falls back to the data lane; losing an
+				// election or acknowledgement message is worse than delaying it. |
+				// 控制通道满时回退到数据通道；丢弃选举或确认消息比延迟它更糟。
+				select {
+				case p.data <- control:
+				default:
+					t.drops.Add(uint64(len(control)))
+					if firstErr == nil {
+						firstErr = errs.Detail(ErrProposalDropped, "stream queue for %d is full", id)
+					}
+				}
+			}
+		}
+		if len(data) > 0 {
+			select {
+			case p.data <- data:
+			default:
+				t.drops.Add(uint64(len(data)))
+				if firstErr == nil {
+					firstErr = errs.Detail(ErrProposalDropped, "stream queue for %d is full", id)
+				}
 			}
 		}
 	}
@@ -378,56 +416,80 @@ func (t *streamTransport) peerLoop(p *streamPeer) {
 		}
 	}()
 	for {
-		select {
-		case <-t.stopCh:
+		batch, ok := t.nextBatch(p)
+		if !ok {
 			return
+		}
+		select {
 		case <-p.stop:
 			return
-		case batch := <-p.ch:
-			select {
-			case <-p.stop:
-				return
-			default:
-			}
-			t.mu.RLock()
-			addr := p.addr
-			t.mu.RUnlock()
-			if conn != nil && connAddr != addr {
-				t.untrack(conn)
-				_ = conn.Close()
-				conn = nil
-			}
-			if conn == nil {
-				ctx, cancel := context.WithTimeout(context.Background(), t.timeout)
-				c, err := t.backend.dial(ctx, addr)
-				cancel()
-				if err != nil {
-					t.drops.Add(uint64(len(batch)))
-					continue
-				}
-				if !t.track(c) {
-					_ = c.Close()
-					if t.stopped.Load() {
-						return
-					}
-					t.drops.Add(uint64(len(batch)))
-					continue
-				}
-				conn = c
-				connAddr = addr
-			}
-			frame, err := encodeStreamFrame(batch, t.secret, t.maxFrame)
+		default:
+		}
+		t.mu.RLock()
+		addr := p.addr
+		t.mu.RUnlock()
+		if conn != nil && connAddr != addr {
+			t.untrack(conn)
+			_ = conn.Close()
+			conn = nil
+		}
+		if conn == nil {
+			ctx, cancel := context.WithTimeout(context.Background(), t.timeout)
+			c, err := t.backend.dial(ctx, addr)
+			cancel()
 			if err != nil {
 				t.drops.Add(uint64(len(batch)))
 				continue
 			}
-			if err := writeFrame(conn, frame); err != nil {
-				t.untrack(conn)
-				_ = conn.Close()
-				conn = nil
+			if !t.track(c) {
+				_ = c.Close()
+				if t.stopped.Load() {
+					return
+				}
 				t.drops.Add(uint64(len(batch)))
+				continue
 			}
+			conn = c
+			connAddr = addr
 		}
+		frame, err := encodeStreamFrame(batch, t.secret, t.maxFrame)
+		if err != nil {
+			t.drops.Add(uint64(len(batch)))
+			continue
+		}
+		if err := writeFrame(conn, frame); err != nil {
+			t.untrack(conn)
+			_ = conn.Close()
+			conn = nil
+			t.drops.Add(uint64(len(batch)))
+		}
+	}
+}
+
+// nextBatch prefers the control lane. The first non-blocking receive drains any
+// queued control batch before a data batch is considered; the blocking select
+// is only reached when the control lane is empty. | nextBatch 优先控制通道。第一次
+// 非阻塞接收会在考虑数据批次前排空已排队的控制批次；只有控制通道为空时才进入
+// 阻塞选择。
+func (t *streamTransport) nextBatch(p *streamPeer) ([]Message, bool) {
+	select {
+	case <-t.stopCh:
+		return nil, false
+	case <-p.stop:
+		return nil, false
+	case batch := <-p.ctrl:
+		return batch, true
+	default:
+	}
+	select {
+	case <-t.stopCh:
+		return nil, false
+	case <-p.stop:
+		return nil, false
+	case batch := <-p.ctrl:
+		return batch, true
+	case batch := <-p.data:
+		return batch, true
 	}
 }
 
@@ -620,7 +682,7 @@ type tcpBackend struct {
 
 // listen implements streamBackend. | listen 实现 streamBackend。
 func (b *tcpBackend) listen(addr string) (streamListener, error) {
-	ln, err := net.Listen("tcp", addr)
+	ln, err := net.Listen(tcpNetwork, addr)
 	if err != nil {
 		return nil, errs.Wrap(err, ErrStorage)
 	}
@@ -633,7 +695,7 @@ func (b *tcpBackend) listen(addr string) (streamListener, error) {
 // dial implements streamBackend. | dial 实现 streamBackend。
 func (b *tcpBackend) dial(ctx context.Context, addr string) (io.ReadWriteCloser, error) {
 	d := net.Dialer{Timeout: b.timeout, KeepAlive: 30 * time.Second}
-	raw, err := d.DialContext(ctx, "tcp", addr)
+	raw, err := d.DialContext(ctx, tcpNetwork, addr)
 	if err != nil {
 		return nil, err
 	}

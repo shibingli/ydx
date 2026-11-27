@@ -184,7 +184,7 @@ func TestStreamingSnapshotFailureRemovesTemporaryFile(t *testing.T) {
 	if err := node.Snapshot(ctx); err == nil {
 		t.Fatal("Snapshot succeeded with a failing StreamingFSM")
 	}
-	entries, err := os.ReadDir(filepath.Join(dir, "snapshots"))
+	entries, err := os.ReadDir(filepath.Join(dir, snapshotDirName))
 	if err != nil {
 		t.Fatal(err)
 	}

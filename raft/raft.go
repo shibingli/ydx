@@ -147,6 +147,7 @@ type Node struct {
 	snapshotEntries    uint64
 	snapshotCatchUp    uint64
 	snapshotChunkBytes int
+	maxSnapshotReceive int64
 	persistLatency     atomic.Int64
 
 	electionRank int
@@ -317,6 +318,10 @@ func New(cfg Config) (*Node, error) {
 		}
 		return nil, errs.Wrap(err, ErrStorage)
 	}
+	maxSnapshotReceive := cfg.MaxSnapshotReceiveBytes
+	if maxSnapshotReceive <= 0 {
+		maxSnapshotReceive = maxSnapshotBytes
+	}
 	n := &Node{
 		cfg:                cfg,
 		id:                 cfg.ID,
@@ -366,6 +371,7 @@ func New(cfg Config) (*Node, error) {
 		snapshotEntries:    cfg.SnapshotEntries,
 		snapshotCatchUp:    cfg.SnapshotCatchUpEntries,
 		snapshotChunkBytes: cfg.SnapshotChunkBytes,
+		maxSnapshotReceive: maxSnapshotReceive,
 		pendingReadLimit:   cfg.pendingReadLimit(),
 	}
 	n.applyQueue = newApplyQueue()
@@ -970,6 +976,10 @@ func (n *Node) Close() error {
 		n.stateAtomic.Store(uint32(StateShutdown))
 		n.stop()
 		<-n.doneCh
+		// The event loop is gone; release any host-wide snapshot install slot
+		// held by a partial reassembly. | 事件循环已结束；释放部分重组占用的主机级
+		// 快照安装名额。
+		n.discardIncomingSnapshot()
 		_ = n.transport.Close()
 		n.wg.Wait()
 		n.closeErr = n.storage.Close()

@@ -82,6 +82,11 @@ type Config struct {
 	// configuration. | senderFilter 可选地覆盖入站消息的成员查询。它不导出，只有包内
 	// 测试可注入其他视图；生产节点按生效配置校验。
 	senderFilter func(NodeID) bool
+	// snapshotSlots is shared by every group of one NodeHost and bounds
+	// concurrent chunked snapshot reassembly. Nil means no host-level limit. |
+	// snapshotSlots 由同一 NodeHost 的所有组共享，限制并发的分块快照重组数。nil 表示
+	// 没有主机级限制。
+	snapshotSlots chan struct{}
 	// Peers seeds a brand-new cluster. It is ignored for membership when Storage
 	// already holds state, but its addresses still seed the transport directory
 	// at startup. A Join node has no initial configuration, so it must be started
@@ -121,14 +126,18 @@ type Config struct {
 	ElectionTicks int
 	// ElectionStagger adds a deterministic delay of rank * ElectionStagger to
 	// the fine-grained election timeout, where rank is the zero-based position
-	// of this node in the sorted voter-ID list. Lower IDs campaign first; this
-	// reduces split votes in large clusters. Zero disables stagger and keeps
-	// purely randomized timeouts. Keep the total stagger well below the election
-	// timeout so a failed preferred node does not delay failover excessively.
-	// | ElectionStagger 在细粒度选举超时上增加 rank * ElectionStagger 的确定性
-	// 延迟，rank 是节点在 voter ID 升序列表中的零基位置。较小 ID 优先竞选，可减少
-	// 大集群的分裂投票。零值关闭 stagger，保持纯随机超时。总 stagger 应明显小于
-	// 选举超时，避免首选节点故障时过度拖慢故障转移。
+	// of this node in the preferred voter order. Lower ranks campaign first; this
+	// reduces split votes in large clusters. For NodeHost groups (Group != 0) the
+	// sorted voter order is rotated by GroupID so independent groups prefer
+	// different hosts; standalone nodes keep the sorted order. Zero disables
+	// stagger and keeps purely randomized timeouts. Keep the total stagger well
+	// below the election timeout so a failed preferred node does not delay
+	// failover excessively. | ElectionStagger 在细粒度选举超时上增加
+	// rank * ElectionStagger 的确定性延迟，rank 是节点在首选顺序中的零基位置。
+	// 较小 rank 优先竞选，可减少大集群的分裂投票。NodeHost 组（Group != 0）按组 ID
+	// 轮换 voter 排序，使不同组偏好不同主机；独立节点保持升序。零值关闭 stagger，
+	// 保持纯随机超时。总 stagger 应明显小于选举超时，避免首选节点故障时过度拖慢
+	// 故障转移。
 	ElectionStagger time.Duration
 	// PreVoteSubsetThreshold enables bounded pre-vote fanout once the voter set
 	// is larger than this value. Zero uses 16. Small clusters always contact
@@ -172,6 +181,14 @@ type Config struct {
 	// | SnapshotCatchUpEntries 是压缩后在内存中保留的日志项数量，使略微落后的
 	// 跟随者无需完整快照即可追上。重启后该窗口不会恢复，此时可能仍需快照。默认 256。
 	SnapshotCatchUpEntries uint64
+	// SnapshotJitter varies the automatic snapshot threshold by ± this percent
+	// (0-50). Zero uses the exact SnapshotEntries threshold. A small jitter
+	// spreads snapshot bursts across nodes and NodeHost groups so they do not
+	// align on the same disk or CPU window; it never changes snapshot safety. |
+	// SnapshotJitter 将自动快照阈值上下浮动该百分比（0-50）。零值使用精确的
+	// SnapshotEntries 阈值。少量抖动可让不同节点与 NodeHost 组的快照错开，避免同时
+	// 压在同一磁盘或 CPU 窗口；不改变快照安全性。
+	SnapshotJitter int
 	// SnapshotChunkBytes splits a snapshot into ack-gated messages of at most
 	// this payload size. Zero disables chunking and sends one whole MsgSnap,
 	// which must fit the transport frame limit. Chunking removes that frame-limit
@@ -182,6 +199,13 @@ type Config struct {
 	// 适配传输帧上限。分块消除帧上限限制，并让文件支持的镜像逐块读取而非整体物化；
 	// 它要求所有对端都理解 MsgSnapChunk。最后一块可以更小。
 	SnapshotChunkBytes int
+	// MaxSnapshotReceiveBytes caps one inbound snapshot image reassembled from
+	// chunks or delivered whole. Zero uses the protocol maximum (256 MiB). A
+	// lower value bounds heap use per install at the cost of rejecting larger
+	// snapshots; it does not change what peers may send. | MaxSnapshotReceiveBytes
+	// 限制单个入站快照镜像（分块重组或整包）的大小。零值使用协议上限 256 MiB。
+	// 更低的值以拒绝更大快照为代价限制每次安装的堆占用，不改变对端可发送的大小。
+	MaxSnapshotReceiveBytes int64
 
 	// PersistBatchDelay is the base group-commit window for durable writes. The
 	// persist goroutine waits up to this long after the first request to merge
@@ -327,6 +351,13 @@ func (c *Config) validate() error {
 	if c.SnapshotChunkBytes > maxSnapshotBytes {
 		return errs.Detail(ErrInvalidConfig, "SnapshotChunkBytes %d exceeds wire snapshot limit %d",
 			c.SnapshotChunkBytes, maxSnapshotBytes)
+	}
+	if c.MaxSnapshotReceiveBytes < 0 || c.MaxSnapshotReceiveBytes > maxSnapshotBytes {
+		return errs.Detail(ErrInvalidConfig, "MaxSnapshotReceiveBytes %d outside (0, %d]",
+			c.MaxSnapshotReceiveBytes, maxSnapshotBytes)
+	}
+	if c.SnapshotJitter < 0 || c.SnapshotJitter > 50 {
+		return errs.Detail(ErrInvalidConfig, "SnapshotJitter %d outside [0, 50]", c.SnapshotJitter)
 	}
 	seenID := make(map[NodeID]struct{}, len(c.Peers)+1)
 	seenAddr := make(map[string]struct{}, len(c.Peers))

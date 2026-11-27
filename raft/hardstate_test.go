@@ -81,7 +81,7 @@ func TestFileStorageHardStateCorruptionRejected(t *testing.T) {
 	if err := s.Close(); err != nil {
 		t.Fatal(err)
 	}
-	path := filepath.Join(dir, "HARDSTATE")
+	path := filepath.Join(dir, hardStateFileName)
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)

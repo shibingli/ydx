@@ -32,7 +32,7 @@ func (n *Node) startPreVote() {
 	}
 	n.setState(StatePreCandidate)
 	n.setLeader(0)
-	n.incomingSnapshot = nil
+	n.discardIncomingSnapshot()
 	n.selfVoteDurable = false
 	n.resetElection()
 	n.logf("info", "raft pre-vote started | raft 预投票开始",
@@ -178,7 +178,7 @@ func (n *Node) startVote() {
 	n.vote = n.id
 	n.setState(StateCandidate)
 	n.setLeader(0)
-	n.incomingSnapshot = nil
+	n.discardIncomingSnapshot()
 	n.resetElection()
 	n.logf("info", "raft election started | raft 选举开始",
 		ydlog.Uint64("node", uint64(n.id)), ydlog.Uint64("term", n.term))
@@ -364,7 +364,7 @@ func (n *Node) becomeLeader() {
 	}
 	n.setState(StateLeader)
 	n.setLeader(n.id)
-	n.incomingSnapshot = nil
+	n.discardIncomingSnapshot()
 	n.metrics.leaderChanges.Add(1)
 	n.resetElection()
 	n.heartbeatElapsed = 0
@@ -451,7 +451,7 @@ func (n *Node) becomeFollower(term uint64, leader NodeID, persist bool) uint64 {
 	// 分块快照属于特定领导者与任期。新任期内或不同领导者会使其中断；同一领导者的
 	// 心跳不会。
 	if term != oldTerm || (leader != 0 && leader != oldLeader) {
-		n.incomingSnapshot = nil
+		n.discardIncomingSnapshot()
 	}
 	n.resetElection()
 	n.votes = make(map[NodeID]bool)
@@ -575,8 +575,18 @@ func (n *Node) refreshElectionRank() {
 		}
 	}
 	slices.Sort(ids)
-	for i, id := range ids {
-		if id == n.id {
+	// NodeHost groups rotate the preference order by group ID so many groups
+	// do not all campaign on the same low-ID host. All replicas of a group know
+	// the same group ID and voter set, so they derive the same order; this only
+	// delays campaigning and never weakens election safety. | NodeHost 组按组 ID
+	// 轮换优先顺序，避免大量组都落到同一台低 ID 主机竞选。同组副本知道相同的组 ID
+	// 与投票集合，因而推导出相同顺序；这只延迟竞选，不会削弱选举安全性。
+	offset := 0
+	if n.group != 0 && len(ids) > 1 {
+		offset = int(uint64(n.group) % uint64(len(ids)))
+	}
+	for i := 0; i < len(ids); i++ {
+		if ids[(i+offset)%len(ids)] == n.id {
 			n.electionRank = i
 			return
 		}

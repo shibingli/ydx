@@ -34,6 +34,15 @@ func (n *Node) handleSnapshot(m *Message) {
 			Index: n.committed, LogIndex: snap.Index})
 		return
 	}
+	if int64(len(snap.Data)) > n.maxSnapshotReceive {
+		// The image was already decoded within the wire limit, but this node's
+		// configured install budget is smaller; reject without restoring or
+		// retaining it. | 镜像已在协议线格式上限内解码，但本节点配置的安装预算更小；
+		// 不还原、不保留，直接拒绝。
+		n.send(Message{Type: MsgSnapResp, To: m.From, Term: n.term, Reject: true,
+			Index: n.committed, LogIndex: snap.Index})
+		return
+	}
 	if err := validateConfState(snap.ConfState); err != nil {
 		n.send(Message{Type: MsgSnapResp, To: m.From, Term: n.term, Reject: true,
 			Index: n.committed, LogIndex: snap.Index})
@@ -41,7 +50,7 @@ func (n *Node) handleSnapshot(m *Message) {
 	}
 	// A complete image supersedes any partially reassembled chunk transfer. |
 	// 完整镜像取代任何尚未完成的分块重组。
-	n.incomingSnapshot = nil
+	n.discardIncomingSnapshot()
 	// Persist the new term before any response, including a rejection. Responses
 	// for a valid snapshot are already tied to the snapshot's own durable write.
 	// | 在发送任何响应（包括拒绝）前持久化新任期。合法快照的响应已绑定到快照自身的
