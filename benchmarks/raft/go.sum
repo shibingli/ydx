@@ -305,8 +305,8 @@ github.com/shibingli/ydx/json v0.1.20 h1:ffp21mWYiXi9HrHo8jsXZH130wjKILusejkESeE
 github.com/shibingli/ydx/json v0.1.20/go.mod h1:NzzLpxptfu5GQquG8IZPIa9xzVDNWZkiJfnZd1+H/0o=
 github.com/shibingli/ydx/log v0.1.14 h1:UvCgFPiSJC99vUzn8JaDNZf7WezvFhbrLMIY9ecrrf8=
 github.com/shibingli/ydx/log v0.1.14/go.mod h1:4XXz6bmahSRH8SgM+pkNDRBQjcKB64eoTBLqfwMX1fo=
-github.com/shibingli/ydx/raft v0.1.18 h1:iZDRkdnrw4Fm0SaEa+jMtvMBriobFlLpelsG904H/yI=
-github.com/shibingli/ydx/raft v0.1.18/go.mod h1:Ns4fkSwk1VLu2IIwmkoXYnguUK0WayK8JircH5AaqRM=
+github.com/shibingli/ydx/raft v0.1.19 h1:QatOrlU+aHVZPhCKAIkNkyTI/gO7v51aTskj6uNNnpY=
+github.com/shibingli/ydx/raft v0.1.19/go.mod h1:Ns4fkSwk1VLu2IIwmkoXYnguUK0WayK8JircH5AaqRM=
 github.com/shibingli/ydx/rdma v0.1.9 h1:QHBKJLuZA3gRGPUMSisuUZ++KThRnUa9yqzHrkWw4hw=
 github.com/shibingli/ydx/rdma v0.1.9/go.mod h1:ogkTYe+yzy0jhsxacvz792lV+UA4cMauJzektHthHJ4=
 github.com/shibingli/ydx/sysinfo v0.1.6 h1:5SEHSqUdVDqAgLxk7xqI4S2bldiO0CDz5XjYUnfHYRY=
