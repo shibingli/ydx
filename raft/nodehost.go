@@ -323,6 +323,16 @@ func (h *NodeHost) Promote(ctx context.Context, id GroupID, node NodeID) error {
 	return n.Promote(ctx, node)
 }
 
+// UpdateNodeAddress changes one member's transport address in one group. |
+// UpdateNodeAddress 修改一个组内某个成员的传输地址。
+func (h *NodeHost) UpdateNodeAddress(ctx context.Context, id GroupID, node NodeID, addr string) error {
+	n, err := h.nodeFor(id)
+	if err != nil {
+		return err
+	}
+	return n.UpdateNodeAddress(ctx, node, addr)
+}
+
 // TransferLeader transfers one group's leadership. | TransferLeader 转移一个组的
 // 领导权。
 func (h *NodeHost) TransferLeader(ctx context.Context, id GroupID, target NodeID) error {

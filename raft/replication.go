@@ -512,17 +512,31 @@ func (n *Node) maybeCommit() {
 	}
 }
 
-// finishRemovals drops replication progress for members removed by a final
-// configuration once that configuration commits. | finishRemovals 在最终配置提交后
-// 丢弃被移除成员的复制进度。
+// finishRemovals drops replication progress and transport state for removed
+// members once the entry that removed them commits. The barrier is the joint
+// leave entry for voter removals and the removal entry for a learner. |
+// finishRemovals 在移除成员的日志项提交后丢弃其复制进度与传输状态。投票成员移除的
+// 屏障是联合离开日志项，学习者移除的屏障是移除日志项本身。
 func (n *Node) finishRemovals() {
-	if n.leaveIndex == 0 || n.committed < n.leaveIndex || len(n.pendingRemoval) == 0 {
+	if len(n.pendingRemoval) == 0 {
+		return
+	}
+	barrier := n.leaveIndex
+	if barrier == 0 {
+		barrier = n.removalIndex
+	}
+	if barrier == 0 || n.committed < barrier {
 		return
 	}
 	for _, id := range n.pendingRemoval {
 		delete(n.progress, id)
+		// The configuration is committed, so no further message is owed to the
+		// removed member; release its address, queue and goroutine. | 配置已提交，
+		// 不再欠被移除成员任何消息；释放其地址、队列与协程。
+		n.removeTransportPeer(id)
 	}
 	n.pendingRemoval = nil
+	n.removalIndex = 0
 }
 
 // broadcastCommit informs followers that the leader's commit index advanced so

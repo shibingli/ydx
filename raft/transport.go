@@ -21,6 +21,38 @@ type Transport interface {
 	Close() error
 }
 
+// PeerRemover is an optional Transport extension that drops one peer address
+// and releases the connection, queue and goroutine owned by it. Raft calls it
+// after a removed member's final configuration commits on the leader and when a
+// follower applies a configuration that no longer contains the member. |
+// PeerRemover 是 Transport 的可选扩展，移除一个对端地址及其连接、队列与协程。
+// 领导者在被移除成员的最终配置提交后调用；跟随者在应用不再包含该成员的配置时调用。
+type PeerRemover interface {
+	RemovePeer(id NodeID)
+}
+
+// PeerDirectory is an optional Transport extension that reports a known peer
+// address. Startup seeds consult it and only fill missing entries, so a stale
+// Config.Peers never overwrites an address installed explicitly through
+// UpdatePeer or learned from another NodeHost group's membership. |
+// PeerDirectory 是 Transport 的可选扩展，报告已知对端地址。启动种子会查询它并只
+// 填补缺失项，因此过期的 Config.Peers 不会覆盖显式 UpdatePeer 或其它 NodeHost 组
+// 从成员配置学到的地址。
+type PeerDirectory interface {
+	PeerAddress(id NodeID) (string, bool)
+}
+
+// PeerAddressTransport is an optional Transport extension for transports that
+// deliver by address rather than by identifier. A Join node on such a transport
+// needs Config.Peers seeds to answer the leader before its first configuration
+// arrives; the node logs a warning when that list is empty. |
+// PeerAddressTransport 是 Transport 的可选扩展，表示按地址而非标识投递的传输。
+// 这类传输上的 Join 节点需要 Config.Peers 种子才能在首份配置到达前回复领导者；
+// 种子列表为空时节点会记录告警。
+type PeerAddressTransport interface {
+	RequiresPeerAddresses() bool
+}
+
 // messageSink is implemented by in-process transports that can hand off a
 // pooled message pointer without a value copy or per-message allocation. The
 // sink takes ownership: it must enqueue the message or release it. |
@@ -45,6 +77,13 @@ func (noopTransport) SendImmediate() bool { return true }
 
 // UpdatePeer implements Transport. | UpdatePeer 实现 Transport。
 func (noopTransport) UpdatePeer(NodeID, string) {}
+
+// RemovePeer implements PeerRemover. | RemovePeer 实现 PeerRemover。
+func (noopTransport) RemovePeer(NodeID) {}
+
+// RequiresPeerAddresses implements PeerAddressTransport. | RequiresPeerAddresses
+// 实现 PeerAddressTransport。
+func (noopTransport) RequiresPeerAddresses() bool { return false }
 
 // Close implements Transport. | Close 实现 Transport。
 func (noopTransport) Close() error { return nil }

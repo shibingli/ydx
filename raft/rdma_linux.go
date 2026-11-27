@@ -41,7 +41,7 @@ func NewRDMATransport(opts RDMATransportOptions) (*RDMATransport, error) {
 		return nil, errs.Detail(ErrUnsupported, "libibverbs is not available | libibverbs 不可用")
 	}
 	backend := &rdmaBackend{opts: opts}
-	st, err := newStreamTransport(backend, opts.ListenAddr, opts.SharedSecret, opts.Queue, opts.MaxFrameBytes, opts.DialTimeout)
+	st, err := newStreamTransport(backend, opts.ListenAddr, opts.SharedSecret, opts.Queue, opts.MaxFrameBytes, opts.MaxConns, opts.DialTimeout)
 	if err != nil {
 		return nil, err
 	}

@@ -300,6 +300,18 @@
 // 日志项被追加时生效；联合配置日志项提交后，领导者自动追加 LeaveJoint 日志项。
 // 学习者接收日志但不投票。
 //
+// UpdateNodeAddress changes one member's transport address without touching the
+// voter or learner sets; the entry is replicated like any other configuration
+// change. Every replica must understand ConfChangeUpdateNode before the API is
+// used, so finish upgrading a mixed-version cluster first. A transport that
+// implements PeerRemover drops a removed member's address and goroutine once
+// its final configuration commits; PeerDirectory makes Config.Peers a fallback
+// that never overwrites an explicit address. | UpdateNodeAddress 在不改变投票或
+// 学习者集合的情况下修改成员的传输地址；该日志项与其它配置变更一样被复制。调用该
+// API 前所有副本都必须理解 ConfChangeUpdateNode，因此混合版本集群应先完成升级。
+// 实现 PeerRemover 的传输会在被移除成员的最终配置提交后释放其地址与协程；
+// PeerDirectory 使 Config.Peers 只作为回填，不会覆盖显式地址。
+//
 // # Observability and lifecycle | 可观测性与生命周期
 //
 // Stats returns lock-free counters. Status is assembled by the event loop. Both

@@ -29,6 +29,13 @@ func (t *recordingTransport) UpdatePeer(id NodeID, addr string) {
 	t.mu.Unlock()
 }
 
+// RemovePeer implements PeerRemover. | RemovePeer 实现 PeerRemover。
+func (t *recordingTransport) RemovePeer(id NodeID) {
+	t.mu.Lock()
+	delete(t.peers, id)
+	t.mu.Unlock()
+}
+
 // Close implements Transport. | Close 实现 Transport。
 func (t *recordingTransport) Close() error { return nil }
 

@@ -168,6 +168,16 @@ func (n *Node) handleConfProposal(p *proposal) {
 		n.jointIndex = 0
 	}
 	n.conf = next
+	// A learner removal takes effect without joint consensus. Keep its transport
+	// entry until the entry commits so it can still receive the configuration,
+	// then finishRemovals releases it. Voter removals use the joint flow and are
+	// collected by maybeAutoLeave instead. | 学习者移除不经过联合共识即生效。其
+	// 传输条目保留到日志项提交，期间仍可收到配置；随后由 finishRemovals 释放。
+	// 投票成员移除走联合流程，由 maybeAutoLeave 收集。
+	if p.conf.Type == ConfChangeRemoveNode && !next.joint() && !next.isMember(p.conf.NodeID) {
+		n.pendingRemoval = append(n.pendingRemoval, p.conf.NodeID)
+		n.removalIndex = entry.Index
+	}
 	n.confHistory = append(n.confHistory, confVersion{index: entry.Index, conf: next, jointIndex: n.jointIndex})
 	n.updateProgressForConfig()
 	n.updatePeerAddresses()

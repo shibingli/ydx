@@ -216,11 +216,14 @@ func appendConfState(dst []byte, cs ConfState) []byte {
 
 // encodeConfChange serializes a membership command. | encodeConfChange 序列化成员命令。
 func encodeConfChange(cc ConfChange) ([]byte, error) {
-	if cc.Type < ConfChangeAddNode || cc.Type > ConfChangeLeaveJoint {
+	if cc.Type < ConfChangeAddNode || cc.Type > ConfChangeUpdateNode {
 		return nil, errs.Detail(ErrInvalidConfig, "change type %d", cc.Type)
 	}
 	if cc.Type != ConfChangeLeaveJoint && cc.NodeID == 0 {
 		return nil, errs.Detail(ErrInvalidConfig, "change node must be non-zero")
+	}
+	if cc.Type == ConfChangeUpdateNode && cc.Addr == "" {
+		return nil, errs.Detail(ErrInvalidConfig, "update node address is empty")
 	}
 	if len(cc.Addr) > maxAddressBytes {
 		return nil, errs.Detail(ErrTooLarge, "address %d bytes", len(cc.Addr))
@@ -236,7 +239,7 @@ func encodeConfChange(cc ConfChange) ([]byte, error) {
 func decodeConfChange(data []byte) (ConfChange, error) {
 	d := decoder{src: data}
 	typ := ConfChangeType(d.byte())
-	if d.err != nil || typ < ConfChangeAddNode || typ > ConfChangeLeaveJoint {
+	if d.err != nil || typ < ConfChangeAddNode || typ > ConfChangeUpdateNode {
 		if d.err != nil {
 			return ConfChange{}, d.err
 		}

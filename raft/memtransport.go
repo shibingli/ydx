@@ -338,6 +338,14 @@ func (t *MemTransport) SendImmediate() bool { return true }
 // | UpdatePeer 实现 Transport。内存传输按标识寻址。
 func (t *MemTransport) UpdatePeer(NodeID, string) {}
 
+// RemovePeer implements PeerRemover as a no-op; routing uses identifiers. |
+// RemovePeer 是空操作，路由按标识进行。
+func (t *MemTransport) RemovePeer(NodeID) {}
+
+// RequiresPeerAddresses implements PeerAddressTransport. | RequiresPeerAddresses
+// 实现 PeerAddressTransport。
+func (t *MemTransport) RequiresPeerAddresses() bool { return false }
+
 // Drops returns the number of messages dropped because the inbox was full.
 // | Drops 返回因队列满而丢弃的消息数。
 func (t *MemTransport) Drops() uint64 { return t.drops.Load() }

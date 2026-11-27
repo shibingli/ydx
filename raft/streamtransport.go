@@ -107,13 +107,16 @@ type streamTransport struct {
 // 对端的有序出站队列。
 type streamPeer struct {
 	ch   chan []Message
+	stop chan struct{}
 	addr string
 	id   NodeID
 }
 
 // newStreamTransport binds the listener and returns a stopped-until-Start
-// transport. | newStreamTransport 绑定监听并返回在 Start 前不投递的传输。
-func newStreamTransport(backend streamBackend, listenAddr string, secret []byte, queue, maxFrame int, timeout time.Duration) (*streamTransport, error) {
+// transport. maxConns zero uses defaultMaxConns, a negative value means
+// unlimited. | newStreamTransport 绑定监听并返回在 Start 前不投递的传输。
+// maxConns 为零时使用 defaultMaxConns，负值表示不限制。
+func newStreamTransport(backend streamBackend, listenAddr string, secret []byte, queue, maxFrame, maxConns int, timeout time.Duration) (*streamTransport, error) {
 	if queue <= 0 {
 		queue = 64
 	}
@@ -122,6 +125,12 @@ func newStreamTransport(backend streamBackend, listenAddr string, secret []byte,
 	}
 	if timeout <= 0 {
 		timeout = 5 * time.Second
+	}
+	if maxConns == 0 {
+		maxConns = defaultMaxConns
+	}
+	if maxConns < 0 {
+		maxConns = 0
 	}
 	if len(secret) > 0 && len(secret) < 16 {
 		return nil, errs.Detail(ErrInvalidConfig, "shared secret must be at least 16 bytes")
@@ -140,7 +149,7 @@ func newStreamTransport(backend streamBackend, listenAddr string, secret []byte,
 		secret:   append([]byte(nil), secret...),
 		queue:    queue,
 		maxFrame: maxFrame,
-		maxConns: defaultMaxConns,
+		maxConns: maxConns,
 		timeout:  timeout,
 		readTTL:  defaultReadTimeout,
 		peers:    make(map[NodeID]*streamPeer),
@@ -172,7 +181,11 @@ func (t *streamTransport) Start(handler func(Message)) error {
 	return nil
 }
 
-// UpdatePeer implements Transport. | UpdatePeer 实现 Transport。
+// UpdatePeer implements Transport. An address change takes effect on the next
+// batch: peerLoop compares the dialed address with the current one before every
+// write and reconnects immediately instead of waiting for an old connection to
+// fail. | UpdatePeer 实现 Transport。地址变更在下一次发送时生效：peerLoop 每次
+// 写入前比较已拨号地址与当前地址并立即重连，而不是等待旧连接失败。
 func (t *streamTransport) UpdatePeer(id NodeID, addr string) {
 	if id == 0 || addr == "" {
 		return
@@ -180,7 +193,7 @@ func (t *streamTransport) UpdatePeer(id NodeID, addr string) {
 	t.mu.Lock()
 	p := t.peers[id]
 	if p == nil {
-		p = &streamPeer{id: id, addr: addr, ch: make(chan []Message, t.queue)}
+		p = &streamPeer{id: id, addr: addr, ch: make(chan []Message, t.queue), stop: make(chan struct{})}
 		t.peers[id] = p
 		if t.started {
 			t.wg.Add(1)
@@ -191,6 +204,35 @@ func (t *streamTransport) UpdatePeer(id NodeID, addr string) {
 	}
 	t.mu.Unlock()
 }
+
+// RemovePeer implements PeerRemover. | RemovePeer 实现 PeerRemover。
+func (t *streamTransport) RemovePeer(id NodeID) {
+	if id == 0 {
+		return
+	}
+	t.mu.Lock()
+	p := t.peers[id]
+	if p != nil {
+		delete(t.peers, id)
+		close(p.stop)
+	}
+	t.mu.Unlock()
+}
+
+// PeerAddress implements PeerDirectory. | PeerAddress 实现 PeerDirectory。
+func (t *streamTransport) PeerAddress(id NodeID) (string, bool) {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	p := t.peers[id]
+	if p == nil {
+		return "", false
+	}
+	return p.addr, true
+}
+
+// RequiresPeerAddresses implements PeerAddressTransport. | RequiresPeerAddresses
+// 实现 PeerAddressTransport。
+func (t *streamTransport) RequiresPeerAddresses() bool { return true }
 
 // Send implements Transport. | Send 实现 Transport。
 func (t *streamTransport) Send(_ context.Context, msgs []Message) error {
@@ -319,11 +361,16 @@ func (t *streamTransport) readLoop(conn io.ReadWriteCloser) {
 	}
 }
 
-// peerLoop serializes writes to one peer and reconnects after failures. | peerLoop
-// 串行化发往一个对端的写入，并在失败后重连。
+// peerLoop serializes writes to one peer and reconnects after failures or an
+// address change. connAddr records the address the live connection was dialed
+// for, so an UpdatePeer takes effect before the next write instead of waiting
+// for the old connection to fail. | peerLoop 串行化发往一个对端的写入，并在失败或
+// 地址变更后重连。connAddr 记录当前连接拨号时使用的地址，因此 UpdatePeer 会在下
+// 一次写入前生效，而不是等待旧连接失败。
 func (t *streamTransport) peerLoop(p *streamPeer) {
 	defer t.wg.Done()
 	var conn io.ReadWriteCloser
+	var connAddr string
 	defer func() {
 		if conn != nil {
 			t.untrack(conn)
@@ -334,11 +381,23 @@ func (t *streamTransport) peerLoop(p *streamPeer) {
 		select {
 		case <-t.stopCh:
 			return
+		case <-p.stop:
+			return
 		case batch := <-p.ch:
+			select {
+			case <-p.stop:
+				return
+			default:
+			}
+			t.mu.RLock()
+			addr := p.addr
+			t.mu.RUnlock()
+			if conn != nil && connAddr != addr {
+				t.untrack(conn)
+				_ = conn.Close()
+				conn = nil
+			}
 			if conn == nil {
-				t.mu.RLock()
-				addr := p.addr
-				t.mu.RUnlock()
 				ctx, cancel := context.WithTimeout(context.Background(), t.timeout)
 				c, err := t.backend.dial(ctx, addr)
 				cancel()
@@ -355,6 +414,7 @@ func (t *streamTransport) peerLoop(p *streamPeer) {
 					continue
 				}
 				conn = c
+				connAddr = addr
 			}
 			frame, err := encodeStreamFrame(batch, t.secret, t.maxFrame)
 			if err != nil {
@@ -519,6 +579,13 @@ type TCPTransportOptions struct {
 	// MaxFrameBytes caps one frame. Default 64 MiB. | MaxFrameBytes 限制单帧大小，
 	// 默认 64 MiB。
 	MaxFrameBytes int
+	// MaxConns caps tracked inbound and outbound connections. Zero uses 256; a
+	// negative value means unlimited. Each peer normally needs one connection in
+	// each direction, so the default fits roughly 128 peers; raise it for larger
+	// clusters. | MaxConns 限制跟踪的入站与出站连接总数。零值使用 256，负值表示
+	// 不限制。每个对端通常需要一条各方向连接，默认值约可容纳 128 个对端；更大集群
+	// 应提高该值。
+	MaxConns int
 }
 
 // TCPTransport is a TCP implementation of Transport with optional TLS and HMAC.
@@ -537,7 +604,7 @@ func NewTCPTransport(opts TCPTransportOptions) (*TCPTransport, error) {
 		return nil, errs.Detail(ErrInvalidConfig, "shared secret is required unless AllowInsecure is set")
 	}
 	backend := &tcpBackend{tlsConfig: opts.TLSConfig, timeout: opts.DialTimeout}
-	st, err := newStreamTransport(backend, opts.ListenAddr, opts.SharedSecret, opts.Queue, opts.MaxFrameBytes, opts.DialTimeout)
+	st, err := newStreamTransport(backend, opts.ListenAddr, opts.SharedSecret, opts.Queue, opts.MaxFrameBytes, opts.MaxConns, opts.DialTimeout)
 	if err != nil {
 		return nil, err
 	}

@@ -371,6 +371,7 @@ func (n *Node) becomeLeader() {
 	n.leadTransferee = 0
 	n.transferElapsed = 0
 	n.leaveIndex = 0
+	n.removalIndex = 0
 	n.pendingRemoval = nil
 	n.leaseUntil = time.Time{}
 	n.readRound = nil
@@ -462,6 +463,7 @@ func (n *Node) becomeFollower(term uint64, leader NodeID, persist bool) uint64 {
 	n.selfVoteDurable = false
 	n.progress = make(map[NodeID]*progress)
 	n.pendingRemoval = nil
+	n.removalIndex = 0
 	n.leaseUntil = time.Time{}
 	n.remoteReads.failAll(ErrLeadershipLost)
 	n.termStartIndex = 0

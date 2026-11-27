@@ -91,6 +91,7 @@ type HTTPTransport struct {
 // httpPeer owns one ordered outbound queue. | httpPeer 持有一条有序出站队列。
 type httpPeer struct {
 	ch   chan []Message
+	stop chan struct{}
 	addr string
 	id   NodeID
 }
@@ -154,10 +155,39 @@ func (t *HTTPTransport) UpdatePeer(id NodeID, addr string) {
 		p.addr = addr
 		return
 	}
-	p := &httpPeer{id: id, addr: addr, ch: make(chan []Message, t.queue)}
+	p := &httpPeer{id: id, addr: addr, ch: make(chan []Message, t.queue), stop: make(chan struct{})}
 	t.peers[id] = p
 	go t.peerLoop(p)
 }
+
+// RemovePeer implements PeerRemover. | RemovePeer 实现 PeerRemover。
+func (t *HTTPTransport) RemovePeer(id NodeID) {
+	if id == 0 {
+		return
+	}
+	t.mu.Lock()
+	p := t.peers[id]
+	if p != nil {
+		delete(t.peers, id)
+		close(p.stop)
+	}
+	t.mu.Unlock()
+}
+
+// PeerAddress implements PeerDirectory. | PeerAddress 实现 PeerDirectory。
+func (t *HTTPTransport) PeerAddress(id NodeID) (string, bool) {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	p := t.peers[id]
+	if p == nil {
+		return "", false
+	}
+	return p.addr, true
+}
+
+// RequiresPeerAddresses implements PeerAddressTransport. | RequiresPeerAddresses
+// 实现 PeerAddressTransport。
+func (t *HTTPTransport) RequiresPeerAddresses() bool { return true }
 
 // Send implements Transport. Messages are grouped by destination and enqueued;
 // network I/O never blocks the Raft loop. | Send 实现 Transport。消息按目的地分组
@@ -201,6 +231,8 @@ func (t *HTTPTransport) peerLoop(p *httpPeer) {
 	for {
 		select {
 		case <-t.stopCh:
+			return
+		case <-p.stop:
 			return
 		case batch := <-p.ch:
 			t.mu.RLock()

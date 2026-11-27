@@ -23,6 +23,13 @@ const (
 	// ConfChangeLeaveJoint commits the new configuration of a joint transition.
 	// | ConfChangeLeaveJoint 提交联合过渡的新配置。
 	ConfChangeLeaveJoint
+	// ConfChangeUpdateNode changes one member's transport address without
+	// changing membership or quorum. Every replica must understand this value
+	// before it can appear in the log; finish upgrading a mixed-version cluster
+	// before calling UpdateNodeAddress. | ConfChangeUpdateNode 只修改一个成员的
+	// 传输地址，不改变成员集合或法定人数。该值进入日志前所有副本都必须理解它；
+	// 混合版本集群应先完成升级，再调用 UpdateNodeAddress。
+	ConfChangeUpdateNode
 )
 
 // ConfChange is the command stored in an EntryConfChange log entry. | ConfChange
@@ -350,6 +357,14 @@ func (m *membership) apply(cc ConfChange) (*membership, error) {
 		}
 		next.votersOut = make(map[NodeID]struct{})
 		next.learnersOut = make(map[NodeID]struct{})
+	case ConfChangeUpdateNode:
+		if !next.isMember(cc.NodeID) {
+			return nil, errs.Detail(ErrUnknownNode, "node %d", cc.NodeID)
+		}
+		if cc.Addr == "" {
+			return nil, errs.Detail(ErrInvalidConfig, "node %d address is empty", cc.NodeID)
+		}
+		next.addrs[cc.NodeID] = cc.Addr
 	default:
 		return nil, errs.Detail(ErrInvalidConfig, "unknown change type %d", cc.Type)
 	}

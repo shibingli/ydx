@@ -127,6 +127,7 @@ type Node struct {
 	leadTransferee      NodeID
 	transferElapsed     int
 	leaveIndex          uint64
+	removalIndex        uint64
 	readSeq             uint64
 	tickCount           uint64
 	termStartIndex      uint64
@@ -401,6 +402,12 @@ func New(cfg Config) (*Node, error) {
 	if tr, ok := n.transport.(ImmediateTransport); ok && tr.SendImmediate() {
 		n.immediateTransport = true
 	}
+	if cfg.Join && len(cfg.Peers) == 0 {
+		if addr, ok := n.transport.(PeerAddressTransport); ok && addr.RequiresPeerAddresses() {
+			n.logf("warn", "raft Join node has no peer seeds and may never answer the leader | raft Join 节点未配置对端种子，可能永远无法回复领导者",
+				ydlog.Uint64("node", uint64(n.id)))
+		}
+	}
 	n.seedPeerAddresses()
 	n.updatePeerAddresses()
 	var startErr error
@@ -617,6 +624,7 @@ func (n *Node) configAt(index uint64) *membership {
 // the configuration of the surviving log. | truncateConfig 删除 index 及之后的配置
 // 版本，并恢复幸存日志对应的配置。
 func (n *Node) truncateConfig(index uint64) {
+	oldConf := n.conf
 	before := len(n.confHistory)
 	cut := len(n.confHistory)
 	for i := range n.confHistory {
@@ -637,19 +645,29 @@ func (n *Node) truncateConfig(index uint64) {
 	if n.conf.joint() && n.jointIndex == 0 {
 		n.jointIndex = n.confBaseIndex
 	}
-	if cut < before && n.cfg.OnConfChange != nil {
-		n.cfg.OnConfChange(n.conf.confState())
+	if cut < before {
+		// A dropped suffix may have added or removed members. Release transport
+		// state for nodes it added and restore addresses for nodes it removed. |
+		// 被丢弃的后缀可能增删成员。释放其新增节点的传输状态，并恢复其移除节点的
+		// 地址。
+		n.removeDepartedPeers(oldConf, n.conf)
+		n.updatePeerAddresses()
+		if n.cfg.OnConfChange != nil {
+			n.cfg.OnConfChange(n.conf.confState())
+		}
 	}
 }
 
 // appendConfig applies membership entries that just entered the log. | appendConfig
 // 应用刚刚进入日志的成员变更项。
 func (n *Node) appendConfig(entries []Entry, from uint64) error {
+	oldConf := n.conf
 	conf := n.conf
 	if conf == nil {
 		conf = newMembership(nil, nil, nil)
 	}
 	jointIndex := n.jointIndex
+	confChanged := false
 	for i := range entries {
 		e := &entries[i]
 		if e.Index < from {
@@ -666,6 +684,7 @@ func (n *Node) appendConfig(entries []Entry, from uint64) error {
 			}
 			conf = newMembershipFromState(cs)
 			jointIndex = 0
+			confChanged = true
 		case EntryConfChange:
 			cc, err := decodeConfChange(e.Data)
 			if err != nil {
@@ -682,29 +701,35 @@ func (n *Node) appendConfig(entries []Entry, from uint64) error {
 				jointIndex = 0
 			}
 			conf = next
+			confChanged = true
 		default:
 			continue
 		}
 		n.confHistory = append(n.confHistory, confVersion{index: e.Index, conf: conf, jointIndex: jointIndex})
 	}
+	if !confChanged {
+		// Ordinary appends do not touch the address directory. Pushing every
+		// member address on each AppendEntries would add O(members) transport
+		// calls to the follower hot path. | 普通追加不修改地址目录。若每次
+		// AppendEntries 都推送全部成员地址，会给跟随者热路径增加 O(成员数) 的
+		// 传输调用。
+		return nil
+	}
 	n.conf = conf
 	n.jointIndex = jointIndex
 	n.updateProgressForConfig()
+	if n.state != StateLeader {
+		// A follower does not replicate to departed members, so their transport
+		// state can be released as soon as the configuration enters the log. |
+		// 跟随者不向已离开成员复制，因此配置进入日志后即可释放其传输状态。
+		n.removeDepartedPeers(oldConf, conf)
+	}
 	n.updatePeerAddresses()
 	if n.cfg.OnConfChange != nil {
 		// Membership entries take effect as soon as they enter the log, on
 		// followers as well as the leader. | 成员变更项进入日志即生效，跟随者与
 		// 领导者同样如此。
-		changed := false
-		for i := range entries {
-			if entries[i].Index >= from && (entries[i].Type == EntryBootstrap || entries[i].Type == EntryConfChange) {
-				changed = true
-				break
-			}
-		}
-		if changed {
-			n.cfg.OnConfChange(n.conf.confState())
-		}
+		n.cfg.OnConfChange(n.conf.confState())
 	}
 	return nil
 }
@@ -746,43 +771,6 @@ func (n *Node) updateProgressForConfig() {
 			continue
 		}
 		delete(n.progress, id)
-	}
-}
-
-// seedPeerAddresses installs the configured peer list into the transport before
-// any membership address. A Join node has an empty configuration, so without
-// this seed it cannot answer the leader that is adding it: over a real transport
-// every reply would fail with ErrUnknownNode and catch-up could never start.
-// The seed is only a transport directory entry; it never makes the node a
-// member, and later membership addresses take precedence because
-// updatePeerAddresses runs immediately after it. | seedPeerAddresses 在任何成员
-// 地址之前把配置中的对端列表安装到传输层。Join 节点的配置为空；若没有该种子，
-// 它无法回复正在添加它的领导者：在真实传输上每次回复都会因 ErrUnknownNode 失败，
-// 追赶永远不会开始。该种子只是传输层目录项，不会使节点成为成员；由于
-// updatePeerAddresses 紧随其后运行，之后的成员地址会覆盖它。
-func (n *Node) seedPeerAddresses() {
-	if n.transport == nil {
-		return
-	}
-	for _, p := range n.cfg.Peers {
-		if p.ID == 0 || p.ID == n.id || p.Addr == "" {
-			continue
-		}
-		n.transport.UpdatePeer(p.ID, p.Addr)
-	}
-}
-
-// updatePeerAddresses pushes the current address directory into the transport.
-// | updatePeerAddresses 将当前地址目录推送到传输层。
-func (n *Node) updatePeerAddresses() {
-	if n.transport == nil {
-		return
-	}
-	for id, addr := range n.conf.addrs {
-		if id == n.id || addr == "" {
-			continue
-		}
-		n.transport.UpdatePeer(id, addr)
 	}
 }
 

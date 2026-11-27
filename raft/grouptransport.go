@@ -112,6 +112,33 @@ func (t *GroupTransport) UpdatePeer(id NodeID, addr string) {
 	t.mux.base.UpdatePeer(id, addr)
 }
 
+// RemovePeer implements PeerRemover by forwarding to the shared base transport.
+// | RemovePeer 通过共享基础传输实现 PeerRemover。
+func (t *GroupTransport) RemovePeer(id NodeID) {
+	if remover, ok := t.mux.base.(PeerRemover); ok {
+		remover.RemovePeer(id)
+	}
+}
+
+// PeerAddress implements PeerDirectory by forwarding to the shared base
+// transport. | PeerAddress 通过共享基础传输实现 PeerDirectory。
+func (t *GroupTransport) PeerAddress(id NodeID) (string, bool) {
+	if dir, ok := t.mux.base.(PeerDirectory); ok {
+		return dir.PeerAddress(id)
+	}
+	return "", false
+}
+
+// RequiresPeerAddresses implements PeerAddressTransport by forwarding to the
+// shared base transport. | RequiresPeerAddresses 通过共享基础传输实现
+// PeerAddressTransport。
+func (t *GroupTransport) RequiresPeerAddresses() bool {
+	if addr, ok := t.mux.base.(PeerAddressTransport); ok {
+		return addr.RequiresPeerAddresses()
+	}
+	return false
+}
+
 // FrameLimit reports the shared transport's maximum encoded frame. | FrameLimit
 // 返回共享传输的最大编码帧。
 func (t *GroupTransport) FrameLimit() int64 {

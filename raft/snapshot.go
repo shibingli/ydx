@@ -83,6 +83,7 @@ func (n *Node) handleSnapshot(m *Message) {
 	n.sentApplied = snap.Index
 	n.confBase = newMembershipFromState(snap.ConfState)
 	n.confBaseIndex = snap.Index
+	oldConf := n.conf
 	n.conf = n.confBase
 	n.confHistory = nil
 	n.jointIndex = 0
@@ -92,6 +93,7 @@ func (n *Node) handleSnapshot(m *Message) {
 	n.progress = make(map[NodeID]*progress)
 	n.futures.failAll(ErrLeadershipLost)
 	n.resolveReads(ErrLeadershipLost)
+	n.removeDepartedPeers(oldConf, n.conf)
 	n.updatePeerAddresses()
 	if n.cfg.OnConfChange != nil {
 		n.cfg.OnConfChange(n.conf.confState())

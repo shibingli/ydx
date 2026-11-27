@@ -191,6 +191,21 @@ func (n *Node) Promote(ctx context.Context, id NodeID) error {
 	return n.changeConf(ctx, ConfChange{Type: ConfChangePromote, NodeID: id})
 }
 
+// UpdateNodeAddress changes a member's transport address without altering the
+// voter or learner sets. The new address takes effect on every replica when the
+// entry enters the log, and the transport reconnects on the next send. addr
+// must be non-empty. Every replica must understand ConfChangeUpdateNode before
+// this is called; finish upgrading a mixed-version cluster first. |
+// UpdateNodeAddress 修改成员的传输地址，不改变投票或学习者集合。日志项进入日志时
+// 新地址在所有副本生效，传输层在下一次发送时重连。addr 不得为空。调用前所有副本都
+// 必须理解 ConfChangeUpdateNode；混合版本集群应先完成升级。
+func (n *Node) UpdateNodeAddress(ctx context.Context, id NodeID, addr string) error {
+	if addr == "" {
+		return errs.Detail(ErrInvalidConfig, "node %d address is empty", id)
+	}
+	return n.changeConf(ctx, ConfChange{Type: ConfChangeUpdateNode, NodeID: id, Addr: addr})
+}
+
 // changeConf submits a membership change and waits for its final configuration
 // to commit. | changeConf 提交成员变更，并等待最终配置提交。
 func (n *Node) changeConf(ctx context.Context, cc ConfChange) error {

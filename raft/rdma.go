@@ -57,6 +57,13 @@ type RDMATransportOptions struct {
 	// 64 MiB. | MaxFrameBytes 限制重组后的单帧大小。超过一个注册槽位的帧会被分块，
 	// 因此该限制与 BufferSize 独立。默认 64 MiB。
 	MaxFrameBytes int
+	// MaxConns caps tracked inbound and outbound connections. Zero uses 256; a
+	// negative value means unlimited. Each peer normally needs one connection in
+	// each direction, so the default fits roughly 128 peers; raise it for larger
+	// clusters. | MaxConns 限制跟踪的入站与出站连接总数。零值使用 256，负值表示
+	// 不限制。每个对端通常需要一条各方向连接，默认值约可容纳 128 个对端；更大集群
+	// 应提高该值。
+	MaxConns int
 	// BusyPoll is retained for compatibility. ydx/rdma polls completion queues on
 	// the hot path with a bounded spin before yielding. | BusyPoll 为兼容保留。
 	// ydx/rdma 热路径轮询完成队列，并在有限自旋后让出处理器。
