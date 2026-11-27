@@ -95,7 +95,9 @@ node, err := raft.New(raft.Config{
 
 ```go
 // 新节点：Join 跳过引导，Peers 仅用于传输层地址簿
-tr4, _ := raft.NewTCPTransport(raft.TCPTransportOptions{ListenAddr: "192.168.2.5:22102"})
+tr4, _ := raft.NewTCPTransport(raft.TCPTransportOptions{
+    ListenAddr: "192.168.2.5:22102", SharedSecret: sharedSecret,
+})
 node4, err := raft.New(raft.Config{
     ID: 4, Join: true, Peers: peers, Storage: store, FSM: fsm, Transport: tr4,
 })
