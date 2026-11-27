@@ -86,7 +86,13 @@ func (tx *transaction) initRequest() {
 	} else {
 		tx.uriRaw = r.URL.RequestURI()
 	}
-	tx.uriDecoded = tx.uriRaw
+	tx.uriDecoded = r.URL.Path
+	if r.URL.RawQuery != "" {
+		tx.uriDecoded += "?" + r.URL.RawQuery
+	}
+	if tx.uriDecoded == "" {
+		tx.uriDecoded = tx.uriRaw
+	}
 	tx.requestLine = r.Method + " " + tx.uriRaw + " " + r.Proto
 	if host, port, err := net.SplitHostPort(r.RemoteAddr); err == nil {
 		tx.remoteHost = host

@@ -44,6 +44,7 @@ func captureRequestBody(r *http.Request, limit int, action LimitAction) ([]byte,
 		return nil, true, nil
 	}
 	original := r.Body
+	originalLength := r.ContentLength
 	data, err := io.ReadAll(io.LimitReader(original, int64(limit)+1))
 	if err != nil {
 		_ = original.Close()
@@ -60,9 +61,17 @@ func captureRequestBody(r *http.Request, limit int, action LimitAction) ([]byte,
 			r.ContentLength = 0
 			return prefix, true, nil
 		}
-		rest := io.MultiReader(bytes.NewReader(data[limit:]), original)
+		// Replay every inspected byte plus the unread remainder. Replaying only
+		// data[limit:] would hand the handler a body starting at the inspection
+		// limit, letting an attacker put the real payload after benign padding. |
+		// 回放已检查的全部字节与未读剩余；只回放 data[limit:] 会让处理器从检查上限
+		// 处开始读正文，攻击者可用良性填充把真实负载移到后面。
+		rest := io.MultiReader(bytes.NewReader(data), original)
 		r.Body = &replayBody{Reader: rest, closer: original}
-		r.ContentLength = -1
+		r.ContentLength = originalLength
+		if originalLength < 0 {
+			r.ContentLength = -1
+		}
 		return prefix, true, nil
 	}
 	_ = original.Close()
