@@ -329,23 +329,29 @@ func parseBPMNNode(element bpmnElement) (Node, string, error) {
 func parseVoteCondition(raw string) (Completion, bool) {
 	text := stripBPMNExpression(raw)
 	text = strings.ReplaceAll(text, " ", "")
-	countRe := regexpx.MustCompile(`^nrOfCompletedInstances(?:>=|==|>)([0-9]+)$`)
+	countRe := regexpx.MustCompile(`^nrOfCompletedInstances(>=|==|>)([0-9]+)$`)
 	if match := countRe.FindStringSubmatch(text); match != nil {
-		count, err := strconv.ParseFloat(match[1], 64)
+		count, err := strconv.ParseFloat(match[2], 64)
 		if err != nil {
 			return Completion{}, false
 		}
+		if match[1] == ">" {
+			count++
+		}
 		return Completion{Mode: CompletionVote, ThresholdType: ThresholdCount, Threshold: count, RejectMode: RejectModeAny}, true
 	}
-	percentRe := regexpx.MustCompile(`^nrOfCompletedInstances/nrOfInstances(?:>=|==|>)([0-9.]+)$`)
+	percentRe := regexpx.MustCompile(`^nrOfCompletedInstances/nrOfInstances(>=|==|>)([0-9.]+)$`)
 	if match := percentRe.FindStringSubmatch(text); match != nil {
-		ratio, err := strconv.ParseFloat(match[1], 64)
+		ratio, err := strconv.ParseFloat(match[2], 64)
 		if err != nil {
 			return Completion{}, false
 		}
 		percent := ratio * 100
-		if percent <= 1 {
-			percent = ratio
+		if match[1] == ">" {
+			// Strictly more than the ratio: nudge by 0.01 percentage point so
+			// the engine's ceiling requires the next whole vote. | 严格大于该比例：
+			// 上移 0.01 个百分点，使引擎向上取整时要求下一整票。
+			percent += 0.01
 		}
 		return Completion{Mode: CompletionVote, ThresholdType: ThresholdPercent, Threshold: percent, RejectMode: RejectModeAny}, true
 	}

@@ -241,26 +241,27 @@ func (s *Store) CreateVersion(ctx context.Context, version workflow.Version) err
 // UpdateVersion updates the editable columns of one draft version. | UpdateVersion 更新一个草稿版本的可编辑列。
 func (s *Store) UpdateVersion(ctx context.Context, version workflow.Version) error {
 	result := s.db.WithContext(ctx).Model(&workflow.Version{}).
-		Where("tenant_id = ? AND id = ?", version.TenantID, version.ID).
+		Where("tenant_id = ? AND id = ? AND status = ?", version.TenantID, version.ID, workflow.VersionDraft).
 		Select("status", "design", "bpmn", "checksum", "note", "published_at", "published_by", "updated_at", "created_by").
 		Updates(&version)
 	if result.Error != nil {
 		return result.Error
 	}
 	if result.RowsAffected == 0 {
-		return workflow.ErrNotFound
+		return workflow.ErrVersionPublished
 	}
 	return nil
 }
 
 // DeleteVersion deletes one version. | DeleteVersion 删除一个版本。
 func (s *Store) DeleteVersion(ctx context.Context, tenantID, id string) error {
-	result := s.db.WithContext(ctx).Where("tenant_id = ? AND id = ?", tenantID, id).Delete(&workflow.Version{})
+	result := s.db.WithContext(ctx).Where("tenant_id = ? AND id = ? AND status = ?",
+		tenantID, id, workflow.VersionDraft).Delete(&workflow.Version{})
 	if result.Error != nil {
 		return result.Error
 	}
 	if result.RowsAffected == 0 {
-		return workflow.ErrNotFound
+		return workflow.ErrVersionPublished
 	}
 	return nil
 }

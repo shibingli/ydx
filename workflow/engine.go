@@ -392,6 +392,13 @@ func (s *Service) advance(ctx context.Context, tx *runtimeTxn, token *Token) err
 			if err := tx.st.UpdateToken(ctx, *token); err != nil {
 				return err
 			}
+			// An early-ending branch can make a waiting inclusive/parallel join
+			// ready even though no multi-edge fork runs after this token. |
+			// 提前结束的分支可能让等待中的包容/并行汇聚就绪，即使该令牌之后没有
+			// 多出线分支执行。
+			if err := s.recheckJoins(ctx, tx); err != nil {
+				return err
+			}
 			return s.finishIfDone(ctx, tx)
 		case NodeServiceTask:
 			tx.event(ctx, EventNodeEntered, "", node.ID, "system", "system", "服务任务已执行 | service task executed", "")
@@ -550,7 +557,28 @@ func (s *Service) Signal(ctx context.Context, tenantID string, actor Actor, inst
 		if err != nil {
 			return err
 		}
-		rt.mergeFormData(payload)
+		// Only merge values declared by a target message form (or the form.*
+		// namespace). Without a waiting token the payload must not touch runtime
+		// variables at all; otherwise any participant could rewrite routing
+		// variables through a signal name that nobody is waiting on. |
+		// 只合并目标消息节点声明的表单字段（或 form.* 命名空间）。没有等待令牌时
+		// 负载不得修改运行时变量，否则任何参与者都能通过无人等待的信号名改写路由变量。
+		var fields []FormField
+		active := 0
+		for i := range tokens {
+			token := tokens[i]
+			if token.Status != TokenWaiting || token.WaitType != WaitMessage {
+				continue
+			}
+			active++
+			if node, ok := rt.design.FindNode(token.NodeID); ok {
+				fields = append(fields, node.Form...)
+			}
+		}
+		if active == 0 {
+			return nil
+		}
+		rt.mergeFormData(filterFormData(fields, payload))
 		for i := range tokens {
 			token := tokens[i]
 			if token.Status != TokenWaiting || token.WaitType != WaitMessage {
@@ -880,7 +908,7 @@ func (s *Service) finishInstance(ctx context.Context, tx *runtimeTxn, status, ou
 	tx.inst.Outcome = outcome
 	tx.inst.EndedAt = tx.now
 	tx.inst.UpdatedAt = tx.now
-	tx.inst.EndedReason = strings.TrimSpace(reason)
+	tx.inst.EndedReason = truncate(strings.TrimSpace(reason), 500)
 	tx.inst.CurrentNodes = "[]"
 	if err := tx.st.UpdateInstance(ctx, *tx.inst); err != nil {
 		return err
@@ -919,20 +947,26 @@ func (s *Service) cancelLiveWork(ctx context.Context, tx *runtimeTxn, reason str
 			return err
 		}
 	}
-	tasks, _, err := tx.st.ListTasks(ctx, tx.inst.TenantID, TaskFilter{InstanceID: tx.inst.ID, Page: 1, PageSize: s.options.MaxPageSize})
-	if err != nil {
-		return err
-	}
-	for i := range tasks {
-		task := &tasks[i]
-		if task.Status != TaskPending && task.Status != TaskClaimed {
-			continue
-		}
-		task.Status = TaskCancelled
-		task.Comment = reason
-		task.UpdatedAt = tx.now
-		if err := tx.st.UpdateTask(ctx, *task); err != nil {
+	for page := 1; ; page++ {
+		tasks, total, err := tx.st.ListTasks(ctx, tx.inst.TenantID,
+			TaskFilter{InstanceID: tx.inst.ID, Page: page, PageSize: s.options.MaxPageSize})
+		if err != nil {
 			return err
+		}
+		for i := range tasks {
+			task := &tasks[i]
+			if task.Status != TaskPending && task.Status != TaskClaimed {
+				continue
+			}
+			task.Status = TaskCancelled
+			task.Comment = reason
+			task.UpdatedAt = tx.now
+			if err := tx.st.UpdateTask(ctx, *task); err != nil {
+				return err
+			}
+		}
+		if len(tasks) == 0 || page*s.options.MaxPageSize >= total {
+			break
 		}
 	}
 	return nil
@@ -957,7 +991,7 @@ func (tx *runtimeTxn) event(ctx context.Context, eventType, taskID, nodeID, acto
 		ActorID:    actorID,
 		ActorName:  actorName,
 		Type:       eventType,
-		Message:    message,
+		Message:    truncate(message, 500),
 		Detail:     detail,
 	})
 }
