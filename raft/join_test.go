@@ -3,6 +3,7 @@ package raft
 import (
 	"context"
 	"fmt"
+	"net/http/httptest"
 	"sync"
 	"testing"
 	"time"
@@ -133,7 +134,7 @@ func TestClusterJoinOverTCP(t *testing.T) {
 			_ = node.Close()
 		}
 	}()
-	leader := waitTCPLeader(t, nodes, 8*time.Second)
+	leader := waitOneLeader(t, nodes, 8*time.Second)
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	var last Result
@@ -205,9 +206,9 @@ func TestClusterJoinOverTCP(t *testing.T) {
 	}
 }
 
-// waitTCPLeader waits for exactly one leader among nodes. | waitTCPLeader 等待 nodes
+// waitOneLeader waits for exactly one leader among nodes. | waitOneLeader 等待 nodes
 // 中出现唯一领导者。
-func waitTCPLeader(t *testing.T, nodes map[NodeID]*Node, timeout time.Duration) *Node {
+func waitOneLeader(t *testing.T, nodes map[NodeID]*Node, timeout time.Duration) *Node {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
@@ -224,7 +225,7 @@ func waitTCPLeader(t *testing.T, nodes map[NodeID]*Node, timeout time.Duration) 
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
-	t.Fatal("no single leader over TCP")
+	t.Fatal("no single leader")
 	return nil
 }
 
@@ -237,5 +238,166 @@ func waitAppliedOn(t *testing.T, node *Node, index uint64, timeout time.Duration
 	if err := node.WaitApplied(ctx, index); err != nil {
 		t.Fatalf("node %d wait applied %d: %v (leader=%d commit=%d applied=%d status=%+v)",
 			node.ID(), index, err, node.Leader(), node.Commit(), node.Applied(), node.Status())
+	}
+}
+
+// TestClusterJoinOverHTTP runs a dynamic join over the HTTP transport. The
+// joining node must post its replies to the leader's base URL, which it can
+// only learn from the Peers seed before the first configuration arrives. |
+// TestClusterJoinOverHTTP 在 HTTP 传输上执行动态加入。加入节点必须把回复 POST 到
+// 领导者的基础 URL，而它只能在首份配置到达前从 Peers 种子获知该 URL。
+func TestClusterJoinOverHTTP(t *testing.T) {
+	const size = 3
+	transports := make([]*HTTPTransport, size)
+	servers := make([]*httptest.Server, 0, size+1)
+	peers := make([]Peer, size)
+	for i := 0; i < size; i++ {
+		tr, err := NewHTTPTransport(HTTPTransportOptions{ID: NodeID(i + 1), AllowInsecure: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		server := httptest.NewServer(tr.Handler())
+		servers = append(servers, server)
+		transports[i] = tr
+		peers[i] = Peer{ID: NodeID(i + 1), Addr: server.URL}
+	}
+	nodes := make(map[NodeID]*Node, size+1)
+	fsms := make(map[NodeID]*kvFSM, size+1)
+	for i := 0; i < size; i++ {
+		fsm := newKVFSM()
+		node, err := New(Config{
+			ID: NodeID(i + 1), Peers: peers, Storage: NewMemStorage(), FSM: fsm,
+			Transport: transports[i], TickInterval: 5 * time.Millisecond,
+			HeartbeatTicks: 1, ElectionTicks: 8, MaxBatchEntries: 64,
+		})
+		if err != nil {
+			t.Fatalf("node %d: %v", i+1, err)
+		}
+		nodes[NodeID(i+1)] = node
+		fsms[NodeID(i+1)] = fsm
+	}
+	defer func() {
+		for _, node := range nodes {
+			_ = node.Close()
+		}
+		for _, server := range servers {
+			server.Close()
+		}
+	}()
+	leader := waitOneLeader(t, nodes, 8*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	if _, err := leader.Propose(ctx, []byte("before=http-join")); err != nil {
+		t.Fatalf("propose before join: %v", err)
+	}
+
+	tr4, err := NewHTTPTransport(HTTPTransportOptions{ID: 4, AllowInsecure: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server4 := httptest.NewServer(tr4.Handler())
+	servers = append(servers, server4)
+	fsm4 := newKVFSM()
+	node4, err := New(Config{
+		ID: 4, Join: true, Peers: peers, Storage: NewMemStorage(), FSM: fsm4,
+		Transport: tr4, TickInterval: 5 * time.Millisecond,
+		HeartbeatTicks: 1, ElectionTicks: 8, MaxBatchEntries: 64,
+	})
+	if err != nil {
+		t.Fatalf("join node: %v", err)
+	}
+	nodes[4] = node4
+	fsms[4] = fsm4
+
+	if err := leader.AddLearner(ctx, 4, server4.URL); err != nil {
+		t.Fatalf("add learner: %v", err)
+	}
+	waitAppliedOn(t, node4, leader.Commit(), 15*time.Second)
+	if got := fsm4.value("before"); got != "http-join" {
+		t.Fatalf("learner replayed value = %q", got)
+	}
+	res, err := leader.Propose(ctx, []byte("after=http-join"))
+	if err != nil {
+		t.Fatalf("propose after join: %v", err)
+	}
+	waitAppliedOn(t, node4, res.Index, 15*time.Second)
+	if got := fsm4.value("after"); got != "http-join" {
+		t.Fatalf("learner live value = %q", got)
+	}
+}
+
+// TestNodeHostJoinOverTCP starts a fourth NodeHost as a joining group over real
+// TCP and verifies the shared base transport receives the group's Peers seed. |
+// TestNodeHostJoinOverTCP 在真实 TCP 上把第四个 NodeHost 作为加入组启动，并验证
+// 共享基础传输收到该组的 Peers 种子。
+func TestNodeHostJoinOverTCP(t *testing.T) {
+	const size = 3
+	transports := make([]*TCPTransport, size)
+	peers := make([]Peer, size)
+	for i := 0; i < size; i++ {
+		tr, err := NewTCPTransport(TCPTransportOptions{ListenAddr: "127.0.0.1:0", Queue: 256, AllowInsecure: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		transports[i] = tr
+		peers[i] = Peer{ID: NodeID(i + 1), Addr: tr.Addr()}
+	}
+	states := make([]*hostState, size)
+	for i := 0; i < size; i++ {
+		states[i] = newHostState(NodeID(i+1), transports[i])
+		states[i].startHost(t)
+		startGroup(t, states[i].host, 100, peers)
+	}
+	defer func() {
+		for _, s := range states {
+			if s.host != nil {
+				_ = s.host.Close()
+			}
+		}
+	}()
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	leaderIdx := waitHostLeader(t, states, 100)
+	if _, err := states[leaderIdx].host.Propose(ctx, 100, []byte("before=host-join")); err != nil {
+		t.Fatalf("propose before join: %v", err)
+	}
+
+	tr4, err := NewTCPTransport(TCPTransportOptions{ListenAddr: "127.0.0.1:0", Queue: 256, AllowInsecure: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	state4 := newHostState(4, tr4)
+	state4.startHost(t)
+	states = append(states, state4)
+	defer func() { _ = state4.host.Close() }()
+	if _, err := state4.host.StartGroup(GroupConfig{
+		ID: 100, Join: true, Peers: peers,
+		TickInterval: 5 * time.Millisecond, HeartbeatTicks: 1, ElectionTicks: 8,
+	}); err != nil {
+		t.Fatalf("start joining group: %v", err)
+	}
+	leader := states[leaderIdx].host
+	if err := leader.AddLearner(ctx, 100, 4, tr4.Addr()); err != nil {
+		t.Fatalf("add learner: %v", err)
+	}
+	status, err := leader.Status(100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := state4.host.WaitApplied(ctx, 100, status.Commit); err != nil {
+		t.Fatalf("join host applied: %v", err)
+	}
+	if got := state4.fsms[100].value("before"); got != "host-join" {
+		t.Fatalf("join host value = %q", got)
+	}
+	res, err := leader.Propose(ctx, 100, []byte("after=host-join"))
+	if err != nil {
+		t.Fatalf("propose after join: %v", err)
+	}
+	if err := state4.host.WaitApplied(ctx, 100, res.Index); err != nil {
+		t.Fatalf("join host live applied: %v", err)
+	}
+	if got := state4.fsms[100].value("after"); got != "host-join" {
+		t.Fatalf("join host live value = %q", got)
 	}
 }
