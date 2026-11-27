@@ -401,6 +401,7 @@ func New(cfg Config) (*Node, error) {
 	if tr, ok := n.transport.(ImmediateTransport); ok && tr.SendImmediate() {
 		n.immediateTransport = true
 	}
+	n.seedPeerAddresses()
 	n.updatePeerAddresses()
 	var startErr error
 	if sink, ok := n.transport.(messageSink); ok {
@@ -745,6 +746,29 @@ func (n *Node) updateProgressForConfig() {
 			continue
 		}
 		delete(n.progress, id)
+	}
+}
+
+// seedPeerAddresses installs the configured peer list into the transport before
+// any membership address. A Join node has an empty configuration, so without
+// this seed it cannot answer the leader that is adding it: over a real transport
+// every reply would fail with ErrUnknownNode and catch-up could never start.
+// The seed is only a transport directory entry; it never makes the node a
+// member, and later membership addresses take precedence because
+// updatePeerAddresses runs immediately after it. | seedPeerAddresses 在任何成员
+// 地址之前把配置中的对端列表安装到传输层。Join 节点的配置为空；若没有该种子，
+// 它无法回复正在添加它的领导者：在真实传输上每次回复都会因 ErrUnknownNode 失败，
+// 追赶永远不会开始。该种子只是传输层目录项，不会使节点成为成员；由于
+// updatePeerAddresses 紧随其后运行，之后的成员地址会覆盖它。
+func (n *Node) seedPeerAddresses() {
+	if n.transport == nil {
+		return
+	}
+	for _, p := range n.cfg.Peers {
+		if p.ID == 0 || p.ID == n.id || p.Addr == "" {
+			continue
+		}
+		n.transport.UpdatePeer(p.ID, p.Addr)
 	}
 }
 

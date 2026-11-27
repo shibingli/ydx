@@ -82,9 +82,16 @@ type Config struct {
 	// configuration. | senderFilter 可选地覆盖入站消息的成员查询。它不导出，只有包内
 	// 测试可注入其他视图；生产节点按生效配置校验。
 	senderFilter func(NodeID) bool
-	// Peers seeds a brand-new cluster. It is ignored when Storage already holds
-	// state. The local ID is added automatically when absent. | Peers 用于初始化全
-	// 新集群；Storage 已有状态时忽略。本地 ID 缺失时会自动加入。
+	// Peers seeds a brand-new cluster. It is ignored for membership when Storage
+	// already holds state, but its addresses still seed the transport directory
+	// at startup. A Join node has no initial configuration, so it must be started
+	// with every existing member's address here; otherwise its replies to the
+	// leader cannot be delivered and catch-up never starts. Membership addresses
+	// always take precedence over this seed. The local ID is added automatically
+	// when absent. | Peers 用于初始化全新集群。Storage 已有状态时它不影响成员配置，
+	// 但其地址仍会在启动时填充传输层目录。Join 节点初始没有配置，必须在此提供所有
+	// 现有成员的地址，否则它发给领导者的回复无法投递，追赶永远不会开始。成员地址
+	// 始终优先于该种子。本地 ID 缺失时会自动加入。
 	Peers []Peer
 	// RDMAOptions configures the built-in RDMA transport. | RDMAOptions 配置内置
 	// RDMA 传输。
@@ -208,8 +215,11 @@ type Config struct {
 	// 并行度目标。
 	MaxPendingReads int
 
-	// Join starts an empty node that waits to be added by a leader. | Join 启动一个
-	// 空节点，等待领导者将其加入集群。
+	// Join starts an empty node that waits to be added by a leader. Start it with
+	// Peers set to the current members and their addresses so its transport can
+	// reply before the first configuration arrives. | Join 启动一个空节点，等待
+	// 领导者将其加入集群。启动时应把 Peers 设为当前成员及其地址，使传输层在首份
+	// 配置到达前就能投递其回复。
 	Join bool
 	// RDMA enables the built-in RDMA transport when Transport is nil. It requires
 	// a Linux/amd64 or Linux/arm64 build with -tags rdma; other builds return

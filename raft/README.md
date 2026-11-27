@@ -88,7 +88,19 @@ node, err := raft.New(raft.Config{
 ```
 
 每个节点使用相同的 `Peers`；`Config.Peers` 只在全新集群首次启动时用于初始化，
-已有日志/快照时忽略。
+已有日志/快照时不影响成员配置。除成员初始化外，`Peers` 还会在启动时填充传输层
+地址簿：加入已有集群的新节点必须以现有成员及其地址作为 `Peers` 启动，否则它在收到
+首份配置前无法回复领导者，日志/快照追赶不会开始。
+
+```go
+// 新节点：Join 跳过引导，Peers 仅用于传输层地址簿
+tr4, _ := raft.NewTCPTransport(raft.TCPTransportOptions{ListenAddr: "192.168.2.5:22102"})
+node4, err := raft.New(raft.Config{
+    ID: 4, Join: true, Peers: peers, Storage: store, FSM: fsm, Transport: tr4,
+})
+// 既有集群的领导者把它加入；addr 必须是新节点的监听地址
+err = leader.AddLearner(ctx, 4, "192.168.2.5:22102")
+```
 
 ### HTTP 传输（YD 路由优先 / 原生 net/http 兼容）
 

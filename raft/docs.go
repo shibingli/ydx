@@ -48,6 +48,13 @@
 //		ID: 1, Peers: peers, Storage: store, FSM: fsm, Transport: tr,
 //	})
 //
+// A node joining an existing cluster sets Join and lists the current members
+// with their addresses in Peers. That list only seeds the transport address
+// book, so the node can answer AppendEntries and snapshot acknowledgements
+// before the leader adds it; it does not join through Peers. | 加入已有集群的节点
+// 设置 Join，并在 Peers 中列出当前成员及其地址。该列表只填充传输层地址簿，使节点
+// 在被领导者加入前就能回复 AppendEntries 与快照确认；它不会通过 Peers 加入集群。
+//
 // # HTTP transport | HTTP 传输
 //
 // The YD router is the first-class entry point. HTTPTransport.Handler returns a
