@@ -112,6 +112,10 @@ func (b *Broker) Publish(topic string, e Event) {
 	if t == nil {
 		return
 	}
+	// Subscribers read asynchronously; copy the payload once so the caller may
+	// reuse its buffer after Publish returns. | 订阅者异步读取；此处复制一次负载，使
+	// 调用方在 Publish 返回后可复用缓冲。
+	e.Data = append([]byte(nil), e.Data...)
 	for sub := range t.subs {
 		select {
 		case sub.ch <- e:

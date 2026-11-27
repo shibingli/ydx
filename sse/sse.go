@@ -62,6 +62,13 @@ type Options struct {
 	Retry time.Duration
 	// BufferSize is the initial capacity of the per-frame assembly buffer; <=0 means 512. | BufferSize 是单帧组装缓冲的初始容量；<=0 时取 512。
 	BufferSize int
+	// WriteTimeout bounds one event write/flush. Zero uses 30s. A reader that
+	// stops consuming hits this deadline instead of pinning the handler and
+	// blocking WriterSet.Shutdown forever. Set a negative value to disable the
+	// bound (not recommended). | WriteTimeout 限制单次事件写入/刷新；零值使用 30 秒。
+	// 停止读取的客户端会触发该期限，而不是永久占用处理器并阻塞 WriterSet.Shutdown。
+	// 负值关闭限制（不推荐）。
+	WriteTimeout time.Duration
 }
 
 // Writer writes events to an http.ResponseWriter in the W3C event stream format. | Writer 把事件按 W3C 事件流格式写入 http.ResponseWriter。
@@ -70,13 +77,15 @@ type Options struct {
 // Writer serializes writes internally and may be called concurrently from several goroutines (for example the business handler and the heartbeat goroutine); | Writer 内部串行化写入，可被多个 goroutine 并发调用（例如业务处理器与心跳 goroutine）；
 // all writes after Close are no-ops. | Close 之后的所有写入均为无操作。
 type Writer struct {
-	w       io.Writer
-	flusher http.Flusher
-	stop    chan struct{}
-	stopped chan struct{}
-	done    chan struct{}
-	buf     []byte
-	untrack func()
+	w            io.Writer
+	flusher      http.Flusher
+	rc           *http.ResponseController
+	writeTimeout time.Duration
+	stop         chan struct{}
+	stopped      chan struct{}
+	done         chan struct{}
+	buf          []byte
+	untrack      func()
 
 	options Options
 
@@ -101,6 +110,9 @@ func NewWriter(w http.ResponseWriter, o Options) (*Writer, error) {
 	if o.BufferSize <= 0 {
 		o.BufferSize = defaultBufferSize
 	}
+	if o.WriteTimeout == 0 {
+		o.WriteTimeout = 30 * time.Second
+	}
 	// An event stream outlives the server's write timeout. net/http applies one absolute write
 	// deadline to the whole response, so without clearing it here every stream dies when
 	// server.write_timeout elapses (15s by default). ResponseController is the supported way to
@@ -108,18 +120,21 @@ func NewWriter(w http.ResponseWriter, o Options) (*Writer, error) {
 	// previous behaviour. | 事件流的寿命长于服务器的写超时。net/http 对整个响应只设置一个绝对写超时，
 	// 不在此清除的话，server.write_timeout（默认 15s）一到所有事件流都会失败。ResponseController
 	// 是穿透中间件包装器访问底层写入器的受支持方式；不支持时维持原有行为。
-	_ = http.NewResponseController(w).SetWriteDeadline(time.Time{})
+	rc := http.NewResponseController(w)
+	_ = rc.SetWriteDeadline(time.Time{})
 	h := w.Header()
 	h.Set("Content-Type", "text/event-stream; charset=utf-8")
 	h.Set("Cache-Control", "no-cache, no-transform")
 	h.Set("Connection", "keep-alive")
 	h.Set("X-Accel-Buffering", "no")
 	out := &Writer{
-		w:       w,
-		flusher: f,
-		options: o,
-		buf:     make([]byte, 0, o.BufferSize),
-		done:    make(chan struct{}),
+		w:            w,
+		flusher:      f,
+		rc:           rc,
+		writeTimeout: o.WriteTimeout,
+		options:      o,
+		buf:          make([]byte, 0, o.BufferSize),
+		done:         make(chan struct{}),
 	}
 	out.setTracker(o.Tracker)
 	return out, nil
@@ -348,6 +363,12 @@ func (w *Writer) flushLocked(buf []byte) error {
 		w.buf = make([]byte, 0, w.options.BufferSize)
 	} else {
 		w.buf = buf
+	}
+	if w.rc != nil && w.writeTimeout > 0 {
+		// Re-arm a rolling deadline before every write so a stalled reader is
+		// unblocked within the timeout while an idle stream keeps no deadline. |
+		// 每次写入前重新设置滚动期限，使停滞读者在超时内解除阻塞，空闲流不保留期限。
+		_ = w.rc.SetWriteDeadline(time.Now().Add(w.writeTimeout))
 	}
 	if _, err := w.w.Write(buf); err != nil {
 		return errs.Wrap(err, ErrWriteStream)
