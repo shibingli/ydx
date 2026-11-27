@@ -196,9 +196,10 @@ func (s *Subscription) run() {
 		closing := s.closing
 		s.mu.RUnlock()
 		if s.response != nil && s.timeout > 0 && !closing {
-			// After Close, keep the short deadline it installed so a stalled
-			// subscriber cannot block wg.Wait forever. | Close 之后保留其设置的短期限，
-			// 避免停滞订阅者永久阻塞 wg.Wait。
+			// Keep a rolling deadline per event so a stalled subscriber is unblocked
+			// within the timeout; Close replaces it with an immediate deadline. |
+			// 每条事件都设置滚动期限，使停滞订阅者在超时内解除阻塞；Close 会把它替换为
+			// 立即到期的期限。
 			_ = http.NewResponseController(s.response).SetWriteDeadline(time.Now().Add(s.timeout))
 		}
 		err := s.writer.WriteEvent(ydxsse.Event{
@@ -229,7 +230,21 @@ func (s *Subscription) Close() error {
 		s.closed = true
 		close(s.queue)
 		s.mu.Unlock()
-		s.wg.Wait()
+		// A writer that does not support SetWriteDeadline cannot be unblocked by the
+		// immediate deadline above. Bound the wait so one stalled subscriber cannot
+		// pin the whole fanout forever; the run goroutine exits as soon as the
+		// underlying write returns. | 不支持 SetWriteDeadline 的写入器无法被上面的立即
+		// 期限解除阻塞。为等待设置上限，避免一个停滞订阅者永久拖住整个扇出；底层写入返回后
+		// run 协程随即退出。
+		done := make(chan struct{})
+		go func() {
+			s.wg.Wait()
+			close(done)
+		}()
+		select {
+		case <-done:
+		case <-time.After(s.timeout):
+		}
 	})
 	return nil
 }

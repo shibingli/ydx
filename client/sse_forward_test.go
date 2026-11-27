@@ -378,3 +378,95 @@ func TestMirrorSSE(t *testing.T) {
 func bytesContains(haystack, needle []byte) bool {
 	return strings.Contains(string(haystack), string(needle))
 }
+
+// flushRecorder records the body and each flush instant. | flushRecorder 记录正文与每次刷新时刻。
+type flushRecorder struct {
+	mu      sync.Mutex
+	body    bytes.Buffer
+	flushes []time.Time
+}
+
+func (r *flushRecorder) Header() http.Header { return make(http.Header) }
+
+func (r *flushRecorder) WriteHeader(int) {}
+
+func (r *flushRecorder) Write(p []byte) (int, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.body.Write(p)
+}
+
+func (r *flushRecorder) Flush() {
+	r.mu.Lock()
+	r.flushes = append(r.flushes, time.Now())
+	r.mu.Unlock()
+}
+
+func (r *flushRecorder) snapshot() (string, int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.body.String(), len(r.flushes)
+}
+
+// TestSSEForwardFlushIntervalReachesSilentUpstream pins that a chunk written within the
+// throttle interval is still flushed when the upstream then goes silent. Without the timer it
+// would stay in the response buffer until the next chunk or EOF. |
+// TestSSEForwardFlushIntervalReachesSilentUpstream 固定：在节流间隔内写入的块，即使上游随后
+// 沉默也会被刷新。没有定时器时它会滞留在响应缓冲中，直到下一个块或 EOF。
+func TestSSEForwardFlushIntervalReachesSilentUpstream(t *testing.T) {
+	for _, loop := range []bool{false, true} {
+		name := "fast"
+		if loop {
+			name = "loop"
+		}
+		t.Run(name, func(t *testing.T) {
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "text/event-stream")
+				fmt.Fprint(w, "data: one\n\n")
+				w.(http.Flusher).Flush()
+				<-r.Context().Done()
+			}))
+			defer upstream.Close()
+
+			c, err := New()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer c.Close()
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			req, err := http.NewRequestWithContext(ctx, http.MethodGet, upstream.URL+"/events", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer resp.Body.Close()
+
+			rec := &flushRecorder{}
+			in := httptest.NewRequest(http.MethodGet, "/events", nil)
+			opts := ForwardOptions{FlushInterval: 80 * time.Millisecond}
+			if loop {
+				// Heartbeat/idle select loop instead of the pooled fast path. |
+				// 用心跳/空闲 select 循环代替池化快路径。
+				opts.SSEIdleTimeout = 5 * time.Second
+			}
+			done := make(chan error, 1)
+			go func() {
+				done <- c.copySSE(ctx, rec, resp, in, opts)
+			}()
+			waitFor(t, time.Second, func() bool {
+				body, flushes := rec.snapshot()
+				return strings.Contains(body, "data: one") && flushes >= 2
+			})
+			cancel()
+			select {
+			case <-done:
+			case <-time.After(2 * time.Second):
+				t.Fatal("copySSE did not return after cancel | 取消后 copySSE 未返回")
+			}
+		})
+	}
+}

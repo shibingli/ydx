@@ -3,10 +3,12 @@ package sse
 import (
 	"context"
 	"errors"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/shibingli/ydx/client"
 )
@@ -78,4 +80,61 @@ func TestFanoutBroadcastCloseRace(t *testing.T) {
 	}
 	_ = fanout.Close()
 	wg.Wait()
+}
+
+// blockingWriter is a ResponseWriter without SetWriteDeadline whose Write blocks until released. |
+// blockingWriter 是一个不支持 SetWriteDeadline、且 Write 会阻塞到释放的响应写入器。
+type blockingWriter struct {
+	header  http.Header
+	started chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (w *blockingWriter) Header() http.Header {
+	if w.header == nil {
+		w.header = make(http.Header)
+	}
+	return w.header
+}
+
+func (w *blockingWriter) Write(p []byte) (int, error) {
+	w.once.Do(func() { close(w.started) })
+	<-w.release
+	return len(p), nil
+}
+
+func (w *blockingWriter) WriteHeader(int) {}
+
+func (w *blockingWriter) Flush() {}
+
+// TestCloseBoundedWithoutWriteDeadline pins that Close returns even when the ResponseWriter
+// cannot be unblocked through SetWriteDeadline, so one stalled subscriber cannot pin the fanout
+// forever. | TestCloseBoundedWithoutWriteDeadline 固定：ResponseWriter 无法通过
+// SetWriteDeadline 解除阻塞时 Close 仍会返回，一个停滞订阅者不能永久拖住扇出。
+func TestCloseBoundedWithoutWriteDeadline(t *testing.T) {
+	fanout := NewFanout(Options{Queue: 1, WriteTimeout: 100 * time.Millisecond})
+	defer fanout.Close()
+	writer := &blockingWriter{started: make(chan struct{}), release: make(chan struct{})}
+	sub, err := fanout.Add(writer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := fanout.Sink().WriteEvent(context.Background(), client.Event{Data: []byte("x")}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-writer.started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("subscriber never started writing | 订阅者未开始写入")
+	}
+	start := time.Now()
+	if err := sub.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Fatalf("Close blocked for %v | Close 阻塞过久", elapsed)
+	}
+	close(writer.release)
+	sub.wg.Wait()
 }

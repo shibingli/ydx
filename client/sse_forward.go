@@ -140,13 +140,15 @@ func (c *Client) copySSE(ctx context.Context, w http.ResponseWriter, resp *http.
 		buffer = buffer[:cap(buffer)]
 		defer buffpool.Put(buffer)
 		writer := &sseFlushWriter{writer: w, interval: opts.FlushInterval, last: time.Now()}
-		if _, err := io.CopyBuffer(writer, resp.Body, buffer); err != nil {
+		_, copyErr := io.CopyBuffer(writer, resp.Body, buffer)
+		closeErr := writer.Close()
+		if copyErr != nil {
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
-			return err
+			return copyErr
 		}
-		return nil
+		return closeErr
 	}
 
 	type streamChunk struct {
@@ -215,6 +217,38 @@ func (c *Client) copySSE(ctx context.Context, w http.ResponseWriter, resp *http.
 	lastData := time.Now()
 	lastFlush := time.Now()
 	flushInterval := opts.FlushInterval
+	// A throttled write must not wait for the next upstream chunk: the upstream may
+	// go silent right after it. The timer flushes the buffered tail when the
+	// interval since the last flush elapses. | 被节流的写入不能等待下一个上游数据块：
+	// 上游可能在此之后立即沉默。定时器在距上次刷新的间隔到期时刷新缓冲尾部。
+	var flushTimer *time.Timer
+	var flushC <-chan time.Time
+	stopFlushTimer := func() {
+		if flushTimer == nil {
+			return
+		}
+		if !flushTimer.Stop() {
+			select {
+			case <-flushTimer.C:
+			default:
+			}
+		}
+		flushTimer = nil
+		flushC = nil
+	}
+	armFlushTimer := func() {
+		wait := flushInterval - time.Since(lastFlush)
+		if wait <= 0 {
+			return
+		}
+		if flushTimer == nil {
+			flushTimer = time.NewTimer(wait)
+		} else {
+			flushTimer.Reset(wait)
+		}
+		flushC = flushTimer.C
+	}
+	defer stopFlushTimer()
 	for {
 		select {
 		case outcome := <-chunks:
@@ -237,15 +271,32 @@ func (c *Client) copySSE(ctx context.Context, w http.ResponseWriter, resp *http.
 						return flushErr
 					}
 					lastFlush = time.Now()
+					stopFlushTimer()
+				} else {
+					armFlushTimer()
 				}
 				releaseChunk(outcome.data)
 			}
 			if outcome.err != nil {
 				if errors.Is(outcome.err, io.EOF) {
+					// Deliver the buffered tail before reporting a clean end. |
+					// 干净结束前先送出缓冲尾部。
+					if flushErr := flushResponseWriter(w); flushErr != nil {
+						_ = resp.Body.Close()
+						return flushErr
+					}
 					return nil
 				}
 				return outcome.err
 			}
+		case <-flushC:
+			flushTimer = nil
+			flushC = nil
+			if err := flushResponseWriter(w); err != nil {
+				_ = resp.Body.Close()
+				return err
+			}
+			lastFlush = time.Now()
 		case <-idleC:
 			_ = resp.Body.Close()
 			return ErrSSEIdle
@@ -259,6 +310,8 @@ func (c *Client) copySSE(ctx context.Context, w http.ResponseWriter, resp *http.
 					_ = resp.Body.Close()
 					return err
 				}
+				lastFlush = time.Now()
+				stopFlushTimer()
 			}
 		case <-ctx.Done():
 			_ = resp.Body.Close()
@@ -449,27 +502,89 @@ func (m *mirrorer) runSSE(parent context.Context, req *http.Request, logical *ur
 	}
 }
 
-// sseFlushWriter flushes every chunk when interval <= 0. | sseFlushWriter 在
-// interval <= 0 时逐块刷新。
+// sseFlushWriter flushes every chunk when interval <= 0, and otherwise bounds
+// the time a chunk may stay buffered with a timer. A timer is required because
+// the upstream may fall silent right after a throttled write; without it the
+// last event would never reach the client. | sseFlushWriter 在 interval <= 0 时
+// 逐块刷新；否则用定时器限制块在缓冲中的最长时间。上游可能在一次被节流的写入后立刻沉默，
+// 没有定时器时最后一个事件永远到不了客户端。
 type sseFlushWriter struct {
 	writer   http.ResponseWriter
+	timer    *time.Timer
 	last     time.Time
 	interval time.Duration
+	mu       sync.Mutex
+	err      error
 }
 
-// Write writes and conditionally flushes. | Write 写入并按需刷新。
+// Write writes and schedules a flush for the remainder of the interval. |
+// Write 写入并按剩余间隔安排刷新。
 func (f *sseFlushWriter) Write(p []byte) (int, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.err != nil {
+		return 0, f.err
+	}
 	n, err := f.writer.Write(p)
 	if err != nil {
+		f.err = err
 		return n, err
 	}
-	if f.interval <= 0 || time.Since(f.last) >= f.interval {
+	wait := time.Duration(0)
+	if f.interval > 0 {
+		wait = f.interval - time.Since(f.last)
+	}
+	if wait <= 0 {
 		if flushErr := flushResponseWriter(f.writer); flushErr != nil {
+			f.err = flushErr
 			return n, flushErr
 		}
 		f.last = time.Now()
+		if f.timer != nil {
+			f.timer.Stop()
+			f.timer = nil
+		}
+		return n, nil
+	}
+	if f.timer == nil {
+		f.timer = time.AfterFunc(wait, f.flushPending)
+	} else {
+		f.timer.Reset(wait)
 	}
 	return n, nil
+}
+
+// flushPending flushes the buffered tail when the interval elapses. |
+// flushPending 在间隔到期时刷新缓冲尾部。
+func (f *sseFlushWriter) flushPending() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.timer = nil
+	if f.err != nil {
+		return
+	}
+	if err := flushResponseWriter(f.writer); err != nil {
+		f.err = err
+		return
+	}
+	f.last = time.Now()
+}
+
+// Close stops the timer and flushes any pending bytes. | Close 停止定时器并刷新残留字节。
+func (f *sseFlushWriter) Close() error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.timer != nil {
+		f.timer.Stop()
+		f.timer = nil
+	}
+	if f.err == nil {
+		if err := flushResponseWriter(f.writer); err != nil {
+			f.err = err
+		}
+	}
+	f.last = time.Now()
+	return f.err
 }
 
 // flushResponseWriter flushes through ResponseController with a Flusher fallback. | flushResponseWriter 通过 ResponseController 刷新，失败时回退 Flusher。
