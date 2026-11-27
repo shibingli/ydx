@@ -408,6 +408,49 @@ func (c *Config) UnmarshalKey(key string, rawVal any, opts ...viper.DecoderConfi
 	return nil
 }
 
+// GetUint8 returns the uint8 value of key under the reload lock. | GetUint8 在重载锁保护下返回
+// key 的 uint8 取值。
+func (c *Config) GetUint8(key string) uint8 {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.Viper.GetUint8(key)
+}
+
+// GetUint16 returns the uint16 value of key under the reload lock. | GetUint16 在重载锁保护下
+// 返回 key 的 uint16 取值。
+func (c *Config) GetUint16(key string) uint16 {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.Viper.GetUint16(key)
+}
+
+// InConfig reports whether key has a value in the loaded config files under the reload lock. |
+// InConfig 在重载锁保护下报告 key 是否在已加载的配置文件中取值。
+func (c *Config) InConfig(key string) bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.Viper.InConfig(key)
+}
+
+// ConfigFileUsed returns the file path read last, under the reload lock. | ConfigFileUsed 在
+// 重载锁保护下返回最近读取的文件路径。
+func (c *Config) ConfigFileUsed() string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.Viper.ConfigFileUsed()
+}
+
+// UnmarshalExact decodes the configuration strictly under the reload lock. | UnmarshalExact 在
+// 重载锁保护下严格解码配置。
+func (c *Config) UnmarshalExact(rawVal any, opts ...viper.DecoderConfigOption) error {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if err := c.Viper.UnmarshalExact(rawVal, opts...); err != nil {
+		return errs.Wrap(err, ErrUnmarshal)
+	}
+	return nil
+}
+
 // Set writes one key under the reload lock. | Set 在重载锁保护下写入单个键。
 func (c *Config) Set(key string, value any) {
 	c.mu.Lock()
