@@ -166,6 +166,16 @@ func serveHTTP(t *testing.T, handler http.Handler, method, target string, body u
 
 func loginRedirect(t *testing.T, handler http.Handler, target string) *url.URL {
 	t.Helper()
+	parsed, _ := loginRedirectWithCookies(t, handler, target)
+	return parsed
+}
+
+// loginRedirectWithCookies performs a login and returns the authorization URL together with
+// the cookies (notably the browser binding cookie) the callback must present. |
+// loginRedirectWithCookies 执行登录并返回授权 URL 与回调必须提交的 Cookie（尤其是浏览器绑定
+// Cookie）。
+func loginRedirectWithCookies(t *testing.T, handler http.Handler, target string) (*url.URL, []*http.Cookie) {
+	t.Helper()
 	recorder := serveHTTP(t, handler, http.MethodGet, target, nil)
 	if recorder.Code != http.StatusFound {
 		t.Fatalf("%s status = %d, want 302; body=%s", target, recorder.Code, recorder.Body.String())
@@ -175,7 +185,26 @@ func loginRedirect(t *testing.T, handler http.Handler, target string) *url.URL {
 	if err != nil {
 		t.Fatalf("parse redirect %q: %v", location, err)
 	}
-	return parsed
+	return parsed, recorder.Result().Cookies()
+}
+
+// serveHTTPWithCookies is serveHTTP with request cookies. | serveHTTPWithCookies 是携带请求
+// Cookie 的 serveHTTP。
+func serveHTTPWithCookies(t *testing.T, handler http.Handler, method, target string, body url.Values, cookies []*http.Cookie) *httptest.ResponseRecorder {
+	t.Helper()
+	var request *http.Request
+	if body != nil {
+		request = httptest.NewRequest(method, target, strings.NewReader(body.Encode()))
+		request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	} else {
+		request = httptest.NewRequest(method, target, nil)
+	}
+	for _, cookie := range cookies {
+		request.AddCookie(cookie)
+	}
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+	return recorder
 }
 
 func TestBrokerFullRouterLoginFlow(t *testing.T) {
@@ -185,7 +214,7 @@ func TestBrokerFullRouterLoginFlow(t *testing.T) {
 	r := router.New()
 	broker.Register(r, "/auth")
 
-	authorization := loginRedirect(t, r, "/auth/mock/login")
+	authorization, loginCookies := loginRedirectWithCookies(t, r, "/auth/mock/login")
 	state := authorization.Query().Get("state")
 	if state == "" {
 		t.Fatal("authorization redirect has no state")
@@ -204,7 +233,7 @@ func TestBrokerFullRouterLoginFlow(t *testing.T) {
 		t.Fatalf("scope = %q", authorization.Query().Get("scope"))
 	}
 
-	recorder := serveHTTP(t, r, http.MethodGet, "/auth/mock/callback?code=code-1&state="+url.QueryEscape(state), nil)
+	recorder := serveHTTPWithCookies(t, r, http.MethodGet, "/auth/mock/callback?code=code-1&state="+url.QueryEscape(state), nil, loginCookies)
 	if recorder.Code != http.StatusFound {
 		t.Fatalf("callback status = %d, want 303; body=%s", recorder.Code, recorder.Body.String())
 	}
@@ -279,13 +308,13 @@ func TestBrokerRejectsReusedUnknownAndCrossProviderState(t *testing.T) {
 	r := router.New()
 	broker.Register(r, "/auth")
 
-	authorization := loginRedirect(t, r, "/auth/mock/login")
+	authorization, loginCookies := loginRedirectWithCookies(t, r, "/auth/mock/login")
 	state := authorization.Query().Get("state")
-	first := serveHTTP(t, r, http.MethodGet, "/auth/mock/callback?code=code-1&state="+url.QueryEscape(state), nil)
+	first := serveHTTPWithCookies(t, r, http.MethodGet, "/auth/mock/callback?code=code-1&state="+url.QueryEscape(state), nil, loginCookies)
 	if first.Code != http.StatusFound {
 		t.Fatalf("first callback = %d; body=%s", first.Code, first.Body.String())
 	}
-	reused := serveHTTP(t, r, http.MethodGet, "/auth/mock/callback?code=code-2&state="+url.QueryEscape(state), nil)
+	reused := serveHTTPWithCookies(t, r, http.MethodGet, "/auth/mock/callback?code=code-2&state="+url.QueryEscape(state), nil, loginCookies)
 	if reused.Code != http.StatusBadRequest || !strings.Contains(reused.Body.String(), "invalid_state") {
 		t.Fatalf("reused state = %d %s", reused.Code, reused.Body.String())
 	}
@@ -298,14 +327,36 @@ func TestBrokerRejectsReusedUnknownAndCrossProviderState(t *testing.T) {
 		t.Fatalf("unknown state = %d", unknown.Code)
 	}
 
-	authorization = loginRedirect(t, r, "/auth/mock/login")
+	authorization, loginCookies = loginRedirectWithCookies(t, r, "/auth/mock/login")
 	crossState := authorization.Query().Get("state")
-	cross := serveHTTP(t, r, http.MethodGet, "/auth/other/callback?code=code&state="+url.QueryEscape(crossState), nil)
+	cross := serveHTTPWithCookies(t, r, http.MethodGet, "/auth/other/callback?code=code&state="+url.QueryEscape(crossState), nil, loginCookies)
 	if cross.Code != http.StatusBadRequest || !strings.Contains(cross.Body.String(), "invalid_state") {
 		t.Fatalf("cross-provider state = %d %s", cross.Code, cross.Body.String())
 	}
 	if mock.tokenCount() != 1 {
 		t.Fatalf("cross-provider state reached token endpoint: %d calls", mock.tokenCount())
+	}
+}
+
+// TestBrokerRejectsCallbackWithoutBindingCookie pins the login CSRF defense: a callback
+// that does not present the browser binding cookie set at login is rejected before the
+// authorization code is exchanged. | TestBrokerRejectsCallbackWithoutBindingCookie 固定
+// 登录 CSRF 防护：未提交登录时设置的浏览器绑定 Cookie 的回调在兑换授权码之前被拒绝。
+func TestBrokerRejectsCallbackWithoutBindingCookie(t *testing.T) {
+	mock := newMockOAuthServer(t)
+	service, _ := newTestAuthService(t)
+	broker := newTestBroker(t, service, map[string]*Provider{"mock": mock.provider("mock")}, nil)
+	r := router.New()
+	broker.Register(r, "/auth")
+
+	authorization := loginRedirect(t, r, "/auth/mock/login")
+	state := authorization.Query().Get("state")
+	recorder := serveHTTP(t, r, http.MethodGet, "/auth/mock/callback?code=code-1&state="+url.QueryEscape(state), nil)
+	if recorder.Code != http.StatusBadRequest || !strings.Contains(recorder.Body.String(), "invalid_state") {
+		t.Fatalf("callback without binding = %d %s", recorder.Code, recorder.Body.String())
+	}
+	if mock.tokenCount() != 0 {
+		t.Fatalf("callback without binding reached token endpoint: %d calls", mock.tokenCount())
 	}
 }
 
@@ -316,9 +367,9 @@ func TestBrokerProviderErrorAndMissingCode(t *testing.T) {
 	r := router.New()
 	broker.Register(r, "/auth")
 
-	authorization := loginRedirect(t, r, "/auth/mock/login")
+	authorization, loginCookies := loginRedirectWithCookies(t, r, "/auth/mock/login")
 	state := authorization.Query().Get("state")
-	denied := serveHTTP(t, r, http.MethodGet, "/auth/mock/callback?error=access_denied&error_description=super-secret-description&state="+url.QueryEscape(state), nil)
+	denied := serveHTTPWithCookies(t, r, http.MethodGet, "/auth/mock/callback?error=access_denied&error_description=super-secret-description&state="+url.QueryEscape(state), nil, loginCookies)
 	if denied.Code != http.StatusUnauthorized {
 		t.Fatalf("provider denial = %d, want 401", denied.Code)
 	}
@@ -329,13 +380,13 @@ func TestBrokerProviderErrorAndMissingCode(t *testing.T) {
 		t.Fatal("provider denial reached token endpoint")
 	}
 
-	authorization = loginRedirect(t, r, "/auth/mock/login")
+	authorization, loginCookies = loginRedirectWithCookies(t, r, "/auth/mock/login")
 	state = authorization.Query().Get("state")
-	missing := serveHTTP(t, r, http.MethodGet, "/auth/mock/callback?state="+url.QueryEscape(state), nil)
+	missing := serveHTTPWithCookies(t, r, http.MethodGet, "/auth/mock/callback?state="+url.QueryEscape(state), nil, loginCookies)
 	if missing.Code != http.StatusBadRequest || !strings.Contains(missing.Body.String(), "missing_code") {
 		t.Fatalf("missing code = %d %s", missing.Code, missing.Body.String())
 	}
-	replayed := serveHTTP(t, r, http.MethodGet, "/auth/mock/callback?code=late&state="+url.QueryEscape(state), nil)
+	replayed := serveHTTPWithCookies(t, r, http.MethodGet, "/auth/mock/callback?code=late&state="+url.QueryEscape(state), nil, loginCookies)
 	if replayed.Code != http.StatusBadRequest {
 		t.Fatalf("replayed missing-code state = %d", replayed.Code)
 	}
@@ -351,9 +402,9 @@ func TestBrokerTokenFailureDoesNotLeakProviderBody(t *testing.T) {
 	r := router.New()
 	broker.Register(r, "/auth")
 
-	authorization := loginRedirect(t, r, "/auth/mock/login")
+	authorization, loginCookies := loginRedirectWithCookies(t, r, "/auth/mock/login")
 	state := authorization.Query().Get("state")
-	recorder := serveHTTP(t, r, http.MethodGet, "/auth/mock/callback?code=code&state="+url.QueryEscape(state), nil)
+	recorder := serveHTTPWithCookies(t, r, http.MethodGet, "/auth/mock/callback?code=code&state="+url.QueryEscape(state), nil, loginCookies)
 	if recorder.Code != http.StatusBadGateway {
 		t.Fatalf("token failure = %d, want 502; body=%s", recorder.Code, recorder.Body.String())
 	}
@@ -363,8 +414,10 @@ func TestBrokerTokenFailureDoesNotLeakProviderBody(t *testing.T) {
 			t.Fatalf("failure body leaked %q: %s", secret, body)
 		}
 	}
-	if len(recorder.Result().Cookies()) != 0 {
-		t.Fatal("failed login set a session cookie")
+	for _, cookie := range recorder.Result().Cookies() {
+		if cookie.Name == "ydx_session" && cookie.Value != "" {
+			t.Fatal("failed login set a session cookie")
+		}
 	}
 }
 
@@ -395,9 +448,9 @@ func TestBrokerLinkByVerifiedEmail(t *testing.T) {
 	r := router.New()
 	broker.Register(r, "/auth")
 
-	authorization := loginRedirect(t, r, "/auth/mock/login")
+	authorization, loginCookies := loginRedirectWithCookies(t, r, "/auth/mock/login")
 	state := authorization.Query().Get("state")
-	recorder := serveHTTP(t, r, http.MethodGet, "/auth/mock/callback?code=code&state="+url.QueryEscape(state), nil)
+	recorder := serveHTTPWithCookies(t, r, http.MethodGet, "/auth/mock/callback?code=code&state="+url.QueryEscape(state), nil, loginCookies)
 	if recorder.Code != http.StatusNoContent {
 		t.Fatalf("callback = %d %s", recorder.Code, recorder.Body.String())
 	}
@@ -433,9 +486,9 @@ func TestBrokerNeverLinksUnverifiedEmail(t *testing.T) {
 	r := router.New()
 	broker.Register(r, "/auth")
 
-	authorization := loginRedirect(t, r, "/auth/mock/login")
+	authorization, loginCookies := loginRedirectWithCookies(t, r, "/auth/mock/login")
 	state := authorization.Query().Get("state")
-	recorder := serveHTTP(t, r, http.MethodGet, "/auth/mock/callback?code=code&state="+url.QueryEscape(state), nil)
+	recorder := serveHTTPWithCookies(t, r, http.MethodGet, "/auth/mock/callback?code=code&state="+url.QueryEscape(state), nil, loginCookies)
 	if recorder.Code != http.StatusConflict || !strings.Contains(recorder.Body.String(), "account_link_conflict") {
 		t.Fatalf("unverified email login = %d %s", recorder.Code, recorder.Body.String())
 	}
@@ -484,12 +537,12 @@ func TestBrokerHTTPHandlerSupportsFormPostCallback(t *testing.T) {
 	broker := newTestBroker(t, service, map[string]*Provider{"mock": mock.provider("mock")}, nil)
 	handler := broker.HTTPHandler("/auth")
 
-	authorization := loginRedirect(t, handler, "/auth/mock/login")
+	authorization, loginCookies := loginRedirectWithCookies(t, handler, "/auth/mock/login")
 	state := authorization.Query().Get("state")
-	recorder := serveHTTP(t, handler, http.MethodPost, "/auth/mock/callback", url.Values{
+	recorder := serveHTTPWithCookies(t, handler, http.MethodPost, "/auth/mock/callback", url.Values{
 		"code":  {"form-post-code"},
 		"state": {state},
-	})
+	}, loginCookies)
 	if recorder.Code != http.StatusFound {
 		t.Fatalf("POST callback = %d; body=%s", recorder.Code, recorder.Body.String())
 	}
@@ -520,5 +573,46 @@ func TestBrokerUsesHeadSafeLoginAndProviderClientOverride(t *testing.T) {
 	recorder := serveHTTP(t, handler, http.MethodHead, "/mock/login", nil)
 	if recorder.Code != http.StatusFound {
 		t.Fatalf("HEAD login = %d, want 302", recorder.Code)
+	}
+}
+
+// TestBrokerBindingCookieSupportsParallelLogins pins that a second login reuses the browser's
+// binding cookie, so starting another tab does not invalidate a flow already in progress. |
+// TestBrokerBindingCookieSupportsParallelLogins 固定第二次登录复用浏览器的绑定 Cookie，另一个
+// 标签页发起登录不会使进行中的流程失效。
+func TestBrokerBindingCookieSupportsParallelLogins(t *testing.T) {
+	mock := newMockOAuthServer(t)
+	service, _ := newTestAuthService(t)
+	broker := newTestBroker(t, service, map[string]*Provider{"mock": mock.provider("mock")}, nil)
+	r := router.New()
+	broker.Register(r, "/auth")
+
+	first, firstCookies := loginRedirectWithCookies(t, r, "/auth/mock/login")
+	secondRecorder := serveHTTPWithCookies(t, r, http.MethodGet, "/auth/mock/login", nil, firstCookies)
+	if secondRecorder.Code != http.StatusFound {
+		t.Fatalf("second login = %d; body=%s", secondRecorder.Code, secondRecorder.Body.String())
+	}
+	second, err := url.Parse(secondRecorder.Header().Get("Location"))
+	if err != nil {
+		t.Fatalf("parse second redirect: %v", err)
+	}
+	secondCookies := secondRecorder.Result().Cookies()
+	if len(firstCookies) == 0 || len(secondCookies) == 0 {
+		t.Fatal("login did not set a binding cookie | 登录未设置绑定 Cookie")
+	}
+	if firstCookies[0].Name != secondCookies[0].Name || firstCookies[0].Value != secondCookies[0].Value {
+		t.Fatalf("binding cookie was regenerated: %q vs %q", firstCookies[0].Value, secondCookies[0].Value)
+	}
+	for _, flow := range []struct {
+		state string
+		code  string
+	}{
+		{first.Query().Get("state"), "code-first"},
+		{second.Query().Get("state"), "code-second"},
+	} {
+		recorder := serveHTTPWithCookies(t, r, http.MethodGet, "/auth/mock/callback?code="+flow.code+"&state="+url.QueryEscape(flow.state), nil, secondCookies)
+		if recorder.Code != http.StatusFound {
+			t.Fatalf("parallel callback = %d; body=%s", recorder.Code, recorder.Body.String())
+		}
 	}
 }

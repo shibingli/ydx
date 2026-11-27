@@ -1,7 +1,9 @@
 package federation
 
 import (
+	"crypto/sha256"
 	"crypto/subtle"
+	"encoding/hex"
 	"errors"
 	"net/http"
 	"net/url"
@@ -81,6 +83,17 @@ type BrokerConfig struct {
 	// effective TTL; a negative value disables stale fallback. | DiscoveryMaxStale
 	// 限制刷新失败后的过期回退。零值表示一个生效 TTL；负值禁用过期回退。
 	DiscoveryMaxStale time.Duration
+	// BindingCookie is the browser binding cookie name; empty uses
+	// "ydx_federation_binding". The cookie is HttpOnly and scoped to "/" with the state
+	// lifetime. | BindingCookie 是浏览器绑定 Cookie 的名称；空值使用
+	// "ydx_federation_binding"。该 Cookie 为 HttpOnly，作用域为 "/"，生命周期与 state 一致。
+	BindingCookie string
+	// BindingSameSite selects the binding cookie's SameSite mode; zero uses Lax.
+	// Providers returning response_mode=form_post (for example Apple) post cross-site
+	// and need None together with HTTPS. | BindingSameSite 选择绑定 Cookie 的 SameSite
+	// 模式；零值使用 Lax。使用 response_mode=form_post 的提供方（例如 Apple）跨站 POST，
+	// 需要 None 并配合 HTTPS。
+	BindingSameSite http.SameSite
 }
 
 // Broker implements the provider-neutral authorization-code login flow and mounts
@@ -127,6 +140,11 @@ type Broker struct {
 	// DiscoveryMaxStale bounds stale fallback after a failed refresh. | DiscoveryMaxStale
 	// 限制刷新失败后的过期回退。
 	DiscoveryMaxStale time.Duration
+	// BindingCookie is the browser binding cookie name. | BindingCookie 是浏览器绑定 Cookie 的名称。
+	BindingCookie string
+	// BindingSameSite selects the binding cookie's SameSite mode. | BindingSameSite 选择
+	// 绑定 Cookie 的 SameSite 模式。
+	BindingSameSite http.SameSite
 
 	mu       sync.RWMutex
 	adapters map[string]ProviderAdapter
@@ -152,6 +170,17 @@ func NewBroker(config BrokerConfig) (*Broker, error) {
 	if successRedirect == "" {
 		successRedirect = "/"
 	}
+	bindingCookie := strings.TrimSpace(config.BindingCookie)
+	if bindingCookie == "" {
+		bindingCookie = defaultBindingCookieName
+	}
+	if !validCookieName(bindingCookie) {
+		return nil, errs.Detail(ErrInvalidConfig, "binding cookie name %q is invalid | 绑定 Cookie 名称 %q 非法", bindingCookie, bindingCookie)
+	}
+	bindingSameSite := config.BindingSameSite
+	if bindingSameSite == 0 {
+		bindingSameSite = http.SameSiteLaxMode
+	}
 	broker := &Broker{
 		Service:           config.Service,
 		Providers:         make(map[string]*Provider, len(config.Providers)),
@@ -169,6 +198,8 @@ func NewBroker(config BrokerConfig) (*Broker, error) {
 		DiscoveryTTLMax:   config.DiscoveryTTLMax,
 		DiscoveryJitter:   config.DiscoveryJitter,
 		DiscoveryMaxStale: config.DiscoveryMaxStale,
+		BindingCookie:     bindingCookie,
+		BindingSameSite:   bindingSameSite,
 		adapters:          make(map[string]ProviderAdapter),
 	}
 	if broker.Now == nil {
@@ -364,6 +395,20 @@ func (b *Broker) login(w http.ResponseWriter, r *http.Request, providerName stri
 			return errs.Detail(ErrInvalidRequest, "cannot generate nonce | 无法生成 nonce")
 		}
 	}
+	// Reuse the browser's existing binding so starting a second login in another
+	// tab does not invalidate the first flow. Only the browser can present this
+	// HttpOnly value, and each state stores its hash. | 复用浏览器已有的绑定值，使另一个
+	// 标签页发起第二次登录时不会让第一个流程失效。只有该浏览器能出示这个 HttpOnly 值，
+	// 每个 state 各自保存其摘要。
+	binding := ""
+	if existing, cookieErr := r.Cookie(b.bindingCookieName()); cookieErr == nil && len(existing.Value) >= 16 {
+		binding = existing.Value
+	} else {
+		binding, err = auth.RandomToken(32)
+		if err != nil {
+			return errs.Detail(ErrInvalidRequest, "cannot generate browser binding | 无法生成浏览器绑定值")
+		}
+	}
 	now := b.now()
 	record := &StateRecord{
 		State:       state,
@@ -371,6 +416,7 @@ func (b *Broker) login(w http.ResponseWriter, r *http.Request, providerName stri
 		Nonce:       nonce,
 		Verifier:    verifier,
 		RedirectURL: provider.RedirectURL,
+		BindingHash: bindingHash(binding),
 		CreatedAt:   now,
 		ExpiresAt:   now.Add(b.stateTTL()),
 	}
@@ -383,6 +429,7 @@ func (b *Broker) login(w http.ResponseWriter, r *http.Request, providerName stri
 	}
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Pragma", "no-cache")
+	b.setBindingCookie(w, r, binding, b.bindingSameSiteFor(provider))
 	http.Redirect(w, r, target, http.StatusFound)
 	return nil
 }
@@ -398,6 +445,11 @@ func (b *Broker) callback(w http.ResponseWriter, r *http.Request, providerName s
 	if err != nil {
 		return err
 	}
+	// Read the browser binding before anything writes response headers. The cookie
+	// intentionally survives the callback so another tab can finish its own login
+	// with the same browser binding. | 在写任何响应头之前读取浏览器绑定 Cookie。该 Cookie
+	// 有意在回调后保留，使另一个标签页能用同一浏览器绑定完成自己的登录。
+	bindingCookie, bindingErr := r.Cookie(b.bindingCookieName())
 	values, err := callbackValues(w, r)
 	if err != nil {
 		return err
@@ -418,6 +470,15 @@ func (b *Broker) callback(w http.ResponseWriter, r *http.Request, providerName s
 		return err
 	}
 	if record == nil || subtle.ConstantTimeCompare([]byte(record.Provider), []byte(providerName)) != 1 {
+		return ErrStateMismatch
+	}
+	// Bind the authorization response to the browser that started the flow. Without this
+	// check an attacker can complete a login with their own account and deliver the
+	// callback to a victim, silently logging the victim into the attacker's session
+	// (login CSRF). | 把授权响应绑定到发起流程的浏览器。缺少该检查时，攻击者可用自己的账号
+	// 完成登录并把回调交给受害者，使受害者静默进入攻击者的会话（登录 CSRF）。
+	if bindingErr != nil || record.BindingHash == "" ||
+		subtle.ConstantTimeCompare([]byte(bindingHash(bindingCookie.Value)), []byte(record.BindingHash)) != 1 {
 		return ErrStateMismatch
 	}
 	if providerError != "" {
@@ -562,12 +623,102 @@ func (b *Broker) now() time.Time {
 	return time.Now()
 }
 
+// defaultBindingCookieName is the browser binding cookie used when none is configured. |
+// defaultBindingCookieName 是未配置时使用的浏览器绑定 Cookie。
+const defaultBindingCookieName = "ydx_federation_binding"
+
 // stateTTL returns the effective state lifetime. | stateTTL 返回生效的 state 有效期。
 func (b *Broker) stateTTL() time.Duration {
 	if b != nil && b.StateTTL > 0 {
 		return b.StateTTL
 	}
 	return DefaultStateTTL
+}
+
+// bindingCookieName returns the configured binding cookie name. | bindingCookieName 返回配置的
+// 绑定 Cookie 名称。
+func (b *Broker) bindingCookieName() string {
+	if b != nil && b.BindingCookie != "" {
+		return b.BindingCookie
+	}
+	return defaultBindingCookieName
+}
+
+// bindingSameSite returns the configured SameSite mode. | bindingSameSite 返回配置的 SameSite 模式。
+func (b *Broker) bindingSameSite() http.SameSite {
+	if b != nil && b.BindingSameSite != 0 {
+		return b.BindingSameSite
+	}
+	return http.SameSiteLaxMode
+}
+
+// bindingSameSiteFor selects the binding cookie mode for one provider. A provider that
+// answers with response_mode=form_post posts cross-site, where Lax cookies are not sent,
+// so such providers default to None (and therefore Secure) unless the caller chose a
+// mode explicitly. | bindingSameSiteFor 为单个提供方选择绑定 Cookie 模式。使用
+// response_mode=form_post 的提供方跨站 POST，Lax Cookie 不会被发送，因此这类提供方默认使用
+// None（从而必须 Secure），除非调用方显式选择模式。
+func (b *Broker) bindingSameSiteFor(provider *Provider) http.SameSite {
+	if b != nil && b.BindingSameSite != 0 {
+		return b.BindingSameSite
+	}
+	if provider != nil && strings.EqualFold(provider.AuthParams["response_mode"], "form_post") {
+		return http.SameSiteNoneMode
+	}
+	return http.SameSiteLaxMode
+}
+
+// bindingHash fingerprints a binding value for storage. | bindingHash 为绑定值生成存储用摘要。
+func bindingHash(value string) string {
+	sum := sha256.Sum256([]byte(value))
+	return hex.EncodeToString(sum[:])
+}
+
+// validCookieName reports whether name is a non-empty RFC 6265 token. | validCookieName 报告
+// name 是否为非空的 RFC 6265 token。
+func validCookieName(name string) bool {
+	if name == "" {
+		return false
+	}
+	for i := 0; i < len(name); i++ {
+		c := name[i]
+		if c <= 0x20 || c >= 0x7f || strings.ContainsRune("()<>@,;:\\\"/[]?={}", rune(c)) {
+			return false
+		}
+	}
+	return true
+}
+
+// setBindingCookie writes the browser binding cookie. | setBindingCookie 写入浏览器绑定 Cookie。
+func (b *Broker) setBindingCookie(w http.ResponseWriter, r *http.Request, value string, sameSite http.SameSite) {
+	maxAge := int(b.stateTTL() / time.Second)
+	if maxAge < 1 {
+		maxAge = 1
+	}
+	http.SetCookie(w, &http.Cookie{
+		Name:     b.bindingCookieName(),
+		Value:    value,
+		Path:     "/",
+		MaxAge:   maxAge,
+		Expires:  b.now().Add(b.stateTTL()),
+		HttpOnly: true,
+		Secure:   bindingSecure(r, sameSite),
+		SameSite: sameSite,
+	})
+}
+
+// bindingSecure reports whether the binding cookie must be Secure. SameSite=None is
+// rejected by browsers without Secure, so that mode forces it even on plain HTTP. |
+// bindingSecure 报告绑定 Cookie 是否必须为 Secure。浏览器拒绝没有 Secure 的 SameSite=None，
+// 因此该模式即使在明文 HTTP 上也强制 Secure。
+func bindingSecure(r *http.Request, sameSite http.SameSite) bool {
+	if sameSite == http.SameSiteNoneMode {
+		return true
+	}
+	if r == nil {
+		return false
+	}
+	return r.TLS != nil || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https")
 }
 
 // callbackValues parses query and bounded form values. | callbackValues 解析查询与受限表单值。

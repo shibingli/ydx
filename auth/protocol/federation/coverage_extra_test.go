@@ -218,7 +218,7 @@ func TestBrokerNativeHandlers(t *testing.T) {
 	broker := newTestBroker(t, service, map[string]*Provider{"mock": mock.provider("mock")}, nil)
 
 	login := broker.LoginHandler("mock")
-	redirect := loginRedirect(t, login, "/login")
+	redirect, loginCookies := loginRedirectWithCookies(t, login, "/login")
 	state := redirect.Query().Get("state")
 	if state == "" {
 		t.Fatal("LoginHandler redirect has no state")
@@ -231,7 +231,7 @@ func TestBrokerNativeHandlers(t *testing.T) {
 	}
 
 	callback := broker.CallbackHandler("mock")
-	rec := serveHTTP(t, callback, http.MethodGet, "/callback?state="+url.QueryEscape(state)+"&code=test-code", nil)
+	rec := serveHTTPWithCookies(t, callback, http.MethodGet, "/callback?state="+url.QueryEscape(state)+"&code=test-code", nil, loginCookies)
 	if rec.Code != http.StatusFound || rec.Header().Get("Location") != "/app" {
 		t.Fatalf("callback status = %d location = %q body=%s", rec.Code, rec.Header().Get("Location"), rec.Body.String())
 	}

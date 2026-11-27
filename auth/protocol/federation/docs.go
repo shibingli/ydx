@@ -78,4 +78,20 @@
 // suitable for a single process; multi-instance deployments should provide a
 // shared StateStore. | 回调在兑换授权码前通过 StateStore 单次消费 state，因此重放或跨提供方
 // 的 state 会被拒绝。默认 MemoryStateStore 适用于单进程；多实例部署应提供共享 StateStore。
+//
+// Login also sets an HttpOnly browser binding cookie (BindingCookie, default
+// "ydx_federation_binding") and records its hash in the state; a callback without
+// the matching cookie is rejected before the authorization code is exchanged. This
+// blocks login CSRF, where an attacker completes a login with their own account and
+// delivers the callback to a victim. Providers that answer with
+// response_mode=form_post default the cookie to SameSite=None (and Secure), because
+// a cross-site POST does not carry a Lax cookie; plain HTTP deployments of such
+// providers must terminate TLS in front of the service. The login endpoint and the
+// provider's RedirectURL must share a host, because the binding cookie is
+// host-scoped. | 登录同时设置 HttpOnly 浏览器绑定 Cookie（BindingCookie，默认
+// "ydx_federation_binding"）并把其摘要写入 state；缺少匹配 Cookie 的回调会在兑换授权码前被
+// 拒绝。这阻止登录 CSRF：攻击者用自己的账号完成登录并把回调交给受害者。使用
+// response_mode=form_post 的提供方默认把该 Cookie 设为 SameSite=None（且 Secure），因为跨站
+// POST 不会携带 Lax Cookie；这类提供方的明文 HTTP 部署必须在服务前终止 TLS。登录端点与提供方
+// 的 RedirectURL 必须位于同一主机，因为绑定 Cookie 按主机作用域发送。
 package federation

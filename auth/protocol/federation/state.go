@@ -24,6 +24,12 @@ type StateRecord struct {
 	Verifier string
 	// RedirectURL is the callback URL used for the authorization request. | RedirectURL 是授权请求使用的回调 URL。
 	RedirectURL string
+	// BindingHash is the hex-encoded SHA-256 of the browser binding cookie set at login.
+	// The callback must present that cookie, binding the authorization response to the
+	// browser that started the flow (login CSRF defense). | BindingHash 是登录时设置的浏览器
+	// 绑定 Cookie 的十六进制 SHA-256。回调必须出示该 Cookie，从而把授权响应绑定到发起流程的
+	// 浏览器（登录 CSRF 防护）。
+	BindingHash string
 	// CreatedAt is the creation time. | CreatedAt 是创建时间。
 	CreatedAt time.Time
 	// ExpiresAt is the absolute expiry time. | ExpiresAt 是绝对过期时间。
