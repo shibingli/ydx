@@ -292,6 +292,7 @@ func Open(dir string, opts ...Option) (*WAL, error) {
 				return nil, err
 			}
 		}
+		w.relaxNoSyncMetaBaseline()
 		if err := w.persistMetaIfChanged(); err != nil {
 			w.abortOpen()
 			return nil, err
@@ -363,6 +364,25 @@ func (w *WAL) metaCurrent() bool {
 	cur := w.metaSnapshot()
 	cur.generation = w.meta.state.generation
 	return cur == w.meta.state
+}
+
+// relaxNoSyncMetaBaseline lowers the in-memory META baseline to the recovered
+// prefix after an unsynchronized rotation lost its tail. The monotonic guard
+// compares the new generation with this baseline, so without the adjustment the
+// repair rewrite would be rejected as a rollback even though it is exactly the
+// state the segments prove. | relaxNoSyncMetaBaseline 在未同步轮转丢失尾部后把内存
+// META 基线降到恢复出的前缀。单调性保护会用该基线比较新代次，不调整时修复写入会被当成
+// 回退而拒绝，尽管它正是分段能够证明的状态。
+func (w *WAL) relaxNoSyncMetaBaseline() {
+	if w.opts.syncOnRotate || w.meta == nil || !w.meta.hasState {
+		return
+	}
+	if w.meta.state.nextLSN > w.nextLSN {
+		w.meta.state.nextLSN = w.nextLSN
+	}
+	if w.meta.state.commitSeq > w.commitSeq {
+		w.meta.state.commitSeq = w.commitSeq
+	}
 }
 
 // persistMetaIfChanged writes META only when the recovered or final state
@@ -985,11 +1005,11 @@ func (w *WAL) doClose() error {
 	// directory lock. | 释放目录锁前等待所有按需侧车升级结束。
 	w.idxWriteMu.Lock()
 	w.idxWriteMu.Unlock()
-	if w.lock != nil {
-		if err := w.lock.Close(); err != nil && firstErr == nil {
-			firstErr = err
-		}
-	}
+	// The directory lock outlives Close while read leases are active: a second
+	// process must not be able to rotate or unlink segments under a live reader.
+	// closeEngine (called here or by the last endRead) releases it exactly once. |
+	// 读租约仍存活时目录锁要晚于 Close 释放：第二个进程不得在活跃读取器之下轮转或删除
+	// 分段。closeEngine（此处或最后一个 endRead 调用）只释放一次。
 	w.closeEngineWhenIdle()
 	return firstErr
 }
@@ -1018,6 +1038,13 @@ func (w *WAL) closeEngine() {
 		// Derived key material is no longer needed once every Reader lease ends. | 所有 Reader 租约结束后不再需要派生密钥材料。
 		if w.bound != nil {
 			w.bound.close()
+		}
+		// Release the directory lock only after the last read lease: a writer in
+		// another process must not rotate or unlink segments under a live reader. |
+		// 最后一个读租约结束后才释放目录锁：其它进程的写者不得在活跃读取器之下轮转或
+		// 删除分段。
+		if w.lock != nil {
+			_ = w.lock.Close()
 		}
 	})
 }

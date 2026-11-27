@@ -393,7 +393,10 @@ func WithSyncOnRotate(enabled bool) Option { return func(o *options) { o.syncOnR
 // WithMacOSFullFsync selects F_FULLFSYNC on macOS. | WithMacOSFullFsync 选择 macOS 上使用 F_FULLFSYNC。
 func WithMacOSFullFsync(enabled bool) Option { return func(o *options) { o.macFullFsync = enabled } }
 
-// WithReadOnly opens the WAL without any writer, backup, or mutation. | WithReadOnly 以只读方式打开，不启动写入、备份或修改。
+// WithReadOnly opens the WAL without any writer, backup, or mutation. A missing
+// lock file is created as the reader/writer rendezvous unless WithNoLock is set;
+// WAL data files are never written. | WithReadOnly 以只读方式打开，不启动写入、备份或修改。
+// 除设置 WithNoLock 外，缺失的锁文件会作为读写双方的汇合点被创建；WAL 数据文件绝不写入。
 func WithReadOnly(enabled bool) Option { return func(o *options) { o.readOnly = enabled } }
 
 // WithNoLock skips the directory lock; the caller must guarantee a single

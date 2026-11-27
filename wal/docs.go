@@ -162,10 +162,14 @@
 // Append returns ErrTooLarge before the LSN or segment-sequence counter can
 // wrap to zero. | Append 在 LSN 或分段序号计数器回绕为零之前返回 ErrTooLarge。
 //
-// WithReadOnly opens never write, truncate, or delete files. Readers created
-// before Close may continue reading, but WAL.Close releases the directory lock;
-// close Readers before opening the directory with another writer if cross-process
-// deletion must not affect them. | WithReadOnly 打开从不写入、截断或删除文件。
-// Close 前创建的 Reader 可以继续读，但 WAL.Close 会释放目录锁；若跨进程删除
-// 不得影响 Reader，请在另一个写者打开目录前关闭 Reader。
+// WithReadOnly opens never write, truncate, or delete WAL data files. If the
+// directory lock file is absent they create that empty file (the reader/writer
+// rendezvous) so a writer starting later conflicts with the reader; media where
+// it cannot be created require WithNoLock explicitly. Readers created before
+// Close may continue reading, and Close keeps the directory lock held until the
+// last Reader closes, so another process cannot rotate or delete segments under
+// a live reader. | WithReadOnly 打开不写入、截断或删除 WAL 数据文件。若目录锁文件
+// 不存在，会创建这个空文件（读写双方的汇合点），使随后启动的写者与读者冲突；无法创建
+// 它的介质必须显式使用 WithNoLock。Close 前创建的 Reader 可以继续读，Close 会保持
+// 目录锁直到最后一个 Reader 关闭，因此其它进程无法在活跃读取器之下轮转或删除分段。
 package wal

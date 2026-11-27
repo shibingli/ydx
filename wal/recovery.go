@@ -640,6 +640,7 @@ func (w *WAL) recover() error {
 	state.firstLSN = firstLSN
 	// Determine nextLSN/nextSeq/commitSeq. | 确定 nextLSN/nextSeq/commitSeq。
 	observedNext := firstLSN
+	observedCommit := uint64(0)
 	highestLast := uint64(0)
 	for _, seg := range live {
 		seg.metaMu.RLock()
@@ -658,6 +659,9 @@ func (w *WAL) recover() error {
 		}
 		if last > highestLast {
 			highestLast = last
+		}
+		if commitSeq > observedCommit {
+			observedCommit = commitSeq
 		}
 		if commitSeq > state.commitSeq {
 			state.commitSeq = commitSeq
@@ -678,9 +682,27 @@ func (w *WAL) recover() error {
 	}
 	if stateTrusted && state.nextLSN > observedNext {
 		if len(live) != 0 || state.firstLSN != state.nextLSN {
-			return errs.Detail(ErrCorrupt, "META.nextLSN %[1]d is ahead of recovered records %[2]d | META.nextLSN %[1]d 超前于已恢复记录 %[2]d",
-				state.nextLSN, observedNext)
+			if w.opts.syncOnRotate {
+				return errs.Detail(ErrCorrupt, "META.nextLSN %[1]d is ahead of recovered records %[2]d | META.nextLSN %[1]d 超前于已恢复记录 %[2]d",
+					state.nextLSN, observedNext)
+			}
+			// Rotation without syncing writes metadata from the in-memory high-water, so
+			// a crash can leave META advertising bytes that never reached the disk. NoSync
+			// already accepts losing that unsynced tail; resume from the durable prefix
+			// instead of refusing to open the WAL. | 未同步的轮转按内存高水位写元数据，
+			// 掉电后 META 可能声明了从未落盘的字节。NoSync 本就接受丢失未同步尾部，因此
+			// 从持久前缀继续，而不是拒绝打开 WAL。
+			state.nextLSN = observedNext
 		}
+	}
+	// The commit watermark has the same tail-loss semantics as nextLSN: an
+	// unsynchronized rotation may persist a commit sequence whose records never
+	// reached the disk. NoSync accepts losing those commits, so the recovered
+	// segments' watermark is authoritative. | 提交水位与 nextLSN 有相同的尾丢失语义：
+	// 未同步轮转可能持久化了记录从未落盘的提交序号。NoSync 接受丢失这些提交，因此以恢复出的
+	// 分段水位为准。
+	if !w.opts.syncOnRotate && stateTrusted && state.commitSeq > observedCommit {
+		state.commitSeq = observedCommit
 	}
 	state.nextLSN = maxU64(state.nextLSN, observedNext)
 	state.nextLSN = maxU64(state.nextLSN, state.firstLSN)
@@ -879,10 +901,13 @@ func (w *WAL) summaryFromFile(seq uint64, size int64) (*segment, error) {
 // openLastSegment validates, scans, and seals or reuses the last segment. | openLastSegment
 // 校验、扫描并封存或复用最后分段。
 func (w *WAL) openLastSegment(seg *segment, state metaState, walID [16]byte, firstLSN uint64, stateTrusted bool) (*segment, uint32, uint64, uint64, error) {
-	// A sealed last segment with a matching size needs no open at all; its
-	// records were synced before the sealing MANIFEST record. | 已封且大小匹配的
-	// 最后分段无需打开；其记录在封段 MANIFEST 记录之前已同步。
-	if stateTrusted && seg.currentState() == segmentSealed && seg.size > int64(segmentHeaderSize) {
+	// A sealed last segment with a matching size needs no open at all when rotation
+	// synchronized the data before writing its metadata. With syncOnRotate disabled
+	// that premise does not hold: the metadata may describe bytes that never reached
+	// the disk, so the segment must be scanned and CRC-validated. | 轮转在写元数据前
+	// 已同步数据时，已封且大小匹配的最后分段无需打开。禁用 syncOnRotate 后该前提不成立：
+	// 元数据可能描述了从未落盘的字节，必须扫描并校验 CRC。
+	if stateTrusted && w.opts.syncOnRotate && seg.currentState() == segmentSealed && seg.size > int64(segmentHeaderSize) {
 		info, statErr := os.Stat(seg.path)
 		switch {
 		case statErr == nil && info.Size() == seg.size:
@@ -952,8 +977,12 @@ func (w *WAL) openLastSegment(seg *segment, state metaState, walID [16]byte, fir
 	base := scanBase{lastLSN: seg.baseLSN - 1, atHeader: true}
 	trusted := false
 	// Use the MANIFEST summary as a trusted full description or a checkpoint prefix
-	// when the sidecar is missing. | 侧车缺失时使用 MANIFEST 摘要作为完整描述或检查点前缀。
-	if stateTrusted {
+	// when the sidecar is missing and rotation synchronized the data. Without
+	// syncOnRotate the summary may describe unsynced bytes, so it is only a hint and
+	// the scan starts at the header. | 侧车缺失且轮转已同步数据时，MANIFEST 摘要可
+	// 作为完整描述或检查点前缀。禁用 syncOnRotate 时摘要可能描述未同步字节，只能作为
+	// 提示，扫描从段头开始。
+	if stateTrusted && w.opts.syncOnRotate {
 		if seg.size > fileSize && seg.size > int64(segmentHeaderSize) {
 			_ = f.Close()
 			return nil, 0, state.commitSeq, state.firstLSN, errs.Detail(ErrCorrupt, "MANIFEST segmentBytes exceeds the file | MANIFEST segmentBytes 超过文件大小")
@@ -976,7 +1005,10 @@ func (w *WAL) openLastSegment(seg *segment, state metaState, walID [16]byte, fir
 		}
 	}
 	staleSidecar := false
-	if sc, err := loadSidecar(seg.idxPath); err == nil && stateTrusted && sc.seq == seg.seq && sc.baseLSN == h.baseLSN && sc.walID == walID {
+	// A sidecar written before an unsynchronized seal describes the same
+	// unverified bytes, so it is not trusted as a prefix in that mode either. |
+	// 未同步封段之前写入的侧车描述同样的未校验字节，因此该模式下也不把它当作可信前缀。
+	if sc, err := loadSidecar(seg.idxPath); err == nil && stateTrusted && w.opts.syncOnRotate && sc.seq == seg.seq && sc.baseLSN == h.baseLSN && sc.walID == walID {
 		if sc.segmentBytes > uint64(fileSize) {
 			// B5: a crash before the sidecar invalidation can leave a sidecar that
 			// claims bytes past the current file end. Do not trust it as a prefix;
