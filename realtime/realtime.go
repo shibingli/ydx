@@ -314,6 +314,11 @@ func (h *Hub) Publish(ctx context.Context, topic string, body []byte) error {
 	backend := h.backend
 	h.mu.Unlock()
 
+	// Fan-out and retry queues deliver asynchronously; copy the caller's body
+	// once so reusing a pooled buffer after Publish cannot corrupt in-flight
+	// messages. | 扇出与重试队列异步投递；此处复制一次调用方正文，使 Publish 返回后
+	// 复用池化缓冲不会破坏在途消息。
+	body = append([]byte(nil), body...)
 	msg := Message{
 		Topic: topic,
 		ID:    h.opts.NodeID + ":" + strconv.FormatUint(h.seq.Add(1), 10),
