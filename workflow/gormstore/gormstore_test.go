@@ -115,6 +115,21 @@ func TestNotificationLeaseIsExclusive(t *testing.T) {
 	if _, ok, err := store.ClaimNotification(ctx, "other", note.ID, now, now.Add(time.Minute)); err != nil || ok {
 		t.Fatalf("跨租户租约应失败: %v %v", ok, err)
 	}
+	// A writer that no longer owns the claim must not overwrite the row. |
+	// 不再持有领取租约的写入方不得覆盖该行。
+	sent := first
+	sent.Status = workflow.NotificationSent
+	sent.SentAt = now
+	sent.UpdatedAt = now
+	if updated, err := store.UpdateNotificationLease(ctx, sent, first.NextAttemptAt.Add(time.Second)); err != nil || updated {
+		t.Fatalf("错误租约写入 = %v %v, 期望被拒绝", updated, err)
+	}
+	if updated, err := store.UpdateNotificationLease(ctx, sent, first.NextAttemptAt); err != nil || !updated {
+		t.Fatalf("有效租约写入 = %v %v, 期望成功", updated, err)
+	}
+	if updated, err := store.UpdateNotificationLease(ctx, sent, first.NextAttemptAt); err != nil || updated {
+		t.Fatalf("已发送行再次写入 = %v %v, 期望被拒绝", updated, err)
+	}
 }
 
 // TestTaskFilterActorAndOverdue covers inbox and overdue queries. | TestTaskFilterActorAndOverdue

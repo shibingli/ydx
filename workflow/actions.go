@@ -378,6 +378,13 @@ func (s *Service) Approve(ctx context.Context, tenantID string, actor Actor, tas
 		if err != nil {
 			return err
 		}
+		// A pending task whose token has been cancelled, completed or moved is stale:
+		// acting on it would drive a token that no longer belongs to this node and
+		// create a second execution path. | 令牌已取消、完成或已移动的待办任务是陈旧的：处理它
+		// 会推进一个不再属于该节点的令牌，产生第二条执行路径。
+		if !synthetic && (token.Status != TokenWaiting || token.NodeID != task.NodeID) {
+			return errs.Detail(ErrTaskClosed, "the task token is no longer waiting at this node | 任务令牌已不在该节点等待")
+		}
 		if synthetic {
 			token.Status = TokenCompleted
 			token.UpdatedAt = rt.now
@@ -1301,25 +1308,11 @@ func (s *Service) RunDue(ctx context.Context, limit int) (SchedulerReport, error
 		return report, err
 	}
 	if len(notes) > 0 && s.notificationsActive() {
-		claimed := make([]Notification, 0, len(notes))
-		lease := s.options.NotificationTimeout * 2
-		if lease < time.Minute {
-			lease = time.Minute
-		}
-		for _, note := range notes {
-			// The lease makes a second node skip a row this one is already delivering; a crash
-			// simply lets the lease expire. | 租约让另一个节点跳过本节点正在投递的行；进程崩溃则租约
-			// 自然过期后重试。
-			claimedNote, ok, claimErr := s.store.ClaimNotification(ctx, note.TenantID, note.ID, s.now(), s.now().Add(lease))
-			if claimErr != nil {
-				return report, claimErr
-			}
-			if ok {
-				claimed = append(claimed, claimedNote)
-			}
-		}
-		s.flushNotifications(ctx, claimed)
-		report.Notifications = len(claimed)
+		// flushNotifications claims each row immediately before its own send, so a batch
+		// cannot outlive a single lease and be delivered twice. | flushNotifications 在每条
+		// 通知投递前才领取，整批不会超过同一个租约而被重复投递。
+		s.flushNotifications(ctx, notes)
+		report.Notifications = len(notes)
 	}
 	return report, nil
 }

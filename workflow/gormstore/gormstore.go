@@ -886,6 +886,23 @@ func (s *Store) UpdateNotification(ctx context.Context, note workflow.Notificati
 	return nil
 }
 
+// UpdateNotificationLease writes delivery state only while leaseUntil still identifies the
+// caller's claim and the row is still pending, so a node whose lease expired cannot overwrite
+// the state of the node that re-claimed the row. | UpdateNotificationLease 仅在 leaseUntil 仍标识
+// 调用方领取且该行仍为待投递时写入投递状态，因此租约已过期的节点无法覆盖重新领取该行的节点所写
+// 的状态。
+func (s *Store) UpdateNotificationLease(ctx context.Context, note workflow.Notification, leaseUntil time.Time) (bool, error) {
+	result := s.db.WithContext(ctx).Model(&workflow.Notification{}).
+		Where("tenant_id = ? AND id = ? AND status = ? AND next_attempt_at = ?",
+			note.TenantID, note.ID, workflow.NotificationPending, leaseUntil).
+		Select("status", "attempts", "last_error", "sent_at", "next_attempt_at", "updated_at").
+		Updates(&note)
+	if result.Error != nil {
+		return false, result.Error
+	}
+	return result.RowsAffected > 0, nil
+}
+
 // ClaimNotification leases one pending notification to this node. | ClaimNotification 把一条待投递通知租给当前节点。
 func (s *Store) ClaimNotification(ctx context.Context, tenantID, id string, now, leaseUntil time.Time) (workflow.Notification, bool, error) {
 	result := s.db.WithContext(ctx).Model(&workflow.Notification{}).

@@ -219,16 +219,44 @@ func (s *Service) ImportBundle(ctx context.Context, tenantID, actorID string, bu
 					return err
 				}
 				if err == nil {
-					if existing.Checksum == sum {
-						report.Skipped++
-					} else if existing.Status == VersionPublished {
+					publish := source.Status == VersionPublished
+					switch {
+					case existing.Checksum == sum:
+						if publish && existing.Status != VersionPublished {
+							// The bundle marks this version published and its content matches
+							// the locally drafted row: promote the draft instead of skipping
+							// and leaving the definition unpublished. | 流程包把该版本标为已发布
+							// 且内容与本地草稿一致：提升草稿，而不是跳过并让定义停留在未发布状态。
+							existing.Status = VersionPublished
+							existing.PublishedAt = now
+							existing.PublishedBy = strings.TrimSpace(actorID)
+							existing.UpdatedAt = now
+							if err := st.UpdateVersion(ctx, existing); err != nil {
+								return err
+							}
+							report.Updated++
+							if number > maxPublished {
+								maxPublished = number
+							}
+						} else {
+							report.Skipped++
+						}
+					case existing.Status == VersionPublished:
 						return errs.Detail(ErrConflict, "definition %[1]q version %[2]d is published and differs | 定义 %[1]q 版本 %[2]d 已发布且内容不同", key, number)
-					} else {
+					default:
 						existing.Design = canonical
 						existing.BPMN = bpmn
 						existing.Checksum = sum
 						existing.Note = source.Note
 						existing.UpdatedAt = now
+						if publish {
+							existing.Status = VersionPublished
+							existing.PublishedAt = now
+							existing.PublishedBy = strings.TrimSpace(actorID)
+							if number > maxPublished {
+								maxPublished = number
+							}
+						}
 						if err := st.UpdateVersion(ctx, existing); err != nil {
 							return err
 						}

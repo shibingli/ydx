@@ -1,6 +1,9 @@
 package workflow
 
-import "context"
+import (
+	"context"
+	"time"
+)
 
 // waitingTokenLister is an optional Store extension used by refreshCurrentNodes. Stores that do
 // not implement it fall back to ListTokens and filter in memory. | waitingTokenLister 是
@@ -32,9 +35,34 @@ type definitionMetricsReader interface {
 	CountInstancesForDefinitions(ctx context.Context, tenantID string, definitionIDs []string) (map[string]int, error)
 }
 
+// notificationLeaseWriter is an optional Store extension that writes delivery state only while
+// the caller still holds the claim it took and no other node has re-claimed the row. A store
+// without it falls back to the unconditional writer. | notificationLeaseWriter 是一个可选 Store
+// 扩展：仅当调用方仍持有自己取得的领取租约、且没有其它节点重新领取该行时才写入投递状态。
+// 未实现它的存储回退到无条件写入。
+type notificationLeaseWriter interface {
+	// UpdateNotificationLease updates one notification if leaseUntil still identifies the
+	// caller's claim. It reports whether the row was still owned. | UpdateNotificationLease 在
+	// leaseUntil 仍标识调用方领取时更新一条通知，并报告该行是否仍归调用方所有。
+	UpdateNotificationLease(ctx context.Context, note Notification, leaseUntil time.Time) (bool, error)
+}
+
 // The service asserts the grouped-count extension on the transaction wrapper, so the wrapper must
 // keep forwarding it. | 服务在事务包装层上断言分组统计扩展，因此包装层必须持续转发它。
 var _ definitionMetricsReader = (*aiDeferringStore)(nil)
+
+// UpdateNotificationLease forwards the conditional write, or falls back to the unconditional
+// writer for stores that do not support leases. | UpdateNotificationLease 转发条件写入；不支持租约
+// 的存储回退到无条件写入。
+func (s *aiDeferringStore) UpdateNotificationLease(ctx context.Context, note Notification, leaseUntil time.Time) (bool, error) {
+	if writer, ok := s.Store.(notificationLeaseWriter); ok {
+		return writer.UpdateNotificationLease(ctx, note, leaseUntil)
+	}
+	if err := s.Store.UpdateNotification(ctx, note); err != nil {
+		return false, err
+	}
+	return true, nil
+}
 
 // versionSummaryReader is an optional Store extension that loads lightweight version projections. |
 // versionSummaryReader 是一个可选 Store 扩展，加载轻量版本投影。

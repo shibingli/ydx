@@ -3,6 +3,7 @@ package workflow_test
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -951,5 +952,72 @@ func TestSchedulerReminderIsClaimedOnce(t *testing.T) {
 	task := f.taskFor(t, inst.ID, "u1")
 	if task.RemindCount != 1 {
 		t.Fatalf("任务催办计数 = %d, 期望 1", task.RemindCount)
+	}
+}
+
+// deleteOnFirstTxStore deletes a definition just before the next transaction starts, modelling
+// a delete that commits after Start resolved the definition but before its transaction. |
+// deleteOnFirstTxStore 在下一个事务开始前删除定义，模拟「Start 已解析定义、事务尚未开始」时
+// 删除操作提交的竞态。
+type deleteOnFirstTxStore struct {
+	workflow.Store
+	mu     sync.Mutex
+	armed  bool
+	tenant string
+	id     string
+}
+
+// arm schedules one delete. | arm 安排一次删除。
+func (s *deleteOnFirstTxStore) arm(tenant, id string) {
+	s.mu.Lock()
+	s.armed = true
+	s.tenant = tenant
+	s.id = id
+	s.mu.Unlock()
+}
+
+// WithTx performs the scheduled delete before delegating. | WithTx 在委托前执行安排的删除。
+func (s *deleteOnFirstTxStore) WithTx(ctx context.Context, fn func(workflow.Store) error) error {
+	s.mu.Lock()
+	armed, tenant, id := s.armed, s.tenant, s.id
+	if armed {
+		s.armed = false
+	}
+	s.mu.Unlock()
+	if armed {
+		if err := s.Store.DeleteDefinition(ctx, tenant, id); err != nil {
+			return err
+		}
+	}
+	return s.Store.WithTx(ctx, fn)
+}
+
+// TestStartRejectsDefinitionDeletedBeforeTransaction pins that Start re-checks the definition
+// inside its transaction, so a delete that wins the race cannot leave a running instance pinned
+// to a missing definition/version. |
+// TestStartRejectsDefinitionDeletedBeforeTransaction 固定 Start 在事务内重新校验定义，删除操作
+// 赢得竞态时不会留下绑定到缺失定义/版本的运行实例。
+func TestStartRejectsDefinitionDeletedBeforeTransaction(t *testing.T) {
+	wrapper := &deleteOnFirstTxStore{}
+	f := newFixtureWithStore(t, func(store workflow.Store) workflow.Store {
+		wrapper.Store = store
+		return wrapper
+	})
+	defer f.close()
+	def, _ := f.publishDefinition(t, "vanishing", linearDesign(
+		workflow.Assignment{Type: workflow.AssigneeInitiator},
+		workflow.Completion{Mode: workflow.CompletionAny},
+	))
+	wrapper.arm(f.tenant, def.ID)
+	_, err := f.svc.Start(context.Background(), f.tenant, actor("u1"), workflow.StartInput{DefinitionKey: "vanishing", Title: "竞态实例"})
+	if !errors.Is(err, workflow.ErrNotFound) {
+		t.Fatalf("Start 错误 = %v, 期望 ErrNotFound", err)
+	}
+	_, total, err := f.store.ListInstances(context.Background(), f.tenant, workflow.InstanceFilter{DefinitionID: def.ID, Page: 1, PageSize: 1})
+	if err != nil {
+		t.Fatalf("统计实例失败: %v", err)
+	}
+	if total != 0 {
+		t.Fatalf("竞态后遗留实例数 = %d, 期望 0", total)
 	}
 }

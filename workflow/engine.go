@@ -131,10 +131,10 @@ func (s *Service) Start(ctx context.Context, tenantID string, actor Actor, in St
 	if !ok {
 		return Instance{}, ErrInvalidInput
 	}
-	// The instance category is always the definition category; StartInput.Category is ignored
-	// so automatic rules cannot be steered by a forged category. | 实例分类始终取自定义分类；
-	// StartInput.Category 被忽略，自动规则无法被伪造的分类左右。
-	category := def.Category
+	// The instance category is always the definition category (re-read inside the
+	// transaction below); StartInput.Category is ignored so automatic rules cannot be steered
+	// by a forged category. | 实例分类始终取自定义分类（下方在事务内重读）；StartInput.Category
+	// 被忽略，自动规则无法被伪造的分类左右。
 	now := s.now()
 	// Generate identity once: an AI deferral replays the transaction, and a fresh instance id on
 	// each replay would also change the decider's input fingerprint and defeat the cache. |
@@ -155,16 +155,34 @@ func (s *Service) Start(ctx context.Context, tenantID string, actor Actor, in St
 		// rolling the previous transaction back. | 每次尝试都从干净状态开始：AI 延后路径会在回滚上一次
 		// 事务之后重新执行本回调。
 		created = Instance{}
+		// Re-read the definition through the transaction-bound store. On backends that
+		// support row locks this holds the definition row for the whole start, so a
+		// concurrent delete or disable cannot leave the instance pinned to a missing or
+		// unpublished definition; DeleteDefinition takes the same lock before counting
+		// instances, so either Start commits first or the delete sees the instance.
+		// The pinned published version is immutable, so it needs no second read (and
+		// reading it here would lock version rows in the opposite order to publishing).
+		// | 通过事务绑定的存储重读定义。支持行锁的后端会在整个发起期间持有定义行锁，
+		// 并发删除或停用无法让实例绑定到缺失或未发布的定义；DeleteDefinition 在计数
+		// 实例前获取同一把锁，因此要么 Start 先提交，要么删除能看到该实例。绑定的已发布
+		// 版本不可变，无需二次读取（在此读取还会以与发布相反的加锁顺序锁定版本行）。
+		attemptDef, err := st.GetDefinition(ctx, tenantID, def.ID)
+		if err != nil {
+			return err
+		}
+		if attemptDef.Status != DefinitionPublished {
+			return errs.Detail(ErrInvalidInput, "definition %[1]q is not published | 定义 %[1]q 尚未发布", attemptDef.Key)
+		}
 		attemptVars := make(map[string]any, len(variables))
 		for key, value := range variables {
 			attemptVars[key] = value
 		}
 		tx := &runtimeTxn{
-			s: s, st: st, inst: &created, def: def, defLoaded: true, tenantID: tenantID, definitionID: def.ID,
+			s: s, st: st, inst: &created, def: attemptDef, defLoaded: true, tenantID: tenantID, definitionID: attemptDef.ID,
 			ver: version, design: design, vars: attemptVars, now: now,
 		}
 		if design.Settings.UniqueBusinessKey && businessKey != "" {
-			count, err := st.CountRunningInstances(ctx, tenantID, def.ID, businessKey)
+			count, err := st.CountRunningInstances(ctx, tenantID, attemptDef.ID, businessKey)
 			if err != nil {
 				return err
 			}
@@ -180,14 +198,14 @@ func (s *Service) Start(ctx context.Context, tenantID string, actor Actor, in St
 			DueAt:          instanceDue(now, design.Settings.Due),
 			ID:             id,
 			TenantID:       tenantID,
-			DefinitionID:   def.ID,
+			DefinitionID:   attemptDef.ID,
 			VersionID:      version.ID,
-			DefinitionKey:  def.Key,
-			DefinitionName: def.Name,
+			DefinitionKey:  attemptDef.Key,
+			DefinitionName: attemptDef.Name,
 			Version:        version.Version,
 			Title:          title,
 			BusinessKey:    businessKey,
-			Category:       category,
+			Category:       attemptDef.Category,
 			InitiatorID:    actor.ID,
 			InitiatorName:  actor.Name,
 			Status:         InstanceRunning,
@@ -1071,11 +1089,35 @@ func (s *Service) flushNotifications(ctx context.Context, notes []Notification) 
 	}
 	// The business transaction already committed; a delivery failure must never surface as a
 	// request failure. | 业务事务已经提交；投递失败绝不能变成请求失败。
-	deliverCtx, cancel := context.WithTimeout(ctx, s.options.NotificationTimeout*time.Duration(len(notes)+1))
-	defer cancel()
+	//
+	// Each row is claimed immediately before its own send with a lease that covers that send
+	// budget. Claiming the whole batch up front and then flushing it under one budget would let
+	// a slow batch outlive its lease and be re-delivered by another node. The final write is
+	// conditional on still owning the claim, so a re-claimed row is not overwritten. |
+	// 每行在自身投递前才领取，租约覆盖该次投递预算。若先领取整批再统一投递，慢批次会超过租约，
+	// 被其它节点重复投递。最终写入以仍持有该领取为条件，因此被重新领取的行不会被覆盖。
+	lease := 2 * s.options.NotificationTimeout
+	if lease < 30*time.Second {
+		lease = 30 * time.Second
+	}
 	for i := range notes {
-		note := &notes[i]
-		err := s.dispatcher.Send(deliverCtx, *note)
+		now := s.now()
+		note, ok, claimErr := s.store.ClaimNotification(ctx, notes[i].TenantID, notes[i].ID, now, now.Add(lease))
+		if claimErr != nil {
+			if ctx.Err() == nil {
+				s.log.Warn("workflow notification could not be claimed | 流程通知领取失败",
+					ydlog.Err(claimErr), ydlog.Str("notification", notes[i].ID))
+			}
+			continue
+		}
+		if !ok {
+			// Another node already owns this delivery. | 其它节点已领取该投递。
+			continue
+		}
+		leaseUntil := note.NextAttemptAt
+		deliverCtx, cancel := context.WithTimeout(ctx, s.options.NotificationTimeout)
+		err := s.dispatcher.Send(deliverCtx, note)
+		cancel()
 		note.Attempts++
 		note.UpdatedAt = s.now()
 		if err == nil {
@@ -1096,10 +1138,20 @@ func (s *Service) flushNotifications(ctx context.Context, notes []Notification) 
 				ydlog.Int("attempts", note.Attempts),
 			)
 		}
-		if updateErr := s.store.UpdateNotification(ctx, *note); updateErr != nil && ctx.Err() == nil {
+		if updateErr := s.storeNotificationState(ctx, note, leaseUntil); updateErr != nil && ctx.Err() == nil {
 			s.log.Warn("workflow notification state could not be stored | 流程通知状态写入失败", ydlog.Err(updateErr))
 		}
 	}
+}
+
+// storeNotificationState writes delivery state under the claim lease when the store supports it. |
+// storeNotificationState 在存储支持时以领取租约为条件写入投递状态。
+func (s *Service) storeNotificationState(ctx context.Context, note Notification, leaseUntil time.Time) error {
+	if writer, ok := s.store.(notificationLeaseWriter); ok {
+		_, err := writer.UpdateNotificationLease(ctx, note, leaseUntil)
+		return err
+	}
+	return s.store.UpdateNotification(ctx, note)
 }
 
 // retryBackoff grows the retry delay without exceeding one hour. | retryBackoff 增大重试延迟，上限一小时。

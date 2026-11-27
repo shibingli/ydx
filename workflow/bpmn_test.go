@@ -239,6 +239,54 @@ func TestBundleExportImport(t *testing.T) {
 	}
 }
 
+// TestImportBundlePromotesMatchingDraft pins that importing a published bundle version over a
+// matching local draft promotes the draft instead of skipping it and leaving the definition
+// unpublished. | TestImportBundlePromotesMatchingDraft 固定「导入的已发布版本与本地草稿内容一致
+// 时提升草稿」，而不是跳过并让定义停留在未发布状态。
+func TestImportBundlePromotesMatchingDraft(t *testing.T) {
+	ctx := context.Background()
+	source := newFixture(t)
+	defer source.close()
+	design := linearDesign(workflow.Assignment{Type: workflow.AssigneeInitiator}, workflow.Completion{Mode: workflow.CompletionAny})
+	source.publishDefinition(t, "bundle-promote", design)
+	bundle, err := source.svc.ExportBundle(ctx, source.tenant, []string{"bundle-promote"})
+	if err != nil {
+		t.Fatalf("导出流程包失败: %v", err)
+	}
+
+	target := newFixture(t)
+	defer target.close()
+	def, err := target.svc.CreateDefinition(ctx, target.tenant, "boss", workflow.DefinitionInput{
+		Key: "bundle-promote", Name: "本地草稿",
+	})
+	if err != nil {
+		t.Fatalf("创建本地定义失败: %v", err)
+	}
+	if _, err := target.svc.CreateVersion(ctx, target.tenant, def.ID, "boss", workflow.VersionInput{
+		Design: bundle.Definitions[0].Versions[0].Design,
+	}); err != nil {
+		t.Fatalf("创建本地草稿失败: %v", err)
+	}
+
+	report, err := target.svc.ImportBundle(ctx, target.tenant, "boss", bundle)
+	if err != nil {
+		t.Fatalf("导入流程包失败: %v", err)
+	}
+	if report.Updated != 1 || report.Skipped != 0 || report.Created != 0 {
+		t.Fatalf("导入报告 = %+v，期望更新一个已存在的草稿", report)
+	}
+	got, err := target.svc.GetDefinitionByKey(ctx, target.tenant, "bundle-promote")
+	if err != nil {
+		t.Fatalf("读取定义失败: %v", err)
+	}
+	if got.Status != workflow.DefinitionPublished || got.CurrentVersion != 1 {
+		t.Fatalf("导入后定义 = %+v，期望已发布且当前版本为 1", got)
+	}
+	if inst := target.start(t, "bundle-promote", nil); inst.Status != workflow.InstanceRunning {
+		t.Fatalf("导入后发起状态 = %s", inst.Status)
+	}
+}
+
 // TestImportBPMNCreatesDraft covers direct BPMN import. | TestImportBPMNCreatesDraft 覆盖直接导入 BPMN。
 func TestImportBPMNCreatesDraft(t *testing.T) {
 	f := newFixture(t)

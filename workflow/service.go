@@ -196,18 +196,25 @@ func (s *Service) DeleteDefinition(ctx context.Context, tenantID, id string) err
 	if tenantID == "" || id == "" {
 		return ErrInvalidInput
 	}
-	current, err := s.store.GetDefinition(ctx, tenantID, id)
-	if err != nil {
-		return err
-	}
-	_, total, err := s.store.ListInstances(ctx, tenantID, InstanceFilter{DefinitionID: current.ID, Page: 1, PageSize: 1})
-	if err != nil {
-		return err
-	}
-	if total > 0 {
-		return errs.Detail(ErrDefinitionPublished, "definition %[1]q has %[2]d instances | 定义 %[1]q 仍有 %[2]d 个实例", current.Key, total)
-	}
-	return s.store.DeleteDefinition(ctx, tenantID, current.ID)
+	// The count and the delete run in one transaction. The definition read takes the row lock
+	// on backends that support it, so a concurrent Start either commits first (and the count
+	// sees its instance) or waits for this transaction to finish and then fails its own
+	// re-check. | 计数与删除在同一事务内完成。支持行锁的后端会在读取定义时加锁，因此并发的
+	// Start 要么先提交（计数能看到其实例），要么等本事务结束后因自身重检失败。
+	return s.store.WithTx(ctx, func(st Store) error {
+		current, err := st.GetDefinition(ctx, tenantID, id)
+		if err != nil {
+			return err
+		}
+		_, total, err := st.ListInstances(ctx, tenantID, InstanceFilter{DefinitionID: current.ID, Page: 1, PageSize: 1})
+		if err != nil {
+			return err
+		}
+		if total > 0 {
+			return errs.Detail(ErrDefinitionPublished, "definition %[1]q has %[2]d instances | 定义 %[1]q 仍有 %[2]d 个实例", current.Key, total)
+		}
+		return st.DeleteDefinition(ctx, tenantID, current.ID)
+	})
 }
 
 // GetDefinition reads one definition inside the tenant. | GetDefinition 读取租户内的一个定义。
