@@ -39,6 +39,7 @@ func OptionsFromConfig(c *config.Config) Options {
 		SlowThreshold:          c.Duration("db.slow_threshold"),
 		LogLevel:               c.GetString("db.log_level"),
 		PrepareStmt:            c.GetBool("db.prepare_stmt"),
+		PrepareStmtSet:         c.IsSet("db.prepare_stmt"),
 		SkipDefaultTransaction: c.GetBool("db.skip_default_transaction"),
 		CreateDatabase:         createDatabaseFromConfig(c),
 	}

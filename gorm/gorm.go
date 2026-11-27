@@ -88,11 +88,17 @@ type Options struct {
 	ConnMaxIdleTime time.Duration
 	// SlowThreshold is the slow-query threshold; a value <=0 takes the default 200ms. | SlowThreshold 是慢查询阈值，<=0 时取默认值 200ms。
 	SlowThreshold time.Duration
-	// PrepareStmt 是配置层 db.prepare_stmt 的映射字段。
-	//
-	// 预编译语句缓存属于框架硬规则，Open 恒以 true 装配（零值即框架默认），
-	// 以免下游误关导致的吞吐退化与注入面扩大；该字段保留用于与配置层对齐。
+	// PrepareStmt mirrors db.prepare_stmt. The framework default is on; set
+	// PrepareStmtSet together with PrepareStmt=false to disable it for
+	// transaction-pooling proxies such as PgBouncer. | PrepareStmt 映射
+	// db.prepare_stmt。框架默认开启；与 PrepareStmtSet 一起设为 false 可在
+	// PgBouncer 等事务池代理前关闭预编译语句。
 	PrepareStmt bool
+	// PrepareStmtSet records that PrepareStmt was explicitly configured, so a
+	// hand-written zero-value Options still gets the framework default (on). |
+	// PrepareStmtSet 记录 PrepareStmt 是否被显式配置，使手写零值 Options 仍采用
+	// 框架默认（开启）。
+	PrepareStmtSet bool
 	// SkipDefaultTransaction, when true, stops wrapping a single write operation in a transaction. | SkipDefaultTransaction 为 true 时，单条写操作不再包在事务里执行。
 	SkipDefaultTransaction bool
 	// CreateDatabase controls automatic database creation: when the first connect fails with the
@@ -155,10 +161,14 @@ func Open(o Options, l *log.Logger) (*gorm.DB, error) {
 		l = log.Default()
 	}
 
+	prepareStmt := true
+	if o.PrepareStmtSet {
+		prepareStmt = o.PrepareStmt
+	}
 	cfg := &gorm.Config{
 		Logger:                 NewLogger(l, o.SlowThreshold, o.LogLevel),
 		NamingStrategy:         DefaultNamingStrategy(), // Framework hard rule: every table and every derived index carries the yd_ prefix (see naming.go) | 框架硬规则：每张表与每个派生索引都带 yd_ 前缀（见 naming.go）
-		PrepareStmt:            true,                    // Framework hard rule: the prepared statement cache is on by default | 框架硬规则：预编译语句缓存默认开启
+		PrepareStmt:            prepareStmt,             // Default on; explicit PrepareStmtSet=false disables it | 默认开启；显式 PrepareStmtSet=false 可关闭
 		SkipDefaultTransaction: o.SkipDefaultTransaction,
 		// Relations are maintained by application code (see CLAUDE.md §26); AutoMigrate must never emit a
 		// foreign key even if a model accidentally declares an association. |

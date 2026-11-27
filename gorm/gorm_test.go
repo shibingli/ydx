@@ -438,3 +438,14 @@ func TestCreateDatabaseSwitchFromConfig(t *testing.T) {
 		})
 	}
 }
+
+// TestOpenSQLiteWithPrepareStmtDisabled verifies an explicit
+// db.prepare_stmt=false disables the prepared statement cache. |
+// TestOpenSQLiteWithPrepareStmtDisabled 验证显式 db.prepare_stmt=false 会关闭预编译
+// 语句缓存。
+func TestOpenSQLiteWithPrepareStmtDisabled(t *testing.T) {
+	db := openProbe(t, gorm.Options{PrepareStmt: false, PrepareStmtSet: true}, newBufLogger(&bytes.Buffer{}))
+	if db.Config.PrepareStmt {
+		t.Fatal("explicit PrepareStmt=false was ignored")
+	}
+}
