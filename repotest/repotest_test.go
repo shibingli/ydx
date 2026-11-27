@@ -348,8 +348,11 @@ func TestNoFmtErrorfOutsideErrs(t *testing.T) {
 	}
 }
 
-// TestNoDirectPanic forbids panic except for the recover rethrow inside a function literal.
-// | TestNoDirectPanic 禁止直接 panic，唯一例外是函数字面量内 recover 之后的重新抛出。
+// TestNoDirectPanic forbids panic except for the recover rethrow inside a function literal
+// and the net/http-sanctioned panic(http.ErrAbortHandler) used to abort a response whose
+// headers were already sent. | TestNoDirectPanic 禁止直接 panic，例外是函数字面量内 recover
+// 之后的重新抛出，以及 net/http 认可的 panic(http.ErrAbortHandler)——用于中止已发送响应头的
+// 响应。
 func TestNoDirectPanic(t *testing.T) {
 	root := repositoryRoot(t)
 	fset := token.NewFileSet()
@@ -374,7 +377,12 @@ func TestNoDirectPanic(t *testing.T) {
 				if !ok || ident.Name != "panic" || allowed {
 					return
 				}
-				t.Errorf("%s calls panic outside a recover rethrow or a Must constructor | 仅允许 recover 块内重新抛出 panic 或 Must 构造器", rel)
+				if len(call.Args) == 1 {
+					if sel, ok := call.Args[0].(*ast.SelectorExpr); ok && sel.Sel.Name == "ErrAbortHandler" {
+						return
+					}
+				}
+				t.Errorf("%s calls panic outside a recover rethrow, ErrAbortHandler or a Must constructor | 仅允许 recover 块内重新抛出 panic、ErrAbortHandler 或 Must 构造器", rel)
 			})
 		}
 	}
