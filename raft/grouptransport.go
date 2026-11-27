@@ -16,16 +16,80 @@ type groupMux struct {
 	base     Transport
 	handlers map[GroupID]func(Message)
 	snapshot atomic.Pointer[map[GroupID]func(Message)]
-	mu       sync.Mutex
+	// refs records which groups still reference a peer address. The base
+	// transport is host-scoped, so a peer is removed only after every group that
+	// installed it has released it. | refs 记录仍引用某个对端地址的组。基础传输按
+	// 主机共享，因此只有所有安装过该地址的组都释放后才移除对端。
+	refs map[NodeID]map[GroupID]struct{}
+	mu   sync.Mutex
 }
 
 // newGroupMux wraps a base transport. The caller must start base with dispatch as
 // its inbound handler. | newGroupMux 包装基础传输。调用方必须以 dispatch 作为入站
 // 处理器启动 base。
 func newGroupMux(base Transport) *groupMux {
-	m := &groupMux{base: base, handlers: make(map[GroupID]func(Message))}
+	m := &groupMux{
+		base: base, handlers: make(map[GroupID]func(Message)),
+		refs: make(map[NodeID]map[GroupID]struct{}),
+	}
 	m.publishLocked()
 	return m
+}
+
+// updatePeer installs an address for one group and records its reference. |
+// updatePeer 为一个组安装地址并记录引用。
+func (m *groupMux) updatePeer(group GroupID, id NodeID, addr string) {
+	if id == 0 || addr == "" {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	groups := m.refs[id]
+	if groups == nil {
+		groups = make(map[GroupID]struct{}, 2)
+		m.refs[id] = groups
+	}
+	groups[group] = struct{}{}
+	m.base.UpdatePeer(id, addr)
+}
+
+// removePeer releases one group's reference and removes the base peer only when
+// no other group still uses it. | removePeer 释放一个组的引用；仅当没有其它组
+// 仍使用该对端时才从基础传输移除。
+func (m *groupMux) removePeer(group GroupID, id NodeID) {
+	if id == 0 {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	groups := m.refs[id]
+	if groups == nil {
+		return
+	}
+	delete(groups, group)
+	if len(groups) > 0 {
+		return
+	}
+	delete(m.refs, id)
+	if remover, ok := m.base.(PeerRemover); ok {
+		remover.RemovePeer(id)
+	}
+}
+
+// releaseGroupLocked drops every peer reference held by a stopped group. The
+// caller must hold m.mu. | releaseGroupLocked 释放一个已停止组持有的全部对端引用；
+// 调用方必须持有 m.mu。
+func (m *groupMux) releaseGroupLocked(group GroupID) {
+	for id, groups := range m.refs {
+		delete(groups, group)
+		if len(groups) > 0 {
+			continue
+		}
+		delete(m.refs, id)
+		if remover, ok := m.base.(PeerRemover); ok {
+			remover.RemovePeer(id)
+		}
+	}
 }
 
 // publishLocked publishes an immutable copy of the handler map. | publishLocked
@@ -68,6 +132,7 @@ func (m *groupMux) register(id GroupID, handler func(Message)) error {
 func (m *groupMux) unregister(id GroupID) {
 	m.mu.Lock()
 	delete(m.handlers, id)
+	m.releaseGroupLocked(id)
 	m.publishLocked()
 	m.mu.Unlock()
 }
@@ -106,18 +171,19 @@ func (t *GroupTransport) SendImmediate() bool {
 	return false
 }
 
-// UpdatePeer implements Transport. Addresses are shared by all groups. | UpdatePeer
-// 实现 Transport。地址由所有组共享。
+// UpdatePeer implements Transport. Addresses are shared by all groups and
+// reference-counted so one group's membership change cannot remove a host that
+// another group still uses. | UpdatePeer 实现 Transport。地址由所有组共享，并按
+// 引用计数管理，避免一个组的成员变更移除其它组仍在使用的对端。
 func (t *GroupTransport) UpdatePeer(id NodeID, addr string) {
-	t.mux.base.UpdatePeer(id, addr)
+	t.mux.updatePeer(t.group, id, addr)
 }
 
-// RemovePeer implements PeerRemover by forwarding to the shared base transport.
-// | RemovePeer 通过共享基础传输实现 PeerRemover。
+// RemovePeer implements PeerRemover. The shared base peer is removed only after
+// every group releases it. | RemovePeer 实现 PeerRemover。只有所有组都释放后，
+// 才从共享基础传输移除对端。
 func (t *GroupTransport) RemovePeer(id NodeID) {
-	if remover, ok := t.mux.base.(PeerRemover); ok {
-		remover.RemovePeer(id)
-	}
+	t.mux.removePeer(t.group, id)
 }
 
 // PeerAddress implements PeerDirectory by forwarding to the shared base

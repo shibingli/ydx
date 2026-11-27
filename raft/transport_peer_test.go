@@ -222,3 +222,35 @@ func TestStreamTransportMaxConns(t *testing.T) {
 		}
 	}
 }
+
+// TestGroupMuxPeerRefcount verifies a shared base peer survives until every
+// group releases it. | TestGroupMuxPeerRefcount 验证共享基础对端在所有组释放前
+// 保持存在。
+func TestGroupMuxPeerRefcount(t *testing.T) {
+	base := &recordingTransport{peers: make(map[NodeID]string)}
+	mux := newGroupMux(base)
+	g1 := &GroupTransport{mux: mux, group: 1}
+	g2 := &GroupTransport{mux: mux, group: 2}
+	g1.UpdatePeer(2, "addr:2")
+	g2.UpdatePeer(2, "addr:2")
+	g1.RemovePeer(2)
+	if got := base.addr(2); got != "addr:2" {
+		t.Fatalf("peer removed while group 2 still uses it: %q", got)
+	}
+	g2.RemovePeer(2)
+	if got := base.addr(2); got != "" {
+		t.Fatalf("peer survived the last release: %q", got)
+	}
+	// Closing one group releases its references; the other group's survive. |
+	// 关闭一个组会释放其引用；其它组的引用保留。
+	g1.UpdatePeer(3, "addr:3")
+	g2.UpdatePeer(3, "addr:3")
+	mux.unregister(1)
+	if got := base.addr(3); got != "addr:3" {
+		t.Fatalf("group 1 unregister removed a shared peer: %q", got)
+	}
+	mux.unregister(2)
+	if got := base.addr(3); got != "" {
+		t.Fatalf("peer survived the last group unregister: %q", got)
+	}
+}
