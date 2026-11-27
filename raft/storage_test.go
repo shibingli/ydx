@@ -524,3 +524,51 @@ func TestFileStorageWritesSnapshotFromStagedFile(t *testing.T) {
 		t.Fatalf("recovered snapshot = %+v", rec.Snapshot)
 	}
 }
+
+// TestFileStorageWritesEncryptedSnapshotFromStagedFile verifies the staged
+// payload goes through the encrypted snapshot writer and decrypts on reload. |
+// TestFileStorageWritesEncryptedSnapshotFromStagedFile 验证暂存负载经过加密快照
+// 写入器，并在重新加载时解密。
+func TestFileStorageWritesEncryptedSnapshotFromStagedFile(t *testing.T) {
+	dir := t.TempDir()
+	opts := testStorageOptions(dir, EncryptionAES256GCM, EncryptSnapshots)
+	st, err := NewFileStorage(opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload := []byte("encrypted=staged\n")
+	staged, err := os.CreateTemp(t.TempDir(), "payload-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := staged.Write(payload); err != nil {
+		t.Fatal(err)
+	}
+	if err := staged.Close(); err != nil {
+		t.Fatal(err)
+	}
+	snap := &Snapshot{
+		Index: 9, Term: 4, ConfState: ConfState{Voters: []NodeID{1}},
+		file: staged.Name(), dataSize: int64(len(payload)),
+	}
+	if err := st.Persist(PersistBatch{
+		HardState: &HardState{Term: 4}, Snapshot: snap, SnapshotReplacesLog: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatal(err)
+	}
+	st2, err := NewFileStorage(opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st2.Close()
+	rec, err := st2.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec.Snapshot == nil || !bytes.Equal(rec.Snapshot.Data, payload) {
+		t.Fatalf("recovered encrypted snapshot = %+v", rec.Snapshot)
+	}
+}
