@@ -81,7 +81,11 @@ type Options struct {
 
 // Config is the handle of the layered configuration engine. | Config 是分层配置引擎的句柄。
 //
-// It embeds *viper.Viper, so read APIs such as Get/GetInt/GetString/Set are directly available; | 内嵌 *viper.Viper，因此 Get/GetInt/GetString/Set 等读取 API 直接可用；
+// It embeds *viper.Viper, so read APIs such as Get/GetInt/GetString are directly available;
+// the promoted methods that read maps or time values are shadowed below to take the reload
+// lock. Calling methods directly on the embedded Viper is not safe while Watch is running. |
+// 内嵌 *viper.Viper，因此 Get/GetInt/GetString 等读取 API 直接可用；读取映射或时间值的
+// 提升方法已在本类型上遮蔽并获取重载锁。Watch 运行期间直接调用内嵌 Viper 的方法不安全。
 // this type additionally provides command-line binding, file watching and strongly typed decoding. | 本类型额外提供命令行绑定、文件监视与强类型解码能力。
 type Config struct {
 	fs       afero.Fs
@@ -326,6 +330,89 @@ func (c *Config) Unmarshal(raw any) error {
 		return errs.Wrap(err, ErrUnmarshal)
 	}
 	return nil
+}
+
+// GetStringMap returns the map value of key under the reload lock. |
+// GetStringMap 在重载锁保护下返回 key 的映射取值。
+func (c *Config) GetStringMap(key string) map[string]any {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.Viper.GetStringMap(key)
+}
+
+// GetStringMapStringSlice returns the nested string-map value of key. |
+// GetStringMapStringSlice 返回 key 的嵌套字符串映射取值。
+func (c *Config) GetStringMapStringSlice(key string) map[string][]string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.Viper.GetStringMapStringSlice(key)
+}
+
+// GetTime returns the time value of key. | GetTime 返回 key 的时间取值。
+func (c *Config) GetTime(key string) time.Time {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.Viper.GetTime(key)
+}
+
+// GetUint returns the uint value of key. | GetUint 返回 key 的 uint 取值。
+func (c *Config) GetUint(key string) uint {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.Viper.GetUint(key)
+}
+
+// GetUint32 returns the uint32 value of key. | GetUint32 返回 key 的 uint32 取值。
+func (c *Config) GetUint32(key string) uint32 {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.Viper.GetUint32(key)
+}
+
+// GetUint64 returns the uint64 value of key. | GetUint64 返回 key 的 uint64 取值。
+func (c *Config) GetUint64(key string) uint64 {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.Viper.GetUint64(key)
+}
+
+// GetInt32 returns the int32 value of key. | GetInt32 返回 key 的 int32 取值。
+func (c *Config) GetInt32(key string) int32 {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.Viper.GetInt32(key)
+}
+
+// GetIntSlice returns the int-slice value of key. | GetIntSlice 返回 key 的整数切片取值。
+func (c *Config) GetIntSlice(key string) []int {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.Viper.GetIntSlice(key)
+}
+
+// GetSizeInBytes returns the byte-size value of key. | GetSizeInBytes 返回 key 的字节大小取值。
+func (c *Config) GetSizeInBytes(key string) uint {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.Viper.GetSizeInBytes(key)
+}
+
+// UnmarshalKey decodes one key into rawVal under the reload lock. |
+// UnmarshalKey 在重载锁保护下把单个键解码到 rawVal。
+func (c *Config) UnmarshalKey(key string, rawVal any, opts ...viper.DecoderConfigOption) error {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if err := c.Viper.UnmarshalKey(key, rawVal, opts...); err != nil {
+		return errs.Wrap(err, ErrUnmarshal)
+	}
+	return nil
+}
+
+// Set writes one key under the reload lock. | Set 在重载锁保护下写入单个键。
+func (c *Config) Set(key string, value any) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.Viper.Set(key, value)
 }
 
 // Sub returns a sub-tree of the configuration. | Sub 返回配置的一棵子树。
