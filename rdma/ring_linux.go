@@ -29,6 +29,7 @@ type Ring struct {
 	remote RingInfo
 
 	writeMu     sync.Mutex
+	sendMu      sync.Mutex
 	mu          sync.Mutex
 	outstanding map[int]uint32
 	ackCh       chan uint32
@@ -271,6 +272,11 @@ func (r *Ring) WriteWithImm(ctx context.Context, data []byte, imm uint32) (uint3
 	if len(data)+8 > r.cfg.SlotSize {
 		return 0, ErrMessageTooLarge
 	}
+	// A Ring shares one send queue and WR scratch arrays; concurrent senders
+	// must not race on them or consume each other's completions. | Ring 共享一个
+	// 发送队列与 WR 暂存数组；并发发送方不得竞争它们或消费彼此的完成事件。
+	r.sendMu.Lock()
+	defer r.sendMu.Unlock()
 	slot, err := r.reserveSlot(ctx)
 	if err != nil {
 		return 0, err
@@ -280,6 +286,13 @@ func (r *Ring) WriteWithImm(ctx context.Context, data []byte, imm uint32) (uint3
 		return 0, ErrRingProtocol
 	}
 	seq := r.seq.Add(1)
+	// Publish the sequence before posting: the receiver may ACK as soon as the
+	// RDMA write lands, and ackLoop must find the slot instead of dropping it. |
+	// 在提交前发布序号：RDMA 写落地后接收方可能立即 ACK，ackLoop 必须能找到槽位，
+	// 而不是丢弃 ACK。
+	r.mu.Lock()
+	r.outstanding[slot] = seq
+	r.mu.Unlock()
 	body := r.mr.Bytes()[slot*r.cfg.SlotSize:]
 	binary.BigEndian.PutUint32(body[0:4], seq)
 	binary.BigEndian.PutUint32(body[4:8], uint32(len(data)))
@@ -287,20 +300,33 @@ func (r *Ring) WriteWithImm(ctx context.Context, data []byte, imm uint32) (uint3
 	wr := SendWR{WRID: 1, Addr: r.mr.Addr() + uintptr(slot*r.cfg.SlotSize), Length: uint32(8 + len(data)), LKey: r.mr.LKey(),
 		RemoteAddr: r.remote.Addr + uint64(slot*r.cfg.SlotSize), RKey: r.remote.RKey, Opcode: OpRDMAWriteWithImm, Flags: SendSignaled, Imm: imm}
 	if n, err := r.qp.PostSend([]SendWR{wr}); err != nil || n != 1 {
-		r.releaseSlot(slot)
+		// The provider may have accepted part of the WR; reusing the slot could
+		// overwrite a buffer the NIC still reads. Fail the ring closed. | 提供方可能
+		// 已接受部分 WR；复用槽位可能覆盖网卡仍在读取的缓冲。失败关闭 Ring。
+		r.failRing()
 		if err != nil {
 			return 0, err
 		}
 		return 0, ErrDevice
 	}
 	if err := r.waitSend(ctx); err != nil {
-		r.releaseSlot(slot)
+		// The WR may still be in flight; never return the slot to the allocator. |
+		// WR 可能仍在途；绝不把槽位归还分配器。
+		r.failRing()
 		return 0, err
 	}
-	r.mu.Lock()
-	r.outstanding[slot] = seq
-	r.mu.Unlock()
 	return seq, nil
+}
+
+// failRing marks a ring unusable after an ambiguous send failure and wakes
+// waiters by closing the control connection. | failRing 在发送失败状态不明后标记
+// Ring 不可用，并关闭控制连接唤醒等待者。
+func (r *Ring) failRing() {
+	if r.closed.CompareAndSwap(false, true) {
+		if r.conn != nil {
+			_ = r.conn.Close()
+		}
+	}
 }
 
 func (r *Ring) reserveSlot(ctx context.Context) (int, error) {

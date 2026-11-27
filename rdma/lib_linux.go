@@ -332,7 +332,7 @@ func (v *verbsAPI) qpCap(qp *ibvQP) (int, int, int) {
 	var attr ibvQPAttr
 	var init ibvQPInitAttr
 	r, _, _ := purego.SyscallN(v.queryQP, uintptr(unsafe.Pointer(qp)),
-		uintptr(unsafe.Pointer(&attr)), 0, uintptr(unsafe.Pointer(&init)))
+		uintptr(unsafe.Pointer(&attr)), uintptr(QPAttrCap), uintptr(unsafe.Pointer(&init)))
 	if int(int32(r)) != 0 {
 		return 0, 0, int(int32(r))
 	}
