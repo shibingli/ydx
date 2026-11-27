@@ -32,12 +32,13 @@ var (
 	ErrCacheWriteFailed = errs.New("redis: cache write failed | redis：缓存写入失败")
 )
 
-// negativePayload is the marker stored for a value that does not exist. | negativePayload 是「值不存在」时存储的标记。
-//
-// JSON null is chosen on purpose: it stays a plain JSON document, so a payload written | 刻意选用 JSON null：它仍是一份普通 JSON 文档，
-// by Set remains decodable by json.Unmarshal, while being distinguishable from any | 因此 Set 写入的载荷依然可被 json.Unmarshal 解析；
-// real value of a comparable T. | 同时又能与 T 的任何真实取值区分开。
-const negativePayload = "null"
+// negativePayload is the marker stored for a value that does not exist. It
+// starts with NUL, which can never begin a JSON document produced by
+// json.Marshal, so a legitimate nil value encoded as "null" is not mistaken for
+// a negative entry. | negativePayload 是「值不存在」时存储的标记。它以 NUL 开头，
+// json.Marshal 产生的合法 JSON 文档永远不会这样开头，因此编码为 "null" 的真实 nil
+// 值不会被误判为负缓存。
+const negativePayload = "\x00ydx-cache-negative"
 
 // loadManyBatch is the number of keys read per pipeline round trip in LoadMany. | loadManyBatch 是 LoadMany 每次流水线往返读取的键数量。
 //

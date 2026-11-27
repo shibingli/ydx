@@ -192,7 +192,7 @@ func (r *Raw) loadShared(ctx context.Context, key string, ttl time.Duration, loa
 		if loadErr != nil {
 			r.stats.loadErrors.Add(1)
 			if errors.Is(loadErr, ErrNotFound) && r.negativeTTL > 0 {
-				if werr := r.storeNegative(loadCtx, key); werr != nil {
+				if werr := r.storeNegative(loadCtx, key, version); werr != nil {
 					return nil, errors.Join(loadErr, werr)
 				}
 			}
@@ -247,18 +247,29 @@ func (r *Raw) storeLoaded(ctx context.Context, key string, value []byte, ttl tim
 }
 
 // storeNegative writes a negative entry when negative caching is enabled. | storeNegative 在启用负缓存时写入负缓存条目。
-func (r *Raw) storeNegative(ctx context.Context, key string) error {
+func (r *Raw) storeNegative(ctx context.Context, key string, expect uint64) error {
 	if r.negativeTTL <= 0 {
 		return nil
 	}
 	full := r.full(key)
 	var version uint64
 	if r.manager.remote != nil {
-		v, err := r.manager.remote.Store(ctx, full, nil, FlagNegative, r.negativeTTL)
+		v, stored, err := r.manager.remote.StoreIf(ctx, full, nil, FlagNegative, r.negativeTTL, expect)
 		if err != nil {
 			return errs.Wrap(err, ErrRemote)
 		}
+		if !stored {
+			// A positive write won the race; do not replace it with a negative. |
+			// 正向写入赢得竞争；不得用过期的负缓存覆盖它。
+			r.stats.casLost.Add(1)
+			return nil
+		}
 		version = v
+	} else if _, ok := r.manager.local.Get(full); ok {
+		// Without L2 versions, an existing L1 value proves a concurrent write. |
+		// 无 L2 版本时，已存在的 L1 值证明有并发写入。
+		r.stats.casLost.Add(1)
+		return nil
 	}
 	return r.setLocal(key, nil, version, FlagNegative, r.negativeTTL)
 }
