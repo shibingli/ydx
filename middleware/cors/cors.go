@@ -107,9 +107,11 @@ func matchOrigin(origin string, patterns []originPattern, credentials bool) (boo
 		}
 		switch {
 		case p.any:
-			// Wildcards may never be combined with credentials. | 通配绝不可与凭证同时使用。
+			// Wildcards may never be combined with credentials; fail closed instead
+			// of turning a wildcard policy into credentialed any-origin access. |
+			// 通配绝不可与凭证同时使用；此处失败关闭，避免通配策略变成带凭证的任意来源访问。
 			if credentials {
-				return true, origin
+				return false, ""
 			}
 			return true, "*"
 		case strings.HasPrefix(p.host, "."):
@@ -183,7 +185,9 @@ func (p *corsPolicy) decide(origin string) (bool, string) {
 	// 与下方严格解析器保持一致。
 	if i := strings.Index(origin, "://"); p.hasAny && i > 0 && i+3 < len(origin) {
 		if p.credentials {
-			return true, origin
+			// Fail closed: a wildcard policy cannot be combined with credentials. |
+			// 失败关闭：通配策略不得与凭证组合。
+			return false, ""
 		}
 		return true, "*"
 	}

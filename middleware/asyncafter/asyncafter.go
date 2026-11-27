@@ -441,7 +441,26 @@ func AccessLogAsync(l *log.Logger, a *AsyncAfter, opts ...AccessLogOptions) rout
 	}
 	return func(c *router.Ctx) {
 		if reqlog.IsUpgradeRequest(c.Request) {
+			// Keep the writer unwrapped so http.Hijacker survives the handshake, but
+			// still submit an audit record; otherwise any request with an Upgrade
+			// header would vanish from the async access log. | 保持写入器未包装以保留
+			// http.Hijacker，但仍提交审计记录；否则任何携带 Upgrade 头的请求都会从
+			// 异步访问日志中消失。
+			start := time.Now()
 			c.Next()
+			status := c.StatusCode()
+			if status == 0 {
+				status = http.StatusSwitchingProtocols
+			}
+			a.Submit(Record{
+				ID:       requestid.FromContext(c),
+				Method:   c.Request.Method,
+				Path:     c.Request.URL.Path,
+				RemoteIP: c.ClientIP(trusted),
+				UA:       c.Request.UserAgent(),
+				Status:   status,
+				Duration: time.Since(start),
+			})
 			return
 		}
 		start := time.Now()

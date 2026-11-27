@@ -647,9 +647,9 @@ func TestAccessLogAsyncNilPipelineFallsBackToSync(t *testing.T) {
 }
 
 // TestAccessLogAsyncSkipsUpgradeRequests keeps the WebSocket contract of AccessLog: an upgrade
-// request is neither wrapped nor recorded. | TestAccessLogAsyncSkipsUpgradeRequests 保持 AccessLog
-// 的 WebSocket 契约：升级请求既不包装也不记录。
-func TestAccessLogAsyncSkipsUpgradeRequests(t *testing.T) {
+// request keeps http.Hijacker but still produces an audit record. |
+// TestAccessLogAsyncRecordsUpgradeRequests 保持升级请求的 http.Hijacker，同时仍产生审计记录。
+func TestAccessLogAsyncRecordsUpgradeRequests(t *testing.T) {
 	var handled atomic.Int64
 	a := NewAsyncAfter(AsyncOptions{
 		Workers: 1,
@@ -673,7 +673,7 @@ func TestAccessLogAsyncSkipsUpgradeRequests(t *testing.T) {
 	if err := a.Close(context.Background()); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
-	if got := handled.Load(); got != 0 {
-		t.Fatalf("handled = %d, want 0 for upgrade requests", got)
+	if got := handled.Load(); got != 1 {
+		t.Fatalf("handled = %d, want 1 for upgrade requests", got)
 	}
 }

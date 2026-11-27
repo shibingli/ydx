@@ -74,14 +74,14 @@ func TestCORSOriginParsingFastPath(t *testing.T) {
 }
 
 func TestCORSCredentialsNeverStar(t *testing.T) {
-	t.Run("通配来源加凭证时回显具体来源", func(t *testing.T) {
+	t.Run("通配来源加凭证时失败关闭", func(t *testing.T) {
 		r := corsRouter(CORSOptions{AllowOrigins: []string{"*"}, AllowCredentials: true})
 		rec := doReq(r, http.MethodGet, "/api", map[string]string{"Origin": "https://app.yd.dev"}, "")
-		if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "https://app.yd.dev" {
-			t.Fatalf("Allow-Origin = %q, 期望回显 https://app.yd.dev", got)
+		if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "" {
+			t.Fatalf("Allow-Origin = %q, 通配加凭证必须失败关闭", got)
 		}
-		if got := rec.Header().Get("Access-Control-Allow-Credentials"); got != "true" {
-			t.Fatalf("Allow-Credentials = %q, 期望 true", got)
+		if got := rec.Header().Get("Access-Control-Allow-Credentials"); got != "" {
+			t.Fatalf("Allow-Credentials = %q, 通配加凭证必须失败关闭", got)
 		}
 	})
 
