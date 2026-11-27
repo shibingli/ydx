@@ -191,7 +191,9 @@ func (s *Stream) open(ctx context.Context) error {
 			req.Body = body
 			req.ContentLength = template.ContentLength
 		}
-		if s.lastID != "" {
+		if s.lastID != "" && !suppressInjected {
+			// Never re-add the resume id after a cross-origin hop stripped it. |
+			// 跨源跳转移除 Last-Event-ID 后不得再次注入。
 			req.Header.Set("Last-Event-ID", s.lastID)
 		}
 		req = req.WithContext(context.WithValue(req.Context(), streamRequestKey{}, true))

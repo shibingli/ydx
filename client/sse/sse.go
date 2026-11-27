@@ -46,6 +46,7 @@ type Subscription struct {
 	closeOnce sync.Once
 	mu        sync.RWMutex
 	wg        sync.WaitGroup
+	closing   bool
 	closed    bool
 }
 
@@ -86,15 +87,16 @@ func (f *Fanout) Add(w http.ResponseWriter, opts ...ydxsse.Options) (*Subscripti
 		timeout:  f.opts.WriteTimeout,
 		queue:    make(chan client.Event, f.opts.Queue),
 	}
+	sub.wg.Add(1)
 	f.mu.Lock()
 	if f.closed {
 		f.mu.Unlock()
+		sub.wg.Done()
 		_ = writer.Close()
 		return nil, ErrClosed
 	}
 	f.subs[sub] = struct{}{}
 	f.mu.Unlock()
-	sub.wg.Add(1)
 	go sub.run()
 	return sub, nil
 }
@@ -190,7 +192,13 @@ func (s *Subscription) run() {
 	defer s.wg.Done()
 	defer func() { _ = s.writer.Close() }()
 	for event := range s.queue {
-		if s.response != nil && s.timeout > 0 {
+		s.mu.RLock()
+		closing := s.closing
+		s.mu.RUnlock()
+		if s.response != nil && s.timeout > 0 && !closing {
+			// After Close, keep the short deadline it installed so a stalled
+			// subscriber cannot block wg.Wait forever. | Close 之后保留其设置的短期限，
+			// 避免停滞订阅者永久阻塞 wg.Wait。
 			_ = http.NewResponseController(s.response).SetWriteDeadline(time.Now().Add(s.timeout))
 		}
 		err := s.writer.WriteEvent(ydxsse.Event{
@@ -217,6 +225,7 @@ func (s *Subscription) Close() error {
 			_ = http.NewResponseController(s.response).SetWriteDeadline(time.Now())
 		}
 		s.mu.Lock()
+		s.closing = true
 		s.closed = true
 		close(s.queue)
 		s.mu.Unlock()

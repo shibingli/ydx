@@ -14,6 +14,12 @@ import (
 	"github.com/shibingli/ydx/errs"
 )
 
+// errCoalesceLeaderPanic is reported to followers when the coalesced leader
+// panics; the panic is re-raised to the leader's caller. |
+// errCoalesceLeaderPanic 在合并请求领头者 panic 时报告给跟随者；panic 会重新抛给
+// 领头者的调用方。
+var errCoalesceLeaderPanic = errs.New("client: coalesced leader panic | client：合并请求领头者 panic")
+
 // CoalescePolicy configures concurrent request merging. | CoalescePolicy 配置并发请求合并。
 type CoalescePolicy struct {
 	// Methods lists mergeable methods; nil means GET/HEAD. | Methods 列出可合并方法；nil 表示 GET/HEAD。
@@ -110,6 +116,24 @@ func (g *flightGroup) Do(ctx context.Context, key string, leader func() (*http.R
 	current := &flight{done: make(chan struct{})}
 	shard.flights[key] = current
 	shard.mu.Unlock()
+	// Complete the flight on every path, including a leader panic, so waiters
+	// are never parked on a done channel that is never closed and the key is not
+	// permanently blackholed. | 任何路径都必须完成在途请求，包括领头者 panic，避免
+	// 等待者永远阻塞在该 key 上。
+	defer func() {
+		if r := recover(); r != nil {
+			current.err = errCoalesceLeaderPanic
+			close(current.done)
+			shard.mu.Lock()
+			delete(shard.flights, key)
+			shard.mu.Unlock()
+			panic(r)
+		}
+		close(current.done)
+		shard.mu.Lock()
+		delete(shard.flights, key)
+		shard.mu.Unlock()
+	}()
 
 	resp, body, shareable, err := leader()
 	current.body = body
@@ -133,10 +157,6 @@ func (g *flightGroup) Do(ctx context.Context, key string, leader func() (*http.R
 	case !shareable:
 		current.bypass = true
 	}
-	close(current.done)
-	shard.mu.Lock()
-	delete(shard.flights, key)
-	shard.mu.Unlock()
 	return resp, body, false, err
 }
 

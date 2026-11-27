@@ -413,7 +413,14 @@ func (c *Client) writeForwardResponse(w http.ResponseWriter, r *http.Request, re
 	if cfg.MaxBodyBytes > 0 {
 		body = io.LimitReader(body, cfg.MaxBodyBytes)
 	}
-	_, _ = io.CopyBuffer(dst, body, buffer)
+	if _, err := io.CopyBuffer(dst, body, buffer); err != nil {
+		// Headers and part of the body are already on the wire. Aborting the
+		// handler makes net/http close the connection so the downstream sees a
+		// truncated transfer instead of a valid but short response. | 头部与部分
+		// 正文已经写出。中止处理器会让 net/http 关闭连接，下游看到截断传输，而不是
+		// 一个看似完整但内容变短的响应。
+		panic(http.ErrAbortHandler)
+	}
 	unannounced := false
 	for key, values := range resp.Trailer {
 		if announced[key] {
