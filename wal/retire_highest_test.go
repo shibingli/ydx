@@ -63,7 +63,7 @@ func TestRetiredHighestSequenceIsNotActivated(t *testing.T) {
 	if err := m.close(); err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"META", "META.mirror", "RECOVERY"} {
+	for _, name := range []string{metaFileName, metaMirrorName, recoveryFileName} {
 		_ = os.Remove(filepath.Join(dir, name))
 	}
 

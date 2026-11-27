@@ -41,9 +41,9 @@ func TestMetaRebuildMatrix(t *testing.T) {
 
 	t.Run("no meta and no manifest is corrupt with auto repair off", func(t *testing.T) {
 		dir := copyWALDirForTest(t, src)
-		_ = os.Remove(filepath.Join(dir, "META"))
-		_ = os.Remove(filepath.Join(dir, "META.mirror"))
-		_ = os.RemoveAll(filepath.Join(dir, "manifest"))
+		_ = os.Remove(filepath.Join(dir, metaFileName))
+		_ = os.Remove(filepath.Join(dir, metaMirrorName))
+		_ = os.RemoveAll(filepath.Join(dir, manifestDirName))
 		_ = os.Remove(anchorPath(dir))
 		if _, err := Open(dir, WithAutoRepair(false)); !errors.Is(err, ErrCorrupt) {
 			t.Fatalf("Open err = %v, want ErrCorrupt", err)
@@ -53,8 +53,8 @@ func TestMetaRebuildMatrix(t *testing.T) {
 	t.Run("no meta and no manifest self heals", func(t *testing.T) {
 		dir := copyWALDirForTest(t, src)
 		for _, path := range []string{
-			filepath.Join(dir, "META"), filepath.Join(dir, "META.mirror"),
-			filepath.Join(dir, "RECOVERY"), filepath.Join(dir, "manifest"),
+			filepath.Join(dir, metaFileName), filepath.Join(dir, metaMirrorName),
+			filepath.Join(dir, recoveryFileName), filepath.Join(dir, manifestDirName),
 		} {
 			_ = os.RemoveAll(path)
 		}
@@ -86,9 +86,9 @@ func TestMetaRebuildMatrix(t *testing.T) {
 
 	t.Run("anchor survives meta and manifest loss", func(t *testing.T) {
 		dir := copyWALDirForTest(t, src)
-		_ = os.Remove(filepath.Join(dir, "META"))
-		_ = os.Remove(filepath.Join(dir, "META.mirror"))
-		_ = os.RemoveAll(filepath.Join(dir, "manifest"))
+		_ = os.Remove(filepath.Join(dir, metaFileName))
+		_ = os.Remove(filepath.Join(dir, metaMirrorName))
+		_ = os.RemoveAll(filepath.Join(dir, manifestDirName))
 		w, err := Open(dir)
 		if err != nil {
 			t.Fatalf("Open: %v", err)
@@ -106,8 +106,8 @@ func TestMetaRebuildMatrix(t *testing.T) {
 
 	t.Run("no meta with manifest rebuilds", func(t *testing.T) {
 		dir := copyWALDirForTest(t, src)
-		_ = os.Remove(filepath.Join(dir, "META"))
-		_ = os.Remove(filepath.Join(dir, "META.mirror"))
+		_ = os.Remove(filepath.Join(dir, metaFileName))
+		_ = os.Remove(filepath.Join(dir, metaMirrorName))
 		_ = os.Remove(anchorPath(dir))
 		w, err := Open(dir)
 		if err != nil {
@@ -124,7 +124,7 @@ func TestMetaRebuildMatrix(t *testing.T) {
 
 	t.Run("invalid meta slots with manifest rebuild", func(t *testing.T) {
 		dir := copyWALDirForTest(t, src)
-		for _, name := range []string{"META", "META.mirror"} {
+		for _, name := range []string{metaFileName, metaMirrorName} {
 			if err := os.WriteFile(filepath.Join(dir, name), bytes.Repeat([]byte{0xFF}, metaFileSize), 0o600); err != nil {
 				t.Fatal(err)
 			}
@@ -144,12 +144,12 @@ func TestMetaRebuildMatrix(t *testing.T) {
 
 	t.Run("invalid meta slots and missing manifest is corrupt with auto repair off", func(t *testing.T) {
 		dir := copyWALDirForTest(t, src)
-		for _, name := range []string{"META", "META.mirror"} {
+		for _, name := range []string{metaFileName, metaMirrorName} {
 			if err := os.WriteFile(filepath.Join(dir, name), bytes.Repeat([]byte{0xFF}, metaFileSize), 0o600); err != nil {
 				t.Fatal(err)
 			}
 		}
-		_ = os.RemoveAll(filepath.Join(dir, "manifest"))
+		_ = os.RemoveAll(filepath.Join(dir, manifestDirName))
 		_ = os.Remove(anchorPath(dir))
 		if _, err := Open(dir, WithAutoRepair(false)); !errors.Is(err, ErrCorrupt) {
 			t.Fatalf("Open err = %v, want ErrCorrupt", err)
@@ -158,12 +158,12 @@ func TestMetaRebuildMatrix(t *testing.T) {
 
 	t.Run("invalid meta slots and missing manifest self heals", func(t *testing.T) {
 		dir := copyWALDirForTest(t, src)
-		for _, name := range []string{"META", "META.mirror"} {
+		for _, name := range []string{metaFileName, metaMirrorName} {
 			if err := os.WriteFile(filepath.Join(dir, name), bytes.Repeat([]byte{0xFF}, metaFileSize), 0o600); err != nil {
 				t.Fatal(err)
 			}
 		}
-		_ = os.RemoveAll(filepath.Join(dir, "manifest"))
+		_ = os.RemoveAll(filepath.Join(dir, manifestDirName))
 		_ = os.Remove(anchorPath(dir))
 		w, err := Open(dir)
 		if err != nil {
@@ -179,7 +179,7 @@ func TestMetaRebuildMatrix(t *testing.T) {
 
 	t.Run("torn manifest tail is truncated", func(t *testing.T) {
 		dir := copyWALDirForTest(t, src)
-		shards, err := filepath.Glob(filepath.Join(dir, "manifest", "*.mf"))
+		shards, err := filepath.Glob(filepath.Join(dir, manifestDirName, "*.mf"))
 		if err != nil || len(shards) == 0 {
 			t.Fatalf("manifest shards: %v", err)
 		}
@@ -228,7 +228,7 @@ func TestMetaRebuildMatrix(t *testing.T) {
 		if err := w.Close(); err != nil {
 			t.Fatal(err)
 		}
-		shards, err := filepath.Glob(filepath.Join(dir, "manifest", "*.mf"))
+		shards, err := filepath.Glob(filepath.Join(dir, manifestDirName, "*.mf"))
 		if err != nil || len(shards) == 0 {
 			t.Fatalf("manifest shards: %v", err)
 		}
@@ -280,7 +280,7 @@ func TestMetaRebuildMatrix(t *testing.T) {
 
 	t.Run("corrupt manifest with valid meta rebuilds", func(t *testing.T) {
 		dir := copyWALDirForTest(t, src)
-		shards, err := filepath.Glob(filepath.Join(dir, "manifest", "*.mf"))
+		shards, err := filepath.Glob(filepath.Join(dir, manifestDirName, "*.mf"))
 		if err != nil || len(shards) == 0 {
 			t.Fatalf("manifest shards: %v", err)
 		}

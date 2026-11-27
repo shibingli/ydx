@@ -217,8 +217,8 @@ func openMetaStore(dir string, fileMode os.FileMode) (*metaStore, error) {
 		dir:      dir,
 		fileMode: fileMode,
 		files: [2]*metaFile{
-			{path: filepath.Join(dir, "META")},
-			{path: filepath.Join(dir, "META.mirror")},
+			{path: filepath.Join(dir, metaFileName)},
+			{path: filepath.Join(dir, metaMirrorName)},
 		},
 	}
 	var records [4]metaSlotRecord

@@ -162,9 +162,9 @@ func TestEncryptionDowngradeRejectedWithoutMeta(t *testing.T) {
 	if err := w.Close(); err != nil {
 		t.Fatal(err)
 	}
-	_ = os.Remove(filepath.Join(dir, "META"))
-	_ = os.Remove(filepath.Join(dir, "META.mirror"))
-	_ = os.RemoveAll(filepath.Join(dir, "manifest"))
+	_ = os.Remove(filepath.Join(dir, metaFileName))
+	_ = os.Remove(filepath.Join(dir, metaMirrorName))
+	_ = os.RemoveAll(filepath.Join(dir, manifestDirName))
 	_ = os.Remove(anchorPath(dir))
 	ring, err := NewKeyRing(1, Key{ID: 1, Suite: SuiteAESGCM, Bytes: bytes.Repeat([]byte{3}, 32)})
 	if err != nil {

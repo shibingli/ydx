@@ -37,7 +37,7 @@ func TestGapFloorAcceptsKnownGapAndRejectsNewLowerGap(t *testing.T) {
 	// Force a directory scan so the gap is visible; a manifest fast-path entry
 	// for a missing file is detected lazily on first read instead. | 强制目录扫描
 	// 让缺口可见；MANIFEST 快速路径中缺失文件改为首次读取时检测。
-	_ = os.RemoveAll(filepath.Join(dir, "manifest"))
+	_ = os.RemoveAll(filepath.Join(dir, manifestDirName))
 	// First loss is explicitly accepted and recorded in META.gapFloor. | 首次
 	// 损失被显式接受并记录到 META.gapFloor。
 	w2, err := Open(dir, WithAllowLSNGaps(true), WithAutoRepair(false))
@@ -58,7 +58,7 @@ func TestGapFloorAcceptsKnownGapAndRejectsNewLowerGap(t *testing.T) {
 	// A new lower-address gap must be rejected when auto repair is opted out. |
 	// 关闭自动修复时，新的更低地址缺口必须拒绝。
 	removeSegmentForTest(t, dir, 2)
-	_ = os.RemoveAll(filepath.Join(dir, "manifest"))
+	_ = os.RemoveAll(filepath.Join(dir, manifestDirName))
 	if _, err := Open(dir, WithAutoRepair(false)); !errors.Is(err, ErrMissingSegment) {
 		t.Fatalf("open with new lower gap err = %v, want ErrMissingSegment", err)
 	}
@@ -85,7 +85,7 @@ func TestNoAutoRepairRejectsUnrecordedGap(t *testing.T) {
 		t.Fatal(err)
 	}
 	removeSegmentForTest(t, dir, 3)
-	_ = os.RemoveAll(filepath.Join(dir, "manifest"))
+	_ = os.RemoveAll(filepath.Join(dir, manifestDirName))
 	_ = os.Remove(anchorPath(dir))
 	if _, err := Open(dir, WithAutoRepair(false)); !errors.Is(err, ErrMissingSegment) {
 		t.Fatalf("Open err = %v, want ErrMissingSegment", err)
@@ -113,7 +113,7 @@ func TestAutoRepairAcceptsNewGap(t *testing.T) {
 		t.Fatal(err)
 	}
 	removeSegmentForTest(t, dir, 3)
-	_ = os.RemoveAll(filepath.Join(dir, "manifest"))
+	_ = os.RemoveAll(filepath.Join(dir, manifestDirName))
 	w2, err := Open(dir)
 	if err != nil {
 		t.Fatalf("auto repair open: %v", err)

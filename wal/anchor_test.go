@@ -30,8 +30,8 @@ func TestManifestDisabledTotalMetadataLossSelfHeals(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, path := range []string{
-		filepath.Join(dir, "META"), filepath.Join(dir, "META.mirror"),
-		filepath.Join(dir, "RECOVERY"), filepath.Join(dir, "manifest"),
+		filepath.Join(dir, metaFileName), filepath.Join(dir, metaMirrorName),
+		filepath.Join(dir, recoveryFileName), filepath.Join(dir, manifestDirName),
 	} {
 		_ = os.RemoveAll(path)
 	}
@@ -107,8 +107,8 @@ func TestAnchorPreservesTruncationBeforeCleaner(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, path := range []string{
-		filepath.Join(copyDir, "META"), filepath.Join(copyDir, "META.mirror"),
-		filepath.Join(copyDir, "manifest"),
+		filepath.Join(copyDir, metaFileName), filepath.Join(copyDir, metaMirrorName),
+		filepath.Join(copyDir, manifestDirName),
 	} {
 		_ = os.RemoveAll(path)
 	}
@@ -159,9 +159,9 @@ func TestCorruptAnchorFallsBackToSegments(t *testing.T) {
 	if err := os.WriteFile(anchorPath(dir), data, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	_ = os.Remove(filepath.Join(dir, "META"))
-	_ = os.Remove(filepath.Join(dir, "META.mirror"))
-	_ = os.RemoveAll(filepath.Join(dir, "manifest"))
+	_ = os.Remove(filepath.Join(dir, metaFileName))
+	_ = os.Remove(filepath.Join(dir, metaMirrorName))
+	_ = os.RemoveAll(filepath.Join(dir, manifestDirName))
 	w2, err := Open(dir)
 	if err != nil {
 		t.Fatalf("Open with corrupt anchor: %v", err)
@@ -261,9 +261,9 @@ func TestV1WALWithoutAnchorUpgrades(t *testing.T) {
 		t.Fatalf("anchor not upgraded: valid=%v err=%v", valid, err)
 	}
 	// Losing META, MANIFEST and the old segments must now heal from the anchor.
-	_ = os.Remove(filepath.Join(dir, "META"))
-	_ = os.Remove(filepath.Join(dir, "META.mirror"))
-	_ = os.RemoveAll(filepath.Join(dir, "manifest"))
+	_ = os.Remove(filepath.Join(dir, metaFileName))
+	_ = os.Remove(filepath.Join(dir, metaMirrorName))
+	_ = os.RemoveAll(filepath.Join(dir, manifestDirName))
 	w3, err := Open(dir)
 	if err != nil {
 		t.Fatalf("anchor recovery after upgrade: %v", err)
@@ -365,7 +365,7 @@ func TestAnchorGapsSurviveReopen(t *testing.T) {
 		t.Fatal(err)
 	}
 	removeSegmentForTest(t, dir, 3)
-	_ = os.RemoveAll(filepath.Join(dir, "manifest"))
+	_ = os.RemoveAll(filepath.Join(dir, manifestDirName))
 	w2, err := Open(dir)
 	if err != nil {
 		t.Fatalf("auto repair: %v", err)

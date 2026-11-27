@@ -13,7 +13,7 @@ import (
 
 func backupSetForTest(t *testing.T, dir string) BackupSet {
 	t.Helper()
-	data, err := os.ReadFile(filepath.Join(dir, "BACKUP.snap"))
+	data, err := os.ReadFile(filepath.Join(dir, backupSnapshotName))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -260,7 +260,7 @@ func TestBackupSnapshotRecordsGaps(t *testing.T) {
 		t.Fatal(err)
 	}
 	removeSegmentForTest(t, src, 3)
-	_ = os.RemoveAll(filepath.Join(src, "manifest"))
+	_ = os.RemoveAll(filepath.Join(src, manifestDirName))
 	w, err = Open(src, WithSegmentMaxBytes(200), WithBackup(DirBackup(backupDir)), WithBackupWorkers(1))
 	if err != nil {
 		t.Fatalf("auto repair: %v", err)

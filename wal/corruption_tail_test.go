@@ -48,7 +48,7 @@ func prepareScanCopy(t *testing.T, src string) string {
 	if err := os.Remove(sidecarPath(dir, 1)); err != nil && !os.IsNotExist(err) {
 		t.Fatal(err)
 	}
-	if err := os.RemoveAll(filepath.Join(dir, "manifest")); err != nil {
+	if err := os.RemoveAll(filepath.Join(dir, manifestDirName)); err != nil {
 		t.Fatal(err)
 	}
 	return dir

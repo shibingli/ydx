@@ -25,7 +25,7 @@ func TestMetaV1UpgradesToV2(t *testing.T) {
 	if err := w.Close(); err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"META", "META.mirror"} {
+	for _, name := range []string{metaFileName, metaMirrorName} {
 		path := filepath.Join(dir, name)
 		data, err := os.ReadFile(path)
 		if err != nil {
@@ -56,7 +56,7 @@ func TestMetaV1UpgradesToV2(t *testing.T) {
 	if err := w2.Close(); err != nil {
 		t.Fatal(err)
 	}
-	data, err := os.ReadFile(filepath.Join(dir, "META"))
+	data, err := os.ReadFile(filepath.Join(dir, metaFileName))
 	if err != nil {
 		t.Fatal(err)
 	}

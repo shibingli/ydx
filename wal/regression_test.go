@@ -274,14 +274,14 @@ func TestReadOnlyOpensReadOnlySegment(t *testing.T) {
 	dst := copyWALDirForTest(t, src)
 	// Force a directory scan and the last-segment open path. | 强制目录扫描与
 	// 最后分段打开路径。
-	_ = os.RemoveAll(filepath.Join(dst, "manifest"))
+	_ = os.RemoveAll(filepath.Join(dst, manifestDirName))
 	entries, _ := os.ReadDir(dst)
 	segPath := ""
 	for _, e := range entries {
-		if filepath.Ext(e.Name()) == ".idx" {
+		if filepath.Ext(e.Name()) == indexSuffix {
 			_ = os.Remove(filepath.Join(dst, e.Name()))
 		}
-		if filepath.Ext(e.Name()) == ".wal" {
+		if filepath.Ext(e.Name()) == segmentSuffix {
 			segPath = filepath.Join(dst, e.Name())
 		}
 	}
@@ -387,7 +387,7 @@ func removeLastWALForTest(t *testing.T, dir string) {
 		t.Fatal(err)
 	}
 	for _, e := range entries {
-		if filepath.Ext(e.Name()) == ".wal" {
+		if filepath.Ext(e.Name()) == segmentSuffix {
 			if err := os.Remove(filepath.Join(dir, e.Name())); err != nil {
 				t.Fatal(err)
 			}

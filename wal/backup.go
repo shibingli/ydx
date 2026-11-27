@@ -604,7 +604,7 @@ func (b *dirBackup) Backup(ctx context.Context, bundle SegmentBundle) error {
 	if err := ensureDir(b.dir, 0o700); err != nil {
 		return err
 	}
-	walPath := filepath.Join(b.dir, fmt.Sprintf("%020d.wal", bundle.Meta.Seq))
+	walPath := filepath.Join(b.dir, fmt.Sprintf(segmentNameFormat, bundle.Meta.Seq))
 	copyNeeded := true
 	if info, err := os.Stat(walPath); err == nil && uint64(info.Size()) == bundle.Meta.Bytes {
 		// A same-size destination is only trustworthy when its CRC matches the
@@ -621,7 +621,7 @@ func (b *dirBackup) Backup(ctx context.Context, bundle SegmentBundle) error {
 		}
 	}
 	if bundle.Index != nil {
-		idxPath := filepath.Join(b.dir, fmt.Sprintf("%020d.idx", bundle.Meta.Seq))
+		idxPath := filepath.Join(b.dir, fmt.Sprintf(indexNameFormat, bundle.Meta.Seq))
 		copyIdx := true
 		if data, err := os.ReadFile(idxPath); err == nil && bundle.Meta.IdxCRC != 0 && checksum(data) == bundle.Meta.IdxCRC {
 			copyIdx = false
@@ -647,7 +647,7 @@ func (b *dirBackup) BackupSnapshot(ctx context.Context, set BackupSet) error {
 		return err
 	}
 	for _, m := range set.Segments {
-		path := filepath.Join(b.dir, fmt.Sprintf("%020d.wal", m.Seq))
+		path := filepath.Join(b.dir, fmt.Sprintf(segmentNameFormat, m.Seq))
 		info, err := os.Stat(path)
 		if err != nil {
 			return errs.WrapDetail(err, ErrBackup, "stat backup segment %d | 检查备份分段 %d 失败", m.Seq, m.Seq)
@@ -664,7 +664,7 @@ func (b *dirBackup) BackupSnapshot(ctx context.Context, set BackupSet) error {
 			return errs.Detail(ErrBackup, "backup segment %[1]d CRC mismatch | 备份分段 %[1]d CRC 不匹配", m.Seq)
 		}
 		if m.IdxCRC != 0 {
-			idxPath := filepath.Join(b.dir, fmt.Sprintf("%020d.idx", m.Seq))
+			idxPath := filepath.Join(b.dir, fmt.Sprintf(indexNameFormat, m.Seq))
 			if data, err := os.ReadFile(idxPath); err == nil && checksum(data) != m.IdxCRC {
 				return errs.Detail(ErrBackup, "backup sidecar %[1]d CRC mismatch | 备份侧车 %[1]d CRC 不匹配", m.Seq)
 			}
@@ -674,12 +674,12 @@ func (b *dirBackup) BackupSnapshot(ctx context.Context, set BackupSet) error {
 	if err != nil {
 		return err
 	}
-	return writeFileAtomic(filepath.Join(b.dir, "BACKUP.snap"), data, 0o600)
+	return writeFileAtomic(filepath.Join(b.dir, backupSnapshotName), data, 0o600)
 }
 
 // Verify checks the target segment and its header. | Verify 校验目标分段及其段头。
 func (b *dirBackup) Verify(ctx context.Context, meta SegmentMeta) error {
-	path := filepath.Join(b.dir, fmt.Sprintf("%020d.wal", meta.Seq))
+	path := filepath.Join(b.dir, fmt.Sprintf(segmentNameFormat, meta.Seq))
 	info, err := os.Stat(path)
 	if err != nil {
 		return errs.WrapDetail(err, ErrBackup, "stat %s | 检查 %s 失败", path, path)
@@ -743,7 +743,7 @@ func segmentFileCRC(ctx context.Context, path string) (uint32, error) {
 // copyBackupFile copies src to dst atomically, preferring reflink. | copyBackupFile
 // 原子复制 src 到 dst，优先使用 reflink。
 func copyBackupFile(ctx context.Context, dst string, src io.Reader) error {
-	tmp := dst + ".tmp"
+	tmp := dst + tempSuffix
 	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
 	if err != nil {
 		return err

@@ -120,7 +120,7 @@ func TestReadOnlyDoesNotMutate(t *testing.T) {
 	if err := w.Close(); err != nil {
 		t.Fatalf("close: %v", err)
 	}
-	metaPath := filepath.Join(dir, "META")
+	metaPath := filepath.Join(dir, metaFileName)
 	before, err := os.ReadFile(metaPath)
 	if err != nil {
 		t.Fatalf("read meta: %v", err)

@@ -24,7 +24,7 @@ func RestoreDir(ctx context.Context, backupDir, walDir string) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	data, err := os.ReadFile(filepath.Join(backupDir, "BACKUP.snap"))
+	data, err := os.ReadFile(filepath.Join(backupDir, backupSnapshotName))
 	if err != nil {
 		if os.IsNotExist(err) {
 			return errs.Detail(ErrNotFound, "backup snapshot is missing in %s | 备份目录 %s 缺少 BACKUP.snap", backupDir, backupDir)
@@ -64,13 +64,13 @@ func RestoreDir(ctx context.Context, backupDir, walDir string) error {
 		}
 	}()
 	for _, m := range set.Segments {
-		src := filepath.Join(backupDir, zeroPad20(m.Seq)+".wal")
-		dst := filepath.Join(tmp, zeroPad20(m.Seq)+".wal")
+		src := filepath.Join(backupDir, zeroPad20(m.Seq)+segmentSuffix)
+		dst := filepath.Join(tmp, zeroPad20(m.Seq)+segmentSuffix)
 		if err := copyBackupSegment(ctx, src, dst, m); err != nil {
 			return err
 		}
-		idxSrc := filepath.Join(backupDir, zeroPad20(m.Seq)+".idx")
-		idxDst := filepath.Join(tmp, zeroPad20(m.Seq)+".idx")
+		idxSrc := filepath.Join(backupDir, zeroPad20(m.Seq)+indexSuffix)
+		idxDst := filepath.Join(tmp, zeroPad20(m.Seq)+indexSuffix)
 		if err := copyBackupIndex(ctx, idxSrc, idxDst, m.IdxCRC); err != nil {
 			return err
 		}
@@ -264,17 +264,17 @@ func writeRestoredMetadata(dir string, set BackupSet) error {
 	encodeMetaSlot(slot[:], st)
 	buf := make([]byte, metaFileSize)
 	copy(buf[:metaSlotSize], slot[:])
-	if err := writeFileAtomic(filepath.Join(dir, "META"), buf, 0o600); err != nil {
+	if err := writeFileAtomic(filepath.Join(dir, metaFileName), buf, 0o600); err != nil {
 		return err
 	}
-	if err := writeFileAtomic(filepath.Join(dir, "META.mirror"), buf, 0o600); err != nil {
+	if err := writeFileAtomic(filepath.Join(dir, metaMirrorName), buf, 0o600); err != nil {
 		return err
 	}
 	// Publish the lock file with the restored directory so a later read-only
 	// open takes a shared lock instead of racing a writer that creates it. |
 	// 随恢复目录一起发布锁文件，使之后的只读打开获取共享锁，而不是与创建锁文件
 	// 的写者竞争。
-	if err := writeFileAtomic(filepath.Join(dir, "wal.lock"), nil, 0o600); err != nil {
+	if err := writeFileAtomic(filepath.Join(dir, lockFileName), nil, 0o600); err != nil {
 		return err
 	}
 	anchor := anchorState{

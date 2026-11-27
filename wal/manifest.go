@@ -362,7 +362,7 @@ type manifest struct {
 // 加载全部 shard；MANIFEST 缺失或为空不是错误，调用方回退目录扫描并可重建。
 func openManifest(dir string, enabled bool, shardRecords int, ratio float64, fileMode os.FileMode, readOnly bool) (*manifest, bool, bool, error) {
 	m := &manifest{
-		dir:          filepath.Join(dir, "manifest"),
+		dir:          filepath.Join(dir, manifestDirName),
 		enabled:      enabled,
 		shardRecords: shardRecords,
 		compactRatio: ratio,
@@ -372,7 +372,7 @@ func openManifest(dir string, enabled bool, shardRecords int, ratio float64, fil
 	if !enabled {
 		return m, false, false, nil
 	}
-	if _, err := os.Stat(filepath.Join(m.dir, ".rebuild")); err == nil {
+	if _, err := os.Stat(filepath.Join(m.dir, manifestRebuild)); err == nil {
 		return m, false, true, nil
 	}
 	entries, err := os.ReadDir(m.dir)
@@ -385,7 +385,7 @@ func openManifest(dir string, enabled bool, shardRecords int, ratio float64, fil
 	var names []string
 	maxIndex := -1
 	for _, e := range entries {
-		if !e.IsDir() && strings.HasSuffix(e.Name(), ".tmp") {
+		if !e.IsDir() && strings.HasSuffix(e.Name(), tempSuffix) {
 			// A leftover atomic-write temp file is never a live shard. Remove it
 			// opportunistically; no other writer can be active under the directory
 			// lock. | 原子写残留的临时文件不是存活 shard；目录锁保证没有其它写入者，
@@ -876,7 +876,7 @@ func (m *manifest) rewrite(data manifestData) error {
 		records = append(records, manifestRecord{kind: manifestKindTruncate, baseLSN: data.firstLSN, commitSeq: data.commitSeq, walID: data.walID})
 	}
 	if len(records) == 0 {
-		_ = os.Remove(filepath.Join(m.dir, ".rebuild"))
+		_ = os.Remove(filepath.Join(m.dir, manifestRebuild))
 		// An empty rebuild must also remove stale shards; otherwise a corrupt or
 		// obsolete shard survives forever for an empty WAL and every Open keeps
 		// falling back to a directory scan. | 空重建也必须删除陈旧 shard，否则空
@@ -904,7 +904,7 @@ func (m *manifest) rewrite(data manifestData) error {
 	if err := ensureDir(m.dir, 0o700); err != nil {
 		return err
 	}
-	marker := filepath.Join(m.dir, ".rebuild")
+	marker := filepath.Join(m.dir, manifestRebuild)
 	if err := writeFileAtomic(marker, nil, m.fileMode); err != nil {
 		return err
 	}

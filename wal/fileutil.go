@@ -12,7 +12,7 @@ import (
 // it over path, and synchronizes the directory. | writeFileAtomic 把数据写入同目录
 // 临时文件，同步后 rename 覆盖目标，再同步目录。
 func writeFileAtomic(path string, data []byte, mode os.FileMode) error {
-	tmp := path + ".tmp"
+	tmp := path + tempSuffix
 	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, mode)
 	if err != nil {
 		return errs.WrapDetail(err, ErrStorage, "create %s | 创建 %s 失败", tmp, tmp)

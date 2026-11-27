@@ -22,7 +22,7 @@ func TestReadOnlyDoesNotCreateLockFile(t *testing.T) {
 	if err := w.Close(); err != nil {
 		t.Fatal(err)
 	}
-	lock := filepath.Join(dir, "wal.lock")
+	lock := filepath.Join(dir, lockFileName)
 	if err := os.Remove(lock); err != nil {
 		t.Fatal(err)
 	}

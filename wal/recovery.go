@@ -475,7 +475,7 @@ func (w *WAL) recover() error {
 					state.walID = walID
 				}
 			case w.opts.manifestEnabled:
-				if _, err := os.Stat(filepath.Join(w.dir, "manifest")); err == nil && !w.opts.autoRepair {
+				if _, err := os.Stat(filepath.Join(w.dir, manifestDirName)); err == nil && !w.opts.autoRepair {
 					return errs.Detail(ErrCorrupt, "manifest directory exists without valid records | MANIFEST 目录存在但没有有效记录")
 				}
 				if w.opts.autoRepair {
@@ -763,7 +763,7 @@ func (w *WAL) sweepOrphanSidecars() {
 	}
 	live := make(map[uint64]struct{}, len(entries))
 	for _, e := range entries {
-		if seq, ok := parseSequence(e.Name(), ".wal"); ok {
+		if seq, ok := parseSequence(e.Name(), segmentSuffix); ok {
 			live[seq] = struct{}{}
 		}
 	}
@@ -772,7 +772,7 @@ func (w *WAL) sweepOrphanSidecars() {
 		if e.IsDir() {
 			continue
 		}
-		seq, ok := parseSequence(e.Name(), ".idx")
+		seq, ok := parseSequence(e.Name(), indexSuffix)
 		if !ok {
 			seq, ok = parseSequence(e.Name(), ".bak")
 		}
@@ -807,11 +807,11 @@ func (w *WAL) scanDirectory() (map[uint64]*segment, *retiredSet, uint64, uint64,
 	var maxSeq uint64
 	var shortSeqs []uint64
 	for _, e := range entries {
-		if !w.opts.readOnly && !e.IsDir() && strings.HasSuffix(e.Name(), ".tmp") {
+		if !w.opts.readOnly && !e.IsDir() && strings.HasSuffix(e.Name(), tempSuffix) {
 			_ = os.Remove(filepath.Join(w.dir, e.Name()))
 			continue
 		}
-		seq, ok := parseSequence(e.Name(), ".wal")
+		seq, ok := parseSequence(e.Name(), segmentSuffix)
 		if !ok {
 			continue
 		}

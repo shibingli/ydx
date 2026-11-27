@@ -267,9 +267,9 @@ func TestTornTailTruncatedOnOpen(t *testing.T) {
 	entries, _ := os.ReadDir(dir)
 	for _, e := range entries {
 		switch filepath.Ext(e.Name()) {
-		case ".idx":
+		case indexSuffix:
 			_ = os.Remove(filepath.Join(dir, e.Name()))
-		case ".wal":
+		case segmentSuffix:
 			f, err := os.OpenFile(filepath.Join(dir, e.Name()), os.O_WRONLY|os.O_APPEND, 0)
 			if err != nil {
 				t.Fatalf("open wal: %v", err)
@@ -278,7 +278,7 @@ func TestTornTailTruncatedOnOpen(t *testing.T) {
 			_ = f.Close()
 		}
 	}
-	_ = os.RemoveAll(filepath.Join(dir, "manifest"))
+	_ = os.RemoveAll(filepath.Join(dir, manifestDirName))
 	w2, err := Open(dir)
 	if err != nil {
 		t.Fatalf("reopen with torn tail: %v", err)

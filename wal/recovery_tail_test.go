@@ -109,8 +109,8 @@ func TestTornTailAfterCompleteRecords(t *testing.T) {
 	}
 
 	dst := t.TempDir()
-	copyFileForTest(t, filepath.Join(src, "META"), filepath.Join(dst, "META"))
-	copyFileForTest(t, filepath.Join(src, "META.mirror"), filepath.Join(dst, "META.mirror"))
+	copyFileForTest(t, filepath.Join(src, metaFileName), filepath.Join(dst, metaFileName))
+	copyFileForTest(t, filepath.Join(src, metaMirrorName), filepath.Join(dst, metaMirrorName))
 	walName := firstWALFileForTest(t, src)
 	dstWal := filepath.Join(dst, walName)
 	copyFileForTest(t, filepath.Join(src, walName), dstWal)
@@ -169,7 +169,7 @@ func firstWALFileForTest(t *testing.T, dir string) string {
 		t.Fatal(err)
 	}
 	for _, e := range entries {
-		if filepath.Ext(e.Name()) == ".wal" {
+		if filepath.Ext(e.Name()) == segmentSuffix {
 			return e.Name()
 		}
 	}

@@ -72,7 +72,7 @@ func copyCrashState(t *testing.T, src string) string {
 			t.Fatalf("write %s: %v", rel, err)
 		}
 	}
-	for _, name := range []string{"META", "META.mirror", "RECOVERY"} {
+	for _, name := range []string{metaFileName, metaMirrorName, recoveryFileName} {
 		copyFile(name)
 	}
 	entries, err := os.ReadDir(src)
@@ -83,14 +83,14 @@ func copyCrashState(t *testing.T, src string) string {
 		if entry.IsDir() {
 			continue
 		}
-		if filepath.Ext(entry.Name()) == ".wal" {
+		if filepath.Ext(entry.Name()) == segmentSuffix {
 			copyFile(entry.Name())
 		}
 	}
-	if manifestEntries, err := os.ReadDir(filepath.Join(src, "manifest")); err == nil {
+	if manifestEntries, err := os.ReadDir(filepath.Join(src, manifestDirName)); err == nil {
 		for _, entry := range manifestEntries {
 			if !entry.IsDir() {
-				copyFile(filepath.Join("manifest", entry.Name()))
+				copyFile(filepath.Join(manifestDirName, entry.Name()))
 			}
 		}
 	}

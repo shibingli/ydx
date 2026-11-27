@@ -215,7 +215,7 @@ func Open(dir string, opts ...Option) (*WAL, error) {
 		}
 		return nil, errs.WrapDetail(err, ErrStorage, "stat directory %s | 检查目录 %s 失败", dir, dir)
 	}
-	lock, err := acquireDirLock(filepath.Join(dir, "wal.lock"), o.readOnly, o.noLock)
+	lock, err := acquireDirLock(filepath.Join(dir, lockFileName), o.readOnly, o.noLock)
 	if err != nil {
 		return nil, err
 	}

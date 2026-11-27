@@ -302,7 +302,7 @@ func gapsMaxEnd(g []lsnGap) uint64 {
 }
 
 // anchorPath returns the anchor file path. | anchorPath 返回锚点文件路径。
-func anchorPath(dir string) string { return filepath.Join(dir, "RECOVERY") }
+func anchorPath(dir string) string { return filepath.Join(dir, recoveryFileName) }
 
 // encodeAnchor encodes one anchor with a trailing CRC. | encodeAnchor 编码一个
 // 带尾部 CRC 的锚点。

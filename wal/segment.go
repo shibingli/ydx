@@ -166,8 +166,8 @@ func newSegmentSummary(seq, baseLSN, lastLSN uint64, size int64, walID [16]byte,
 		lastLSN: lastLSN,
 		size:    size,
 		walID:   walID,
-		path:    base + ".wal",
-		idxPath: base + ".idx",
+		path:    base + segmentSuffix,
+		idxPath: base + indexSuffix,
 		bakPath: base + ".bak",
 	}
 }
@@ -197,12 +197,12 @@ func joinPathName(dir, name string) string {
 
 // segmentPath returns <seq>.wal. | segmentPath 返回 <seq>.wal。
 func segmentPath(dir string, seq uint64) string {
-	return joinPathName(dir, zeroPad20(seq)) + ".wal"
+	return joinPathName(dir, zeroPad20(seq)) + segmentSuffix
 }
 
 // sidecarPath returns <seq>.idx. | sidecarPath 返回 <seq>.idx。
 func sidecarPath(dir string, seq uint64) string {
-	return joinPathName(dir, zeroPad20(seq)) + ".idx"
+	return joinPathName(dir, zeroPad20(seq)) + indexSuffix
 }
 
 // backupPath returns <seq>.bak. | backupPath 返回 <seq>.bak。

@@ -285,7 +285,7 @@ func TestVerifyDetectsSummaryMismatch(t *testing.T) {
 	if err := w.Close(); err != nil {
 		t.Fatal(err)
 	}
-	path := filepath.Join(dir, "manifest", manifestShardName(0))
+	path := filepath.Join(dir, manifestDirName, manifestShardName(0))
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)

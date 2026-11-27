@@ -86,7 +86,7 @@ func walFileSizeForTest(t *testing.T, dir string) int64 {
 	}
 	var size int64
 	for _, e := range entries {
-		if filepath.Ext(e.Name()) != ".wal" {
+		if filepath.Ext(e.Name()) != segmentSuffix {
 			continue
 		}
 		info, err := e.Info()
@@ -126,7 +126,7 @@ func copyTreeForTest(t *testing.T, src, dst string) {
 		if d.IsDir() {
 			return os.MkdirAll(target, 0o700)
 		}
-		if filepath.Ext(path) == ".tmp" || d.Name() == "wal.lock" {
+		if filepath.Ext(path) == tempSuffix || d.Name() == lockFileName {
 			return nil
 		}
 		data, err := os.ReadFile(path)

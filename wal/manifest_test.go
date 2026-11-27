@@ -12,7 +12,7 @@ import (
 // 静默丢失其中记录。
 func TestManifestRejectsShardGap(t *testing.T) {
 	dir := t.TempDir()
-	mdir := filepath.Join(dir, "manifest")
+	mdir := filepath.Join(dir, manifestDirName)
 	if err := os.MkdirAll(mdir, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -47,7 +47,7 @@ func TestManifestRejectsShardGap(t *testing.T) {
 // shard，避免损坏/旧 shard 让以后每次 Open 都回退目录扫描。
 func TestManifestEmptyRewriteRemovesStaleShards(t *testing.T) {
 	dir := t.TempDir()
-	mdir := filepath.Join(dir, "manifest")
+	mdir := filepath.Join(dir, manifestDirName)
 	if err := os.MkdirAll(mdir, 0o700); err != nil {
 		t.Fatal(err)
 	}
