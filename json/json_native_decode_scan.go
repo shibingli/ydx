@@ -425,6 +425,17 @@ func (d *decoder) skipString() error {
 		case c < 0x20:
 			return syntaxErr("invalid control character in string | 字符串中包含非法控制字符")
 		default:
+			if c >= utf8.RuneSelf && d.v2 != nil && !d.v2.allowInvalidUTF8 {
+				// The fast path validates UTF-8 only when no escape is present;
+				// the slow path must validate raw non-ASCII bytes as well. | 快路径
+				// 仅在没有转义时校验 UTF-8；慢路径也必须校验原始非 ASCII 字节。
+				r, size := utf8.DecodeRune(d.data[i:])
+				if r == utf8.RuneError && size == 1 {
+					return d.invalidUTF8(i)
+				}
+				i += size
+				continue
+			}
 			i++
 		}
 	}

@@ -162,15 +162,18 @@ func Marshal(in any, opts ...Options) ([]byte, error) {
 func marshalMode(v any, cfg *v2Config) ([]byte, error) {
 	rv := reflect.ValueOf(v)
 	// A struct passed by value sits behind a non-addressable reflect.Value, which used to send
-	// the whole encoding through the reflective fallback. The interface's data word already
-	// points at the struct, so the pointer-based fast encoder can read it directly with no copy
-	// and no extra allocation. Nested values keep their existing addressability semantics. |
-	// 以值传递的结构体在 reflect.Value 中不可寻址，过去整段编码走反射回退路径。接口的数据字本身
-	// 就指向该结构体，因此基于指针的快速编码器可直接读取，无需复制、不增加分配；嵌套值仍保持原有
-	// 的可寻址语义。
+	// the whole encoding through the reflective fallback. Copy it into an addressable value and
+	// hand the pointer-based fast encoder that copy. Do not read the interface data word: Go
+	// stores pointer-free word-sized types directly in that word, so treating it as a pointer
+	// dereferences the value's bits (crash or arbitrary read). | 以值传递的结构体在
+	// reflect.Value 中不可寻址，过去整段编码走反射回退。这里复制到可寻址值后把指针交给快速
+	// 编码器。不得读取接口数据字：Go 会把无指针的字大小类型直接存放在数据字中，把它当指针会
+	// 解引用数值位（崩溃或任意读）。
 	if rv.IsValid() && rv.Kind() == reflect.Struct && !rv.CanAddr() {
 		if info := fastStructFor(rv.Type()); info != nil && fastStructAllowed(cfg) {
-			base := (*emptyInterface)(unsafe.Pointer(&v)).data
+			pv := reflect.New(rv.Type())
+			pv.Elem().Set(rv)
+			base := pv.UnsafePointer()
 			e := getEncoderMode(cfg)
 			if info.encBuf != nil {
 				buf, err := info.encBuf(e, e.buf, base)

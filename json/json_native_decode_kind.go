@@ -178,9 +178,9 @@ func buildKindDecoder(t reflect.Type) decodeFunc {
 				if err != nil {
 					return err
 				}
-				out, err := base64.StdEncoding.DecodeString(s)
+				out, err := d.decodeBase64(s)
 				if err != nil {
-					return errs.Wrap(err, ErrTypeMismatch)
+					return err
 				}
 				v.SetBytes(out)
 				return nil
@@ -211,9 +211,9 @@ func buildKindDecoder(t reflect.Type) decodeFunc {
 				if err != nil {
 					return err
 				}
-				out, err := base64.StdEncoding.DecodeString(s)
+				out, err := d.decodeBase64(s)
 				if err != nil {
-					return errs.Wrap(err, ErrTypeMismatch)
+					return err
 				}
 				if len(out) != v.Len() {
 					return newUnmarshalSemanticError(t, jsontext.KindString, nil, "decoded base64 data has incorrect length")
@@ -872,3 +872,20 @@ func buildMapDecoder(t reflect.Type) decodeFunc {
 
 // fastFieldDec parses a JSON value directly into a field's memory. | fastFieldDec 直接把 JSON 值
 // 解析进字段内存。
+
+// decodeBase64 decodes the standard alphabet and, in strict v2 mode, rejects
+// CR/LF and non-canonical encoded lengths unless the caller opted into loose
+// RFC 4648 parsing. | decodeBase64 解码标准字母表；严格 v2 模式拒绝 CR/LF 与
+// 非规范编码长度，除非调用方选择宽松 RFC 4648 解析。
+func (d *decoder) decodeBase64(s string) ([]byte, error) {
+	out, err := base64.StdEncoding.DecodeString(s)
+	if err != nil {
+		return nil, errs.Wrap(err, ErrTypeMismatch)
+	}
+	if d.v2 != nil && !d.v2.parseBytesWithLooseRFC4648 {
+		if strings.ContainsAny(s, "\r\n") || len(s) != base64.StdEncoding.EncodedLen(len(out)) {
+			return nil, syntaxErr("illegal base64 data | 非法 base64 数据")
+		}
+	}
+	return out, nil
+}

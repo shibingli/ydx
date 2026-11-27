@@ -58,10 +58,10 @@ func (m marshalValueReceiver) MarshalJSON() ([]byte, error) {
 }
 
 // TestMarshalNonAddressableStructFastPath verifies that top-level struct values, which the
-// pointer-based fast encoder can read directly from the interface data word, keep byte-for-byte
-// compatibility with the reflective encoder and encoding/json. |
-// TestMarshalNonAddressableStructFastPath 验证顶层结构体值（基于指针的快速编码器可直接从接口数据字
-// 读取）与反射编码器及 encoding/json 逐字节一致。
+// pointer-based fast encoder receives an addressable copy, keep byte-for-byte compatibility
+// with the reflective encoder and encoding/json. |
+// TestMarshalNonAddressableStructFastPath 验证顶层结构体值（快速编码器接收可寻址副本）与反射
+// 编码器及 encoding/json 逐字节一致。
 func TestMarshalNonAddressableStructFastPath(t *testing.T) {
 	when := time.Date(2026, 10, 22, 8, 9, 10, 123456789, time.UTC)
 	value := marshalFastFixture{
