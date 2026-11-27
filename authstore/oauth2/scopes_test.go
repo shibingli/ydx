@@ -122,19 +122,33 @@ func TestScopesCrossInstance(t *testing.T) {
 	}
 
 	server := miniredis.RunT(t)
-	fastFirst := newStoresOn(t, server, oauth2store.Options{ScopeCacheTTL: 30 * time.Millisecond})
-	fastSecond := newStoresOn(t, server, oauth2store.Options{ScopeCacheTTL: 30 * time.Millisecond})
-	if fastSecond.Scopes.Exists("profile") {
+	// Long TTL: the seeded snapshot must stay stale until its window elapses.
+	// An hour is wide enough that scheduler delays cannot expire it, so this
+	// assertion does not depend on timing luck even under a loaded test run. |
+	// 长 TTL：已加载快照在窗口结束前必须保持陈旧。一小时足够宽，调度延迟不会让它
+	// 过期，因此在满载测试下这条断言也不靠运气。
+	steadyFirst := newStoresOn(t, server, oauth2store.Options{ScopeCacheTTL: time.Hour})
+	steadySecond := newStoresOn(t, server, oauth2store.Options{ScopeCacheTTL: time.Hour})
+	if steadySecond.Scopes.Exists("profile") {
 		t.Fatal("second instance saw an unwritten scope | 第二实例看到了未写入作用域")
 	}
-	if added, err := fastFirst.Scopes.RegisterScopes(testContext, authoauth2.Scope{Name: "profile"}); err != nil || added != 1 {
-		t.Fatalf("fast register = %d, %v | 快速注册失败", added, err)
+	if added, err := steadyFirst.Scopes.RegisterScopes(testContext, authoauth2.Scope{Name: "profile"}); err != nil || added != 1 {
+		t.Fatalf("steady register = %d, %v | 注册失败", added, err)
 	}
-	if fastSecond.Scopes.Exists("profile") {
+	if steadySecond.Scopes.Exists("profile") {
 		t.Fatal("snapshot refreshed before ttl | 快照在 ttl 前刷新")
 	}
-	time.Sleep(60 * time.Millisecond)
+	// Short TTL: a stale snapshot is refreshed once its window elapses. |
+	// 短 TTL：陈旧快照在窗口结束后刷新。
+	fastSecond := newStoresOn(t, server, oauth2store.Options{ScopeCacheTTL: 30 * time.Millisecond})
 	if !fastSecond.Scopes.Exists("profile") {
+		t.Fatal("fresh instance did not load the registry | 新实例未加载注册表")
+	}
+	if added, err := steadyFirst.Scopes.RegisterScopes(testContext, authoauth2.Scope{Name: "email"}); err != nil || added != 1 {
+		t.Fatalf("fast register = %d, %v | 快速注册失败", added, err)
+	}
+	time.Sleep(60 * time.Millisecond)
+	if !fastSecond.Scopes.Exists("email") {
 		t.Fatal("snapshot did not refresh after ttl | 快照在 ttl 后未刷新")
 	}
 }

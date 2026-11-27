@@ -365,6 +365,11 @@ db:
 		MaxIdleConns:  7,
 		SlowThreshold: 350 * time.Millisecond,
 		PrepareStmt:   true,
+		// prepare_stmt appears in the configuration (and the default layer also
+		// registers it), so the value is authoritative rather than a zero-value
+		// placeholder. | prepare_stmt 出现在配置中（默认值层也注册了该键），因此该
+		// 取值是权威值而非零值占位。
+		PrepareStmtSet: true,
 		// The config file omits db.create_database, so the framework default enables automatic database creation. | 配置文件里没写 db.create_database，框架默认开启自动建库。
 		CreateDatabase: true,
 	}
