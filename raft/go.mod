@@ -8,7 +8,7 @@ require (
 	github.com/shibingli/ydx/json v0.1.20
 	github.com/shibingli/ydx/log v0.1.14
 	github.com/shibingli/ydx/rdma v0.1.9
-	github.com/shibingli/ydx/wal v0.3.6
+	github.com/shibingli/ydx/wal v0.3.7
 	golang.org/x/crypto v0.58.0
 )
 

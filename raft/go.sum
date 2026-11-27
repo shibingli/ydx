@@ -18,8 +18,8 @@ github.com/shibingli/ydx/rdma v0.1.9 h1:QHBKJLuZA3gRGPUMSisuUZ++KThRnUa9yqzHrkWw
 github.com/shibingli/ydx/rdma v0.1.9/go.mod h1:ogkTYe+yzy0jhsxacvz792lV+UA4cMauJzektHthHJ4=
 github.com/shibingli/ydx/sysinfo v0.1.6 h1:5SEHSqUdVDqAgLxk7xqI4S2bldiO0CDz5XjYUnfHYRY=
 github.com/shibingli/ydx/sysinfo v0.1.6/go.mod h1:HF5vZvUUidCMnOWPlYUC3sSjYT23COYXm55KP9cdsMc=
-github.com/shibingli/ydx/wal v0.3.6 h1:2K8FdJjYVc9pYqPOBkvzTChr8IWtKKalSRuUyL3xlRs=
-github.com/shibingli/ydx/wal v0.3.6/go.mod h1:9YqJFCMwp0XwsXQ6pb8HwfjNE++dK0tlHrpt3cumPSc=
+github.com/shibingli/ydx/wal v0.3.7 h1:EQsopH9ay7fBpQRLqsAeFTBiMp4j0JF4thh+77iQpF4=
+github.com/shibingli/ydx/wal v0.3.7/go.mod h1:9YqJFCMwp0XwsXQ6pb8HwfjNE++dK0tlHrpt3cumPSc=
 golang.org/x/crypto v0.58.0 h1:COkYLr4k7nDI4r6QtMML2AfzeIswWHAJthLS6K/M/54=
 golang.org/x/crypto v0.58.0/go.mod h1:Xh+kl5A+M0gMiWDytH2Hhr5Z7WbNCpv/eB/EFgfSk+w=
 golang.org/x/sys v0.50.0 h1:dkKZEFTEKaLr1sjhs0WiKqoi8Jj5nHbS3Njmx1UoMJs=
